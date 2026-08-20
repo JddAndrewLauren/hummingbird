@@ -268,6 +268,12 @@ type ScreenAssertion = (page: Page) => Promise<void>;
 
 const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
   now: async (page) => {
+    // #456: the kit world's hero card and "Also startable" list are gone —
+    // `NowScreen` no longer takes a `demo` prop at all, so there is no
+    // branch left that could render either, on any world. A positive
+    // absence check rather than an inferred one: the block really went,
+    // not merely moved off this gate's board-only capture pass.
+    await expect(page.getByText("Also startable")).toHaveCount(0);
     await expect(page.getByRole("heading", { name: "@computer" })).toBeVisible();
     await expect(page.getByRole("alert")).toHaveCount(2);
     // #455: the nav's triage/alerts badges derive from the store now
@@ -288,11 +294,15 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     ).toContainText("2");
   },
   triage: async (page) => {
+    // #456: `TriageScreen` no longer takes a `demo` prop, so the kit
+    // world's fixture card list and its "swept every 15m" meta cannot
+    // render on any world — a positive absence check for the deleted meta
+    // wording, not an inference from the presence check below.
+    await expect(page.getByText(/swept every 15m/)).toHaveCount(0);
     // `demo-task-state.test.ts` pins `triageInbox` at 17 and `grillingItems`
-    // at 1 — `TriageScreen`'s real branch (taken because `demo` is null
-    // under `?demo=board`) renders `triageProcessQueue`'s combined header,
-    // `${capturedCount} captured · ${grillingCount} grilling`, never the kit
-    // branch's "swept every 15m" wording nor the old "N unsorted" phrasing.
+    // at 1 — `TriageScreen`'s one render path renders `triageProcessQueue`'s
+    // combined header, `${capturedCount} captured · ${grillingCount}
+    // grilling`, never the old "N unsorted" phrasing.
     await expect(page.getByText("17 captured · 1 grilling")).toBeVisible();
   },
   routes: async (page) => {
@@ -336,6 +346,12 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     await expect(page.getByRole("main").locator("[aria-expanded]")).toHaveCount(10);
   },
   settings: async (page) => {
+    // #456: `SettingsScreen` no longer takes a `demo` prop, so the kit
+    // world's "Show acked alerts" switch and its inert "Mirror" section
+    // cannot render on any world — a positive absence check, not an
+    // inference from the presence check below.
+    await expect(page.getByRole("heading", { name: "Mirror", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("switch", { name: "Show acked alerts" })).toHaveCount(0);
     // `boundTripsBinding`'s key — the one binding row #452 added that
     // neither world had before. Bindings render only once the real core
     // reports `status === "ready"` (board mode reads `task.bindings`
