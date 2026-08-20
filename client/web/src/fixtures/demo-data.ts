@@ -228,6 +228,22 @@ export const DEMO_DATA: DemoData = {
       updatedAt: 1_755_000_000_000,
       version: 1,
     },
+    // #374: last on purpose — the other three each have a reason to stay
+    // where they are (the first is the backtest capture's target; the rest
+    // are the demo's own narrative order), so the rule that exists only to
+    // photograph the unranked-severity badge's wrapping row goes at the
+    // end. "urgent-plus" is not in `ruleKindRegistry.severities` below.
+    {
+      id: "rule-unranked-severity",
+      name: "Backup generator test overdue",
+      eventKind: null,
+      conditions: [{ field: "source", op: "contains", value: "generator", negate: false }],
+      severity: "urgent-plus",
+      tier: "normal",
+      enabled: true,
+      updatedAt: 1_755_000_000_000,
+      version: 1,
+    },
   ],
   ruleKindRegistry: {
     coreFields: [

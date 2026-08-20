@@ -40,6 +40,24 @@ describe("the label span exists only when there is a label", () => {
   });
 });
 
+describe("the wrap variant (#374)", () => {
+  it("defaults to the single-line pill: nowrap, fixed height, pill radius", () => {
+    render(<Badge data-testid="b">short</Badge>);
+    const style = pill().style;
+    expect(style.whiteSpace).toBe("nowrap");
+    expect(style.height).toBe("22px");
+    expect(style.borderRadius).toBe("var(--radius-pill)");
+  });
+
+  it("wraps sentence-length text instead of clipping, at a softer radius", () => {
+    render(<Badge data-testid="b" wrap>Unranked severity — loses every fold against a declared severity, and can never escalate a notification.</Badge>);
+    const style = pill().style;
+    expect(style.whiteSpace).toBe("normal");
+    expect(style.height).toBe("");
+    expect(style.borderRadius).toBe("var(--radius-md)");
+  });
+});
+
 describe("the icon-only form is nameable", () => {
   // Not `Badge`'s own doing — it spreads the caller's props onto the pill.
   // This pins that the spread reaches the element, because the word-free

@@ -342,6 +342,39 @@ describe("RulesScreen", () => {
     expect(invalid.parentElement?.parentElement).toBe(unranked.parentElement?.parentElement);
   });
 
+  it("keeps sentence-length badges out of the non-wrapping identity row (#374)", () => {
+    render(
+      <RulesScreen
+        rules={[
+          rule({
+            severity: "warning",
+            conditions: [{ field: "removed_field", op: "eq", value: "x", negate: false }],
+          }),
+        ]}
+        kindRegistry={registry}
+        frontier={[]}
+        lastRuleWrite={null}
+        syncOutcomeSeq={0}
+        onCreateRule={vi.fn()}
+        onPatchRule={vi.fn()}
+      />,
+    );
+
+    const invalid = screen.getByText("Invalid — names a field its kind no longer declares");
+    const unranked = screen.getByText(/^Unranked severity —/);
+    const badgeRow = invalid.parentElement?.parentElement as HTMLElement;
+    // A wrapping row of its own, distinct from the mono tier/kind chips'
+    // identity row — the fixed-height, non-wrapping row is never asked to
+    // hold a sentence.
+    expect(badgeRow.getAttribute("style")).toContain("flex-wrap: wrap");
+
+    const tierChip = screen.getByText("urgent");
+    const identityRow = tierChip.parentElement as HTMLElement;
+    expect(identityRow).not.toBe(badgeRow);
+    expect(identityRow.contains(invalid)).toBe(false);
+    expect(identityRow.contains(unranked)).toBe(false);
+  });
+
   it("does not mark a rule at a declared severity as unranked", () => {
     render(
       <RulesScreen

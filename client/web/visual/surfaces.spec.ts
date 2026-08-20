@@ -300,7 +300,9 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     // (the board world's `task` is a `useState` lazy initializer, never
     // fetched) never shows it.
     await expect(page.getByText("Loading rules…")).toHaveCount(0);
-    await expect(page.getByText("3 rules · default-deny")).toBeVisible();
+    // 4 since #374 added a rule at an out-of-vocabulary severity so this
+    // gate photographs its wrapping badge row.
+    await expect(page.getByText("4 rules · default-deny")).toBeVisible();
   },
   done: async (page) => {
     // `DONE_SEEDS` is 6 long; `DoneScreen`'s "not read yet" only shows while
