@@ -78,6 +78,10 @@ export function Combobox({ label, suggestions, value, onChange, placeholder, siz
   function close() {
     setOpen(false);
     setActive(-1);
+    // Dropped here rather than in the placing effect below, so that
+    // effect only ever *measures*. A shut list is unmounted, so nothing
+    // reads a stale placement in the meantime.
+    setPlacement(null);
   }
 
   function openWith(all: boolean) {
@@ -131,7 +135,6 @@ export function Combobox({ label, suggestions, value, onChange, placeholder, siz
   // why it renders `visibility: hidden` until placed.
   useLayoutEffect(() => {
     if (!expanded) {
-      setPlacement(null);
       return;
     }
     function place() {
@@ -188,6 +191,11 @@ export function Combobox({ label, suggestions, value, onChange, placeholder, siz
   }
 
   return (
+    // The wrapper carries `onBlur` to notice focus leaving the control as a
+    // whole (field ↔ chevron is not a dismissal). That is focus bookkeeping,
+    // not an interaction: there is nothing here to operate, and the roles
+    // and keys live on the `<Input>` and its listbox below.
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions
     <div ref={wrapperRef} style={{ position: "relative", ...style }}
       onBlur={(event) => {
         // Focus leaving the control entirely — Tab, or a click on something
@@ -261,6 +269,11 @@ export function Combobox({ label, suggestions, value, onChange, placeholder, siz
             background: "var(--surface-card)", border: "1px solid var(--border-default)",
             borderRadius: "var(--radius-control)", boxShadow: "var(--shadow-3)" }}>
           {options.map((suggestion, index) => (
+            // No key handler *on the option*, by the pattern: listbox options
+            // are not focusable and never receive keys. The input keeps focus
+            // and owns traversal and commit (`onKeyDown` above), pointing at
+            // the active option through `aria-activedescendant`.
+            // eslint-disable-next-line jsx-a11y/click-events-have-key-events
             <li key={suggestion} id={optionId(index)} role="option" aria-selected={index === active}
               ref={index === active ? activeRef : undefined}
               onMouseDown={(event) => event.preventDefault()}
