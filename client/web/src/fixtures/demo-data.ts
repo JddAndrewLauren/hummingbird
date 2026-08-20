@@ -1,11 +1,14 @@
 // A typed mirror of the design kit's fixtures
 // (.claude/skills/hummingbird-design/ui_kits/web/data.js), used only by
 // demo mode. Nothing here is real data and nothing here reaches a
-// production build — see demo.ts for the gate.
+// production build — `demoData()` below is the gate, the same
+// `import.meta.env.DEV` double gate `fixtures/demo.ts`'s board-world
+// accessors sit behind.
 
 import type { Stage } from "../components/domain/StageBadge";
 import type { AlertTier } from "../components/domain/AlertCard";
 import type { BindingDTO, KindRegistryDTO, RuleDTO, TaskItemDTO } from "../store/protocol";
+import { isDemoEnabled } from "./demo-mode";
 
 export type Urgency = "calm" | "soon" | "now" | "overdue";
 
@@ -360,3 +363,23 @@ export const DEMO_DATA: DemoData = {
     },
   ],
 };
+
+/** The kit world's own dev-gated accessor (#457) — Routes and Alerts call
+ * this directly rather than reading a `demo` prop `App.tsx` threads down,
+ * which is what let `DemoData` leave `App.tsx` entirely. Colocated with the
+ * data it gates instead of living in `fixtures/demo.ts` (the board world's
+ * accessors stay there, unaffected — `demoTaskState`/`demoCalendar` still
+ * feed `App.tsx`'s lazy-initializer state).
+ *
+ * The same double gate every fixture accessor in this app sits behind:
+ * `import.meta.env.DEV` is substituted with the literal `false` at build
+ * time, so the production bundle contains `if (false && …)` and Rollup
+ * drops both this function and `DEMO_DATA` with the dead branch — see
+ * `fixtures/demo.ts`'s header for the whole argument, which applies here
+ * unchanged. */
+export function demoData(): DemoData | null {
+  if (!import.meta.env.DEV) {
+    return null;
+  }
+  return isDemoEnabled(window.location.search) ? DEMO_DATA : null;
+}

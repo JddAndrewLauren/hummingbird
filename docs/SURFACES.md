@@ -344,32 +344,39 @@ empty states matter on their own: they are what a new device actually shows,
 and no fixture screen exercises them. **Rules is populated under the default
 `?demo` too**, from the board seed's own `rules` / `kindRegistry` (#452,
 folded from the kit world's `ruleDetails` / `ruleKindRegistry` —
-`demo-data.ts`, #140 — which is what still backs `?demo=kit`'s own,
-unphotographed, Rules render), so its capture is a deterministic, populated
-rules screen — condition rows, toggles and a backtest count — the same as the
-other five.
+`demo-data.ts`, #140), so its capture is a deterministic, populated rules
+screen — condition rows, toggles and a backtest count — the same as the other
+five. `RulesScreen` carries no separate kit branch any more either (#457
+deleted `App.tsx`'s `demo ? demo.ruleDetails : task.rules` — and the sibling
+ternaries over `kindRegistry`/`frontier`/`lastRuleWrite`/`onCreateRule`/
+`onPatchRule` — alongside `DemoData` itself), so this board capture is now
+Rules' only render path, `?demo=kit` included.
 
-**Routes and Alerts lost their only capture at #455's flip, and it is a real
-gap, not a moved one.** Neither screen reads `TaskState` at all — each takes
-only `demo: DemoData | null`, never `task` — so under the default `?demo`
-(board) both always render the honest empty state an unseeded device would
-(`routes renders and asserts the seed`, `alerts renders and asserts the
-seed`), and their only populated render, the kit fixture's rule cards and
-route checklist, is now reachable solely at `?demo=kit`, which nothing in
-`visual/surfaces.spec.ts` opens any more. Neither screen has a component test
-either. Until one of the two exists again — a kit capture pass restored, or a
-`RoutesScreen.test.tsx`/`AlertsScreen.test.tsx` — these two screens' populated
-states are reviewed by hand only, at `?demo=kit`.
+**Routes and Alerts lost their only capture at #455's flip; #457 closed the
+component-test half of the gap it left.** Neither screen reads `TaskState` at
+all — each now calls its own dev-gated `demoData()` directly
+(`fixtures/demo-data.ts`), never a `demo` prop from `App.tsx` — so under the
+default `?demo` (board) both still always render the honest empty state an
+unseeded device would (`routes renders and asserts the seed`, `alerts renders
+and asserts the seed`), and their only populated render, the kit fixture's
+rule cards and route checklist, stays reachable solely at `?demo=kit`, which
+nothing in `visual/surfaces.spec.ts` opens. `RoutesScreen.test.tsx` and
+`AlertsScreen.test.tsx` (#457) now cover both states — the honest empty
+render, the kit-populated render, and the kit fixture standing down in a
+production build — so these two screens' populated states are no longer
+reviewed by hand only; a capture pass restored to `visual/surfaces.spec.ts`
+would still be the only way to photograph them, and nothing in this file adds
+one.
 
-**Now, Triage and Settings carry no kit rendering at all any more** (#456):
-each screen's fixture-only block (Now's hero card and "Also startable" list,
-Triage's fixture card list and "swept every 15m" meta, Settings' acked-alerts
-switch and its inert "Mirror" section) is deleted along with the screen's own
-`demo` prop and the `App.tsx` guards that only existed to keep writes inert
-under it — these three take their real render path unconditionally now,
-`?demo=kit` included. Unlike Routes, Alerts and Rules (still kit-fed above),
-there is no populated kit-only render left on any of the three to review by
-hand.
+**Now, Triage, Settings and Rules carry no kit rendering at all any more**
+(#456, #457): each screen's fixture-only block or branch (Now's hero card and
+"Also startable" list, Triage's fixture card list and "swept every 15m" meta,
+Settings' acked-alerts switch and its inert "Mirror" section, Rules' `demo ?`
+ternaries) is deleted along with the screen's own `demo` prop or argument and
+the `App.tsx` guards that only existed to keep writes inert under it — all
+four take their real render path unconditionally now, `?demo=kit` included.
+Unlike Routes and Alerts (still kit-fed above), there is no populated
+kit-only render left on any of the four to review by hand.
 
 **Recall (#478–#481) is photographed under the BOARD world, not the kit
 one** — every trigger #480 wired (the header's Search button, the `/`
