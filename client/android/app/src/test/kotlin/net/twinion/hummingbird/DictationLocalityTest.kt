@@ -18,7 +18,8 @@ import org.junit.Test
 //    recognition service does not establish that (the platform documents it
 //    as free to use a remote server). Only `isOnDeviceRecognitionAvailable`
 //    /`createOnDeviceSpeechRecognizer` do. The default-service pair is
-//    therefore banned outright — in the shared file and in both hosts, so a
+//    therefore banned outright — in the shared file, in both hosts, and in
+//    `MainActivity` (which constructs the sheet's `DictationHost`), so a
 //    second, local copy of the plumbing cannot sneak the fallback in — a
 //    silent swap back is the exact regression this exists to catch, and the
 //    ADR names "a network-backed recognizer as an error-path fallback" as
@@ -41,6 +42,7 @@ class DictationLocalityTest {
     private val dictationSrc by lazy { source("speech/Dictation.kt") }
     private val captureActivitySrc by lazy { source("CaptureActivity.kt") }
     private val captureSheetSrc by lazy { source("CaptureSheet.kt") }
+    private val mainActivitySrc by lazy { source("MainActivity.kt") }
 
     @Test
     fun `the recognizer is the on-device one, and the default-service pair is never reached`() {
@@ -59,6 +61,7 @@ class DictationLocalityTest {
             "speech/Dictation.kt" to dictationSrc,
             "CaptureActivity.kt" to captureActivitySrc,
             "CaptureSheet.kt" to captureSheetSrc,
+            "MainActivity.kt" to mainActivitySrc,
         )) {
             assertFalse(
                 "$name: SpeechRecognizer.isRecognitionAvailable selects the default (possibly remote) service",

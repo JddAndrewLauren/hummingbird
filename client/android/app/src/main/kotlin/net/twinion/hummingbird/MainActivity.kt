@@ -14,6 +14,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -497,7 +498,13 @@ private fun AppRoot(
         NavHost(
             navController = navController,
             startDestination = Routes.NOW,
-            modifier = Modifier.padding(padding),
+            // Consumed as well as applied: padding alone leaves the
+            // status-bar inset unconsumed, so every tab screen's own nested
+            // bare `Scaffold` re-applies it — a blank band between the top
+            // bar and each screen's content.
+            modifier = Modifier
+                .padding(padding)
+                .consumeWindowInsets(padding),
         ) {
             composable(Routes.NOW) {
                 NowScreen(

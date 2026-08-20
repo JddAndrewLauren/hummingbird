@@ -138,6 +138,25 @@ class CaptureViewModelTest {
         assertEquals(listOf(MobileProject(id = "p-1", name = "Kitchen remodel")), vm.projects.value)
     }
 
+    /** The sheet's post-submit reset: `MainActivity`'s store outlives the
+     * sheet, so without this the next open would replay the submitted
+     * capture's words as a fresh draft (clearDraft's own doc). */
+    @Test
+    fun `clearDraft resets the draft to its resting state`() {
+        val vm = viewModel()
+        vm.updateDraft(
+            CaptureFormState(
+                title = "buy milk",
+                context = "@errands",
+                deadline = "2026-08-20",
+            ),
+        )
+
+        vm.clearDraft()
+
+        assertEquals(CaptureFormState(), vm.draft.value)
+    }
+
     @Test
     fun `the mic transcript replaces only the title, verbatim`() {
         val vm = viewModel()

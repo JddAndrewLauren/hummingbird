@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -217,15 +218,21 @@ class TriageViewModel(
 
     /** The row checkmark: `Core::act`'s `complete`, never a triage — a
      * capture that turned out already finished skips the editor entirely,
-     * the same amendment `TriageRow.tsx`'s own doc records. */
+     * the same amendment `TriageRow.tsx`'s own doc records. The open row
+     * and its draft close on success — and only on success: a failed act
+     * leaves the row on the board, so its editor stays where [statusLine]
+     * can be read against it and the act retried. Cancellation rethrows
+     * rather than being worded as a failure. */
     suspend fun complete(itemId: String, nowMs: Long) {
         val failure = try {
             completeFn(itemId, nowMs)
             null
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Exception) {
             "Couldn't complete — ${error.message}"
         }
-        if (_selectedId.value == itemId) {
+        if (failure == null && _selectedId.value == itemId) {
             _selectedId.value = null
             _draft.value = null
         }
