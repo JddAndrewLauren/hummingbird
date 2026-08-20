@@ -228,25 +228,32 @@ real caller; `skills/BackendPreference.kt` is #274's picker, read into every
 run and into the one-tap "switch tiers" offer a declined, unreachable pin
 gets (`hummingbird_core::decisions::skills::backend::declined_backend_fallback`).
 
-## The Recall screen (M4, #542)
+## The Recall overlay (M4, #542; reshaped by the search-overlay slice)
 
-`RecallScreen.kt`/`RecallViewModel.kt` are the milestone's closer: re-find
+`RecallOverlay.kt`/`RecallViewModel.kt` are the milestone's closer: re-find
 one known item across everything the mirror has ever known, live or
-archived. `MobileTaskHost::search(query, nowMs)` hands back a
+archived. Since the search-overlay slice (operator request 2026-08-20) it
+is the web `RecallOverlay.tsx`'s shape as well as its counterpart: **an
+overlay `AppRoot` draws over whatever route is showing, not a navigated
+screen.** `Routes.RECALL` is gone entirely; the top bar's magnifier and the
+More sheet's "Search everything" row both flip `AppRoot`'s `recallOpen`
+flag, Back (or the X) closes the overlay in place, and the query field
+auto-focuses on open. `MobileTaskHost::search(query, nowMs)` hands back a
 `MobileRecallOutcome` — rows already matched, grouped
 (`MobileRecallGroup::{Live, Done, Archived}`) and ordered, plus the core's
-own un-capped `total` — over `hummingbird_core::search` (#478, predating
-this slice; no web change was needed here since the web seam already sank
-it). Neither file re-derives any of that: no sort, filter, group-by or
+own un-capped `total` — over `hummingbird_core::search` (#478). Neither
+file re-derives any of that: no sort, filter, group-by or
 title/description scan of its own, gated by `RecallScreenStructuralTest`
 the same way `RulesScreenStructuralTest` gates its own surface. Search is
 as-you-type with no debounce — a mirror read, not a network request, the
 same reasoning `useRecallWiring.ts` states on the web. Tapping a **live**
-row opens `ItemDetailScreen` via `Routes.itemDetail`; Done and archived rows
-are shown, labelled and dimmed, but not tappable — this slice ships no
-inline edit the way the web's #479 does. The route was registered at #541
-as a gesture entry off the More sheet, deliberately outside `NavDestination`
-(above); #542 replaced its placeholder body with this real surface.
+row expands it in place into the shared `ItemDetailPanel` below the row
+(the web's own expansion; edit/act/steps in one implementation with the
+notification door) — never a navigation. Done and archived rows are shown,
+labelled and dimmed, but not tappable (#597). The expanded selection lives
+in `RecallViewModel` (never a `remember {}`), closes on any keystroke, and
+resets on a fresh open — the query itself survives, matching the web's
+App-owned query.
 
 ## The UI iteration: icons, compact cards, filter disclosure, inline expansion, the capture FAB
 

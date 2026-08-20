@@ -26,7 +26,7 @@ import uniffi.hummingbird_ffi_mobile.MobileRecallRowRecord
 // `RulesScreenStructuralTest` gates its own surface.
 //
 // **`query` and `search` are deliberately two different members.**
-// `setQueryText` is a plain (non-suspend) setter `RecallScreen`'s text
+// `setQueryText` is a plain (non-suspend) setter `RecallOverlay`'s text
 // field calls on every keystroke; `search` is what actually reaches the
 // seam, invoked from a `LaunchedEffect(query)` keyed on the field it just
 // set — the same split `TriageScreen`'s draft field keeps between "what's
@@ -42,20 +42,19 @@ import uniffi.hummingbird_ffi_mobile.MobileRecallRowRecord
 // an empty or whitespace-only query with no rows and a zero total (that
 // module's own doc: "recall is never browse everything") — trimming and
 // checking here duplicates that one *fact*, never its matching, grouping or
-// ordering, to skip a pointless crossing and to give `RecallScreen` a
+// ordering, to skip a pointless crossing and to give `RecallOverlay` a
 // distinct "type to search" state before any answer would exist. The web's
 // `useRecallWiring.ts` keeps the identical duplicate for the identical
 // reason.
 //
-// **`rows` is not cleared when `query` changes.** The web's
-// `useRecallWiring.ts` clears its slot on every keystroke because a result
-// row there can be expanded into a live edit (#479), and a stale row under
-// a changed query is one a reader could edit by mistake. This slice ships
-// no inline edit — a result row only ever opens `ItemDetailScreen`, which
-// re-reads the item itself — so a previous query's rows staying on screen
-// until the new answer lands is a display lag, not a correctness risk, and
-// is left alone deliberately rather than flashing an empty list on every
-// keystroke.
+// **`rows` is not cleared when `query` changes — but the SELECTION is.**
+// The web's `useRecallWiring.ts` clears its whole slot on every keystroke
+// because a stale row there carries its own editable field state. Here a
+// tapped row expands into `ItemDetailPanel` (the search-overlay slice),
+// which re-reads the item by id — so a lagging collapsed row is a display
+// lag, not a correctness risk, and stays to avoid flashing an empty list
+// on every keystroke. The expanded panel, though, must not stand open
+// under a query it no longer answers: `setQueryText` closes it.
 class RecallViewModel(
     private val searchFn: suspend (query: String, nowMs: Long) -> MobileRecallOutcome,
 ) : ViewModel() {
@@ -75,8 +74,26 @@ class RecallViewModel(
     private val _statusLine = MutableStateFlow<String?>(null)
     val statusLine: StateFlow<String?> = _statusLine.asStateFlow()
 
+    /** The one expanded row (the search-overlay slice) — here, never in a
+     * `remember {}`, for the recorded fold/unfold reason every selection
+     * on this app holds: a composition-scoped selection is lost on
+     * Activity recreation. */
+    private val _selectedId = MutableStateFlow<String?>(null)
+    val selectedId: StateFlow<String?> = _selectedId.asStateFlow()
+
     fun setQueryText(text: String) {
         _query.value = text
+        _selectedId.value = null
+    }
+
+    /** Toggles a row's inline panel — tapping the open row again closes
+     * it, `NowViewModel.selectItem`'s own contract. */
+    fun select(itemId: String) {
+        _selectedId.value = if (_selectedId.value == itemId) null else itemId
+    }
+
+    fun clearSelection() {
+        _selectedId.value = null
     }
 
     suspend fun search(nowMs: Long) {

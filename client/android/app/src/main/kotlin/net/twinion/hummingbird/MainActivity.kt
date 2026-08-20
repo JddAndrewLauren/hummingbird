@@ -17,6 +17,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.consumeWindowInsets
@@ -188,13 +189,11 @@ private data class NotificationTap(
  * [STATUS] from the bar, [DONE]/[LEDGER]/[RULES]/[SETTINGS]/[ROUTES] from
  * the More sheet (#541 wires the last three's `NavDestination` entries and
  * adds [ROUTES] outright — it had no route at all before this slice).
- * [RECALL] is **not** a top-level screen — it is a gesture entry point, the
- * same distinction `nav-bar.ts`'s own `onSearch` row holds on the web (a
- * button in the sheet, deliberately outside `NAV_BAR_OVERFLOW`) — so it
- * carries no `NavDestination` entry and `BottomNavStructuralTest` excludes
- * it from the top-level-screen universe by name. #541 shipped its
- * placeholder; #542 replaced the body with the real search-as-you-type
- * surface over the mobile seam's pre-grouped rows. */
+ * Recall is **not** here at all any more — it is a gesture, not a screen:
+ * the search-overlay slice replaced #541/#542's placeholder route with
+ * `RecallOverlay`, drawn by `AppRoot` over whatever route is showing (the
+ * web `RecallOverlay.tsx`'s own contract), so nothing navigates to it and
+ * no route string exists to reach it by. */
 private object Routes {
     const val NOW = "now"
     const val STATUS = "status"
@@ -205,7 +204,6 @@ private object Routes {
     const val LEDGER = "ledger"
     const val SETTINGS = "settings"
     const val ROUTES = "routes"
-    const val RECALL = "recall"
     const val ALERT_DETAIL = "alert/{alertId}"
     const val ITEM_DETAIL = "item/{itemId}"
     const val GRILL = "grill/{itemId}/{from}"
@@ -497,6 +495,11 @@ private fun AppRoot(
     // the live route — read from the back stack rather than held as a
     // second copy, so a destination reached any other way (a notification
     // deep link) still lights up the right tab.
+    // The search overlay (the search-overlay slice): a gesture, not a route —
+    // the web RecallOverlay's own contract, so it draws OVER the current
+    // screen and Back closes it without navigating. Saveable: an Activity
+    // recreation mid-search brings the overlay back.
+    var recallOpen by rememberSaveable { mutableStateOf(false) }
     var moreSheetOpen by remember { mutableStateOf(false) }
     // `rememberSaveable`, unlike the More sheet's flag: a fold/unfold
     // mid-capture recreates the Activity, and the sheet must come back
@@ -528,207 +531,216 @@ private fun AppRoot(
         }
     }
 
-    Scaffold(
-        // The one hook for chrome hiding: every scrollable in every screen
-        // dispatches through the tree to this ancestor, so both LazyColumn
-        // screens and verticalScroll screens drive the same accumulator.
-        modifier = Modifier.nestedScroll(chrome.connection),
-        topBar = {
-            // The bottom bar's own visibility rule, applied above: chrome
-            // belongs to the top-level surfaces, and a detail/takeover
-            // route draws none of it.
-            if (NavDestination.entries.any { it.route == currentRoute }) {
-                // Height-collapse, not offset: a 0-height slot shrinks the
-                // Scaffold's padding, the content reclaims the space, and
-                // the still-unconsumed status-bar inset falls through to
-                // each screen's own inner Scaffold (#615's arrangement,
-                // untouched) — no dead band, no content under the clock.
-                AnimatedVisibility(
-                    visible = chrome.chromeVisible,
-                    enter = expandVertically() + fadeIn(),
-                    exit = shrinkVertically() + fadeOut(),
-                ) {
-                    AppTopBar(
-                        dark = resolveDarkTheme(themePreference, isSystemInDarkTheme()),
-                        onSearch = { goToTab(Routes.RECALL) },
-                    )
-                }
-            }
-        },
-        bottomBar = {
-            // Hidden on a route with no [NavDestination] entry — a
-            // detail/takeover route (item, alert, Grill) or the Recall
-            // placeholder, which is deliberately not one either (its own
-            // doc, above) — the same "not every screen carries the bar"
-            // the web's shell holds by mounting exactly one nav form.
-            if (NavDestination.entries.any { it.route == currentRoute }) {
-                AnimatedVisibility(
-                    visible = chrome.chromeVisible,
-                    enter = expandVertically(expandFrom = Alignment.Bottom) + fadeIn(),
-                    exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut(),
-                ) {
-                    BottomNavBar(
-                        currentRoute = currentRoute,
-                        onNavigate = ::goToTab,
-                        onMore = { moreSheetOpen = true },
-                    )
-                }
-            }
-        },
-        floatingActionButton = {
-            // The bar's own visibility condition: capture is the app's
-            // global primary action on every top-level surface, and a
-            // detail/takeover route is a task mid-flight that a floating
-            // "Capture" would talk over. The extended-FAB shape, wording
-            // and fill are the design kit's own (`ui_kits/android/`, its
-            // `Fab`): feather at 20dp, the word "Capture", 20dp corners —
-            // and the one place brand orange appears as a large fill on
-            // Android (`colorScheme.primary` is the ember accent).
-            if (NavDestination.entries.any { it.route == currentRoute }) {
-                ExtendedFloatingActionButton(
-                    onClick = { captureSheetOpen = true },
-                    // Gmail's own collapse: scrolled-away chrome shrinks the
-                    // extended FAB to its round icon form; the FAB itself
-                    // stays — capture must survive a reading scroll.
-                    expanded = chrome.chromeVisible,
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                    shape = RoundedCornerShape(20.dp),
-                    icon = {
-                        Icon(
-                            painterResource(R.drawable.ic_feather),
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp),
+    Box {
+        Scaffold(
+            // The one hook for chrome hiding: every scrollable in every screen
+            // dispatches through the tree to this ancestor, so both LazyColumn
+            // screens and verticalScroll screens drive the same accumulator.
+            modifier = Modifier.nestedScroll(chrome.connection),
+            topBar = {
+                // The bottom bar's own visibility rule, applied above: chrome
+                // belongs to the top-level surfaces, and a detail/takeover
+                // route draws none of it.
+                if (NavDestination.entries.any { it.route == currentRoute }) {
+                    // Height-collapse, not offset: a 0-height slot shrinks the
+                    // Scaffold's padding, the content reclaims the space, and
+                    // the still-unconsumed status-bar inset falls through to
+                    // each screen's own inner Scaffold (#615's arrangement,
+                    // untouched) — no dead band, no content under the clock.
+                    AnimatedVisibility(
+                        visible = chrome.chromeVisible,
+                        enter = expandVertically() + fadeIn(),
+                        exit = shrinkVertically() + fadeOut(),
+                    ) {
+                        AppTopBar(
+                            dark = resolveDarkTheme(themePreference, isSystemInDarkTheme()),
+                            onSearch = { recallOpen = true },
                         )
-                    },
-                    text = { Text("Capture") },
-                )
+                    }
+                }
+            },
+            bottomBar = {
+                // Hidden on a route with no [NavDestination] entry — a
+                // detail/takeover route (item, alert, Grill) or the Recall
+                // placeholder, which is deliberately not one either (its own
+                // doc, above) — the same "not every screen carries the bar"
+                // the web's shell holds by mounting exactly one nav form.
+                if (NavDestination.entries.any { it.route == currentRoute }) {
+                    AnimatedVisibility(
+                        visible = chrome.chromeVisible,
+                        enter = expandVertically(expandFrom = Alignment.Bottom) + fadeIn(),
+                        exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut(),
+                    ) {
+                        BottomNavBar(
+                            currentRoute = currentRoute,
+                            onNavigate = ::goToTab,
+                            onMore = { moreSheetOpen = true },
+                        )
+                    }
+                }
+            },
+            floatingActionButton = {
+                // The bar's own visibility condition: capture is the app's
+                // global primary action on every top-level surface, and a
+                // detail/takeover route is a task mid-flight that a floating
+                // "Capture" would talk over. The extended-FAB shape, wording
+                // and fill are the design kit's own (`ui_kits/android/`, its
+                // `Fab`): feather at 20dp, the word "Capture", 20dp corners —
+                // and the one place brand orange appears as a large fill on
+                // Android (`colorScheme.primary` is the ember accent).
+                if (NavDestination.entries.any { it.route == currentRoute }) {
+                    ExtendedFloatingActionButton(
+                        onClick = { captureSheetOpen = true },
+                        // Gmail's own collapse: scrolled-away chrome shrinks the
+                        // extended FAB to its round icon form; the FAB itself
+                        // stays — capture must survive a reading scroll.
+                        expanded = chrome.chromeVisible,
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                        shape = RoundedCornerShape(20.dp),
+                        icon = {
+                            Icon(
+                                painterResource(R.drawable.ic_feather),
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        },
+                        text = { Text("Capture") },
+                    )
+                }
+            },
+        ) { padding ->
+            NavHost(
+                navController = navController,
+                startDestination = Routes.NOW,
+                // Consumed as well as applied: padding alone leaves the
+                // status-bar inset unconsumed, so every tab screen's own nested
+                // bare `Scaffold` re-applies it — a blank band between the top
+                // bar and each screen's content.
+                modifier = Modifier
+                    .padding(padding)
+                    .consumeWindowInsets(padding),
+            ) {
+                composable(Routes.NOW) {
+                    NowScreen(
+                        syncTick = syncTick,
+                        isRefreshing = refreshing,
+                        onRefresh = ::refresh,
+                        // A tapped card expands in place (NowScreen's own
+                        // ItemDetailPanel item) — Grill is the one gesture that
+                        // still leaves the screen, and Back from the takeover
+                        // lands on Now with the panel still standing, since the
+                        // selection lives in the Activity-scoped NowViewModel.
+                        onGrill = { itemId -> navController.navigate(Routes.grill(itemId, "detail")) },
+                    )
+                }
+                composable(Routes.STATUS) {
+                    StatusScreen(
+                        syncTick = syncTick,
+                        isRefreshing = refreshing,
+                        onRefresh = ::refresh,
+                        // Through `goToTab`, never a plain `navigate` (#574):
+                        // Settings is a More destination, so it must land in the
+                        // More stack wherever it was entered from. A plain
+                        // `navigate` here made Settings the Status tab's top
+                        // entry, which `restoreState` then faithfully restored on
+                        // every later Status tap — the tab was unreachable from
+                        // its own bar button.
+                        onGoToSettings = { goToTab(Routes.SETTINGS) },
+                    )
+                }
+                composable(Routes.SETTINGS) {
+                    SettingsScreen(
+                        syncTick = syncTick,
+                        needsToken = needsToken,
+                        onSaveToken = { token -> scope.launch { saveToken(token) } },
+                        onForgetToken = { scope.launch { forgetToken() } },
+                        themePreference = themePreference,
+                        onThemePreference = onThemePreference,
+                        // #535 review: the real cadence's own state, not a
+                        // screen-local copy — see the `lastSyncOutcomeKind`/
+                        // `lastSyncAtMs` note above `sync()`.
+                        lastSyncOutcomeKind = lastSyncOutcomeKind,
+                        lastSyncAtMs = lastSyncAtMs,
+                        onSync = { scope.launch { sync("user") } },
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+                composable(Routes.ALERTS) {
+                    AlertsScreen(
+                        syncTick = syncTick,
+                        isRefreshing = refreshing,
+                        onRefresh = ::refresh,
+                        onOpenAlert = { alertId ->
+                            navController.navigate(Routes.alertDetail(alertId))
+                        },
+                    )
+                }
+                composable(Routes.RULES) {
+                    RulesScreen(
+                        syncTick = syncTick,
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+                composable(Routes.TRIAGE) {
+                    TriageScreen(
+                        syncTick = syncTick,
+                        isRefreshing = refreshing,
+                        onRefresh = ::refresh,
+                        onGrill = { itemId -> navController.navigate(Routes.grill(itemId, "triage")) },
+                    )
+                }
+                composable(Routes.DONE) {
+                    DoneScreen(
+                        syncTick = syncTick,
+                        onBack = { navController.popBackStackOrHome(Routes.NOW) },
+                    )
+                }
+                composable(Routes.LEDGER) {
+                    LedgerScreen(
+                        syncTick = syncTick,
+                        onBack = { navController.popBackStackOrHome(Routes.NOW) },
+                    )
+                }
+                composable(Routes.ROUTES) {
+                    RoutesScreen(onBack = { navController.popBackStackOrHome(Routes.NOW) })
+                }
+                composable(Routes.ITEM_DETAIL) { entry ->
+                    ItemDetailScreen(
+                        itemId = entry.arguments?.getString("itemId").orEmpty(),
+                        syncTick = syncTick,
+                        onBack = { navController.popBackStackOrHome(Routes.NOW) },
+                        onGrill = { itemId -> navController.navigate(Routes.grill(itemId, "detail")) },
+                    )
+                }
+                composable(Routes.GRILL) { entry ->
+                    GrillTakeoverScreen(
+                        itemId = entry.arguments?.getString("itemId").orEmpty(),
+                        backLabel = if (entry.arguments?.getString("from") == "triage") "Back to Triage" else "Back to item",
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+                composable(Routes.ALERT_DETAIL) { entry ->
+                    AlertDetailScreen(
+                        alertId = entry.arguments?.getString("alertId").orEmpty(),
+                        syncTick = syncTick,
+                        onBack = { navController.popBackStackOrHome(Routes.NOW) },
+                    )
+                }
             }
-        },
-    ) { padding ->
-        NavHost(
-            navController = navController,
-            startDestination = Routes.NOW,
-            // Consumed as well as applied: padding alone leaves the
-            // status-bar inset unconsumed, so every tab screen's own nested
-            // bare `Scaffold` re-applies it — a blank band between the top
-            // bar and each screen's content.
-            modifier = Modifier
-                .padding(padding)
-                .consumeWindowInsets(padding),
-        ) {
-            composable(Routes.NOW) {
-                NowScreen(
-                    syncTick = syncTick,
-                    isRefreshing = refreshing,
-                    onRefresh = ::refresh,
-                    // A tapped card expands in place (NowScreen's own
-                    // ItemDetailPanel item) — Grill is the one gesture that
-                    // still leaves the screen, and Back from the takeover
-                    // lands on Now with the panel still standing, since the
-                    // selection lives in the Activity-scoped NowViewModel.
-                    onGrill = { itemId -> navController.navigate(Routes.grill(itemId, "detail")) },
-                )
-            }
-            composable(Routes.STATUS) {
-                StatusScreen(
-                    syncTick = syncTick,
-                    isRefreshing = refreshing,
-                    onRefresh = ::refresh,
-                    // Through `goToTab`, never a plain `navigate` (#574):
-                    // Settings is a More destination, so it must land in the
-                    // More stack wherever it was entered from. A plain
-                    // `navigate` here made Settings the Status tab's top
-                    // entry, which `restoreState` then faithfully restored on
-                    // every later Status tap — the tab was unreachable from
-                    // its own bar button.
-                    onGoToSettings = { goToTab(Routes.SETTINGS) },
-                )
-            }
-            composable(Routes.SETTINGS) {
-                SettingsScreen(
-                    syncTick = syncTick,
-                    needsToken = needsToken,
-                    onSaveToken = { token -> scope.launch { saveToken(token) } },
-                    onForgetToken = { scope.launch { forgetToken() } },
-                    themePreference = themePreference,
-                    onThemePreference = onThemePreference,
-                    // #535 review: the real cadence's own state, not a
-                    // screen-local copy — see the `lastSyncOutcomeKind`/
-                    // `lastSyncAtMs` note above `sync()`.
-                    lastSyncOutcomeKind = lastSyncOutcomeKind,
-                    lastSyncAtMs = lastSyncAtMs,
-                    onSync = { scope.launch { sync("user") } },
-                    onBack = { navController.popBackStack() },
-                )
-            }
-            composable(Routes.ALERTS) {
-                AlertsScreen(
-                    syncTick = syncTick,
-                    isRefreshing = refreshing,
-                    onRefresh = ::refresh,
-                    onOpenAlert = { alertId ->
-                        navController.navigate(Routes.alertDetail(alertId))
-                    },
-                )
-            }
-            composable(Routes.RULES) {
-                RulesScreen(
-                    syncTick = syncTick,
-                    onBack = { navController.popBackStack() },
-                )
-            }
-            composable(Routes.TRIAGE) {
-                TriageScreen(
-                    syncTick = syncTick,
-                    isRefreshing = refreshing,
-                    onRefresh = ::refresh,
-                    onGrill = { itemId -> navController.navigate(Routes.grill(itemId, "triage")) },
-                )
-            }
-            composable(Routes.DONE) {
-                DoneScreen(
-                    syncTick = syncTick,
-                    onBack = { navController.popBackStackOrHome(Routes.NOW) },
-                )
-            }
-            composable(Routes.LEDGER) {
-                LedgerScreen(
-                    syncTick = syncTick,
-                    onBack = { navController.popBackStackOrHome(Routes.NOW) },
-                )
-            }
-            composable(Routes.ROUTES) {
-                RoutesScreen(onBack = { navController.popBackStackOrHome(Routes.NOW) })
-            }
-            composable(Routes.RECALL) {
-                RecallScreen(
-                    onBack = { navController.popBackStackOrHome(Routes.NOW) },
-                    onOpenItem = { itemId -> navController.navigate(Routes.itemDetail(itemId)) },
-                )
-            }
-            composable(Routes.ITEM_DETAIL) { entry ->
-                ItemDetailScreen(
-                    itemId = entry.arguments?.getString("itemId").orEmpty(),
-                    syncTick = syncTick,
-                    onBack = { navController.popBackStackOrHome(Routes.NOW) },
-                    onGrill = { itemId -> navController.navigate(Routes.grill(itemId, "detail")) },
-                )
-            }
-            composable(Routes.GRILL) { entry ->
-                GrillTakeoverScreen(
-                    itemId = entry.arguments?.getString("itemId").orEmpty(),
-                    backLabel = if (entry.arguments?.getString("from") == "triage") "Back to Triage" else "Back to item",
-                    onBack = { navController.popBackStack() },
-                )
-            }
-            composable(Routes.ALERT_DETAIL) { entry ->
-                AlertDetailScreen(
-                    alertId = entry.arguments?.getString("alertId").orEmpty(),
-                    syncTick = syncTick,
-                    onBack = { navController.popBackStackOrHome(Routes.NOW) },
-                )
-            }
+        }
+
+        if (recallOpen) {
+            RecallOverlay(
+                syncTick = syncTick,
+                onClose = { recallOpen = false },
+                // Grill is the one gesture that leaves the overlay: close it
+                // first, or the takeover would open underneath.
+                onGrill = { itemId ->
+                    recallOpen = false
+                    navController.navigate(Routes.grill(itemId, "detail"))
+                },
+            )
         }
     }
 
@@ -736,6 +748,10 @@ private fun AppRoot(
         MoreSheet(
             currentRoute = currentRoute,
             onNavigate = ::goToTab,
+            onSearch = {
+                moreSheetOpen = false
+                recallOpen = true
+            },
             onDismiss = { moreSheetOpen = false },
         )
     }
@@ -871,6 +887,7 @@ private fun BottomNavBar(
 private fun MoreSheet(
     currentRoute: String?,
     onNavigate: (String) -> Unit,
+    onSearch: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -896,8 +913,10 @@ private fun MoreSheet(
             MoreSheetRow(
                 label = "Search everything",
                 iconRes = R.drawable.ic_search,
-                active = Routes.RECALL == currentRoute,
-                onClick = { onNavigate(Routes.RECALL) },
+                // A gesture has no route to be "current" on — the overlay
+                // closes this sheet as it opens.
+                active = false,
+                onClick = onSearch,
             )
         }
     }

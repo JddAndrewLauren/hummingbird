@@ -48,8 +48,8 @@ class TopBarStructuralTest {
             src.contains("contentDescription = \"Search everything\""),
         )
         assertTrue(
-            "the trigger must reach Recall through the tab door",
-            src.contains("goToTab(Routes.RECALL)"),
+            "the trigger must open the search overlay, never navigate (the web overlay's contract)",
+            src.contains("onSearch = { recallOpen = true }"),
         )
     }
 
