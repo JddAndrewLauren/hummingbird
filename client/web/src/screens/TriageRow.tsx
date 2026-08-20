@@ -50,8 +50,8 @@ export interface TriageRowProps {
    * there. */
   onGrillMe?: (itemId: string) => void;
   /** Whether this item already carries a Grill draft (#356) — decides
-   * `item-actions.ts`'s `grillButtonLabel`. `false` in demo mode, same as
-   * `onGrillMe`. */
+   * `item-actions.ts`'s `grillButtonLabel`. `false` when there is no draft
+   * to have read. */
   hasGrillDraft?: boolean;
   /** The most recent triage result any row got back (`TaskState.lastTriage`)
    * — matched here by the item id the result itself carries, the same

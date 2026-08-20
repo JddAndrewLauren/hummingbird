@@ -384,13 +384,15 @@ kit-only render left on any of the four to review by hand.
 one** — the reason is the kit world's `task`, not the trigger: since #456
 every trigger #480 wired (the header's Search button, the `/` hotkey, the
 rail's magnifier, the phone More sheet's entry) fires unconditionally on
-every world (`App.tsx`'s `onSearch={requestSearchOpen}`), but the kit
-world's `task` is still the static fixture with no real `Core::search` to
-answer against — opening it there would spin on "Searching…" forever for
-any typed query. (Before #456 the trigger itself was inert under
+every world (`App.tsx`'s `onSearch={requestSearchOpen}`). What still confines
+this to the board world is `task` itself: `demoTaskState()` (`fixtures/demo.ts`)
+seeds a `TaskState` only for the board spelling, so under `?demo=kit` `task`
+is `liveTask`, the real store slice, with no seeded `search` answer to
+photograph — a deterministic capture needs the board world's fixed seed, not
+a live round trip. (Before #456 the trigger itself was also inert under
 `?demo=kit`, and `onTriage` was absent in kit mode everywhere else; #456
-deleted both ternaries, so the render path is unconditional now — only the
-fixture's own dead end still hides Recall from the kit world.) The board
+deleted both ternaries, so only `task`'s own difference between the two
+worlds still confines Recall's populated render to board.) The board
 world seeds an answer of its
 own for the identical structural reason `now-columns`'s alerts and
 `triageInbox` are seeded rather than requested: `App.tsx`'s

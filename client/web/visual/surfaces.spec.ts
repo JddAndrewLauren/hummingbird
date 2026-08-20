@@ -483,12 +483,13 @@ for (const theme of THEMES) {
     // closing #331's "the busiest new surface shipping unphotographed"
     // finding. Board world only — until #456, the header's Search button
     // (and every other trigger #480 wired) was inert under `?demo=kit`
-    // (`App.tsx`'s `onSearch={demo ? undefined : requestSearchOpen}`),
-    // because the kit world's `task` is a static fixture with no real
-    // `Core::search` to answer against; #456 deleted that ternary along with
-    // `NavBar`'s `demo` prop, so the trigger is unconditional now, but the
-    // kit world's `task` is still the same fixture, so opening it there
-    // would still spin on "Searching…" forever for any typed query.
+    // (`App.tsx`'s `onSearch={demo ? undefined : requestSearchOpen}`); #456
+    // deleted that ternary, so the trigger is unconditional now. What still
+    // confines this to the board world is `task` itself: `demoTaskState()`
+    // (`fixtures/demo.ts`) returns a seed only for the board spelling, so
+    // under `?demo=kit` `task` is `liveTask`, the real store slice, with no
+    // seeded `search` answer — opening Recall there sends a real request to
+    // whatever `Core::search` the live worker resolves, not a fixed result.
     // `task.search` is itself a fixed seed even in board
     // mode (`fixtures/demo-task-state.ts`'s `recallRow` doc) — board's
     // `TaskState` is the lazy-initializer fixture `App.tsx`'s `task` always

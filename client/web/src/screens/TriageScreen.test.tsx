@@ -408,7 +408,8 @@ describe("TriageScreen — the editor", () => {
 // collapsed line — the recorded amendment to "Triage is pre-action by
 // definition". What only a mount can prove is the sibling structure: the
 // checkmark must fire WITHOUT toggling the editor open, and must not exist
-// at all when no handler is wired (demo mode).
+// at all when no handler is wired — `App.tsx` always wires one; this
+// exercises the prop's own optionality, not a real path.
 describe("TriageScreen — the mark-done checkmark", () => {
   function renderWithComplete(task: TaskState) {
     const onComplete = vi.fn();
@@ -468,7 +469,7 @@ describe("TriageScreen — the Grill takeover", () => {
     };
   }
 
-  it("offers no Grill me button without a grill prop (demo mode's own reason)", () => {
+  it("offers no Grill me button without a grill prop", () => {
     renderTriage(taskState({ triageInbox: [itemDTO({ id: "i1", title: "a foggy capture", stage: "triage" })] }));
     fireEvent.click(row("a foggy capture"));
     expect(screen.queryByRole("button", { name: /grill me/i })).toBeNull();
