@@ -87,6 +87,11 @@ real sequencing.
   `energy` are guesses the human corrects — say so in the preview. The spellings are
   `quick`/`normal`/`deep` and `low`/`medium`/`high` (REFERENCE.md; both changed from the
   Linear vocabulary).
+- **A context-less action copies the project's default context at mint** (ADR-0030
+  decision 3) — `hb.sh mint` fills `context` from the project's `default_context` for any
+  entry that names none of its own; an action the interview gave a context keeps it. This
+  happens inside `mint` itself, not the preview build, so don't propose a context just to
+  satisfy this — leaving it unset for a project with a default is a legitimate preview.
 - All minted actions land in **`ready`**. **Never propose `agent` by default** — the
   delegation axis is deliberate, and `/next-up-hb` is where a marked item gets handed off.
 - Sequencing is `blocked_by` edges between actions. That is the whole hand-off: closing an
