@@ -14,8 +14,11 @@ export interface BadgeProps extends Omit<HTMLAttributes<HTMLSpanElement>, "style
   /** Wraps sentence-length text across multiple lines instead of clipping at
    * the fixed 22px single-line height (#374). Swaps the pill radius for
    * `--radius-md` — a full pill reads oddly once its ends are no longer a
-   * single arc — and drops `whiteSpace: nowrap` plus the fixed height. Every
-   * existing call site is unaffected: this is opt-in, not the default. */
+   * single arc — drops `whiteSpace: nowrap` plus the fixed height, and sets
+   * leading to body-sm's declared `1.45` (`design/tokens/typography.css`)
+   * instead of the single-line pill's solid `1`, so 2-3 wrapped lines don't
+   * collide. Every existing call site is unaffected: this is opt-in, not
+   * the default. */
   wrap?: boolean;
   style?: CSSProperties;
   children?: ReactNode;
@@ -37,10 +40,10 @@ export function Badge({ tone = "neutral", icon, dot = false, mono = false, wrap 
   return (
     <span style={{
       display: "inline-flex", alignItems: wrap ? "flex-start" : "center", gap: "var(--space-3)",
-      ...(wrap ? { minHeight: 22, padding: "var(--space-2) var(--space-4)" } : { height: 22, padding: "0 var(--space-4)" }),
+      ...(wrap ? { padding: "var(--space-2) var(--space-4)" } : { height: 22, padding: "0 var(--space-4)" }),
       color: fg, background: bg,
       border: `1px solid ${bd}`, borderRadius: wrap ? "var(--radius-md)" : "var(--radius-pill)",
-      font: mono ? "var(--type-meta)" : "var(--weight-semibold) var(--size-body-sm)/1 var(--font-sans)",
+      font: mono ? "var(--type-meta)" : `var(--weight-semibold) var(--size-body-sm)/${wrap ? "1.45" : "1"} var(--font-sans)`,
       letterSpacing: mono ? "var(--tracking-meta)" : "0",
       textTransform: mono ? "uppercase" : "none", whiteSpace: wrap ? "normal" : "nowrap", ...style,
     }} {...rest}>

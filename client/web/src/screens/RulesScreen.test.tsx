@@ -366,7 +366,7 @@ describe("RulesScreen", () => {
     // A wrapping row of its own, distinct from the mono tier/kind chips'
     // identity row — the fixed-height, non-wrapping row is never asked to
     // hold a sentence.
-    expect(badgeRow.getAttribute("style")).toContain("flex-wrap: wrap");
+    expect(badgeRow.style.flexWrap).toBe("wrap");
 
     const tierChip = screen.getByText("urgent");
     const identityRow = tierChip.parentElement as HTMLElement;
