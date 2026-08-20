@@ -50,9 +50,11 @@ const THEMES = ["light", "dark"] as const;
  * brand-token pass all moved to `"board"`, which is bare `?demo` (and every
  * spelling but the kit's own) — a seeded `TaskState` (#420) that makes the
  * screens take their REAL render path. `null` is no flag at all: the honest
- * empty states. `"kit"` stays in this union, and `loadedWorld` still detects
- * it, so `assertWorldLoaded` keeps proving "not the kit" for every board
- * open, not merely "board or nothing". */
+ * empty states. `"kit"` stays in this union for a caller that adds one back,
+ * but `loadedWorld` can no longer actually detect it (see `KIT_ONLY_TEXT`'s
+ * own note below) — a `"kit"` open today fails `assertWorldLoaded` by
+ * reporting the got-world as `"none"`, not as a diagnosed kit/board
+ * mismatch. */
 type World = "kit" | "board" | null;
 
 // World-identity markers (#453). `demoMode()` (`src/fixtures/demo-mode.ts`)
@@ -60,22 +62,29 @@ type World = "kit" | "board" | null;
 // onto the kit before it), so a typo in a URL here — or a stale arm in this
 // file's own world dispatch — could silently fall back to a world the caller
 // never asked for, and every assertion downstream still held because it
-// never checked WHICH world loaded. These two strings exist only in their
-// own world's fixture: the kit
-// world's hero item (`demo-data.ts`'s `ION-118`, always the "top pick" since
-// its stage is `in_progress`) and the board world's `@computer` column
-// heading (`demo-task-state.ts` — the kit world's `DemoItem` has no
-// `context` at all, so this string cannot appear there by construction).
-// Checked in both directions, on purpose — a one-directional check (kit
-// string present) passes for a page that loaded neither world, e.g. a
-// silent 404 or a blank shell.
+// never checked WHICH world loaded. These two strings were meant to exist
+// only in their own world's fixture: the kit world's hero item (`demo-data.
+// ts`'s `ION-118`, always the "top pick" since its stage is `in_progress`)
+// and the board world's `@computer` column heading (`demo-task-state.ts` —
+// the kit world's `DemoItem` has no `context` at all, so this string cannot
+// appear there by construction). That symmetry broke one-sided at #456:
+// `NowScreen` — the landing screen this check reads — deleted its kit-only
+// hero card and "Also startable" list, so `KIT_ONLY_TEXT` no longer renders
+// on any screen this file's `openApp` can reach; `hasKit` below is
+// permanently `false` in practice, dead instrumentation rather than a live
+// marker. `BOARD_ONLY_TEXT` is unaffected — Now's real frontier still
+// renders `@computer` off the board seed. Checked in both directions on
+// purpose regardless — a one-directional check (kit string present) passes
+// for a page that loaded neither world, e.g. a silent 404 or a blank shell.
 const KIT_ONLY_TEXT = "Rewrite the sweeper's Gmail adapter";
 const BOARD_ONLY_TEXT = "@computer";
 
 /** Which world's marker(s) the page currently shows — `"both"` and `null`
  * (no marker, i.e. "none") are both failures of the instrument itself, named
  * rather than collapsed into a boolean, so a broken dispatch reads as what
- * it is. */
+ * it is. `"kit"`/`"both"` are unreachable in practice today (`KIT_ONLY_TEXT`'s
+ * own note above) — kept rather than deleted so this function still reports
+ * correctly the day a kit render path exists again. */
 async function loadedWorld(page: Page): Promise<World | "both"> {
   const hasKit = (await page.getByText(KIT_ONLY_TEXT).count()) > 0;
   const hasBoard = (await page.getByRole("heading", { name: BOARD_ONLY_TEXT }).count()) > 0;

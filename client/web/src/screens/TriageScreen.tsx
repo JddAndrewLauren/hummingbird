@@ -58,7 +58,7 @@ export function TriageScreen({
   // Neither this screen nor Now's collapsible area filters by stage on its
   // own; `triageProcessQueue` is the one function both render from.
   const triageQueue = triageProcessQueue(task.triageInbox, task.grillingItems, task.grillDraftItemIds);
-  const realTriage = triageQueue?.items ?? [];
+  const realTriage = triageQueue.items;
 
   // Back restores focus to the row's own "Grill me" button — never a held
   // DOM reference, unlike `shell/CapturePopover.tsx`'s `restoreTo`: the
@@ -134,7 +134,7 @@ export function TriageScreen({
         >
           <h2 style={{ font: "var(--type-h3)", color: "var(--text-primary)" }}>Triage</h2>
           <span className="hb-meta">
-            {`${triageQueue?.capturedCount ?? 0} captured · ${triageQueue?.grillingCount ?? 0} grilling`}
+            {`${triageQueue.capturedCount} captured · ${triageQueue.grillingCount} grilling`}
           </span>
         </div>
         {realTriage.length === 0 ? (
