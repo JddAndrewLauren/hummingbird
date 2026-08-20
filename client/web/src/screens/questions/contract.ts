@@ -141,9 +141,11 @@ export const QUESTION_ORDER: readonly StandingQuestion[] = [
  * table, whatever pane reads have landed, and the clock.
  *
  * A plain value on purpose — no hooks, no store access, no fetching. That is
- * what lets the demo fixture (`fixtures/demo-questions.ts`) hand the *real*
- * region a hand-authored world and photograph the real shell, rather than a
- * second demo-only rendering that can drift from it. */
+ * what lets the board world's seed (`fixtures/demo-task-state.ts`, built from
+ * `fixtures/demo-pane-reads.ts`) hand the *real* region a hand-authored world
+ * and photograph the real shell, rather than a second demo-only rendering
+ * that can drift from it. (`fixtures/demo-questions.ts` did this before #452
+ * folded its content into the seed and #455 deleted the module.) */
 export interface QuestionSyncSnapshot {
   latestOutcome: TaskSyncOutcome | null;
   latestInformativeAtMs: number | null;

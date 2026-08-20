@@ -297,7 +297,9 @@ describe("NowScreen — the frontier list", () => {
   // Nothing asserted this when the words came off — the whole suite passed on
   // the change — so a card could regress to words, or lose its accessible
   // name, silently. (The top-pick card takes the same treatment but renders
-  // only under `?demo`, so the visual capture is its only gate.)
+  // only under `?demo=kit` — `demo &&` above — which #455 retired from
+  // `pnpm visual` entirely, so this component test is now that card's ONLY
+  // gate, not merely its cheaper one.)
   it("draws a card's size and energy as named glyphs, with no word", () => {
     renderNow(
       taskState({

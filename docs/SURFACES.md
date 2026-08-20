@@ -71,10 +71,12 @@ Four widths × two themes × sixteen screen states, per run.
 | `narrow` | 768 | The context panel has wrapped below the column. Still the desktop form: it sits above the 640 breakpoint, deliberately. |
 | `phone` | 390 | The phone form. The rail is a bottom bar, the aside is stacked in the flow with **no nested scroll region**, and `ItemRow` wraps its title onto its own line. `deviceScaleFactor: 3`, `isMobile`, `hasTouch`. The spec opens the More sheet to reach the five overflow screens, importing the partition from `shell/nav-bar.ts` so it cannot drift. |
 
-The **rule editor at 390 is the one knowingly-exempt screen** (137px over):
-its condition rows are a dense grid of selects needing their own design pass.
-The exemption is by screen name in `visual/surfaces.spec.ts`, the capture is
-still taken, and every other screen at 390 is held to the same bar as desktop.
+The **rule editor OPEN at 390 is the one knowingly-exempt state** (137px
+over): its condition rows are a dense grid of selects needing their own
+design pass. The exemption in `visual/surfaces.spec.ts` applies only after
+the editor opens — the Rules screen's own LIST state is checked at 390 like
+every other screen, unconditionally, before the editor opens for the
+capture — so this is one state exempt, not the whole screen.
 
 Captures are **viewport-sized, not `fullPage`**: the shell is
 `height: 100dvh; overflow: hidden`, so the document is exactly one viewport on
@@ -88,13 +90,17 @@ first paint (the app resolves `light | dark | system` onto
 
 Screen states: the nine screens under the default `?demo` — the **board**
 world (#420, #455), a seeded `TaskState` that takes the screens' real render
-path with fictional data in it, deterministic and populated on every one of
+path with fictional data in it, deterministic and populated on **seven** of
 the nine, including **Done** and the **Ledger** (#452 grew the seed to cover
 them; before that only the frontier and the triage inbox were seeded, and
-`?demo` meant the design kit besides); **Status** photographs **ten panes**
-fed by the seed's `bindings`/`paneReads` (`src/fixtures/demo-pane-reads.ts`,
-shared with the kit world's own `demo-questions.ts` used to duplicate before
-#452 folded it into the seed and #455 deleted it) — counted in *panes*, not
+`?demo` meant the design kit besides). **Routes and Alerts are the two
+exceptions**: neither reads `TaskState` at all, so both photograph the same
+honest empty state an unseeded device would — see "Routes and Alerts lost
+their only capture at #455's flip" below. **Status** photographs **ten
+panes** fed by the seed's own `bindings`/`paneReads`
+(`src/fixtures/demo-pane-reads.ts`) — the kit world's own `demo-questions.ts`
+duplicated this before #452 folded its content into the seed, and #455
+deleted the now-redundant module entirely — counted in *panes*, not
 questions, because two of its wired questions emit one pane *per subject* the
 way the race question does: one `kimi-balance/v1` gauge, five
 `github-hummingbird/v1` workflow rows and three `uptime/v1` service rows

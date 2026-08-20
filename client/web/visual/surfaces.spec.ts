@@ -132,7 +132,10 @@ async function openApp(page: Page, theme: (typeof THEMES)[number], world: World)
     delete (globalThis as { SpeechRecognition?: unknown }).SpeechRecognition;
     delete (globalThis as { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition;
   });
-  await page.goto(world === "kit" ? "/?demo=kit" : world === "board" ? "/?demo=board" : "/");
+  // "board" goes through bare `/?demo` — the default spelling since #455 —
+  // rather than the explicit `/?demo=board`, so the gate actually exercises
+  // `demoMode()`'s fallback, not just the one spelling that always worked.
+  await page.goto(world === "kit" ? "/?demo=kit" : world === "board" ? "/?demo" : "/");
   // The shell paints before the wasm core is ready (the core's status is a
   // label, not a gate), so waiting on the nav rail is enough — and waiting
   // on the core would hang on a machine with no authority to reach.
@@ -267,6 +270,22 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
   now: async (page) => {
     await expect(page.getByRole("heading", { name: "@computer" })).toBeVisible();
     await expect(page.getByRole("alert")).toHaveCount(2);
+    // #455: the nav's triage/alerts badges derive from the store now
+    // (`App.tsx`'s `navCounts`), not from `DemoData` — asserted once here
+    // rather than on every screen, since the nav is identical chrome
+    // wherever it renders. 17 is `triageInbox.length` (`demo-task-state.
+    // test.ts` pins it, and the `triage` assertion below reads the same
+    // number off the screen itself); 2 is `liveWriteFailureCount`'s count of
+    // the seed's two stranded write failures, the same two the `alert` role
+    // count above already proves are live. Both Triage and Alerts sit on the
+    // phone bar's primary four (`nav-bar.ts`), so this locator resolves
+    // identically on every project, not only desktop.
+    await expect(
+      page.getByRole("navigation").getByRole("button", { name: "Triage", exact: true }),
+    ).toContainText("17");
+    await expect(
+      page.getByRole("navigation").getByRole("button", { name: "Alerts", exact: true }),
+    ).toContainText("2");
   },
   triage: async (page) => {
     // `demo-task-state.test.ts` pins `triageInbox` at 17 and `grillingItems`
@@ -338,21 +357,29 @@ for (const theme of THEMES) {
       test(`${screenId} renders and asserts the seed`, async ({ page }, testInfo) => {
         await openApp(page, theme, "board");
         await show(page, SCREEN_LABELS[screenId], testInfo.project.name);
+        await BOARD_ASSERTIONS[screenId](page);
+        // Checked on the LIST state, before the rule editor (if any) opens
+        // below — every screen, rules included, is held to the same bar
+        // here. Splitting this from the editor-open check below is what
+        // keeps the rules list itself covered at 390 even though the editor
+        // that opens over it is exempt (#374 was a rule-CARD overflow at
+        // 1024/768, a different state than either of these, still caught by
+        // this same call at those widths).
+        await expectNoHorizontalOverflow(page);
         if (screenId === "rules") {
           await openFirstRuleEditor(page);
-        }
-        await BOARD_ASSERTIONS[screenId](page);
-        // The rule editor is the ONE surface knowingly left overflowing at
-        // 390 (137px over when the phone project was added) — its condition
-        // rows are a dense grid of selects that needs its own design pass,
-        // deferred out of this work rather than half-done inside it. Named
-        // here as a single screen rather than skipped as a whole test, so the
-        // capture is still taken and the exemption stays visible and narrow;
-        // every other screen at 390 is held to the same bar as desktop.
-        // Delete this branch, not the assertion, when that pass lands.
-        const rulesExempt = screenId === "rules" && testInfo.project.name === "phone";
-        if (!rulesExempt) {
-          await expectNoHorizontalOverflow(page);
+          // The rule editor is the ONE surface knowingly left overflowing at
+          // 390 (137px over when the phone project was added) — its
+          // condition rows are a dense grid of selects that needs its own
+          // design pass, deferred out of this work rather than half-done
+          // inside it. Only the editor-OPEN state is exempt, and only at
+          // 390: the list-state check above already ran, unconditionally,
+          // for every project including phone. Delete this branch, not the
+          // assertion above, when that pass lands.
+          const rulesEditorExempt = testInfo.project.name === "phone";
+          if (!rulesEditorExempt) {
+            await expectNoHorizontalOverflow(page);
+          }
         }
         await page.screenshot({
           path: `visual/.captures/${screenId}-${testInfo.project.name}-${theme}.png`,
