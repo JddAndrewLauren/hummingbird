@@ -34,7 +34,13 @@ storage decision are #353's, not this ADR's. · **amended 2026-08-14 by
 `size` value is renamed `short` → `normal` in the DDL's `CHECK` constraint
 and in every row already stored under it, `SCHEMA_VERSION` 6 → 7 — the first
 growth here that is not additive at all, and so the first to rebuild a table
-rather than add to one.
+rather than add to one. · **amended 2026-08-20 by
+[ADR-0030](0030-the-project-lane-is-shared-owned-and-client-writable.md):**
+the project lane becomes shared-owned — the `routes` DDL comment below
+saying `/to-actions` owns that table records the ownership as it stood in
+2026-08-08 and no longer holds, route/fog/`project_pos` writes being
+arbitrated by CAS like every other row; `projects` gains `github_repo` and
+`default_context`, and a `project_links` table joins the synced set.
 **Amendments to this ADR follow [the pointer convention](README.md):** what
 a later ADR changed is written in *that* ADR, and named here only. The
 dated notes in the body below are the convention's exception — amendments
