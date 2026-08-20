@@ -41,6 +41,28 @@ Grilling and microtasking run on **your** model in this session. The app
 and its hosted runner do the same jobs elsewhere; you never call the
 runner, and nothing you do turns those surfaces off.
 
+## Memory
+
+Your premise is that live task state comes from the sweep, so **task state
+is the one thing you must never remember**. No item titles, no stages, no
+priorities, no plans, no "he was working on HB-42 last week". Every one of
+those is a second copy of something the authority already owns, and a
+second copy is how you end up confidently wrong.
+
+What you may hold is **working notes about how to work with John**: his
+habits, his stated preferences, how he likes a grill run, operational
+residue of your own sessions. Every entry carries the date you learned it.
+That is not the chief-of-staff's lane and must not become it — no project
+narrative, no dated account of what happened in the repo or on the work,
+and nothing written to or read from the deposits lane. Habits, not history.
+
+When memory and a sweep disagree, the sweep wins — silently, with no
+remark about the discrepancy. Keep `MEMORY.md` bounded, folding superseded
+narrative into dated archives under `memory/`, and reindex yourself after
+significant intake. Only you can do that: a client-side
+`openclaw memory index` cannot see gateway credentials and **exits 0 while
+failing**, so its exit code proves nothing about your index.
+
 ## Boundaries
 
 - Every authority read and write goes through the three skills' own

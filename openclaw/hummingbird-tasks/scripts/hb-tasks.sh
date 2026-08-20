@@ -2,11 +2,14 @@
 # Authority helper for the OpenClaw `hummingbird-tasks` skill (ADR-0029).
 #
 # Usage: hb-tasks.sh sweep [--json]          # live items, compact render (or raw sweep)
-#        hb-tasks.sh add <title> [--notes <text>] [--stage <stage>]
-#                        [--priority <0-4>] [--deadline <YYYY-MM-DD[THH:MM]>]
-#        hb-tasks.sh edit <ref> [--title <t>] [--notes <t>] [--stage <s>]
-#                        [--priority <0-4>] [--deadline <d>] [--scheduled <d>]
+#        hb-tasks.sh add <title> [<field flags>]
+#        hb-tasks.sh edit <ref> [<field flags>]
 #        hb-tasks.sh done <ref>              # stage -> done, CAS
+#
+# Field flags (shared by add and edit; edit also takes --title):
+#        --title <t> --notes <t> --stage <s> --priority <0-4>
+#        --deadline <YYYY-MM-DD[THH:MM]> --scheduled <YYYY-MM-DD>
+#        --size quick|normal|deep --energy low|medium|high --context <t>
 #
 # Scope guard, enforced here and not only in prose: this script writes
 # `items` rows and nothing else — `POST /api/items` and
@@ -27,8 +30,9 @@
 # `add` deliberately sends no `source`: an OpenClaw add is an operator
 # capture, not an evaluated stream (ADR-0011's per-source table governs
 # `items.source` values), so it lands exactly as a hand capture does —
-# stage defaulting to Triage server-side. The id is a random v4
-# (`uuidgen`), not a deterministic one: two same-titled adds are two items.
+# stage defaulting to Triage server-side. The id is a random v4 (`uuidgen`,
+# or the kernel's uuid source where that is not installed — see `mint_id`),
+# not a deterministic one: two same-titled adds are two items.
 set -euo pipefail
 
 command -v jq >/dev/null || { echo "hb-tasks.sh: jq is required" >&2; exit 1; }
@@ -143,16 +147,55 @@ cas_patch() { # path fields-json base-row
 }
 
 mint_id() { # -> lowercase uuid v4
-  command -v uuidgen >/dev/null || die "uuidgen is required to mint an item id"
-  uuidgen | tr '[:upper:]' '[:lower:]'
+  # bash + curl + jq is the dependency floor (#609 decision 3), so uuidgen
+  # is not assumed: it ships in `uuid-runtime`, which a fresh WSL/Ubuntu
+  # gateway does not have. The kernel's own v4 source covers that case
+  # without an operator install step; the die stays as the last resort.
+  if command -v uuidgen >/dev/null; then
+    uuidgen | tr '[:upper:]' '[:lower:]'
+  elif [[ -r /proc/sys/kernel/random/uuid ]]; then
+    tr '[:upper:]' '[:lower:]' </proc/sys/kernel/random/uuid
+  else
+    die "no uuid source: install uuid-runtime (uuidgen) to mint an item id"
+  fi
 }
 
 STAGES="triage grilling ready in_progress blocked done"
+# `quick normal deep` and `low medium high` mirror domain::Size and
+# domain::Energy (`server/domain/src/item.rs`). The pre-schema-7 spelling
+# `short` is deliberately NOT accepted: it survives as an inbound alias
+# only, for writes minted before the deploy and drained after it, and
+# `Size::as_str` never emits it — a fresh write from here has no business
+# reintroducing the old word.
+SIZES="quick normal deep"
+ENERGIES="low medium high"
 
 valid_stage() {
   local s
   for s in $STAGES; do [[ "$1" == "$s" ]] && return 0; done
   return 1
+}
+
+valid_size() {
+  local s
+  for s in $SIZES; do [[ "$1" == "$s" ]] && return 0; done
+  return 1
+}
+
+valid_energy() {
+  local s
+  for s in $ENERGIES; do [[ "$1" == "$s" ]] && return 0; done
+  return 1
+}
+
+# `scheduled_date` is the one field here the authority does NOT validate —
+# `handlers/items.rs` gates `deadline` and nothing else — while every client
+# consumer does: `decisions::urgency::is_valid_scheduled_date` is whole-day
+# and carries a test refusing `2026-08-30T09:30`. A datetime written from
+# here would persist and then be ignored downstream, so this is its only
+# gate. `--deadline` needs none: the authority answers a 400 that says so.
+valid_scheduled() { # whole-day YYYY-MM-DD
+  [[ "$1" =~ ^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$ ]]
 }
 
 # Options shared by add and edit: each sets a key in $FIELDS (a jq object
@@ -171,7 +214,15 @@ parse_field_flags() { # flag args...; echoes count consumed per loop via globals
       --stage)     valid_stage "${2:-}" || die "--stage must be one of: $STAGES"; set_field stage "\"$2\""; shift 2 ;;
       --priority)  [[ "${2:-}" =~ ^[0-4]$ ]] || die "--priority must be 0-4"; set_field priority "$2"; shift 2 ;;
       --deadline)  [[ -n "${2:-}" ]] || die "--deadline needs a value";  set_field deadline "$(jq -Rn --arg v "$2" '$v')"; shift 2 ;;
-      --scheduled) [[ -n "${2:-}" ]] || die "--scheduled needs a value"; set_field scheduled_date "$(jq -Rn --arg v "$2" '$v')"; shift 2 ;;
+      --scheduled) valid_scheduled "${2:-}" || die "--scheduled must be a whole-day YYYY-MM-DD (a time of day is accepted by the authority and then ignored by every client)"; set_field scheduled_date "$(jq -Rn --arg v "$2" '$v')"; shift 2 ;;
+      # The three axes a grill resolves. Without these, an accepted
+      # proposal that sizes an item has no way to land (grill-me's
+      # SKILL.md names them in its patch, and this is the only writer).
+      --size)      valid_size "${2:-}"   || die "--size must be one of: $SIZES";     set_field size "\"$2\""; shift 2 ;;
+      --energy)    valid_energy "${2:-}" || die "--energy must be one of: $ENERGIES"; set_field energy "\"$2\""; shift 2 ;;
+      # `context` is a free string on the wire, not an enum — the GTD
+      # @-context vocabulary is the operator's, not the schema's.
+      --context)   [[ -n "${2:-}" ]] || die "--context needs a value";   set_field context "$(jq -Rn --arg v "$2" '$v')"; shift 2 ;;
       *) die "unknown flag $1" ;;
     esac
   done
@@ -201,7 +252,7 @@ case "$cmd" in
     ;;
 
   add)
-    title="${1:?usage: hb-tasks.sh add <title> [--notes ...] [--stage ...] [--priority ...] [--deadline ...]}"
+    title="${1:?usage: hb-tasks.sh add <title> [field flags — see hb-tasks.sh with no args]}"
     shift
     [[ -n "$title" ]] || die "title must be non-empty"
     parse_field_flags "$@"
@@ -218,7 +269,7 @@ case "$cmd" in
     ;;
 
   edit)
-    ref="${1:?usage: hb-tasks.sh edit <ref> [--title ...] [--notes ...] [--stage ...] [--priority ...] [--deadline ...] [--scheduled ...]}"
+    ref="${1:?usage: hb-tasks.sh edit <ref> [field flags — see hb-tasks.sh with no args]}"
     shift
     parse_field_flags "$@"
     [[ "$FIELDS" != '{}' ]] || die "edit needs at least one field flag"
@@ -242,9 +293,15 @@ case "$cmd" in
   *)
     cat >&2 <<'USAGE'
 usage: hb-tasks.sh sweep [--json]
-       hb-tasks.sh add <title> [--notes <text>] [--stage <stage>] [--priority <0-4>] [--deadline <date>]
-       hb-tasks.sh edit <ref> [--title <t>] [--notes <t>] [--stage <s>] [--priority <0-4>] [--deadline <d>] [--scheduled <d>]
+       hb-tasks.sh add <title> [field flags]
+       hb-tasks.sh edit <ref> [field flags]
        hb-tasks.sh done <ref>
+
+field flags (add and edit both; --title is only useful on edit):
+       --title <t>          --notes <t>              --stage triage|grilling|ready|in_progress|blocked|done
+       --priority <0-4>     --deadline <YYYY-MM-DD[THH:MM]>          --scheduled <YYYY-MM-DD>
+       --size quick|normal|deep                      --energy low|medium|high
+       --context <t>
 USAGE
     exit 2
     ;;
