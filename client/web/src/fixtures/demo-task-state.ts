@@ -696,12 +696,13 @@ export function buildDemoTaskState(): TaskState {
     kindRegistry: DEMO_DATA.ruleKindRegistry,
     rules: DEMO_DATA.ruleDetails,
     lastRuleWrite: null,
-    // Piece 3: every standing question's read, built by the SAME functions
-    // the kit world's `demoQuestionInputs` calls (`demo-pane-reads.ts`) — one
-    // input path, not a third fixture world hand-building the same six
-    // fields. The weekend/vacation panes' own `calendarReads`/
-    // `calendarConnected` arrive through `App.tsx`'s live `CalendarState`
-    // prop threading, unchanged, and need no entry here.
+    // Piece 3: every standing question's read, built by `demo-pane-reads.ts`
+    // — the kit world's own `demoQuestionInputs` called the same functions
+    // before #452 folded its content into this seed and #455 deleted that
+    // module, so this remains one input path, not a third fixture world
+    // hand-building the same six fields. The weekend/vacation panes' own
+    // `calendarReads`/`calendarConnected` arrive through `App.tsx`'s live
+    // `CalendarState` prop threading, unchanged, and need no entry here.
     paneReads: {
       [WASTE_SOURCE]: wasteRead(loadedAt),
       [RACE_SOURCE]: raceRead(loadedAt),

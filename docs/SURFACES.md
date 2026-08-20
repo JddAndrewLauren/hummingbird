@@ -71,10 +71,12 @@ Four widths × two themes × sixteen screen states, per run.
 | `narrow` | 768 | The context panel has wrapped below the column. Still the desktop form: it sits above the 640 breakpoint, deliberately. |
 | `phone` | 390 | The phone form. The rail is a bottom bar, the aside is stacked in the flow with **no nested scroll region**, and `ItemRow` wraps its title onto its own line. `deviceScaleFactor: 3`, `isMobile`, `hasTouch`. The spec opens the More sheet to reach the five overflow screens, importing the partition from `shell/nav-bar.ts` so it cannot drift. |
 
-The **rule editor at 390 is the one knowingly-exempt screen** (137px over):
-its condition rows are a dense grid of selects needing their own design pass.
-The exemption is by screen name in `visual/surfaces.spec.ts`, the capture is
-still taken, and every other screen at 390 is held to the same bar as desktop.
+The **rule editor OPEN at 390 is the one knowingly-exempt state** (137px
+over): its condition rows are a dense grid of selects needing their own
+design pass. The exemption in `visual/surfaces.spec.ts` applies only after
+the editor opens — the Rules screen's own LIST state is checked at 390 like
+every other screen, unconditionally, before the editor opens for the
+capture — so this is one state exempt, not the whole screen.
 
 Captures are **viewport-sized, not `fullPage`**: the shell is
 `height: 100dvh; overflow: hidden`, so the document is exactly one viewport on
@@ -86,28 +88,38 @@ Themes: `light` and `dark`, seeded into `localStorage` at `hb.theme` before
 first paint (the app resolves `light | dark | system` onto
 `[data-theme]` — `src/theme/`).
 
-Screen states: the nine screens under `?demo` (deterministic, populated
-fixtures — except **Done** and the **Ledger**, which have no demo fixtures
-and photograph their "not read yet" holding state; their populated rows are
-covered by `DoneScreen.test.tsx`/`LedgerScreen.test.tsx` and reviewed by hand
-on a device with real items; **Status** photographs **ten panes** fed by
-`src/fixtures/demo-questions.ts` — counted in *panes*, not questions, because
-two of its wired questions emit one pane *per subject* the way the race
-question does: one `kimi-balance/v1` gauge, five `github-hummingbird/v1`
-workflow rows and three `uptime/v1` service rows (#313-#315) make **nine
-poller-backed panes**, plus one quiet, device-local `reachability` answer
-(#316)), the **capture popover** open
+Screen states: the nine screens under the default `?demo` — the **board**
+world (#420, #455), a seeded `TaskState` that takes the screens' real render
+path with fictional data in it, deterministic and populated on **seven** of
+the nine, including **Done** and the **Ledger** (#452 grew the seed to cover
+them; before that only the frontier and the triage inbox were seeded, and
+`?demo` meant the design kit besides). **Routes and Alerts are the two
+exceptions**: neither reads `TaskState` at all, so both photograph the same
+honest empty state an unseeded device would — see "Routes and Alerts lost
+their only capture at #455's flip" below. **Status** photographs **ten
+panes** fed by the seed's own `bindings`/`paneReads`
+(`src/fixtures/demo-pane-reads.ts`) — the kit world's own `demo-questions.ts`
+duplicated this before #452 folded its content into the seed, and #455
+deleted the now-redundant module entirely — counted in *panes*, not
+questions, because two of its wired questions emit one pane *per subject* the
+way the race question does: one `kimi-balance/v1` gauge, five
+`github-hummingbird/v1` workflow rows and three `uptime/v1` service rows
+(#313-#315) make **nine poller-backed panes**, plus one quiet, device-local
+`reachability` answer (#316)), the **capture popover** open
 over Now, and **Now's honest empty state** without the flag. What no capture reaches: Triage's **expanded row
-editor**, since `?demo` renders the fixture rows (`DemoCapture`) and the editor
-only exists over a real `TaskItemDTO` — it is covered by
+editor**. Under `?demo=kit` the rows are `DemoCapture` fixtures with no real
+editor at all; under the default `?demo` (board, since #455) the rows ARE real
+`TaskItemDTO`s with a real editor wired (`onTriage` is not gated off in board
+mode), but nothing in `visual/surfaces.spec.ts`'s board Triage capture opens
+one — it asserts only the header count. Either way it is covered by
 `screens/TriageScreen.test.tsx` instead, and reviewed by hand on a device with
 real captures; and, since #273, **item detail's microtask states** — the two
-affordances, the streaming narration, the stamp badge and the decline — for
-the same reason one level up: `NowScreen.tsx` branches to `RealFrontier` only
-when demo is off, so the item panel is never mounted under `?demo` at all.
-Teaching the flag to mount it would mean entangling the demo hero branch with
-`RealFrontier`, which that branch exists to prevent, so `visual/surfaces.spec.ts`
-is deliberately unchanged here and `components/domain/ItemPanel.test.tsx`
+affordances, the streaming narration, the stamp badge and the decline — for a
+related reason one level up: the board world's own Now capture never selects
+a card to expand `ItemPanel` at all (it asserts the `@computer` heading and
+the two stranded-write alerts, nothing more), so nothing in this file reaches
+the panel, real microtask wiring or not. `visual/surfaces.spec.ts` is
+deliberately unchanged here and `components/domain/ItemPanel.test.tsx`
 is the cover — which now also covers detail mode's Edit. #274's pinned-decline fallback button ("Switch to `<entry>`")
 joins that exclusion under that same cover; the picker it belongs to lives on
 **Settings**, which *is* photographed, so the control itself stays in the
@@ -126,14 +138,16 @@ everything above that Recall
 never wires: `showSteps={false}` and no `microtask` prop at all on
 `RecallOverlay`'s own `ItemPanel` call means the microtask affordances, the
 streaming narration, the stamp badge and the decline are still reachable
-only through Now's or Triage's own item panel — Now's because
-`NowScreen.tsx` still branches to `RealFrontier` only when demo is off,
-Triage's for its own reason stated above (`?demo` renders the fixture rows,
-so nothing real is ever mounted there). **Now's
-captures in the columns** join that list for the same reason one more level up:
-`NowScreen.tsx` branches to `RealFrontier` only when demo is off, so a capture's
-card, its `triage` chip, its place under a column's startable actions and the
-`TriageRow` editor selecting it opens are never mounted under `?demo`.
+only through Now's or Triage's own item panel — neither of which any capture
+in this file opens (Now's per-screen and `now-columns-*` captures never
+select a card; Triage's board capture only asserts its header count), not
+because either is structurally unreachable under the default `?demo` (board,
+since #455 both are real and wired there). **Now's
+captures in the columns** join that list for the same reason one more level
+up: nothing in this file selects a capture's card, so its `triage` chip, its
+place under a column's startable actions and the `TriageRow` editor selecting
+it opens stay unphotographed even though the board world's `RealFrontier`
+mounts them all.
 And `shell/SeamFailure.tsx` (ADR-0025, #141/M1-1) — the surface `main.tsx`
 renders *instead of* `App` when the main-thread decision seam fails to
 instantiate. No query flag can reach it: it requires a wasm failure, which is
@@ -141,12 +155,14 @@ what the surface exists to report. `shell/SeamFailure.test.tsx` is the cover.
 `screens/NowScreen.test.tsx` and `screens/TriageScreen.test.tsx` are the
 cover; a board mixing both kinds is reviewed by hand on a device with real
 captures, which is where a full inbox exists at all. **The Grill takeover**
-(#355, ADR-0023) joins that same exclusion for the identical reason:
+(#355, ADR-0023) joins that same exclusion for a related reason:
 `TriageRow`'s real "Grill me" button, the question card, the review card and
 every turn state (asking, the question, the proposal, a decline) only exist
-over a real `TaskItemDTO`, and `?demo` renders `DemoCapture` fixtures with
-its own unrelated stub "Grill" button — so this screen never opens a real
-takeover under the flag. `screens/GrillTakeover.test.tsx`,
+over a real `TaskItemDTO`. Under `?demo=kit` the rows are `DemoCapture`
+fixtures with an unrelated stub "Grill" button, so the takeover cannot open
+there at all; under the default `?demo` (board) the rows are real and the
+button is real, but nothing in this file clicks it, so the takeover still
+never opens under either spelling of the flag. `screens/GrillTakeover.test.tsx`,
 `screens/TriageScreen.test.tsx` and the `shell/useGrillWiring.ts` /
 `shell/useGrillTakeoverWiring.ts` hook tests are the cover for every
 reachable turn state, and round 2's own tests cover the refused-Confirm
@@ -166,30 +182,30 @@ render over a real, drafted `TaskItemDTO`. `screens/GrillTakeover.test.tsx`
 covers the Discard confirm/cancel branches and `item-actions.test.ts`
 covers the label function; a hand pass confirming how the confirm dialog
 and the resumed label actually read is owed alongside #355's own.
-**Now's
-frontier columns** join the list for that same reason and are settled up front
-rather than discovered mid-slice (ADR-0021 decision 8, #400): because
-`NowScreen.tsx` branches to `RealFrontier` only when demo is off, the columns
-themselves, the axis switch, the facet-filter panel, the collapsed and
-`n more` states and the urgency colours are unphotographed at **every width and
-theme**. They take #273's disposition — `screens/NowScreen.test.tsx` plus the
-grouping and preference modules' own unit tests are the cover, and the wrap
-behaviour, the collapse reflow and the absence of horizontal page overflow are
-reviewed by hand at 1440, 1024 and 768 in both themes on a device with real
-items, which is where enough columns to wrap exist at all. Entangling `?demo`
-with `RealFrontier` to photograph them is rejected there, not merely skipped:
-that branch exists to keep the two apart, so widening it would trade a
-documented coverage gap for an undocumented behavioural one.
+**Now's frontier columns are reached by the default `?demo`** (ADR-0021
+decision 8, #400, closed by #420's board world and #455's flip of which
+spelling is the default) — `now-columns-*` proves the wrap at production
+density, and the per-screen `now-*` capture proves the ordinary default view.
+Still unphotographed by `pnpm visual`, because the capture is one still frame
+of the default view rather than a sequence of interactions: the axis switch,
+the facet-filter panel, and the collapsed/`n more` states. Those take #273's
+disposition — `screens/NowScreen.test.tsx` plus the grouping and preference
+modules' own unit tests are the cover, and the wrap behaviour, the collapse
+reflow and the absence of horizontal page overflow are reviewed by hand at
+1440, 1024 and 768 in both themes on a device with real items, which is where
+enough columns to wrap exist at all.
 
-**Now's own Grill takeover (#359) joins that same exclusion, for the
-identical reason** — settled here rather than discovered mid-slice, per that
-issue's own instruction not to let this be a mid-slice surprise. It is
+**Now's own Grill takeover (#359) joins that same exclusion, for a related
+reason** — settled here rather than discovered mid-slice, per that issue's
+own instruction not to let this be a mid-slice surprise. It is
 `RealFrontier`'s all the way down: the takeover only opens over a real
 `TaskItemDTO` behind Now's centre-column card (`ItemPanel`'s `"detail"` mode's
 own "Grill me"/"Resume grill" button, gated by `item-actions.ts`'s widened
-`canGrill`), and `?demo` never mounts that branch at all. So this takes the
-disposition every other Grill/frontier surface above already took rather than
-inventing a new one: component tests are the cover, not `pnpm visual`.
+`canGrill`). The default `?demo` (board, since #455) does mount `RealFrontier`
+over real `TaskItemDTO`s, so this branch is *reachable* under the gate's own
+world now — but nothing in `visual/surfaces.spec.ts` clicks "Grill me", so it
+stays unphotographed in practice, same disposition every other Grill/frontier
+surface above already took: component tests are the cover, not `pnpm visual`.
 `screens/NowScreen.test.tsx`'s "the Grill takeover (#359)" suite covers
 opening it from Now's own button, the takeover replacing the centre column
 while the ordinary board is gone, Back closing it and restoring focus to the
@@ -291,43 +307,65 @@ it is known to appear in at all.
 **Since #420 the columns, the captures among them and #418's stranded-write
 alerts ARE photographed** (both of them — the board fixture seeds a failed
 triage and a failed act, and `surfaces.spec.ts` asserts the count rather than
-the first match, which is what caught the second line arriving) — the twelfth state, `now-columns-*`, and the reason
-the count above moved (it has since moved again, to sixteen — #481's four
-Recall states below). Not by widening `?demo`, which still never mounts
-`RealFrontier` and still means exactly what it meant: by a **second demo
-world**, `?demo=board`, which seeds a real `TaskState`
-(`src/fixtures/demo-task-state.ts`) and returns `null` for `DemoData`, and a
-null `demo` prop is what selects the `RealFrontier` branch. The rejection above
+the first match, which is what caught the second line arriving) — the twelfth
+state, `now-columns-*`. Not by widening the kit world to mount `RealFrontier`,
+which the rejection below still refuses: by a **second demo world**, the
+board, which seeds a real `TaskState` (`src/fixtures/demo-task-state.ts`) and
+returns `null` for `DemoData`, and a null `demo` prop is what selects the
+`RealFrontier` branch. #420 shipped the board world at the explicit spelling
+`?demo=board`, alongside the kit world's existing bare `?demo`; **#455
+flipped which spelling is the default** — the board is now what bare `?demo`
+(and every spelling but `?demo=kit`) means, and it is the primary nine-screen
+capture pass below, not a second pass alongside a kit one. The rejection above
 is intact — this is the "decided change with its reasoning written down" that
-ADR-0021 decision 8 named as its own condition, and that decision carries the
-amendment. The fixture mirrors **production's measured shape and none of its
-content** (29 cards, its context/size/energy/source spread, no projects, no
-blocked edges), so what the gate photographs is the real awkward board rather
-than a tidy one. Still uncovered on this surface and still on the disposition:
-everything reached only by interaction — the axis switch, the facet-filter
-panel, the collapse reflow and the selected-card slot — since the capture is
-one still frame of the default view. The popover is a state rather than a screen — it
-renders over whatever is showing (`shell/CapturePopover.tsx`), so no
-per-screen capture ever contains it, and the scrim covering the whole window
-plus the card fitting inside 768 are only decidable with it open. `?demo` drives
-the *real* ranked region through a hand-authored world
-(`src/fixtures/demo-questions.ts` — a bound waste question collecting
-tomorrow at the address, so what is photographed is an answered, imminent
-pane, plus a bound `f1` race question twelve days out, the `distant` state
-the race pane holds for most of the year); there is deliberately no demo-only rendering of the region, so the
-capture is the shipping component. The empty
-states matter on their own: they are what a new device actually shows, and
-no fixture screen exercises them. **Rules is populated under `?demo` too**
-(#140): `demo-data.ts` carries its own `ruleDetails` / `ruleKindRegistry` /
-`ruleBacktestItems`, wired at `App.tsx`'s `screen === "rules"` branch
-alongside every other screen's `demo ? … : task.…` split, so its capture is
-a deterministic, populated rules screen — condition rows, toggles and a
-backtest count — the same as the other five.
+ADR-0021 decision 8 named as its own condition, and that decision (as amended
+by #420 and again by #455) carries the record. The fixture mirrors
+**production's measured shape and none of its content** (29 cards, its
+context/size/energy/source spread, no projects, no blocked edges), so what
+the gate photographs is the real awkward board rather than a tidy one. Still
+uncovered on this surface and still on the disposition: everything reached
+only by interaction — the axis switch, the facet-filter panel, the collapse
+reflow and the selected-card slot — since the capture is one still frame of
+the default view. The popover is a state rather than a screen — it renders
+over whatever is showing (`shell/CapturePopover.tsx`), so no per-screen
+capture ever contains it, and the scrim covering the whole window plus the
+card fitting inside 768 are only decidable with it open. The default `?demo`
+drives the *real* ranked region through the board seed's own `bindings` /
+`paneReads` (`src/fixtures/demo-pane-reads.ts`, built inside
+`demo-task-state.ts`'s `buildDemoTaskState()` — a bound waste question
+collecting tomorrow at the address, so what is photographed is an answered,
+imminent pane, plus a bound `f1` race question twelve days out, the `distant`
+state the race pane holds for most of the year); there is deliberately no
+demo-only rendering of the region, so the capture is the shipping component.
+(Before #455 this ran through a third, hand-authored fixture world,
+`demo-questions.ts`, that fed the kit world's own Now/Status captures; #452
+folded its content into the board seed and #455 deleted the module along with
+the kit-world captures it fed — see ADR-0021 decision 8's own amendment.) The
+empty states matter on their own: they are what a new device actually shows,
+and no fixture screen exercises them. **Rules is populated under the default
+`?demo` too**, from the board seed's own `rules` / `kindRegistry` (#452,
+folded from the kit world's `ruleDetails` / `ruleKindRegistry` —
+`demo-data.ts`, #140 — which is what still backs `?demo=kit`'s own,
+unphotographed, Rules render), so its capture is a deterministic, populated
+rules screen — condition rows, toggles and a backtest count — the same as the
+other five.
+
+**Routes and Alerts lost their only capture at #455's flip, and it is a real
+gap, not a moved one.** Neither screen reads `TaskState` at all — each takes
+only `demo: DemoData | null`, never `task` — so under the default `?demo`
+(board) both always render the honest empty state an unseeded device would
+(`routes renders and asserts the seed`, `alerts renders and asserts the
+seed`), and their only populated render, the kit fixture's rule cards and
+route checklist, is now reachable solely at `?demo=kit`, which nothing in
+`visual/surfaces.spec.ts` opens any more. Neither screen has a component test
+either. Until one of the two exists again — a kit capture pass restored, or a
+`RoutesScreen.test.tsx`/`AlertsScreen.test.tsx` — these two screens' populated
+states are reviewed by hand only, at `?demo=kit`.
 
 **Recall (#478–#481) is photographed under the BOARD world, not the kit
 one** — every trigger #480 wired (the header's Search button, the `/`
 hotkey, the rail's magnifier, the phone More sheet's entry) is inert under
-`?demo` (`App.tsx`'s `onSearch={demo ? undefined : requestSearchOpen}`),
+`?demo=kit` (`App.tsx`'s `onSearch={demo ? undefined : requestSearchOpen}`),
 because the kit world's `task` is the static fixture with no real
 `Core::search` to answer against — opening it there would spin on
 "Searching…" forever for any typed query, the same reason `onTriage` is

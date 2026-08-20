@@ -10,9 +10,7 @@
 import { buildDemoCalendarState } from "./demo-calendar";
 import { DEMO_DATA, type DemoData } from "./demo-data";
 import { demoMode, isDemoEnabled } from "./demo-mode";
-import { demoQuestionInputs } from "./demo-questions";
 import { buildDemoTaskState } from "./demo-task-state";
-import type { QuestionInputs } from "../screens/questions/contract";
 import type { CalendarState, TaskState } from "../store/store";
 
 export type {
@@ -31,23 +29,6 @@ export function demoData(): DemoData | null {
     return null;
   }
   return isDemoEnabled(window.location.search) ? DEMO_DATA : null;
-}
-
-/** The ranked region's fixture inputs (#245) in the kit world, `null`
- * everywhere else — so a caller reads `demoQuestions(nowMs) ?? realInputs`.
- *
- * The gate is the point. `NowScreen` and `StatusScreen` used to import
- * `demoQuestionInputs` themselves and call it behind their `demo` prop, which
- * is a React state value — nothing Rollup can fold — so the whole fixture
- * shipped in the production bundle while `assert-no-fixtures` reported ok on a
- * sentinel that matched nothing. Behind `import.meta.env.DEV` the reference is
- * unreachable at build time and the module drops, exactly as `DEMO_DATA` does.
- * That is why every fixture reaches a screen through this file. */
-export function demoQuestions(nowMs: number): Omit<QuestionInputs, "nowMs"> | null {
-  if (!import.meta.env.DEV) {
-    return null;
-  }
-  return isDemoEnabled(window.location.search) ? demoQuestionInputs(nowMs) : null;
 }
 
 /** The board world's seeded `TaskState` (#420), or `null` for every other
