@@ -1,21 +1,41 @@
 #!/usr/bin/env python3
 """One-time local OAuth consent flow: mint a Google refresh token.
 
-The token carries three scopes, and is shared by every Google consumer in the
-repo (operator decision on #486): Google Tasks and Gmail modify for the sweeper
-(the capture-label drain needs to read labelled messages and remove the label),
-plus Calendar readonly for `calendar-poll`. `gmail-poll` reads through the same
-credential rather than a narrower dedicated one -- one consent, one secret to
-rotate. Adding a scope later means re-running this and re-setting the secret
-in all of its places (Fly, and the GitHub Actions secrets both pollers read).
+By default the token carries three scopes, and that one is shared by every
+server-side Google consumer in the repo (operator decision on #486): Google
+Tasks and Gmail modify for the sweeper (the capture-label drain needs to read
+labelled messages and remove the label), plus Calendar readonly for
+`calendar-poll`. `gmail-poll` reads through the same credential rather than a
+narrower dedicated one -- one consent, one secret to rotate. Adding a scope
+later means re-running this and re-setting the secret in all of its places
+(Fly, and the GitHub Actions secrets both pollers read).
+
+**Why `--scope` exists (#581).** ADR-0028's `POST /api/google/calendar_token`
+hands a Google bearer to a browser, so its credential must not be able to reach
+Gmail. Google does honour `scope` on a refresh_token grant -- measured in #581,
+and `authority/src/google_calendar.rs` relies on it -- but narrowing at
+*exchange* time only helps if every exchange remembers to ask. A credential
+whose grant carries one scope cannot be widened by a forgetful caller at all,
+so the authority gets its own, minted here with `--scope`, and its secret store
+never holds a Gmail-capable token to begin with. Prefer the default; reach for
+the override when the consumer is a different blast radius, and say which one
+in the item's 1Password notes.
 
 Run once, on your own machine, against the Internal desktop-app OAuth client
 in the twinion.net Workspace. The token it prints goes into
 `flyctl secrets set GOOGLE_REFRESH_TOKEN=...` and `gh secret set
-GOOGLE_REFRESH_TOKEN`, and nowhere else -- never a file in this repo.
+GOOGLE_REFRESH_TOKEN`, and nowhere else -- never a file in this repo. A
+`--scope` run goes wherever its own consumer reads it (for #581's calendar
+credential: `wrangler secret put` on `hummingbird-authority`, three secrets,
+from the operator's terminal and never Actions -- CLAUDE.md's blast-radius
+rule).
 
     python3 scripts/mint_refresh_token.py \
         --client-id <id> --client-secret <secret>
+
+    python3 scripts/mint_refresh_token.py \
+        --client-id <id> --client-secret <secret> \
+        --scope https://www.googleapis.com/auth/calendar.readonly
 
 (or set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET in the environment)
 
@@ -34,12 +54,10 @@ import webbrowser
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
-SCOPE = " ".join(
-    (
-        "https://www.googleapis.com/auth/tasks",
-        "https://www.googleapis.com/auth/gmail.modify",
-        "https://www.googleapis.com/auth/calendar.readonly",
-    )
+DEFAULT_SCOPES = (
+    "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/calendar.readonly",
 )
 PORT = 8765
 REDIRECT_URI = "http://localhost:%d/" % PORT
@@ -68,15 +86,28 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--client-id", default=os.environ.get("GOOGLE_CLIENT_ID"))
     parser.add_argument("--client-secret", default=os.environ.get("GOOGLE_CLIENT_SECRET"))
+    parser.add_argument(
+        "--scope",
+        action="append",
+        metavar="URL",
+        help=(
+            "request this scope instead of the default three; repeat for more than "
+            "one. See the module header for when a dedicated credential is the "
+            "right call. Default: " + " ".join(DEFAULT_SCOPES)
+        ),
+    )
     args = parser.parse_args()
     if not args.client_id or not args.client_secret:
         parser.error("--client-id and --client-secret (or the matching env vars) are required")
+
+    scopes = args.scope or list(DEFAULT_SCOPES)
+    print("Requesting: %s\n" % " ".join(scopes))
 
     params = {
         "client_id": args.client_id,
         "redirect_uri": REDIRECT_URI,
         "response_type": "code",
-        "scope": SCOPE,
+        "scope": " ".join(scopes),
         "access_type": "offline",
         # Force the consent screen: without it Google reissues an access token
         # only, and no refresh token comes back on a repeat authorization.
@@ -119,10 +150,18 @@ def main():
         print("No refresh_token in the response: %s" % payload, file=sys.stderr)
         return 1
 
+    granted = payload.get("scope", "(none reported)")
+    print("\nGranted scope: %s" % granted)
     print("\nGOOGLE_REFRESH_TOKEN=%s\n" % token)
-    print("Store it in 1Password first, then in both places that read it:")
-    print("  flyctl secrets set GOOGLE_REFRESH_TOKEN='%s' --app hummingbird-sweeper" % token)
-    print("  gh secret set GOOGLE_REFRESH_TOKEN   # gmail-poll + calendar-poll")
+    if args.scope:
+        # A --scope run is a dedicated credential, so its destinations are its
+        # consumer's, not the shared token's. Naming them here would be a guess.
+        print("Store it in 1Password first (dev vault, `hummingbird`-prefixed title),")
+        print("then set it wherever its own consumer reads it, from this terminal.")
+    else:
+        print("Store it in 1Password first, then in both places that read it:")
+        print("  flyctl secrets set GOOGLE_REFRESH_TOKEN='%s' --app hummingbird-sweeper" % token)
+        print("  gh secret set GOOGLE_REFRESH_TOKEN   # gmail-poll + calendar-poll")
     return 0
 
 

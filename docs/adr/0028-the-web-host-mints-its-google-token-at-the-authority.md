@@ -95,6 +95,24 @@ which is a different trust boundary than "another GitHub Actions workflow,"
 and the blast radius of getting it wrong is Gmail write access reachable
 from a stolen device token rather than from a leaked Actions secret.
 
+*Amended 2026-08-20 (#581): **the down-scoping premise above is false, and
+the decision it argued for stands anyway.** #581's provisioning ran the
+check as its own acceptance criterion, against the shared credential where
+the question is actually decidable: asking that three-scope grant for
+`calendar.readonly` alone returns a token Gmail and Tasks both refuse with
+403 `insufficient authentication scopes` while Calendar answers 200 — a real
+narrowing, not an echo in the response body. Google **does** honour `scope`
+on a `refresh_token` grant. Two reasons survive and are now the whole case
+for the dedicated credential: this lane's secret store never holds a
+Gmail-capable token at all, which is strictly smaller than holding one and
+narrowing it per request; and it can be revoked without taking down the
+sweeper and both pollers. The measurement also earned a change — because
+narrowing at exchange time works, `authority/src/google_calendar.rs` now
+sends `scope=…calendar.readonly` on every exchange, not as this lane's
+defence (the credential is already narrow) but so that pasting the shared
+refresh token into `GOOGLE_CALENDAR_REFRESH_TOKEN` fails closed instead of
+silently handing every browser a `gmail.modify` bearer.*
+
 ### Caching, and why it is a security property
 
 One `RefCell` on the Durable Object instance, not persisted. The DO is the

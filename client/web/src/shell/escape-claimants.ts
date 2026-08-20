@@ -47,8 +47,18 @@
  *
  * The Grill takeover is deliberately absent: it claims no Escape at all
  * (`GrillTakeover.tsx` — leaving an interview is a deliberate Back), and it
- * replaces the centre column rather than covering anything. */
-export const ESCAPE_CLAIMANTS = ["search", "capture", "navSheet", "itemDetail"] as const;
+ * replaces the centre column rather than covering anything.
+ *
+ * `contextList` is first because it is the only claimant that is not an
+ * overlay: it is a `Combobox`'s open popup, painted over whatever contains
+ * the field — inside the capture popover today, inside the item detail
+ * panel's Edit form equally. Whichever of those it sits in, it is the thing
+ * the reader can see on top, and an Escape that closed the popover out from
+ * under an open list would take an unsent draft with it. Unlike the four
+ * below, its flag is not `App.tsx`'s own state; it is published by
+ * `components/forms/combobox-open.ts`, which also holds the argument for a
+ * signal rather than props. */
+export const ESCAPE_CLAIMANTS = ["contextList", "search", "capture", "navSheet", "itemDetail"] as const;
 
 export type EscapeClaimant = (typeof ESCAPE_CLAIMANTS)[number];
 
@@ -65,10 +75,15 @@ export interface EscapeInput {
 
 /** The claimant this keystroke belongs to, or `null` if it belongs to nobody.
  *
- * `targetIsEditable` is deliberately not a factor. Escape is not a character;
+ * `targetIsEditable` is deliberately not a factor, and stays that way now
+ * that one editable control *does* claim Escape. Escape is not a character;
  * a reader who has just typed in the detail panel's Edit fields and presses
- * Escape means the panel, and no editable control in the shell treats Escape
- * as its own. */
+ * Escape means the panel. The `Combobox` whose popup is open is the one
+ * exception, and it is expressed the same way every other claimant is — as
+ * a flag at a depth, decided here — rather than as a property of the
+ * keystroke's target. A rule that read "the target is an input" could not
+ * tell an open list from a shut one, which is the only distinction that
+ * matters. */
 export function escapeClaimant(input: EscapeInput): EscapeClaimant | null {
   if (input.key !== "Escape" || input.isComposing) {
     return null;

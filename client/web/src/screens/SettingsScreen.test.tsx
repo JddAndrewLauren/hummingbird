@@ -492,23 +492,39 @@ describe("SettingsScreen — the calendar connection's state", () => {
     expect(onConnect).not.toHaveBeenCalled();
   });
 
-  it("tells a blocked device that the background renewal has stopped, not just that the credential died", () => {
+  it("tells a blocked device that the background renewal has stopped, without guessing a cause", () => {
     // The ordinary reconnect sentence would leave the reader waiting for a
     // recovery that is never coming — `remint-health.ts` has stopped trying.
-    // #585: the thing that needs attention is the server-held Google
-    // credential (ADR-0028), not this browser, so the sentence names that
-    // and points at the operator rather than at a browser session.
+    // #581: one sentence covers all five of `BLOCKING_ERRORS`, which have
+    // five different causes, so it names none of them. It says only what the
+    // per-code copy does not: that retrying has stopped and the last
+    // snapshot stays up.
     renderSettings({
       calendar: { connected: true, needsReconnect: true, silentRemintBlocked: true },
     });
-    expect(
-      screen.getByText(/renewing it in the background has stopped working/i),
-    ).toBeDefined();
-    expect(screen.getByText(/server-held google credential needs attention/i)).toBeDefined();
-    expect(screen.getByText(/ask the operator to check it/i)).toBeDefined();
+    expect(screen.getByText(/renewing it in the background has stopped working/i)).toBeDefined();
+    expect(screen.getByText(/last snapshot is still showing/i)).toBeDefined();
+    expect(screen.queryByText(/revoked refresh token/i)).toBeNull();
     expect(
       screen.getByRole("button", { name: /retry polling on this device/i }),
     ).toBeDefined();
+  });
+
+  it("leaves the cause to the per-code copy when the block is a credential never provisioned", () => {
+    // #581's own sighting, on the installed iPad PWA: `authority_unconfigured`
+    // means the credential was never provisioned, and the blocked sentence
+    // used to guess "revoked" directly above the per-code copy saying the
+    // server has none configured. Two stacked sentences that disagreed.
+    renderSettings({
+      calendar: {
+        connected: true,
+        needsReconnect: true,
+        silentRemintBlocked: true,
+        connectError: "authority_unconfigured",
+      },
+    });
+    expect(screen.getByText(connectErrorCopy("authority_unconfigured").message)).toBeDefined();
+    expect(screen.queryByText(/revoked refresh token/i)).toBeNull();
   });
 
   it("keeps the ordinary reconnect sentence while the silent path is still trying", () => {
