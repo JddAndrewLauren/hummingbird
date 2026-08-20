@@ -1,35 +1,21 @@
-// The one seam between real data and the design kit's fixtures.
+// The board world's seam between real data and its seeded `TaskState`.
 //
 // Gated twice, deliberately. `import.meta.env.DEV` is substituted with the
 // literal `false` at build time, so the production bundle contains
 // `if (false && …)` — demo mode cannot be switched on by a query string in
-// production even if someone tries, and Rollup drops DEMO_DATA with the
+// production even if someone tries, and Rollup drops the fixture with the
 // dead branch. The `?demo` check is what makes it opt-in during development,
 // so `pnpm dev` still shows the honest empty states by default.
+//
+// The kit world's own accessor, `demoData()`, moved to `fixtures/demo-data.ts`
+// in #457 — colocated with `DEMO_DATA`, and called directly by `RoutesScreen`
+// and `AlertsScreen` rather than threaded through `App.tsx` as a `demo` prop.
+// This module now holds only the board world's two accessors.
 
 import { buildDemoCalendarState } from "./demo-calendar";
-import { DEMO_DATA, type DemoData } from "./demo-data";
-import { demoMode, isDemoEnabled } from "./demo-mode";
+import { demoMode } from "./demo-mode";
 import { buildDemoTaskState } from "./demo-task-state";
 import type { CalendarState, TaskState } from "../store/store";
-
-export type {
-  DemoAlert,
-  DemoBinding,
-  DemoCalendar,
-  DemoCapture,
-  DemoData,
-  DemoItem,
-  DemoRoute,
-  DemoRule,
-} from "./demo-data";
-
-export function demoData(): DemoData | null {
-  if (!import.meta.env.DEV) {
-    return null;
-  }
-  return isDemoEnabled(window.location.search) ? DEMO_DATA : null;
-}
 
 /** The board world's seeded `TaskState` (#420), or `null` for every other
  * mode. Behind the same double gate `demoData` is: substituted to
@@ -44,10 +30,12 @@ export function demoData(): DemoData | null {
  * after the build, because this is a claim about the artifact and only the
  * artifact can answer it.
  *
- * Deliberately mutually exclusive with `demoData()` — `?demo=board` returns a
- * state here and `null` there, which is the whole mechanism: a null `demo`
- * prop is what makes `NowScreen` take its `RealFrontier` branch, and this is
- * the data that branch then reads. */
+ * Deliberately mutually exclusive with `demo-data.ts`'s `demoData()` —
+ * `?demo=board` (and every spelling but `?demo=kit`) returns a state here and
+ * `null` there, `demoMode()`'s whole mechanism. `App.tsx`'s
+ * `task = demoTask ?? liveTask` is what makes every screen but Routes and
+ * Alerts (#457, its own dev-gated `demoData()` reader) take its real render
+ * path against this seed. */
 export function demoTaskState(): TaskState | null {
   if (!import.meta.env.DEV) {
     return null;

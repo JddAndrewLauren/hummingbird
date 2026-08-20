@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { demoCalendar, demoData, demoTaskState } from "./fixtures/demo";
+import { demoCalendar, demoTaskState } from "./fixtures/demo";
 import { AlertsScreen } from "./screens/AlertsScreen";
 import { DoneScreen } from "./screens/DoneScreen";
 import { LedgerScreen } from "./screens/LedgerScreen";
@@ -96,17 +96,21 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // once per mount either way.
   const [worker] = useState<WorkerLike>(() => injectedWorker ?? realWorker());
 
-  // Lazy initializer, not a ref: `demoData()` returns null in production, and
-  // `ref.current ??= …` would re-run it on every render forever.
-  const [demo] = useState(demoData);
-
-  // The board world (#420), same lazy-initializer reason. Read-only by
+  // The board world (#420). A lazy initializer, not a ref: reading
+  // `ref.current` during render is what React's rules forbid, and this needs
+  // to be constructed exactly once per mount either way. Read-only by
   // construction: it substitutes for the published state the sync engine would
   // have sent, and no mutation is rewired to it — the point is photographing
   // and eyeballing the real render path at production's density, not a second
-  // writable world. A capture typed into the popover still goes to the worker,
-  // which knows nothing of these fixture ids; `demo`'s own fixture-queue arm
-  // does not apply here because `demoData()` is null in this mode.
+  // writable world. A capture typed into the popover still goes to the
+  // worker, which knows nothing of these fixture ids.
+  //
+  // `DemoData` and the kit world it seeds left this component in #457 —
+  // Routes and Alerts, its last two consumers, now read it through their own
+  // dev-gated accessor (`fixtures/demo-data.ts`'s `demoData()`) instead of a
+  // `demo` prop threaded from here, and every guard that used to keep writes
+  // inert while the kit world showed went with it: this component no longer
+  // has any opinion about which world is loaded.
   const [demoTask] = useState(demoTaskState);
   const task = demoTask ?? liveTask;
 
@@ -273,12 +277,6 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   };
 
   function handleCapture(title: string, destination: CaptureDestination, fields: CaptureFields) {
-    if (demo) {
-      // Kit mode's popover is inert — Now/Triage/Settings render only their
-      // real path since #456, so there is nowhere left for a fixture capture
-      // to land.
-      return;
-    }
     submitCapture(title, destination, Date.now(), fields);
   }
 
@@ -325,12 +323,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         })
       ) {
         event.preventDefault();
-        // Demo mode's `task` is the static fixture, same as the header's
-        // `onSearch` above and reported for the identical reason: opening it
-        // there would spin forever on "Searching…" for any typed query.
-        if (!demo) {
-          requestSearchOpen();
-        }
+        requestSearchOpen();
         return;
       }
 
@@ -374,7 +367,6 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [
-    demo,
     captureOpen,
     captureDictating,
     searchOpen,
@@ -485,7 +477,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           collapsed={railCollapsed}
           onToggleCollapsed={handleToggleRailCollapsed}
           onHome={handleHome}
-          onSearch={demo ? undefined : requestSearchOpen}
+          onSearch={requestSearchOpen}
         />
       )}
 
@@ -501,17 +493,9 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
       >
         <Header
           title={SCREEN_TITLES[screen]}
-          // The demo badge stands in for a real cycle only in demo mode;
-          // everywhere else this is now backed by one (S9) — see
-          // `sync-status.ts`.
-          syncLabel={demo?.syncBadge ?? (hasTaskToken ? syncLabel : undefined)}
+          syncLabel={hasTaskToken ? syncLabel : undefined}
           onRefresh={refreshEnabled ? handleRefresh : undefined}
-          // Demo mode's `task` is the static fixture (`demoTask`), never the
-          // live store slice `useRecallWiring`'s answer lands in — the same
-          // reason `onSetScheduledDate`/`microtask`/`onTriage` below are all
-          // `demo ? undefined : …`. Opening it there would spin forever on
-          // "Searching…" for any typed query.
-          onSearch={demo ? undefined : requestSearchOpen}
+          onSearch={requestSearchOpen}
           // Only on Now — the aside exists on no other screen. Same rule as
           // `onSearch`/`onRefresh` above: the affordance appears exactly where
           // it would do something.
@@ -562,17 +546,17 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               grill={grillTakeover}
             />
           )}
-          {screen === "routes" && <RoutesScreen demo={demo} />}
-          {screen === "alerts" && <AlertsScreen demo={demo} />}
+          {screen === "routes" && <RoutesScreen />}
+          {screen === "alerts" && <AlertsScreen />}
           {screen === "rules" && (
             <RulesScreen
-              rules={demo ? demo.ruleDetails : task.rules}
-              kindRegistry={demo ? demo.ruleKindRegistry : task.kindRegistry}
-              frontier={demo ? demo.ruleBacktestItems : task.frontier}
-              lastRuleWrite={demo ? null : task.lastRuleWrite}
+              rules={task.rules}
+              kindRegistry={task.kindRegistry}
+              frontier={task.frontier}
+              lastRuleWrite={task.lastRuleWrite}
               syncOutcomeSeq={task.syncOutcomeSeq}
-              onCreateRule={demo ? () => {} : handleCreateRule}
-              onPatchRule={demo ? () => {} : handlePatchRule}
+              onCreateRule={handleCreateRule}
+              onPatchRule={handlePatchRule}
             />
           )}
           {screen === "done" && <DoneScreen task={task} nowMs={syncNowMs} />}
@@ -632,7 +616,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           onToggleTheme={() => setPreference(toggledPreference(theme))}
           sheetOpen={navSheetOpen}
           onSheetOpen={setNavSheetOpen}
-          onSearch={demo ? undefined : requestSearchOpen}
+          onSearch={requestSearchOpen}
         />
       ) : null}
 
@@ -644,9 +628,13 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         focusRequestId={captureFocusRequestId}
         onClose={closeCapture}
         onSubmit={handleCapture}
-        projects={demo ? [] : task.projects}
-        demo={demo !== null}
-        lastCapture={demo ? null : task.lastCapture}
+        projects={task.projects}
+        // #457: this component no longer has a kit world to be inert for —
+        // `demo`'s own fixture-queue arm lives on in `CaptureBox`'s own
+        // `demo` prop for a future caller, but nothing left in this
+        // component ever passes `true`.
+        demo={false}
+        lastCapture={task.lastCapture}
         cancelDictationRequestId={cancelDictationRequestId}
         onDictatingChange={setCaptureDictating}
       />
@@ -668,13 +656,9 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         onClose={() => setSearchOpen(false)}
         rows={task.search?.rows ?? null}
         total={task.search?.total ?? 0}
-        // Same gating as `onSearch`/`onTriage` elsewhere in this render: demo
-        // mode's `task` is the static fixture, so an expanded live result
-        // there gets no `onTriage` at all and renders with no Edit
-        // affordance, exactly like a Done or archived one.
-        projects={demo ? [] : task.projects}
-        onTriage={demo ? undefined : handleTriage}
-        lastTriage={demo ? null : task.lastTriage}
+        projects={task.projects}
+        onTriage={handleTriage}
+        lastTriage={task.lastTriage}
         nowMs={syncNowMs}
       />
     </div>
