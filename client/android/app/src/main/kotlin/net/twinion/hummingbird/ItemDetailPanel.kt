@@ -9,12 +9,15 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -31,6 +34,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -196,16 +200,56 @@ fun ItemDetailPanel(
     // `modifier` in its own `verticalScroll`; the inline host must not.
     Column(
         modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        TextButton(
-            onClick = {
-                if (draft != null && viewModel.isDirty) confirmingDiscard = true
-                else if (draft != null) viewModel.discardEdit()
-                else onClose()
-            },
+        // The web ItemPanel's header row: the mono meta line over the
+        // title on the left, the close control top-right. One × IconButton
+        // whatever the state — a loading or unsynced panel must still be
+        // closable — and while a draft is open the × cancels the edit (the
+        // dirty path confirms first), exactly what the old top button did.
+        val loadedRecord = (state as? ItemDetailState.Loaded)?.record
+        Row(
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(if (draft != null) "Cancel" else closeLabel)
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                // `HB-<seq>` with the project riding beside it —
+                // `ItemPanel.tsx`'s own `.hb-meta` line, "ITEM DETAIL"
+                // while the seq hasn't synced yet, never blank. The
+                // project id stands in for an unsynced name: the name is
+                // unsynced, not the project.
+                val meta = buildList {
+                    add(loadedRecord?.seq?.let { "HB-$it" } ?: "ITEM DETAIL")
+                    (loadedRecord?.projectName ?: loadedRecord?.projectId)?.let { add(it) }
+                }
+                Text(
+                    meta.joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                loadedRecord?.let {
+                    // The web panel's title token is h3 (17px semibold
+                    // display) — titleMedium here, not headlineLarge: the
+                    // panel is a card over a board, not a screen.
+                    Text(it.title, style = MaterialTheme.typography.titleMedium)
+                }
+            }
+            IconButton(
+                onClick = {
+                    if (draft != null && viewModel.isDirty) confirmingDiscard = true
+                    else if (draft != null) viewModel.discardEdit()
+                    else onClose()
+                },
+            ) {
+                Icon(
+                    painterResource(R.drawable.ic_x),
+                    contentDescription = if (draft != null) "Cancel" else closeLabel,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
         }
 
         statusLine?.let {
@@ -315,39 +359,6 @@ private fun ReadBody(
         )
     }
 
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        // One treatment per stage word (#557) — `ui/StageBadge.kt`, never
-        // a raw `stage.uppercase()`.
-        StageBadge(stage = record.stage, dark = dark)
-        record.seq?.let {
-            Text(
-                "HB-$it",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        record.projectName?.let {
-            Text(
-                it,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        } ?: record.projectId?.let {
-            // The name is unsynced, not the project: show the id rather
-            // than pretending the item belongs to nothing.
-            Text(
-                it,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-
-    Text(record.title, style = MaterialTheme.typography.headlineLarge)
-
     record.description?.let {
         Text(it, style = MaterialTheme.typography.bodyLarge)
     }
@@ -362,7 +373,13 @@ private fun ReadBody(
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
+        itemVerticalAlignment = Alignment.CenterVertically,
     ) {
+        // The badge leads the row — the web panel's badge-row order, with
+        // the seq/title header above it since the header restructure. One
+        // treatment per stage word (#557) — `ui/StageBadge.kt`, never a
+        // raw `stage.uppercase()`.
+        StageBadge(stage = record.stage, dark = dark)
         val sizePos = levelPosition(SIZE_VOCABULARY, record.size)
         val sizeColor = levelColor(sizePos, dark)
         Row(
