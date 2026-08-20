@@ -3,6 +3,7 @@ package net.twinion.hummingbird
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
@@ -39,6 +40,7 @@ class NowViewModelTest {
         energy = null,
         availableActions = actions,
         stage = "ready",
+        canMarkDone = true,
     )
 
     private fun board(vararg ids: String, liveColumnKeys: List<String> = listOf("")) = NowBoardRecord(
@@ -76,6 +78,7 @@ class NowViewModelTest {
         paneZoneQueriesFn: suspend (Long) -> List<MobileZoneQuery> = { emptyList() },
         rankPanesFn: suspend (Long, List<MobileZoneFact>) -> List<MobileRankedPane> = { _, _ -> emptyList() },
         setScheduledDateFn: suspend (String, String?, Long) -> Unit = { _, _, _ -> },
+        completeFn: suspend (String, Long) -> Unit = { _, _ -> },
     ) = NowViewModel(
         fetchBoardFn,
         readAxisFn,
@@ -85,6 +88,7 @@ class NowViewModelTest {
         paneZoneQueriesFn,
         rankPanesFn,
         setScheduledDateFn,
+        completeFn,
     )
 
     @Test
@@ -102,6 +106,46 @@ class NowViewModelTest {
         assertEquals(MobileFrontierAxis.SIZE, seenAxis)
         assertEquals(setOf("@phone"), vm.collapsed.value)
         assertFalse("loading must settle false once the fetch returns", vm.loading.value)
+    }
+
+    /** The row checkmark: [NowViewModel.complete] acts through the seam,
+     * drops the selection when it pointed at the completed row (a finished
+     * item's panel must not stay standing over a board that no longer
+     * holds it), and re-reads the board in the same gesture. */
+    @Test
+    fun `complete acts, closes the completed row's own panel, and re-reads the board`() = runBlocking {
+        var acted: Pair<String, Long>? = null
+        var fetches = 0
+        val vm = viewModel(
+            fetchBoardFn = { _, _, _ -> fetches += 1; board("a") },
+            completeFn = { itemId, nowMs -> acted = itemId to nowMs },
+        )
+        vm.load("2026-08-19T12:00")
+        vm.selectItem("a")
+
+        vm.complete("a", "2026-08-19T12:01", 42L)
+
+        assertEquals("a" to 42L, acted)
+        assertNull("the completed row's panel must close", vm.selectedItemId.value)
+        assertEquals("load once, then the post-complete re-read", 2, fetches)
+        assertNull(vm.statusLine.value)
+    }
+
+    /** A failed complete keeps the board honest — the re-read still runs,
+     * an unrelated selection survives, and the failure is said in words
+     * rather than swallowed. */
+    @Test
+    fun `a failed complete re-reads anyway, keeps another row's panel, and says so`() = runBlocking {
+        val vm = viewModel(
+            completeFn = { _, _ -> throw RuntimeException("boom") },
+        )
+        vm.load("2026-08-19T12:00")
+        vm.selectItem("other")
+
+        vm.complete("a", "2026-08-19T12:01", 42L)
+
+        assertEquals("other", vm.selectedItemId.value)
+        assertEquals("Couldn't complete — boom", vm.statusLine.value)
     }
 
     /** #530's "rendering it makes a single crossing": entry reads the board

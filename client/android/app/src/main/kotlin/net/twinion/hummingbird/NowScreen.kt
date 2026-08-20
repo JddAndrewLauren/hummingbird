@@ -26,6 +26,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -66,6 +67,8 @@ import net.twinion.hummingbird.ui.theme.Amber500
 import net.twinion.hummingbird.ui.theme.Crimson500
 import net.twinion.hummingbird.ui.theme.Ember400
 import net.twinion.hummingbird.ui.theme.Ember500
+import net.twinion.hummingbird.ui.theme.Moss600
+import net.twinion.hummingbird.ui.theme.StatusDoneFgDark
 import net.twinion.hummingbird.ui.theme.UrgencyOverdueDark
 import net.twinion.hummingbird.ui.theme.UrgencySoonDark
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
@@ -249,6 +252,7 @@ fun NowScreen(
     val loading by viewModel.loading.collectAsState()
     val panes by viewModel.panes.collectAsState()
     val selectedId by viewModel.selectedItemId.collectAsState()
+    val statusLine by viewModel.statusLine.collectAsState()
     val dark = isSystemInDarkTheme()
     val listState = rememberLazyListState()
 
@@ -356,6 +360,18 @@ fun NowScreen(
                 shownLine = shownLine.takeIf { !filtersOpen },
                 onToggleFilters = { viewModel.toggleFiltersOpen() },
             )
+
+            // The row checkmark's failure line ([NowViewModel.statusLine])
+            // — absent until a complete actually fails, `TriageScreen`'s
+            // own honesty shape: never a toast, the words stay until the
+            // next attempt clears them.
+            statusLine?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
 
             // Behind the disclosure — filtering is the occasional gesture,
             // so only the axis switch earns permanent space
@@ -500,6 +516,15 @@ fun NowScreen(
                                         dark = dark,
                                         selected = record.id == selectedId,
                                         onOpen = { viewModel.selectItem(record.id) },
+                                        onComplete = {
+                                            scope.launch {
+                                                viewModel.complete(
+                                                    record.id,
+                                                    nowDeadlineShaped(),
+                                                    System.currentTimeMillis(),
+                                                )
+                                            }
+                                        },
                                     )
                                 }
 
@@ -528,6 +553,15 @@ fun NowScreen(
                                     dark = dark,
                                     selected = entry.item.id == selectedId,
                                     onOpen = { viewModel.selectItem(entry.item.id) },
+                                    onComplete = {
+                                        scope.launch {
+                                            viewModel.complete(
+                                                entry.item.id,
+                                                nowDeadlineShaped(),
+                                                System.currentTimeMillis(),
+                                            )
+                                        }
+                                    },
                                 )
                             }
                         }
@@ -745,12 +779,19 @@ private fun BlockedRow(
     dark: Boolean,
     selected: Boolean,
     onOpen: () -> Unit,
+    onComplete: () -> Unit,
 ) {
     Column(
         modifier = Modifier.alpha(0.6f),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        NowRow(record = entry.item, dark = dark, selected = selected, onOpen = onOpen)
+        NowRow(
+            record = entry.item,
+            dark = dark,
+            selected = selected,
+            onOpen = onOpen,
+            onComplete = onComplete,
+        )
         Text(
             blockedReasonLabel(entry.blockedByTitles),
             style = MaterialTheme.typography.labelSmall,
@@ -766,6 +807,7 @@ private fun NowRow(
     dark: Boolean,
     selected: Boolean,
     onOpen: () -> Unit,
+    onComplete: () -> Unit,
 ) {
     // The card is the door to the item's expanded panel, in place above
     // the board (#521's tap target, retargeted from the full-screen route
@@ -776,12 +818,15 @@ private fun NowRow(
     // -- the design system's `interactive` card is the whole affordance,
     // and its icon vocabulary has no chevron in it.
     //
-    // No action row on the card: acting is what the opened item is for,
+    // No action ROW on the card: acting is what the opened item is for,
     // and the four-button FlowRow was most of the card's ~130dp height.
-    // The web `ItemCard`'s one inline affordance — the mark-done checkmark
-    // — is deliberately not ported either: on touch it would sit one slip
-    // away from the whole-card tap target. `availableActions` still
-    // arrives decided on the record; the opened item renders it.
+    // The one inline affordance is the web `ItemRow`'s own mark-done
+    // checkmark (`MarkDoneButton.tsx`), trailing and gated on the seam's
+    // `canMarkDone` — an earlier slice left it out as a mis-tap risk
+    // beside the whole-card target, reversed on operator feedback
+    // (2026-08-19): `IconButton`'s 48dp minimum target is its own slip
+    // margin. `availableActions` still arrives decided on the record;
+    // the opened item renders it.
     Card(
         onClick = onOpen,
         modifier = Modifier
@@ -797,88 +842,112 @@ private fun NowRow(
             null
         },
     ) {
-        Column(
+        Row(
             // --space-5 / --space-2: the web ItemCard's own density class,
             // not the 16/8 a full-width content card gets.
             modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Every entry on the meta row is conditional -- the swatch and the
-            // word both go for `calm`, the deadline draws only when set, and
-            // `ready` says nothing -- so the ordinary minted action reaches
-            // this row with nothing to put on it. An empty `Row` is not free:
-            // it measures zero high but the Column's `spacedBy(4.dp)` still
-            // pays for it, stranding 4dp above the title. Read once here and
-            // reused below, so the guard cannot disagree with what draws.
-            val swatch = urgencyColor(record.urgency, dark)
-            val urgencyWord = urgencyLabel(record.urgency)
-            // `ItemRow`'s own `item.stage === "ready" ? null : <StageBadge>`
-            // (web), ported: `Ready` alone says nothing at card size.
-            val stageChip = if (record.stage == "ready") null else record.stage
-            // Word-free glyph positions (#558, ADR-0024): only a judged,
-            // known dimension draws on a card — an absent one is omitted
-            // entirely (that omission is what licenses dropping the word),
-            // and an unknown wire word maps to position 0, which a card
-            // never draws (the unset ghost is detail-only).
-            val sizePos = record.size?.let { levelPosition(SIZE_VALUES, it) }?.takeIf { it > 0 }
-            val energyPos = record.energy?.let { levelPosition(ENERGY_VALUES, it) }?.takeIf { it > 0 }
-            if (swatch != null || urgencyWord != null || record.deadline != null ||
-                stageChip != null || sizePos != null || energyPos != null
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                // Title first, meta below — the web phone `ItemRow`'s own wrap
+                // order (`.hb-item-row-title` takes the first line; the mono
+                // chips wrap under it).
+                Text(record.title, style = MaterialTheme.typography.bodyLarge)
+                // Every entry on the meta row is conditional -- the swatch and the
+                // word both go for `calm`, the deadline draws only when set, and
+                // `ready` says nothing -- so the ordinary minted action reaches
+                // this row with nothing to put on it. An empty `Row` is not free:
+                // it measures zero high but the Column's `spacedBy(4.dp)` still
+                // pays for it, stranding 4dp above the title. Read once here and
+                // reused below, so the guard cannot disagree with what draws.
+                val swatch = urgencyColor(record.urgency, dark)
+                val urgencyWord = urgencyLabel(record.urgency)
+                // `ItemRow`'s own `item.stage === "ready" ? null : <StageBadge>`
+                // (web), ported: `Ready` alone says nothing at card size.
+                val stageChip = if (record.stage == "ready") null else record.stage
+                // Word-free glyph positions (#558, ADR-0024): only a judged,
+                // known dimension draws on a card — an absent one is omitted
+                // entirely (that omission is what licenses dropping the word),
+                // and an unknown wire word maps to position 0, which a card
+                // never draws (the unset ghost is detail-only).
+                val sizePos = record.size?.let { levelPosition(SIZE_VALUES, it) }?.takeIf { it > 0 }
+                val energyPos = record.energy?.let { levelPosition(ENERGY_VALUES, it) }?.takeIf { it > 0 }
+                if (swatch != null || urgencyWord != null || record.deadline != null ||
+                    stageChip != null || sizePos != null || energyPos != null
                 ) {
-                    swatch?.let {
-                        // 6dp: the web ItemRow's own dot size.
-                        Box(
-                            modifier = Modifier
-                                .size(6.dp)
-                                .background(it, CircleShape),
-                        )
-                    }
-                    urgencyWord?.let { label ->
-                        Text(
-                            label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    record.deadline?.let {
-                        Text(
-                            it,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    // The stage chip IS the triage label: a capture riding
-                    // inline into these columns is marked by the app's one
-                    // stage vocabulary, never a badge invented for this
-                    // surface (`ItemRow`'s own rule, ported) — and since
-                    // #557 the one treatment too, `ui/StageBadge.kt`.
-                    stageChip?.let {
-                        StageBadge(stage = it, dark = dark)
-                    }
-                    // ADR-0024: drawn, not written — the glyph names itself
-                    // (`Size: quick`) since no word sits beside it here.
-                    sizePos?.let { pos ->
-                        SizeGlyph(
-                            position = pos,
-                            color = levelColor(pos, dark),
-                            contentDescription = sizeTitle(record.size),
-                        )
-                    }
-                    energyPos?.let { pos ->
-                        EnergyGlyph(
-                            position = pos,
-                            color = levelColor(pos, dark),
-                            contentDescription = energyTitle(record.energy),
-                        )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        swatch?.let {
+                            // 6dp: the web ItemRow's own dot size.
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .background(it, CircleShape),
+                            )
+                        }
+                        urgencyWord?.let { label ->
+                            Text(
+                                label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        record.deadline?.let {
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        // The stage chip IS the triage label: a capture riding
+                        // inline into these columns is marked by the app's one
+                        // stage vocabulary, never a badge invented for this
+                        // surface (`ItemRow`'s own rule, ported) — and since
+                        // #557 the one treatment too, `ui/StageBadge.kt`.
+                        stageChip?.let {
+                            StageBadge(stage = it, dark = dark)
+                        }
+                        // ADR-0024: drawn, not written — the glyph names itself
+                        // (`Size: quick`) since no word sits beside it here.
+                        sizePos?.let { pos ->
+                            SizeGlyph(
+                                position = pos,
+                                color = levelColor(pos, dark),
+                                contentDescription = sizeTitle(record.size),
+                            )
+                        }
+                        energyPos?.let { pos ->
+                            EnergyGlyph(
+                                position = pos,
+                                color = levelColor(pos, dark),
+                                contentDescription = energyTitle(record.energy),
+                            )
+                        }
                     }
                 }
             }
 
-            Text(record.title, style = MaterialTheme.typography.bodyLarge)
+            if (record.canMarkDone) {
+                IconButton(onClick = onComplete) {
+                    Icon(
+                        painterResource(R.drawable.ic_check),
+                        contentDescription = "Mark \"${record.title}\" done",
+                        modifier = Modifier.size(18.dp),
+                        // The mark-done green — the same token the Done
+                        // stage pill carries, because this button IS that
+                        // status as a verb (`MarkDoneButton.tsx`'s own
+                        // documented exception to "icons never carry colour
+                        // independently of their label").
+                        tint = if (dark) StatusDoneFgDark else Moss600,
+                    )
+                }
+            }
         }
     }
 }
