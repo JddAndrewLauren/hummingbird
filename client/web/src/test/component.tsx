@@ -163,6 +163,8 @@ export function projectDTO(overrides: Partial<ProjectDTO> = {}): ProjectDTO {
   return {
     id: "project-1",
     name: "A project",
+    githubRepo: null,
+    defaultContext: null,
     archivedAt: null,
     createdAt: 1_000,
     updatedAt: 1_000,

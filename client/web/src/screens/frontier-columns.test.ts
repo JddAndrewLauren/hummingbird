@@ -56,6 +56,8 @@ function project(overrides: Partial<ProjectDTO> = {}): ProjectDTO {
   return {
     id: "p-0",
     name: "untitled project",
+    githubRepo: null,
+    defaultContext: null,
     archivedAt: null,
     createdAt: 1,
     updatedAt: 1,

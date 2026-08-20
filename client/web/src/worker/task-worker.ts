@@ -178,6 +178,28 @@ export interface TaskHostLike {
    * "error": string|null}`. The name is trimmed and an empty one refused at
    * the seam, before `Core`. */
   createProject(seed: string, name: string, nowMs: number): Promise<string>;
+  /** #625's project patch — the dossier's properties card, and every other
+   * project edit. Mirrors `TaskHost::patchProject`, resolved to JSON:
+   * `{"kind": "ok"|"failed"|"busy", "error": string|null}`. `currentJson`
+   * is the caller's own last-known `Project`, as JSON — the CAS `base` a
+   * 409 is diffed against. Each `*Touched` flag distinguishes "leave this
+   * field alone" (`false`) from "set it, possibly to `null`" (`true`, with
+   * the paired value carrying the new value or `null`) — the same
+   * double-`Option` `ProjectPatch` itself carries. `githubRepo`, when
+   * touched and non-null, is checked with `is_valid_github_repo` before
+   * `Core` is reached. */
+  patchProject(
+    seed: string,
+    currentJson: string,
+    name: string | null,
+    githubRepoTouched: boolean,
+    githubRepo: string | null,
+    defaultContextTouched: boolean,
+    defaultContext: string | null,
+    archivedAtTouched: boolean,
+    archivedAt: number | null,
+    nowMs: number,
+  ): Promise<string>;
   isPending(itemId: string): string;
   takeEvents(): string;
   runSync(
@@ -335,6 +357,8 @@ interface RawPaneReadResponse {
 interface RawProject {
   id: string;
   name: string;
+  github_repo: string | null;
+  default_context: string | null;
   archived_at: number | null;
   created_at: number;
   updated_at: number;
@@ -354,6 +378,11 @@ interface RawProjectListResponse {
 interface RawCreateProjectResponse {
   kind: "ok" | "failed" | "busy";
   id: string | null;
+  error: string | null;
+}
+
+interface RawPatchProjectResponse {
+  kind: "ok" | "failed" | "busy";
   error: string | null;
 }
 
@@ -630,6 +659,8 @@ function mapProject(raw: RawProject): ProjectDTO {
   return {
     id: raw.id,
     name: raw.name,
+    githubRepo: raw.github_repo,
+    defaultContext: raw.default_context,
     archivedAt: raw.archived_at,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
@@ -1109,6 +1140,39 @@ export async function handleTaskRequest(
         seed: request.seed,
         kind: raw.kind,
         id: raw.id,
+        error: raw.error,
+      });
+      return;
+    }
+    case "patchProject": {
+      const raw = JSON.parse(
+        await host.patchProject(
+          request.seed,
+          JSON.stringify({
+            id: request.current.id,
+            name: request.current.name,
+            github_repo: request.current.githubRepo,
+            default_context: request.current.defaultContext,
+            archived_at: request.current.archivedAt,
+            created_at: request.current.createdAt,
+            updated_at: request.current.updatedAt,
+            version: request.current.version,
+          }),
+          request.name,
+          request.githubRepoTouched,
+          request.githubRepo,
+          request.defaultContextTouched,
+          request.defaultContext,
+          request.archivedAtTouched,
+          request.archivedAt,
+          request.nowMs,
+        ),
+      ) as RawPatchProjectResponse;
+      post({
+        type: "patchProjectResult",
+        seed: request.seed,
+        projectId: request.current.id,
+        kind: raw.kind,
         error: raw.error,
       });
       return;

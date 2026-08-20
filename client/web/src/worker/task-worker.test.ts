@@ -36,6 +36,7 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     blocked: vi.fn().mockReturnValue('{"kind":"ok","entries":[]}'),
     steps: vi.fn().mockReturnValue('{"kind":"ok","steps":[]}'),
     createProject: vi.fn().mockResolvedValue('{"kind":"ok","id":"project-1","error":null}'),
+    patchProject: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     projects: vi.fn().mockReturnValue('{"kind":"ok","projects":[],"archived":[]}'),
     isPending: vi.fn().mockReturnValue('{"kind":"ok","pending":false}'),
     takeEvents: vi.fn().mockReturnValue("[]"),

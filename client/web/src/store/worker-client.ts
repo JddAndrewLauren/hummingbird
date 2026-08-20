@@ -11,6 +11,7 @@ import type {
   ConditionDTO,
   GrillDraftTurnDTO,
   GrillVerdictName,
+  ProjectDTO,
   RuleDTO,
   StepDTO,
   SyncCadenceRequest,
@@ -383,6 +384,22 @@ export function attachWorkerClient(
           // it back, so this re-request answers the *old* list, which is the
           // point: the grid says it is waiting rather than showing a card
           // the authority has not confirmed.
+          requestProjects(worker);
+        }
+        return;
+      case "patchProjectResult":
+        store.setTaskState({
+          lastProjectWrite: {
+            seed: message.seed,
+            projectId: message.projectId,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        if (message.kind === "ok") {
+          // No overlay for projects — same reasoning as `createProjectResult`:
+          // the edit becomes visible once the next completed cycle pulls it
+          // back, so this re-request answers the *old* row until then.
           requestProjects(worker);
         }
         return;
@@ -889,6 +906,39 @@ export function requestProjects(worker: WorkerLike): void {
  * trimmed and an empty one refused at the wasm seam, not here. */
 export function createProject(worker: WorkerLike, seed: string, name: string, nowMs: number): void {
   worker.postMessage({ type: "createProject", seed, name, nowMs });
+}
+
+/** #625's project patch — the dossier's properties card, and every other
+ * project edit. `current` is the caller's own last-known copy of the row
+ * (the CAS `base` a 409 is diffed against); every field in `patch` is
+ * `undefined` to mean "leave this alone," except `githubRepo`/
+ * `defaultContext`, which distinguish a present-but-`null` clear from an
+ * absent "don't touch" the same way `patchRule`'s `patch.eventKind` does. */
+export function patchProject(
+  worker: WorkerLike,
+  seed: string,
+  current: ProjectDTO,
+  patch: {
+    name?: string | null;
+    githubRepo?: string | null;
+    defaultContext?: string | null;
+    archivedAt?: number | null;
+  },
+  nowMs: number,
+): void {
+  worker.postMessage({
+    type: "patchProject",
+    seed,
+    current,
+    name: patch.name ?? null,
+    githubRepoTouched: "githubRepo" in patch,
+    githubRepo: patch.githubRepo ?? null,
+    defaultContextTouched: "defaultContext" in patch,
+    defaultContext: patch.defaultContext ?? null,
+    archivedAtTouched: "archivedAt" in patch,
+    archivedAt: patch.archivedAt ?? null,
+    nowMs,
+  });
 }
 
 export function requestIsPending(worker: WorkerLike, itemId: string): void {

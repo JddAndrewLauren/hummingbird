@@ -474,6 +474,9 @@ mod wasm_bindings {
     // #624: same three-way shape as BUSY_CREATE_RULE — busy is "no answer",
     // distinct from a create this seam refused.
     const BUSY_CREATE_PROJECT: &str = r#"{"kind":"busy","id":null,"error":null}"#;
+    // #625: same shape as BUSY_PATCH_RULE — busy is "no answer", distinct
+    // from a patch this seam refused (a malformed github_repo).
+    const BUSY_PATCH_PROJECT: &str = r#"{"kind":"busy","error":null}"#;
     const BUSY_IS_PENDING: &str = r#"{"kind":"busy","pending":false}"#;
     // #118: an empty binding list would read as "nothing is bound", which
     // is an answer — and the wrong one. Busy says nothing at all.
@@ -658,6 +661,70 @@ mod wasm_bindings {
                 inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("CreateProjectResponse serializes"),
+                ))
+            })
+        }
+
+        /// Patches a project (#625) — the dossier's properties card sets and
+        /// clears `github_repo`/`default_context`, alongside renaming and
+        /// archiving, through this one entry point. Resolves to JSON:
+        /// `{"kind": "ok"|"failed"|"busy", "error": string|null}`.
+        /// `current_json` is the caller's own last-known [`Project`] (from
+        /// [`TaskHost::projects`]), as JSON — the `base` a 409's rebase diffs
+        /// against. `github_repo_touched`/`default_context_touched`/
+        /// `archived_at_touched` each distinguish "leave this field alone"
+        /// (`false`) from "set it, possibly to `null`" (`true`, with the
+        /// paired value carrying the new value or `None`) — the same
+        /// double-`Option` [`hummingbird_domain::ProjectPatch`] itself
+        /// carries, flattened for the wasm boundary exactly like
+        /// [`TaskHost::patch_rule`]'s `event_kind_touched`. A malformed
+        /// `github_repo` is refused before `Core` is reached
+        /// ([`TaskHostCore::patch_project`]).
+        #[wasm_bindgen(js_name = patchProject)]
+        #[allow(clippy::too_many_arguments)]
+        pub fn patch_project(
+            &self,
+            seed: String,
+            current_json: String,
+            name: Option<String>,
+            github_repo_touched: bool,
+            github_repo: Option<String>,
+            default_context_touched: bool,
+            default_context: Option<String>,
+            archived_at_touched: bool,
+            archived_at: Option<f64>,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let current: hummingbird_domain::Project = match serde_json::from_str(&current_json) {
+                    Ok(project) => project,
+                    Err(error) => {
+                        return Ok(JsValue::from_str(&format!(
+                            r#"{{"kind":"failed","error":"malformed project: {error}"}}"#
+                        )))
+                    }
+                };
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_PATCH_PROJECT));
+                };
+                let response = host
+                    .patch_project(
+                        &seed,
+                        &current,
+                        name,
+                        github_repo_touched,
+                        github_repo,
+                        default_context_touched,
+                        default_context,
+                        archived_at_touched,
+                        archived_at.map(|v| v as i64),
+                        now_ms as i64,
+                    )
+                    .await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("PatchProjectResponse serializes"),
                 ))
             })
         }

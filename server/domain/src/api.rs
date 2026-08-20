@@ -150,21 +150,34 @@ pub struct ItemPatch {
 
 /// `POST /api/projects` body. Creating a project also creates its empty
 /// Route row — the 1:1 invariant is structural, so there is no
-/// `POST /api/routes`.
+/// `POST /api/routes`. `github_repo`/`default_context` are plain `Option`,
+/// not the patch's double-`Option`: a create names no prior value a `null`
+/// could be clearing, the same reasoning [`CreateItem`]'s own nullable
+/// fields carry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateProject {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_context: Option<String>,
 }
 
-/// `PATCH /api/projects/:id` body.
+/// `PATCH /api/projects/:id` body. `github_repo`/`default_context` are
+/// double-`Option` (#625) — the same [`touched`] contract every other
+/// nullable patch field here carries.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectPatch {
     pub expected_version: i64,
     #[serde(default, deserialize_with = "non_null_name", skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub github_repo: Option<Option<String>>,
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub default_context: Option<Option<String>>,
     #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<Option<i64>>,
 }

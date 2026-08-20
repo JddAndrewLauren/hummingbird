@@ -5,11 +5,13 @@ import { Card } from "../components/core/Card";
 import { EmptyState } from "../components/feedback/EmptyState";
 import { Input } from "../components/forms/Input";
 import { Switch } from "../components/forms/Switch";
+import type { ProjectDTO } from "../store/protocol";
 import type { TaskProjectResult, TaskState } from "../store/store";
 import { Aside, Column, TwoColumn } from "./layout";
 import {
   awaitingCreate,
   countsMeta,
+  githubRepoUrl,
   projectRoster,
   rosterSummary,
   visibleRows,
@@ -48,9 +50,15 @@ const WAITING_COPY = "creating — appears when the round trip lands";
 export interface ProjectsScreenProps {
   task: TaskState;
   onCreateProject: (name: string) => void;
+  /** #625: the dossier's properties card write — `patch` carries only the
+   * fields the card actually changed. */
+  onPatchProject: (
+    current: ProjectDTO,
+    patch: { githubRepo?: string | null; defaultContext?: string | null },
+  ) => void;
 }
 
-export function ProjectsScreen({ task, onCreateProject }: ProjectsScreenProps) {
+export function ProjectsScreen({ task, onCreateProject, onPatchProject }: ProjectsScreenProps) {
   const [openId, setOpenId] = useState<string | null>(null);
 
   // `null` is "not read yet", not "no projects" (`TaskState.projects`' own
@@ -82,7 +90,12 @@ export function ProjectsScreen({ task, onCreateProject }: ProjectsScreenProps) {
       onCreateProject={onCreateProject}
     />
   ) : (
-    <Dossier row={open} onBack={() => setOpenId(null)} />
+    <Dossier
+      row={open}
+      lastProjectWrite={task.lastProjectWrite}
+      onBack={() => setOpenId(null)}
+      onPatchProject={onPatchProject}
+    />
   );
 }
 
@@ -234,7 +247,20 @@ function ComingRegion({ label, body }: { label: string; body: string }) {
   );
 }
 
-function Dossier({ row, onBack }: { row: ProjectRow; onBack: () => void }) {
+function Dossier({
+  row,
+  lastProjectWrite,
+  onBack,
+  onPatchProject,
+}: {
+  row: ProjectRow;
+  lastProjectWrite: TaskProjectResult | null;
+  onBack: () => void;
+  onPatchProject: (
+    current: ProjectDTO,
+    patch: { githubRepo?: string | null; defaultContext?: string | null },
+  ) => void;
+}) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "var(--space-5)", flexWrap: "wrap" }}>
@@ -262,14 +288,114 @@ function Dossier({ row, onBack }: { row: ProjectRow; onBack: () => void }) {
           <ComingRegion label="fog" body="The open questions on this Route land here." />
         </Column>
         <Aside label="Project properties">
-          <ComingRegion
-            label="properties"
-            body="The GitHub repo and the default context land here."
+          <PropertiesCard
+            project={row.project}
+            lastProjectWrite={lastProjectWrite}
+            onPatchProject={onPatchProject}
           />
           <ComingRegion label="links" body="This project's links land here." />
           <ComingRegion label="archive" body="Archiving this project lands here." />
         </Aside>
       </TwoColumn>
+    </div>
+  );
+}
+
+/** The dossier's properties card (#625, ADR-0030 decisions 2–3): shows and
+ * edits `githubRepo`/`defaultContext`, the two columns #625 adds. The repo
+ * renders as a derived link (`githubRepoUrl`) — the stored value is always
+ * the bare `owner/repo` slug, never the URL. Local edit state re-syncs from
+ * `project` whenever its `version` moves, which is what lets a patch this
+ * card just sent (no optimistic overlay) settle into the fields once the
+ * next completed cycle pulls it back, rather than being clobbered by the
+ * stale value already on screen. */
+function PropertiesCard({
+  project,
+  lastProjectWrite,
+  onPatchProject,
+}: {
+  project: ProjectDTO;
+  lastProjectWrite: TaskProjectResult | null;
+  onPatchProject: (
+    current: ProjectDTO,
+    patch: { githubRepo?: string | null; defaultContext?: string | null },
+  ) => void;
+}) {
+  const [repoInput, setRepoInput] = useState(project.githubRepo ?? "");
+  const [contextInput, setContextInput] = useState(project.defaultContext ?? "");
+  const [syncedVersion, setSyncedVersion] = useState(project.version);
+
+  if (project.version !== syncedVersion) {
+    setSyncedVersion(project.version);
+    setRepoInput(project.githubRepo ?? "");
+    setContextInput(project.defaultContext ?? "");
+  }
+
+  const trimmedRepo = repoInput.trim();
+  const trimmedContext = contextInput.trim();
+  const repoChanged = trimmedRepo !== (project.githubRepo ?? "");
+  const contextChanged = trimmedContext !== (project.defaultContext ?? "");
+  const dirty = repoChanged || contextChanged;
+  const link = githubRepoUrl(project.githubRepo);
+  // Gated on `projectId` — `lastProjectWrite` is one global slot shared with
+  // `createProject` and every other dossier's own patch, so an unguarded
+  // read would paint a stranger's failure into this card.
+  const failure =
+    lastProjectWrite !== null && lastProjectWrite.projectId === project.id
+      ? writeFailureMessage(lastProjectWrite)
+      : null;
+
+  function save() {
+    const patch: { githubRepo?: string | null; defaultContext?: string | null } = {};
+    if (repoChanged) {
+      patch.githubRepo = trimmedRepo === "" ? null : trimmedRepo;
+    }
+    if (contextChanged) {
+      patch.defaultContext = trimmedContext === "" ? null : trimmedContext;
+    }
+    onPatchProject(project, patch);
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      <span className="hb-meta">properties</span>
+      <Card
+        as="form"
+        padding="var(--space-5)"
+        onSubmit={(event) => {
+          event.preventDefault();
+          save();
+        }}
+        style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
+      >
+        <Input
+          label="GitHub repo"
+          placeholder="owner/repo"
+          value={repoInput}
+          onChange={(event) => setRepoInput(event.target.value)}
+        />
+        {link !== null ? (
+          <a
+            href={link}
+            target="_blank"
+            rel="noreferrer"
+            style={{ font: "var(--type-body-sm)", color: "var(--accent)" }}
+          >
+            {link}
+          </a>
+        ) : null}
+        <Input
+          label="Default context"
+          placeholder="@computer"
+          value={contextInput}
+          onChange={(event) => setContextInput(event.target.value)}
+          hint="Copied onto an action minted with no context of its own."
+        />
+        {failure !== null ? <Badge tone="danger">{failure}</Badge> : null}
+        <Button type="submit" size="sm" disabled={!dirty}>
+          Save
+        </Button>
+      </Card>
     </div>
   );
 }

@@ -48,6 +48,7 @@ const TASK_REQUEST_TYPES: Record<TaskWorkerRequest["type"], true> = {
   getSteps: true,
   getProjects: true,
   createProject: true,
+  patchProject: true,
   isPending: true,
   runSync: true,
   getQueueDepth: true,

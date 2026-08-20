@@ -225,6 +225,8 @@ describe("CapturePopover — the full field set behind More details", () => {
           id: "proj-1",
           name: "Kitchen",
           description: null,
+          githubRepo: null,
+          defaultContext: null,
           archivedAt: null,
           createdAt: 0,
           updatedAt: 0,

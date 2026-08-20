@@ -64,8 +64,8 @@ pub mod task;
 use bindings::{Binding, BindingKey, BindingValue};
 use hummingbird_domain::{
     resulting_stage, Alert, AlertPatch, Condition, CreateGrill, CreateItem, CreateProject,
-    CreateRule, Energy, GrillVerdict, Item, Project, Rule, RulePatch, Setting, Size, Stage, Step,
-    Tier,
+    CreateRule, Energy, GrillVerdict, Item, Project, ProjectPatch, Rule, RulePatch, Setting,
+    Size, Stage, Step, Tier,
 };
 
 use serde::{Deserialize, Serialize};
@@ -1191,7 +1191,12 @@ where
         now_ms: i64,
     ) -> Result<String, SnapshotError<QS::Error>> {
         let id = sync::write::deterministic_id(seed);
-        let create = CreateProject { id: id.clone(), name: name.into() };
+        let create = CreateProject {
+            id: id.clone(),
+            name: name.into(),
+            github_repo: None,
+            default_context: None,
+        };
         let body = serde_json::to_value(&create).expect("CreateProject always serializes");
         let entry = QueueEntry {
             id: id.clone(),
@@ -1199,6 +1204,68 @@ where
         };
         self.cycle.enqueue(entry, now_ms).await?;
         Ok(id)
+    }
+
+    /// Patches a project (#625, ADR-0030 decisions 2–3) — the dossier's
+    /// properties card, setting or clearing `github_repo`/`default_context`,
+    /// plus renaming and archiving, all through this one entry point. Same
+    /// contract as [`Core::patch_rule`]: every `Some` field is touched,
+    /// absolute-set; `None` means "leave this field alone." `expected_version`
+    /// is CAS as everywhere, and a stale write 409s and rebases or
+    /// dead-letters via the ordinary path (`patch_with_rebase`,
+    /// `sync::write::adapter`). `base` is `current` verbatim, for
+    /// [`sync::write::rebase::decide`] to diff a 409 against.
+    ///
+    /// `github_repo`/`default_context` are each `Option<Option<String>>` —
+    /// `None` leaves the field alone, `Some(None)` clears it, `Some(Some(v))`
+    /// sets it — [`ProjectPatch`]'s own double-`Option` contract, unchanged
+    /// across this seam. `github_repo` validation
+    /// (`hummingbird_domain::is_valid_github_repo`) is the caller's job, the
+    /// same "reject before the seam" split every wasm-facing entry point here
+    /// follows — this method itself trusts its caller, exactly as
+    /// [`Core::patch_rule`] trusts `tier`/`event_kind` to already be parsed.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn patch_project(
+        &mut self,
+        seed: &str,
+        current: &Project,
+        name: Option<String>,
+        github_repo: Option<Option<String>>,
+        default_context: Option<Option<String>>,
+        archived_at: Option<Option<i64>>,
+        now_ms: i64,
+    ) -> Result<(), SnapshotError<QS::Error>> {
+        let base = serde_json::to_value(current).expect("Project always serializes");
+        let patch = ProjectPatch {
+            expected_version: current.version,
+            name,
+            github_repo,
+            default_context,
+            archived_at,
+        };
+
+        let mut patch_fields = serde_json::to_value(&patch).expect("ProjectPatch always serializes");
+        // `expected_version` rides on the wire body but is not itself a
+        // "touched field" for rebase purposes — `drain` refills it from
+        // whatever version is live at send time (see `MutationIntent::Patch`
+        // field doc), so it must not appear in `patch_fields`.
+        if let serde_json::Value::Object(map) = &mut patch_fields {
+            map.remove("expected_version");
+        }
+
+        let entry = QueueEntry {
+            id: sync::write::deterministic_id(seed),
+            intent: MutationIntent::Patch {
+                path: sync::write::paths::project(&current.id),
+                method: HttpMethod::Patch,
+                base,
+                base_updated_at: current.updated_at,
+                patch_fields,
+                rebase_fields: None,
+            },
+        };
+        self.cycle.enqueue(entry, now_ms).await?;
+        Ok(())
     }
 
     /// The complete retained roster — every item this mirror has ever
@@ -4616,6 +4683,8 @@ mod tests {
             hummingbird_domain::Project {
                 id: id.to_string(),
                 name: name.to_string(),
+                github_repo: None,
+                default_context: None,
                 archived_at: None,
                 created_at: 1,
                 updated_at: 1,
@@ -5137,6 +5206,8 @@ mod tests {
             hummingbird_domain::Project {
                 id: id.to_string(),
                 name: name.to_string(),
+                github_repo: None,
+                default_context: None,
                 archived_at: None,
                 created_at: 1,
                 updated_at: 1,
@@ -5203,6 +5274,8 @@ mod tests {
             hummingbird_domain::Project {
                 id: id.to_string(),
                 name: name.to_string(),
+                github_repo: None,
+                default_context: None,
                 archived_at,
                 created_at: 1,
                 updated_at: 1,
@@ -6001,6 +6074,112 @@ mod tests {
         );
     }
 
+    /// Runs one full-sweep cycle seeding `projects` — [`core_with_rules`]'s
+    /// own shape, since a project pulled from the authority must reach the
+    /// mirror the ordinary way or not at all.
+    async fn core_with_projects(projects: Vec<hummingbird_domain::Project>) -> Core {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            projects,
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let outcome = core
+            .run(&read, &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0)
+            .await;
+        assert!(matches!(
+            outcome,
+            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
+        ));
+        core
+    }
+
+    /// #625 acceptance: patching a project's `github_repo`/`default_context`
+    /// is one CAS patch, touching only the fields actually passed —
+    /// [`toggling_enabled_is_one_cas_patch_touching_only_that_field`]'s own
+    /// shape, adopted for the properties card's set-and-clear gesture.
+    #[tokio::test]
+    async fn patch_project_sets_repo_and_context_touching_only_those_fields() {
+        let mut core = core_with_projects(vec![hummingbird_domain::Project {
+            id: "p-1".to_string(),
+            name: "Rebuild the deck".to_string(),
+            github_repo: None,
+            default_context: None,
+            archived_at: None,
+            created_at: 1,
+            updated_at: 1,
+            version: 1,
+        }])
+        .await;
+        let current = core.projects().into_iter().find(|p| p.id == "p-1").unwrap();
+
+        core.patch_project(
+            "seed-1",
+            &current,
+            None,
+            Some(Some("JddAndrewLauren/hummingbird".to_string())),
+            Some(Some("@computer".to_string())),
+            None,
+            3_000,
+        )
+        .await
+        .unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        assert_eq!(entries.len(), 1);
+        let MutationIntent::Patch { path, method, patch_fields, .. } = &entries[0].intent else {
+            panic!("a properties edit is a CAS patch, not a create");
+        };
+        assert_eq!(path, "/api/projects/p-1");
+        assert_eq!(*method, HttpMethod::Patch);
+        assert_eq!(
+            patch_fields,
+            &serde_json::json!({
+                "github_repo": "JddAndrewLauren/hummingbird",
+                "default_context": "@computer",
+            }),
+        );
+        assert!(
+            patch_fields.get("expected_version").is_none(),
+            "expected_version is not a touched field — drain fills it at send time"
+        );
+    }
+
+    /// The clearing half: `Some(None)` sends an explicit JSON `null`, the
+    /// same double-`Option` contract every other nullable patch field here
+    /// carries.
+    #[tokio::test]
+    async fn patch_project_clears_repo_and_context_with_explicit_null() {
+        let mut core = core_with_projects(vec![hummingbird_domain::Project {
+            id: "p-1".to_string(),
+            name: "Rebuild the deck".to_string(),
+            github_repo: Some("JddAndrewLauren/hummingbird".to_string()),
+            default_context: Some("@computer".to_string()),
+            archived_at: None,
+            created_at: 1,
+            updated_at: 1,
+            version: 1,
+        }])
+        .await;
+        let current = core.projects().into_iter().find(|p| p.id == "p-1").unwrap();
+
+        core.patch_project("seed-1", &current, None, Some(None), Some(None), None, 3_000)
+            .await
+            .unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        let MutationIntent::Patch { patch_fields, .. } = &entries[0].intent else {
+            panic!("a properties edit is a CAS patch, not a create");
+        };
+        assert_eq!(
+            patch_fields,
+            &serde_json::json!({ "github_repo": null, "default_context": null }),
+        );
+    }
+
     /// #140 acceptance: "the enable/disable toggle is one CAS field,
     /// following the authority's absolute-set + `expected_version`
     /// contract." Only `enabled` is touched; every other field stays out of
@@ -6265,6 +6444,8 @@ mod tests {
             vec![hummingbird_domain::Project {
                 id: "p-1".to_string(),
                 name: "Kitchen".to_string(),
+                github_repo: None,
+                default_context: None,
                 archived_at: None,
                 created_at: 1,
                 updated_at: 1,
