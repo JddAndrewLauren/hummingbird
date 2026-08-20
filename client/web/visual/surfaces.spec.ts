@@ -262,17 +262,18 @@ async function expectNoHorizontalOverflow(page: Page) {
 // imports `SCREENS`/`Screen` from the app rather than restating the list.
 //
 // Routes and Alerts are KIT-ONLY, deliberately asserted as such rather than
-// skipped: neither screen reads `TaskState` at all (`RoutesScreen` and
-// `AlertsScreen` each take only `demo: DemoData | null`, never `task`), so
+// skipped: neither screen reads `TaskState` at all — since #457 each calls
+// its own dev-gated `demoData()` directly (`RoutesScreen.tsx`,
+// `AlertsScreen.tsx`), taking no `demo` prop from `App.tsx` at all — so
 // under `?demo` (the board world) both always render the same honest empty
 // state an unseeded device would. Asserting that specific text — not merely
 // "the screen renders" — is what would force this registry to change the
 // day either screen is wired to the board seed instead of leaving the gap
 // silently papered over. Their KIT-populated renders (fixture rule cards,
 // fixture checklist rows) are no longer photographed by this gate at all
-// since #455 retired the kit-world capture pass, and neither screen has a
-// component test either — a real, undocumented-until-now gap, not a moved
-// cover; `docs/SURFACES.md` says so and names it rather than implying one.
+// since #455 retired the kit-world capture pass; that half of the gap is now
+// covered by `RoutesScreen.test.tsx` and `AlertsScreen.test.tsx` (#457)
+// instead, per `docs/SURFACES.md`.
 type ScreenAssertion = (page: Page) => Promise<void>;
 
 const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {

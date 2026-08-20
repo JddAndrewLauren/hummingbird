@@ -177,6 +177,13 @@ screen's own list — so a device can show a nonzero alerts badge and an empty
 Alerts screen at once, which is not a bug: the badge counts live write
 failures, and this screen still reads nothing about them.*
 
+*Amended 2026-08-20 (#457): the amendment above's mechanism sentence is now
+stale — "demo-fixture-only" still holds, but `AlertsScreen` no longer takes
+a `demo` prop at all. It calls its own dev-gated `demoData()` accessor
+directly (`fixtures/demo-data.ts`), reachable only at `?demo=kit` exactly as
+before. The decision itself — Alerts stays demo-fixture-only, and the nav
+badge is a different, store-backed count — is unaffected.*
+
 **The binding obligation:** whoever builds a real alerts-history screen adds
 `alerts_horizon_ms` to `ChangesResponse` **in that same PR**, so the screen
 can say where its history starts rather than implying it starts nowhere.
