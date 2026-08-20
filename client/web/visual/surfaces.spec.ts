@@ -478,6 +478,29 @@ for (const theme of THEMES) {
       });
     });
 
+    test("the capture popover's context list", async ({ page }, testInfo) => {
+      // A state inside a state, and unphotographed until now for the reason
+      // the capture popover itself was: the Context suggestions used to be a
+      // native `<datalist>`, browser chrome that takes none of the design
+      // tokens and that a screenshot cannot even see. Since the list is ours
+      // (`components/forms/Combobox.tsx`) it is a real surface — a popup
+      // card over a form inside a dialog — and it is the one place in the
+      // app where three elevations stack. The phone form is where that goes
+      // wrong first: the popup is absolutely positioned inside a card that
+      // is already near the viewport's bottom.
+      await openApp(page, theme, "board");
+      await show(page, "Now", testInfo.project.name);
+      await page.locator(`#${CAPTURE_TRIGGER_ID}`).click();
+      await expect(page.getByRole("dialog")).toBeVisible();
+      await page.getByRole("button", { name: "Show context suggestions" }).click();
+      await expect(page.getByRole("listbox")).toBeVisible();
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({
+        path: `visual/.captures/capture-context-list-${testInfo.project.name}-${theme}.png`,
+        fullPage: false,
+      });
+    });
+
     test("projects: the dossier behind the grid", async ({ page }, testInfo) => {
       // #624. The per-screen board capture above only ever photographs the
       // GRID — `ProjectsScreen` opens the dossier on local state, so the
@@ -676,6 +699,43 @@ for (const theme of THEMES) {
       await page.locator(`#${CAPTURE_TRIGGER_ID}`).press("Enter");
       await expect(capture).toBeVisible();
       await expect(recall).toBeHidden();
+    });
+
+    // No screenshot: a rule, not a surface, and it lives here for the same
+    // reason the exclusivity test above does — it is `App.tsx` state, there
+    // is no `App.test.tsx`, and the two halves it joins are in different
+    // files. `Combobox` publishes "my list is open"
+    // (`components/forms/combobox-open.ts`), `escape-claimants.ts` ranks it
+    // above the popover, and neither one alone can show that ONE Escape
+    // closes the list and leaves the draft standing. Keyboard-only
+    // throughout, which is also the path with no pointer to dismiss with.
+    test("the context list takes the first Escape, the popover the second", async ({ page }, testInfo) => {
+      await openApp(page, theme, "board");
+      await show(page, "Now", testInfo.project.name);
+      const capture = page.getByRole("dialog", { name: "New capture" });
+      const list = page.getByRole("listbox");
+      const field = page.getByRole("combobox", { name: "Context" });
+
+      await page.locator(`#${CAPTURE_TRIGGER_ID}`).click();
+      await expect(capture).toBeVisible();
+
+      // Into the list from the field, with no pointer: ArrowDown opens it
+      // browsing, a second moves the active option, Enter commits it.
+      await field.focus();
+      await field.press("ArrowDown");
+      await expect(list).toBeVisible();
+      await field.press("ArrowDown");
+      await field.press("Enter");
+      await expect(field).toHaveValue("@computer");
+      await expect(list).toHaveCount(0);
+
+      await field.press("ArrowDown");
+      await expect(list).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(list).toHaveCount(0);
+      await expect(capture).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(capture).toHaveCount(0);
     });
 
     test("empty states capture", async ({ page }, testInfo) => {
