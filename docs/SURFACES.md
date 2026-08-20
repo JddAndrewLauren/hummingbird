@@ -62,7 +62,7 @@ already photographs.
 
 ### Matrix
 
-Four widths × two themes × sixteen screen states, per run.
+Four widths × two themes × seventeen screen states, per run.
 
 | Project | Width | What it proves |
 | --- | --- | --- |
@@ -77,6 +77,15 @@ design pass. The exemption in `visual/surfaces.spec.ts` applies only after
 the editor opens — the Rules screen's own LIST state is checked at 390 like
 every other screen, unconditionally, before the editor opens for the
 capture — so this is one state exempt, not the whole screen.
+
+**Rules is photographed twice**, `rules-list-*` and `rules-*`, and the pair is
+not redundant. The editor the second capture opens on rule 1 — condition rows
+plus an expanded backtest — is tall enough to push the seed's fourth rule off
+the bottom of every viewport, and that fourth rule
+(`fixtures/demo-data.ts`'s `rule-unranked-severity`) exists only to photograph
+#374's wrapping badge row. For a run it was in no capture at all: at 1440 only
+the badge's top edge survived, and at 1024 and below the whole card was below
+the fold. So the list state is shot first, with the badge scrolled into view.
 
 Captures are **viewport-sized, not `fullPage`**: the shell is
 `height: 100dvh; overflow: hidden`, so the document is exactly one viewport on

@@ -110,7 +110,8 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // dev-gated accessor (`fixtures/demo-data.ts`'s `demoData()`) instead of a
   // `demo` prop threaded from here, and every guard that used to keep writes
   // inert while the kit world showed went with it: this component no longer
-  // has any opinion about which world is loaded.
+  // has any opinion about the KIT world. The board world below is still its
+  // own — `demoTask` and `settingsDemoCalendar` are substituted from here.
   const [demoTask] = useState(demoTaskState);
   const task = demoTask ?? liveTask;
 

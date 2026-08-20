@@ -105,8 +105,11 @@ path with fictional data in it — this is what the visual gate photographs
 (`pnpm visual` above) and the default since #455.
 
 `http://localhost:5173/?demo=kit` renders the **design kit's** fixture data
-on every surface instead, so the shell can be compared against
-`.claude/skills/hummingbird-design/ui_kits/web/`.
+instead, so the shell can be compared against
+`.claude/skills/hummingbird-design/ui_kits/web/`. Since #456/#457 that is
+Routes and Alerts only — its other readers were render branches that shipped
+to nobody, and the screens that had them (Now, Triage, Settings, Rules) now
+take their real/empty path under `?demo=kit` like any other world.
 
 ## Layout
 

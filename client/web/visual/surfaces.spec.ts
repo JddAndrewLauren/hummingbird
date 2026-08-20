@@ -224,6 +224,30 @@ async function openFirstRuleEditor(page: Page) {
   await page.getByRole("button", { name: "Backtest" }).first().click();
 }
 
+/** The rules LIST state, captured separately from the editor-open one above.
+ * Not a nicety: `demo-data.ts`'s `rule-unranked-severity` is last in the seed
+ * specifically to photograph its wrapping badge row, and the editor this file
+ * opens on rule 1 — condition rows plus an expanded backtest — pushes that
+ * fourth card off the bottom of every viewport (at 1440 only the badge's top
+ * edge survived; at 1024 and below the whole card did not). So the badge is
+ * scrolled into view and shot before the editor opens. The screen's own
+ * per-project capture below stays the editor-open state, unchanged.
+ *
+ * The badge is addressed by the same `/^Unranked severity —/` prefix
+ * `RulesScreen.test.tsx`'s #374 test uses, not by the full sentence: the copy
+ * is one `UNRANKED_SEVERITY_COPY` constant in `RulesScreen.tsx`, and pinning
+ * its whole text from out here would be a second copy to keep in step. */
+async function captureRulesList(page: Page, projectName: string, theme: string) {
+  const badge = page.getByText(/^Unranked severity —/);
+  await expect(badge).toHaveCount(1);
+  await badge.scrollIntoViewIfNeeded();
+  await expect(badge).toBeInViewport();
+  await page.screenshot({
+    path: `visual/.captures/rules-list-${projectName}-${theme}.png`,
+    fullPage: false,
+  });
+}
+
 /** No horizontal overflow at any width — and be clear about how little that
  * proves. `App.tsx`'s root is `overflow: hidden`, so content wider than the
  * shell is CLIPPED rather than extending `documentElement.scrollWidth`: this
@@ -330,7 +354,9 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     // fetched) never shows it.
     await expect(page.getByText("Loading rules…")).toHaveCount(0);
     // 4 since #374 added a rule at an out-of-vocabulary severity so this
-    // gate photographs its wrapping badge row.
+    // gate photographs its wrapping badge row — which is the `rules-list-*`
+    // capture, not the `rules-*` one: the open editor pushes that fourth
+    // card past the bottom of every viewport.
     await expect(page.getByText("4 rules · default-deny")).toBeVisible();
   },
   done: async (page) => {
@@ -394,6 +420,9 @@ for (const theme of THEMES) {
         // this same call at those widths).
         await expectNoHorizontalOverflow(page);
         if (screenId === "rules") {
+          // Before the editor opens, and its own PNG — see `captureRulesList`
+          // for why the editor-open capture below cannot stand in for it.
+          await captureRulesList(page, testInfo.project.name, theme);
           await openFirstRuleEditor(page);
           // The rule editor is the ONE surface knowingly left overflowing at
           // 390 (137px over when the phone project was added) — its
