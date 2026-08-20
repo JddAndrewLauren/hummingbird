@@ -263,12 +263,11 @@ problem.
 ## Update path
 
 Skills change in this repo, land on `main`, and reach the agent by `git
-pull` on the gateway clone followed by a re-install — which needs
-`--force`, since `openclaw skills install` refuses to overwrite an existing
-workspace skill without it:
-
-All three are installed independently and none of them updates the others,
-so a re-install is all three or the agent runs a mixed set:
+pull` on the gateway clone followed by a re-install. That re-install needs
+`--force` — `openclaw skills install` refuses to overwrite an existing
+workspace skill without it — and it covers all three skills: they install
+independently and none of them updates the others, so it is all three or
+the agent runs a mixed set.
 
 ```sh
 for s in hummingbird-tasks microtask grill-me; do
