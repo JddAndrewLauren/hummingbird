@@ -31,6 +31,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -58,6 +59,7 @@ import kotlin.random.Random
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.speech.DictationHost
 import net.twinion.hummingbird.core.CoreHolder
 import net.twinion.hummingbird.core.SyncHistoryStore
 import net.twinion.hummingbird.core.TokenStore
@@ -613,7 +615,18 @@ private fun AppRoot(
     }
 
     if (captureSheetOpen) {
+        // The sheet's dictation host lives exactly as long as the sheet is
+        // composed: `SpeechRecognizer` is a Context-bound platform session
+        // with a `destroy()` lifecycle, and where `CaptureActivity` owns
+        // its host in `onCreate`/`onDestroy`, this Activity hosts the
+        // sheet as a composition — so the composition is the lifetime, and
+        // no recognizer session outlives the surface that could use it.
+        val dictation = remember { DictationHost(context) }
+        DisposableEffect(Unit) {
+            onDispose { dictation.destroy() }
+        }
         CaptureSheet(
+            startListening = dictation::startListening,
             onDismiss = { captureSheetOpen = false },
             // A user-attributed cycle, not a wait for the 60-second timer
             // leg: the capture is already durable locally

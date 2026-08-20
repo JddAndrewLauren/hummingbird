@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import net.twinion.hummingbird.core.CoreHolder
 import uniffi.hummingbird_ffi_mobile.CaptureDestination
 import uniffi.hummingbird_ffi_mobile.CaptureDraft
+import net.twinion.hummingbird.speech.DictationFailure
 import uniffi.hummingbird_ffi_mobile.CaptureFormMeta
 import uniffi.hummingbird_ffi_mobile.MetaProblems
 import uniffi.hummingbird_ffi_mobile.MobileProject

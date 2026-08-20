@@ -1,12 +1,7 @@
 package net.twinion.hummingbird
 
 import android.Manifest
-import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -53,9 +48,10 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.speech.DictationFailure
+import net.twinion.hummingbird.speech.DictationHost
 import net.twinion.hummingbird.ui.LevelGlyphFamily
 import net.twinion.hummingbird.ui.forms.CaptureDateField
 import net.twinion.hummingbird.ui.forms.ContextField
@@ -85,15 +81,19 @@ import uniffi.hummingbird_ffi_mobile.MobileProject
 // into this file (ADR-0025's ban on a hand-copied vocabulary).
 class CaptureActivity : ComponentActivity() {
 
-    private var recognizer: SpeechRecognizer? = null
+    // The recognizer plumbing lives in `speech/Dictation.kt` since #611 —
+    // shared with the FAB's capture sheet by extraction, never by a second
+    // copy. This Activity owns its host for its own lifetime.
+    private var dictation: DictationHost? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        val host = DictationHost(this).also { dictation = it }
         setContent {
             HummingbirdTheme {
                 CaptureScreen(
-                    startListening = ::startListening,
+                    startListening = host::startListening,
                     onFinished = ::finish,
                 )
             }
@@ -101,104 +101,10 @@ class CaptureActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        recognizer?.destroy()
-        recognizer = null
+        dictation?.destroy()
+        dictation = null
         super.onDestroy()
     }
-
-    /** Starts one **on-device** recognition pass; `onTranscript` receives
-     * the first hypothesis verbatim, and `onFailure` every other way the
-     * pass can end.
-     *
-     * ADR-0022's prohibition is on audio leaving the device, and
-     * `isRecognitionAvailable`/`createSpeechRecognizer` do not establish
-     * that: they resolve the *default* recognition service, which the
-     * platform documents as free to send audio to a remote server. Only the
-     * `…OnDevice…` pair positively establishes local processing, so those
-     * are what this asks for, and an absent on-device recognizer means the
-     * feature is unavailable — never a quiet fall back to the default
-     * service, which is exactly the "network-backed recognizer as an
-     * error-path fallback" the ADR rejects by name.
-     *
-     * Every failure path ends the session and reports, per the same ADR:
-     * "the prohibition explicitly includes error paths." */
-    private fun startListening(
-        onTranscript: (String) -> Unit,
-        onFailure: (DictationFailure) -> Unit,
-    ) {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            onFailure(DictationFailure.NO_PERMISSION)
-            return
-        }
-        if (!SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) {
-            onFailure(DictationFailure.UNAVAILABLE)
-            return
-        }
-        val active = recognizer
-            ?: SpeechRecognizer.createOnDeviceSpeechRecognizer(this).also { recognizer = it }
-        active.setRecognitionListener(TranscriptListener(onTranscript, onFailure))
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        }
-        active.startListening(intent)
-    }
-}
-
-/** The ways a dictation pass can end without text, each with the sentence
- * the capture screen shows for it. One enum rather than four call sites
- * composing strings, because ADR-0022 treats the *set* as the requirement:
- * unavailable, refused, mid-session error, no match — all four visible.
- * Wording follows the design README's honesty rule: say what happened and
- * what still works, apologise for nothing. */
-enum class DictationFailure(val message: String) {
-    NO_PERMISSION("Dictation needs microphone access. Typing still works."),
-    UNAVAILABLE("This device has no on-device speech recognition. Typing still works."),
-    FAILED("Dictation stopped. Typing still works."),
-    NO_MATCH("No speech recognised."),
-}
-
-/** A raw-transcript-only listener (ADR-0022): the first hypothesis's text,
- * verbatim, never trimmed or parsed here — [CaptureViewModel.onTranscript]
- * is the next stop, and it does not touch the string either. A result that
- * carries no hypothesis is a failure, not a silent no-op: an empty
- * `RESULTS_RECOGNITION` is the no-match case the ADR names. */
-private class TranscriptListener(
-    private val onTranscript: (String) -> Unit,
-    private val onFailure: (DictationFailure) -> Unit,
-) : RecognitionListener {
-    override fun onResults(results: Bundle) {
-        val transcript = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-        if (transcript == null) {
-            onFailure(DictationFailure.NO_MATCH)
-            return
-        }
-        onTranscript(transcript)
-    }
-
-    /** The recognizer has already ended the session by the time this
-     * arrives; the only thing left is to say so. Nothing here retries, and
-     * nothing here reaches for a second recognizer — that is the fallback
-     * ADR-0022 rejects. */
-    override fun onError(error: Int) {
-        val failure = when (error) {
-            SpeechRecognizer.ERROR_NO_MATCH,
-            SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
-            -> DictationFailure.NO_MATCH
-            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> DictationFailure.NO_PERMISSION
-            else -> DictationFailure.FAILED
-        }
-        onFailure(failure)
-    }
-
-    override fun onReadyForSpeech(params: Bundle?) {}
-    override fun onBeginningOfSpeech() {}
-    override fun onRmsChanged(rmsdB: Float) {}
-    override fun onBufferReceived(buffer: ByteArray?) {}
-    override fun onEndOfSpeech() {}
-    override fun onPartialResults(partialResults: Bundle?) {}
-    override fun onEvent(eventType: Int, params: Bundle?) {}
 }
 
 @Composable

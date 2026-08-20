@@ -62,16 +62,25 @@ class CaptureSheetStructuralTest {
     }
 
     @Test
-    fun `the sheet is the light form — no details disclosure, no mic`() {
-        // The full form lives in CaptureActivity. The sheet deliberately
-        // renders no dictation mic: a mic without its recognizer plumbing
-        // is the dead control ADR-0022 calls a defect, so until the
-        // dictation helper is extracted (its own slice), the honest sheet
-        // has no mic at all.
+    fun `the sheet is the light form with the shared-helper mic — no details disclosure`() {
+        // The full form lives in CaptureActivity. The mic arrived with
+        // #611, wired through the extracted `speech/Dictation.kt` — never
+        // a second copy of the recognizer plumbing (DictationLocalityTest
+        // bans the default-service pair in this file for that reason), and
+        // never a mic without plumbing, the dead control ADR-0022 calls a
+        // defect.
         val src = source("CaptureSheet.kt")
-        assertFalse(
-            "CaptureSheet must not render a mic it cannot wire (ADR-0022)",
+        assertTrue(
+            "CaptureSheet must render the dictation mic (#611)",
             src.contains("ic_mic"),
+        )
+        assertTrue(
+            "the mic must wire through the shared helper's failure type",
+            src.contains("net.twinion.hummingbird.speech.DictationFailure"),
+        )
+        assertTrue(
+            "a denied permission reports through the failure lane, never silently",
+            src.contains("viewModel.onDictationFailed(DictationFailure.NO_PERMISSION)"),
         )
         assertFalse(
             "CaptureSheet must not grow the details disclosure — CaptureActivity is the full form",
