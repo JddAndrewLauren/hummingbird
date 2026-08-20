@@ -521,17 +521,26 @@ its queue since #537, and Status is the ranked region's second surface
 (#536). None of it is photographed by anything.
 
 That is a real gap, not an oversight to fix casually: `android.yml` runs no
-emulator (its own header says why), so a screenshot matrix would need one
-stood up in CI before it could gate anything — **though #576 weakened that
-premise, and the next person to read this row should re-open it rather than
-inherit it.** That slice put Robolectric and `compose-ui-test-junit4` in the
-module, which is the substrate a screenshot gate (Roborazzi and its kin)
-runs on *without* an emulator. Whether a Robolectric render is evidence for
-this row, or whether this surface still wants a real device, is an open
-question and not one a wrap-up should settle by itself.
+emulator (its own header says why), so a screenshot matrix has to be stood
+up before it can gate anything.
 
-Until it is settled, this surface's evidence is of the kinds below, and each
-is named so nobody mistakes it for a visual gate:
+**Settled 2026-08-20, operator decision: visual evidence for this surface is
+a real device or an emulator. A Robolectric render is not evidence.** This
+had been open since #576 put Robolectric and `compose-ui-test-junit4` in the
+module — the substrate a screenshot gate (Roborazzi and its kin) runs on
+*without* an emulator — and it sat unmoved through four sessions of Android
+visual work, because accumulating evidence cannot answer a question about
+what counts as evidence. It is answered now, and the answer closes the
+Roborazzi route rather than choosing it: the reason is that the defects this
+row exists to catch have repeatedly been ones the Robolectric substrate is
+blind to by construction. The clearest case is 2026-08-20's capture sheet,
+where making it open full height put the title field's outline against the
+status-bar clock — a window-inset defect, invisible to a render that has no
+window, and caught only by screenshotting the phone.
+
+So the evidence below is **not** an interim arrangement pending a decision;
+it is the permanent, named floor beneath a gate that does not exist yet. Each
+kind is named so nobody mistakes it for a visual gate:
 
 - **Structural tests**, JVM, reading the Compose source as text —
   `NavigationStructuralTest`, `BottomNavStructuralTest`,
@@ -549,26 +558,43 @@ is named so nobody mistakes it for a visual gate:
 - **`ColorTokenDriftTest`** (#483, ADR-0026), which pins `ui/theme/Color.kt`
   against the design system's token CSS. It is about appearance, but it
   covers the palette only — never a screen.
-- **`ChoiceRowWrappingTest`** (#576) and **`FacetLabelAlignmentTest`**
-  (#588), the two things here that measure **layout**: real Compose renders
-  under Robolectric at a 320dp qualifier, asserting a row of choices stays
-  hittable and a facet label seats beside its first chip line. Each covers
-  one component shape plus a negative control rendering its defect — never
-  a screen's whole composition, and they photograph nothing. Their
+- **`ChoiceRowWrappingTest`** (#576), **`FacetLabelAlignmentTest`** (#588),
+  **`AxisRowWrappingTest`** and **`PriorityRowWrappingTest`** (both the
+  round-4/round-5 operator batches, 2026-08-20) — the four things here that
+  measure **layout**: real Compose renders under Robolectric, asserting a
+  row of choices stays hittable, a facet label seats beside its first chip
+  line, and the axis strip and the priority row each fit one line. Each
+  covers one component shape plus a negative control rendering its defect —
+  never a screen's whole composition, and they photograph nothing.
+  The later two moved the qualifier off 320dp deliberately: the operator
+  ruled the budget is **the device's** width, the Fold's 443dp cover
+  display, not a synthetic stress width (`AxisRow`'s own header carries the
+  measurements and the accepted clipping limit). Their
   `@GraphicsMode(NATIVE)` is load-bearing: without it Robolectric measures
   text with a stub and any assertion here passes vacuously, which is the
-  trap to know before writing the next test of this kind. A further edge
-  found at #558: `captureToImage()` **times out** under this Robolectric
-  setup even in NATIVE mode, so pixel-level assertions are off the table —
-  bounds measurement is the ceiling of what this substrate gives, which
-  sharpens the open Roborazzi-or-device question above rather than
-  settling it.
+  trap to know before writing the next test of this kind. A second thing is
+  load-bearing beside it, and is known only because it shipped a clipped
+  chip: **the content must be wrapped in `HummingbirdTheme`.** A bare render
+  resolves `MaterialTheme.typography` to Material's defaults rather than the
+  app's bundled faces, which measured an axis strip green at 268dp while the
+  device clipped its trailing chip. A further edge found at #558:
+  `captureToImage()` **times out** under this Robolectric setup even in
+  NATIVE mode, so pixel-level assertions are off the table — bounds
+  measurement is the ceiling of what this substrate gives. That ceiling was
+  one input to the 2026-08-20 decision above, and it is now moot rather than
+  open: these tests measure component *layout*, they are not a visual gate,
+  and no amount of them will become one.
 - **Hardware runs**, recorded in `client/android/README.md`'s "Proving the
-  lane on hardware". Operator-run, not CI, and currently the only evidence
-  any of these screens has ever rendered.
+  lane on hardware". Operator-run, not CI, and the only evidence any of
+  these screens has ever rendered — which the 2026-08-20 decision makes the
+  *right* kind of evidence, merely an unautomated one. Until the emulator
+  matrix exists, a device pass is what a UI change on this surface owes.
 
-Add the emulator matrix here when one exists; do not quietly treat the
-structural tests as covering this row.
+Add the emulator matrix here when one exists — that is now the only route to
+gating this row, per the 2026-08-20 decision above, and standing one up in
+`android.yml` is the whole of the remaining work. Do not quietly treat the
+structural or bounds-measuring tests as covering it; they were never the
+blocker and are not the answer.
 
 ## Planned, not built
 

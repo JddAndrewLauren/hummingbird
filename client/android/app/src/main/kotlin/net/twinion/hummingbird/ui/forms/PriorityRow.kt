@@ -2,8 +2,7 @@ package net.twinion.hummingbird.ui.forms
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -19,7 +18,7 @@ import androidx.compose.ui.unit.dp
  * mirroring that precedent rather than inventing a fourth core door for a
  * five-word, never-renamed display list.
  *
- * **The order (`1,2,3,4,0` — Urgent..Low, then No priority last) is
+ * **The order (`1,2,3,4` — Urgent..Low) is
  * `decisions::frontier::priority_rank`'s own order, pinned from the Rust
  * side** (review finding on #529's own PR, note 5): a plain JVM test
  * cannot call a generated JNI binding to check it here
@@ -27,7 +26,8 @@ import androidx.compose.ui.unit.dp
  * `ffi-mobile/src/lib.rs`'s `the_priority_row_order_matches_priority_rank`
  * asserts this exact sequence against the real rule instead — if that rule
  * ever reorders, that Rust test breaks and names this list as what needs
- * updating to match. ADR-0025's ledger for `priority.ts` records the same
+ * updating to match. That test still sorts the wire value `0` too, and its
+ * landing last is what makes this row's omission of it safe. ADR-0025's ledger for `priority.ts` records the same
  * asymmetry on the web side: the rank is pinned (`seam.test.ts`'s
  * `priorityRankFromCore`), the labels are not.
  *
@@ -38,9 +38,13 @@ import androidx.compose.ui.unit.dp
  * must not be made of.
  *
  * Note the sentinel this does not share with [LevelSlider]: cleared here is
- * `""`, not `null`, because a priority draft is a non-null `String`.
+ * `""`, not `null`, because a priority draft is a non-null `String`. **That
+ * sentinel is the only control over it now** (operator decision
+ * 2026-08-20): there is no "No priority" chip, because not picking one
+ * already says it, and a chip for the absence of a choice is a fifth target
+ * that means what the resting state means. Re-tapping the selected chip is
+ * how a priority is taken back off.
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PriorityRow(
     selected: String,
@@ -52,7 +56,6 @@ fun PriorityRow(
         "2" to "High",
         "3" to "Medium",
         "4" to "Low",
-        "0" to "No priority",
     )
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(
@@ -60,15 +63,19 @@ fun PriorityRow(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        // A `FlowRow`, not a `Row`: five labelled chips ("Urgent / High /
-        // Medium / Low / No priority") are wider than a phone at the
-        // default font scale, and a fixed, non-scrolling Row put the
-        // trailing priorities out of reach — the same clipping `NowScreen`'s
-        // action buttons already answered with a wrapping container.
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+        // One line, and a fixed `Row` — [LevelSlider]'s own container, one
+        // field above this one, which is half the reason: two adjacent rows
+        // of chips that wrap differently read as two different controls.
+        //
+        // This wrapped in a `FlowRow` until 2026-08-20, and dropping the
+        // fifth chip is what let it stop. Four labelled `FilterChip`s want
+        // 303dp (`PriorityRowWrappingTest` measures it under the app's own
+        // theme, not Material's defaults — the round-4 trap), against
+        // 395dp of content on the Fold's cover display, the narrowest
+        // surface this app ships to. That is the operator's stated width
+        // budget for a one-line strip (`AxisRow`'s header states it and
+        // why), and the five-chip row could not have met it.
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             for ((value, label) in options) {
                 FilterChip(
                     selected = value == selected,

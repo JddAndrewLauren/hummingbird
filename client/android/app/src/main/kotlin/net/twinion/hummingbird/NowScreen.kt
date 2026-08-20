@@ -1,15 +1,18 @@
 package net.twinion.hummingbird
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.paddingFromBaseline
@@ -18,19 +21,22 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -41,9 +47,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -310,7 +319,11 @@ fun NowScreen(
                 // ([uniffi.hummingbird_ffi_mobile.NowBoardRecord.shownCount]/
                 // [.totalCount], never re-derived here), spoken only while a
                 // facet actually narrows the board: an unfiltered "12 of 12
-                // shown" is reassurance, not information.
+                // shown" is reassurance, not information. Read by the facet
+                // panel alone since the axis strip went shrink-to-fit
+                // ([AxisRow]'s own doc) — so it says nothing while the panel
+                // is shut, and a shut panel with an active filter is spoken
+                // by the Filter chip's own count instead.
                 val shownLine = currentBoard
                     ?.takeIf { facets.count() > 0 }
                     ?.let { "${it.shownCount} of ${it.totalCount} shown" }
@@ -320,10 +333,6 @@ fun NowScreen(
                     onPick = { next -> scope.launch { viewModel.setAxis(next, nowDeadlineShaped()) } },
                     filtersOpen = filtersOpen,
                     facetCount = facets.count(),
-                    // Beside the Filter chip only while the panel is shut —
-                    // open, the panel's own footer carries it, and saying it
-                    // twice would claim two different facts can disagree.
-                    shownLine = shownLine.takeIf { !filtersOpen },
                     onToggleFilters = { viewModel.toggleFiltersOpen() },
                 )
 
@@ -560,58 +569,138 @@ fun NowScreen(
 
 /** The axis switch — every grouping axis, in [FRONTIER_AXES]'s order —
  * plus the facet panel's one piece of permanent chrome: the Filter
- * disclosure chip, carrying the active-facet count in its label and the
- * "N of M shown" meta line beside it while shut (`FrontierColumns.tsx`'s
- * own row, ported). One `Row` on a horizontal scroll, never a wrap
- * (operator feedback 2026-08-19, replacing the earlier `FlowRow`): five
- * chips and a meta line are wider than the Fold's cover display, and the
- * strip holds its single line by scrolling the overflow into reach —
- * clipping without the scroll would hide the only door to an active
- * filter. Never decides which axis groups what; picking one only tells
- * [NowViewModel] which already-decided board to ask for next. */
+ * disclosure chip, carrying the active-facet count in its label
+ * (`FrontierColumns.tsx`'s own row, ported). Never decides which axis
+ * groups what; picking one only tells [NowViewModel] which already-decided
+ * board to ask for next.
+ *
+ * **One line, shrunk to fit — never a scroll and never a wrap** (operator
+ * decision 2026-08-20, superseding the 2026-08-19 `Row` + `horizontalScroll`
+ * that superseded the original `FlowRow`). Three constraints follow from
+ * that, and all three are load-bearing:
+ *
+ * - The five chips fit **272dp** — 320dp, the narrowest width this repo
+ *   tests at (`ChoiceRowWrappingTest`'s own qualifier), less `NowScreen`'s
+ *   24dp gutters. `AxisRowWrappingTest` measures it, and that measurement
+ *   is the only thing standing between this row and a *clipped* trailing
+ *   chip: a fixed `Row` squeezes whatever runs out of width, and the chip
+ *   at the trailing edge is the Filter disclosure — the only door to an
+ *   active filter, hidden with no sign it is there. Measured while
+ *   building this: five `FilterChip`s want 320dp and cannot fit at any
+ *   text size — a `FilterChip` spends 32dp per chip on horizontal chrome,
+ *   160dp of the budget for five. Hence [AxisChip], the same treatment on
+ *   12dp of chrome, which wants 276dp.
+ * - **The width this fits is the device's, not a stress width** (operator
+ *   decision 2026-08-20). The Fold's cover display is 443dp — measured on
+ *   hardware, 1080px at density 390 — leaving 419dp of content, so the
+ *   strip has 143dp of headroom there. It does **not** fit 272dp, the
+ *   320dp figure `ChoiceRowWrappingTest` stresses: measured on the device
+ *   at that width, the Filter chip's count digit clips to "Filter ·", and
+ *   no type size fixes it. **The accepted limit is roughly 336dp of
+ *   content**; below that the trailing chip clips, which is the cost of a
+ *   strip that neither wraps nor scrolls, taken deliberately rather than
+ *   discovered. The same is true of a large enough font scale.
+ * - The label is `bodyMedium`, the sans body style — **not** `labelSmall`.
+ *   `labelSmall` is the mono meta style, 11sp Space Mono at +0.08em, and
+ *   the design system reserves it for values the system computed; an axis
+ *   name is a UI label. It is also the widest small style in the scale, and
+ *   using it here cost 44dp the strip did not have.
+ * - The 48dp minimum touch target is waived here, deliberately, via
+ *   [LocalMinimumInteractiveComponentSize]. This is the one place in the
+ *   app that waives it, and what makes it defensible is that it waives
+ *   *layout* inflation only: the chips still measure 28dp tall, their full
+ *   width is hittable, and the platform expands the touch target at the
+ *   input layer regardless of this
+ *   (`Modifier.minimumInteractiveComponentSize`'s own doc says so).
+ * - There is no leading icon on the Filter chip. It had `ic_search` while
+ *   the strip scrolled; measured, the icon is what pushed the row 2dp past
+ *   the budget, and the chip says "Filter" in words either way.
+ * - The "N of M shown" meta line is not here. It rode beside the Filter
+ *   chip while the panel was shut and there is no room for it on one line;
+ *   the facet panel's own footer carries it, which is where it was already
+ *   said when the panel is open.
+ */
 @Composable
-private fun AxisRow(
+internal fun AxisRow(
     axis: MobileFrontierAxis,
     onPick: (MobileFrontierAxis) -> Unit,
     filtersOpen: Boolean,
     facetCount: Int,
-    shownLine: String?,
     onToggleFilters: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier.horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        for (candidate in FRONTIER_AXES) {
-            FilterChip(
-                selected = axis == candidate,
-                onClick = { onPick(candidate) },
-                label = { Text(AXIS_LABEL[candidate] ?: candidate.name) },
-            )
-        }
-        FilterChip(
-            selected = filtersOpen,
-            onClick = onToggleFilters,
-            leadingIcon = {
-                Icon(
-                    painterResource(R.drawable.ic_search),
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            for (candidate in FRONTIER_AXES) {
+                AxisChip(
+                    selected = axis == candidate,
+                    onClick = { onPick(candidate) },
+                    label = AXIS_LABEL[candidate] ?: candidate.name,
+                    // One of four, so a radio rather than a checkbox — the
+                    // `FilterChip` this replaces called every chip a
+                    // checkbox, including these.
+                    role = Role.RadioButton,
                 )
-            },
-            // The middle dot is punctuation, not an icon (design README) —
-            // the count rides in the label so an active filter stays
-            // visible while the panel is shut.
-            label = { Text(if (facetCount > 0) "Filter · $facetCount" else "Filter") },
-        )
-        shownLine?.let {
-            Text(
-                it,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            }
+            AxisChip(
+                selected = filtersOpen,
+                onClick = onToggleFilters,
+                // The middle dot is punctuation, not an icon (design
+                // README) — the count rides in the label so an active
+                // filter stays visible while the panel is shut.
+                label = if (facetCount > 0) "Filter · $facetCount" else "Filter",
+                role = Role.Checkbox,
             )
         }
+    }
+}
+
+/** One chip of the strip above: `FilterChip`'s own treatment — a
+ * `secondaryContainer` fill when selected, a hairline outline when not —
+ * on a twelfth of its horizontal chrome, which is what lets five of them
+ * share a line at 272dp. [AxisRow]'s doc has the measurements and the
+ * reason a `FilterChip` cannot be used here; this file's `StageBadge`
+ * sibling is the precedent for building a pill from a `Surface` rather
+ * than reaching for a Material chip.
+ *
+ * The whole pill is the target, not the text: `clip` before `selectable`
+ * so the ripple stays inside the pill, and the label is `maxLines = 1`
+ * because the row has no second line to give it. */
+@Composable
+private fun AxisChip(
+    selected: Boolean,
+    onClick: () -> Unit,
+    label: String,
+    role: Role,
+) {
+    Box(
+        modifier = Modifier
+            .height(28.dp)
+            .clip(CircleShape)
+            .then(
+                if (selected) {
+                    Modifier.background(MaterialTheme.colorScheme.secondaryContainer)
+                } else {
+                    Modifier.border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
+                },
+            )
+            .selectable(selected = selected, role = role, onClick = onClick)
+            .padding(horizontal = 6.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            color = if (selected) {
+                MaterialTheme.colorScheme.onSecondaryContainer
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
     }
 }
 

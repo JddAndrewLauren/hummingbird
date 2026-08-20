@@ -19,6 +19,16 @@ import androidx.compose.ui.Modifier
  * the caller and passed in as [error]. This component only shows whatever
  * it is handed; it decides nothing about what a valid date looks like
  * (#529's own structural-test criterion: "no date regexes").
+ *
+ * [modifier] exists so a caller can seat two of these side by side — the
+ * capture surfaces pair deadline and scheduled date on one line (operator
+ * decision 2026-08-20) with a `weight(1f)` each. `fillMaxWidth()` is
+ * applied *after* it rather than being the parameter's default, so a
+ * caller that passes a modifier still gets the full width of whatever it
+ * was given: inside a weighted `Row` slot that is the slot's width, and
+ * unmodified it is the Triage editor's stacked full-width field. A
+ * `Modifier.fillMaxWidth()` default would have silently dropped for every
+ * caller that passed anything.
  */
 @Composable
 fun CaptureDateField(
@@ -26,6 +36,7 @@ fun CaptureDateField(
     value: String,
     error: String?,
     onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     OutlinedTextField(
         value = value,
@@ -33,6 +44,6 @@ fun CaptureDateField(
         label = { Text(label) },
         isError = error != null,
         supportingText = error?.let { { Text(it) } },
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
     )
 }

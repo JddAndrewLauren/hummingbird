@@ -110,7 +110,7 @@ class CaptureFieldSetStructuralTest {
     @Test
     fun `submit gates on both canSubmitDraft and its own two injected predicates`() {
         val viewModelSrc = captureFieldSrcByName.getValue("CaptureViewModel.kt")
-        val submitBody = Regex("""suspend fun submit\(nowMs: Long\)[\s\S]*?\n {4}}""")
+        val submitBody = Regex("""suspend fun submit\(destination: CaptureDestination, nowMs: Long\)[\s\S]*?\n {4}}""")
             .find(viewModelSrc)
             ?.value
             ?: error("could not locate CaptureViewModel.submit in the source")
@@ -155,10 +155,11 @@ class CaptureFieldSetStructuralTest {
      * disclosure's Project field must read the live list from
      * `MobileTaskHost.projects()` and offer it as a picker (`readOnly`
      * anchor field, `onValueChange = {}`) rather than accepting arbitrary
-     * text. */
+     * text. Round 4 moved the picker into `ui/forms/` — both capture
+     * surfaces render the disclosure now, and the refusal has to hold on
+     * both, which it cannot do from a `private fun` in one of them. */
     @Test
     fun `the Project field is a read-only picker over the live projects list, never free text`() {
-        val captureActivitySrc = captureFieldSrcByName.getValue("CaptureActivity.kt")
         val captureViewModelSrc = captureFieldSrcByName.getValue("CaptureViewModel.kt")
         assertTrue(
             "CaptureViewModel must expose the live projects list",
@@ -168,10 +169,11 @@ class CaptureFieldSetStructuralTest {
             "CaptureViewModel.create must wire projectsFn to CoreHolder.get(...).projects()",
             captureViewModelSrc.contains(".projects()"),
         )
-        val projectFieldBody = Regex("""private fun ProjectField\([\s\S]*?\n}""")
-            .find(captureActivitySrc)
+        val projectFieldSrc = captureFieldSrcByName.getValue("ui/forms/ProjectField.kt")
+        val projectFieldBody = Regex("""fun ProjectField\([\s\S]*?\n}""")
+            .find(projectFieldSrc)
             ?.value
-            ?: error("could not locate ProjectField in CaptureActivity.kt")
+            ?: error("could not locate ProjectField in ui/forms/ProjectField.kt")
         assertTrue(
             "the Project field's anchor must be read-only",
             projectFieldBody.contains("readOnly = true"),
@@ -180,31 +182,98 @@ class CaptureFieldSetStructuralTest {
             "the Project field's anchor must ignore typed input (onValueChange = {})",
             projectFieldBody.contains("onValueChange = {}"),
         )
+        for (name in listOf("CaptureActivity.kt", "CaptureSheet.kt")) {
+            val src = captureFieldSrcByName.getValue(name)
+            assertFalse(
+                "$name must not bind an editable OutlinedTextField directly to " +
+                    "draft.projectId (that is the free-text hazard the picker replaces)",
+                src.contains("value = draft.projectId"),
+            )
+            assertTrue(
+                "$name renders the details disclosure, so it must import the shared picker",
+                src.contains("import net.twinion.hummingbird.ui.forms.ProjectField"),
+            )
+        }
+    }
+
+    /** Round 4's submit pair, on both capture surfaces: the destination is
+     * a property of the gesture, so each button names its own and there is
+     * no `FilterChip` switch left holding a selected destination — two
+     * places for one fact was the shape being replaced. Both surfaces gate
+     * on `canSubmitDraft()`, not the title rule alone: the sheet's dates
+     * are editable now, and `canSubmit(draft.title)` would pass a
+     * malformed deadline to the authority's dead-letter journal. */
+    @Test
+    fun `both capture surfaces submit through two destination-carrying buttons`() {
+        for (name in listOf("CaptureActivity.kt", "CaptureSheet.kt")) {
+            // Comments stripped, unlike the bans above: every assertion
+            // here is about what the code does, and both files explain in
+            // prose the very shapes being banned ("`canSubmitDraft()`, not
+            // `canSubmit(draft.title)`"), which a raw `contains` reads as
+            // the defect itself.
+            val src = withoutComments(captureFieldSrcByName.getValue(name))
+            assertTrue(
+                "$name must offer a Triage submit carrying its own destination",
+                src.contains("submit(CaptureDestination.TRIAGE"),
+            )
+            assertTrue(
+                "$name must offer an Add submit carrying its own destination",
+                src.contains("submit(CaptureDestination.READY"),
+            )
+            assertFalse(
+                "$name must not keep a FilterChip destination switch — the buttons are the choice",
+                src.contains("FilterChip("),
+            )
+            assertTrue(
+                "$name must gate submission on the whole draft, not the title rule alone",
+                src.contains("canSubmitDraft()"),
+            )
+            assertFalse(
+                "$name must not gate on canSubmit(draft.title) — a malformed date would pass",
+                src.contains("canSubmit(draft.title)"),
+            )
+        }
+        // The submit row must ride the keyboard rather than being pushed
+        // under it, and the two surfaces get there by opposite means —
+        // asserted per surface, because asserting `imePadding()` on both
+        // was itself the bug. A bare `Scaffold` pays no IME inset, so the
+        // Activity applies one; `ModalBottomSheet`'s own
+        // `contentWindowInsets` defaults to `safeDrawing`, which already
+        // includes the IME, so an `imePadding()` there pays it twice and
+        // pushes the buttons off-screen (sighted on hardware 2026-08-20).
+        assertTrue(
+            "CaptureActivity must apply the IME inset itself — a bare Scaffold pays none",
+            withoutComments(captureFieldSrcByName.getValue("CaptureActivity.kt"))
+                .contains("imePadding()"),
+        )
         assertFalse(
-            "CaptureActivity.kt must not bind an editable OutlinedTextField directly to " +
-                "draft.projectId (that is the free-text hazard the picker replaces)",
-            captureActivitySrc.contains("value = draft.projectId"),
+            "CaptureSheet must NOT apply imePadding() — ModalBottomSheet's own " +
+                "contentWindowInsets already includes the IME, and paying it twice puts " +
+                "the submit row under the keyboard",
+            withoutComments(captureFieldSrcByName.getValue("CaptureSheet.kt"))
+                .contains("imePadding()"),
+        )
+        // The destination is gone from the form state itself: a field no
+        // control writes is state the reader can never see or correct.
+        assertFalse(
+            "CaptureFormState must not carry a destination field",
+            withoutComments(captureFieldSrcByName.getValue("CaptureViewModel.kt"))
+                .contains("val destination: CaptureDestination"),
         )
     }
 
-    /** The five priority chips wrap rather than clipping at a phone width
-     * — "Urgent / High / Medium / Low / No priority" does not fit one
-     * 360dp row at the default font scale, let alone a scaled-up one, and
-     * a fixed `Row` put the trailing priorities out of reach. No emulator
-     * here, so this gates the container choice itself, exactly as
-     * `NowScreenStructuralTest` does for the action buttons. */
-    @Test
-    fun `the priority chips wrap rather than clipping at a phone width`() {
-        val priorityRowSrc = captureFieldSrcByName.getValue("ui/forms/PriorityRow.kt")
-        val row = Regex("""fun PriorityRow\([\s\S]*?\n}""")
-            .find(priorityRowSrc)
-            ?.value
-            ?: error("could not locate PriorityRow in ui/forms/PriorityRow.kt")
-        assertTrue(
-            "PriorityRow's chips must sit in a FlowRow, not a fixed Row",
-            row.contains("FlowRow("),
-        )
-    }
+    private fun withoutComments(src: String): String = src
+        .replace(Regex("""/\*[\s\S]*?\*/"""), "")
+        .replace(Regex("""(?m)^\s*//.*$"""), "")
+
+    /** The priority chips lost their fifth option and their wrap on
+     * 2026-08-20 (operator decision), and both halves of that — the
+     * measurement at the narrowest shipped width, and the source pin
+     * against a `FlowRow` coming back — live in `PriorityRowWrappingTest`,
+     * which can measure a real render. This file keeps only the claim it
+     * can make: the row is still one of the shared components both capture
+     * surfaces render (the loop above).
+     */
 
     /** Dictation stays title-field-only (#529's own boundary, carried from
      * M1-5): the transcript callback must never touch any field but the

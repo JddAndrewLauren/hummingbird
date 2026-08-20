@@ -334,13 +334,14 @@ Five slices bringing the surfaces in line with the design kit
   `NowViewModel.selectedItemId`, Triage's one-open-at-a-time shape.
   `NowItemDoorTest` pins the door end to end.
 - **The capture FAB and sheet.** The design kit's extended FAB (the one
-  sanctioned large ember fill) opens `CaptureSheet` — the light form over
-  the same `CaptureViewModel` and `ui/forms/` components, no details
-  disclosure (`CaptureActivity`, still the launcher icon's and
-  shortcut's door, keeps the full form; `CaptureSheetStructuralTest` pins
-  both the FAB and the no-second-Intent-door rule). The sheet shipped
-  mic-less first — a mic without recognizer plumbing is ADR-0022's dead
-  control — and gained one in the refinement round via #611's extraction.
+  sanctioned large ember fill) opens `CaptureSheet`, over the same
+  `CaptureViewModel` and `ui/forms/` components as `CaptureActivity` (still
+  the launcher icon's and shortcut's door); `CaptureSheetStructuralTest`
+  pins the FAB and the no-second-Intent-door rule. The sheet was the *light*
+  form here — no details disclosure — until round 4 gave it full field
+  parity. It shipped mic-less first, too — a mic without recognizer
+  plumbing is ADR-0022's dead control — and gained one in the refinement
+  round via #611's extraction.
 
 ## The refinement round: top bar, mark-done, panel chrome, width parity (continues the iteration above)
 
@@ -361,7 +362,8 @@ Operator feedback on the iteration, applied as six slices on top of it:
   shape — and re-reads the board in the same gesture.
 - **One-line axis strip.** `AxisRow` scrolls horizontally instead of
   wrapping; the facet groups inside the disclosure keep their
-  one-labelled-row-per-facet layout.
+  one-labelled-row-per-facet layout. (Round 4 kept the one line and dropped
+  the scroll — the chips shrink to fit instead. See below.)
 - **Panel chrome.** `ItemDetailPanel`'s header is the web `ItemPanel`'s:
   `HB-<seq>` mono meta line over a `titleMedium` title, the × close
   IconButton top-right (Cancel while editing, dirty path still confirms),
@@ -389,10 +391,13 @@ two buttons) before it was sighted on hardware; on the discard prompt the
 squeezed child was `Keep`, the escape from a destructive question, so the
 failure was not always cosmetic. `NowScreen.kt`, `RulesScreen.kt` and
 `ui/forms/PriorityRow.kt` had each already answered it with their own inline
-`FlowRow`, and are left as they are.
+`FlowRow`, and were left as they were. `PriorityRow` has since left that
+group — round 5 dropped its fifth chip and the four that remain fit one
+line, so it is a fixed `Row` with a measuring test of its own.
 
-`ChoiceRowWrappingTest` is **the only test in this module that measures a
-layout**, and the reason the defect got this far is that no other one does —
+`ChoiceRowWrappingTest` is **the first test in this module that measured a
+layout** — there are three now, and the two after it are built from its rig
+— and the reason the defect got this far is that at the time no test did:
 `*StructuralTest.kt` assert presence and wiring, and the squeezed buttons
 were all present and all wired. It runs `createComposeRule()` under
 Robolectric at a 320dp qualifier and asserts each choice stays at least 48dp
@@ -403,6 +408,186 @@ reproduce at all; and a control case that renders the old plain `Row` and
 asserts the trailing button *is* squeezed (0dp × 136dp), so a widened
 qualifier or a text-measurement regression cannot leave the file green while
 measuring nothing.
+
+## Round 4: the capture submit pair, the shrunk axis strip, the Triage header
+
+Operator batch 2026-08-20, three areas on one branch.
+
+- **Two submit buttons, not a destination switch.** Both capture surfaces
+  drop the Triage/Ready `FilterChip` pair for a **Triage** (outlined) and
+  **Add** (filled) submit pair, `Add` carrying `CaptureDestination.READY`.
+  The destination left `CaptureFormState` with it: once two buttons carry
+  it, a field holding it is state no control writes. The title field's IME
+  Done still submits to Triage, the funnel's own default.
+- **The submit row is pinned on the Activity, scrolled to on the sheet.**
+  The buttons were the last child of a scrolling column, so a raised
+  keyboard could push the only way out of the screen off the bottom of it.
+  On `CaptureActivity` the answer is a pinned footer: the fields scroll, the
+  row does not, and `consumeWindowInsets(padding)` sits between the
+  `Scaffold`'s padding and `imePadding()` — `padding()` applies insets
+  without consuming them, so the IME inset would otherwise land on top of an
+  already-paid navigation bar (the #614 dead band, in the other direction).
+  **The sheet could not be pinned at all**, which took two failed attempts
+  on hardware to establish: the IME inset does not reach a
+  `ModalBottomSheet`'s window here, so `imePadding()` is a no-op and so is
+  the sheet's own `contentWindowInsets` (`safeDrawing`, which nominally
+  includes the IME). A `weight(1f, fill = false)` field column broke it a
+  second, independent way — a `verticalScroll` child's desired height is its
+  whole content, so with `fill = false` it claimed every pixel and left the
+  row none. The sheet therefore scrolls to its submit row, the last thing in
+  that scroll. The structural pin now says this per surface —`imePadding()`
+  required on the Activity, banned on the sheet — because asserting it on
+  both is what let the bug through.
+  `CaptureViewModel.submitting` is the second `enabled` term on both
+  buttons: three doors reach one `captureFn` (two buttons and the IME
+  action), so a tap inside the first's suspension minted the same words
+  twice, and the duplicate was indistinguishable from a deliberate one. It
+  is released in a `finally`, so a failed enqueue does not leave both
+  buttons dead for the screen's life.
+- **The sheet is no longer the light form.** It gains the "More details"
+  disclosure — description, project, priority, deadline, scheduled date —
+  so the two capture surfaces differ only in which door they are, never in
+  what a person can record through them. `CaptureSheetStructuralTest`'s ban
+  on `detailsOpen` is inverted into the parity assertion it became, checked
+  field by field rather than by the disclosure's flag alone. The Project
+  picker moved to `ui/forms/ProjectField.kt` so its refusal of free text
+  (`items.project_id` is an FK — a typo mints locally and dead-letters at
+  the authority) holds on both. The sheet also stops gating on
+  `canSubmit(draft.title)`: its dates are editable now, and the title rule
+  alone would pass a malformed deadline through.
+- **The axis strip shrinks to fit instead of scrolling** (superseding the
+  2026-08-19 scroll, which superseded the original `FlowRow`). The "N of M
+  shown" meta line leaves with the scroll — no room on one line, and the
+  facet panel's footer already carries it. A fixed single-line `Row` clips
+  what runs out of width, and the chip at the trailing edge is the Filter
+  disclosure, the only door to an active filter, so this came with a
+  **measuring** test. Measuring corrected the plan twice. First: five
+  `FilterChip`s cannot fit at any text size, because a `FilterChip` spends
+  32dp per chip on horizontal chrome — hence `AxisChip`, the same
+  `secondaryContainer`-or-outline treatment built from a `Surface` as
+  `StageBadge` already is, on 12dp of chrome. It also lost `ic_search`:
+  measured, the icon was what pushed the row over, and the chip says
+  "Filter" in words either way. Second, and caught only on hardware: the
+  label must be `bodyMedium`, the sans body style, **not** `labelSmall` —
+  that is the mono meta style (11sp Space Mono at +0.08em), which the design
+  system reserves for computed values, and it is the widest small style in
+  the scale. Using it cost 44dp the strip did not have, and the Filter chip
+  clipped to "Fi" on the device while the unit test read green (see below).
+  **The width the strip fits is the device's, not a stress width** (operator
+  decision 2026-08-20): the Fold cover display is 443dp, leaving 419dp of
+  content, and the strip wants 276dp. It does *not* fit the 272dp that
+  `ChoiceRowWrappingTest`'s 320dp qualifier leaves — measured there, the
+  Filter chip's count digit clips. The accepted limit is ~336dp of content;
+  below that the trailing chip clips, which is the stated cost of a strip
+  that neither wraps nor scrolls. `AxisRow` is also the one place in the app
+  that waives `LocalMinimumInteractiveComponentSize`, and only its *layout*
+  inflation: the chips stay 28dp tall, their full width is hittable, and the
+  platform expands the touch target at the input layer regardless.
+- **The Triage header title is the display and the edit both.** A "Title"
+  text box below the header used to say the same words the header said, so
+  the panel claimed the title twice and editing one changed the other. The
+  header now reads the *draft's* title — an edit has to show where it was
+  made — and `ic_pencil` swaps an inline field in for it; the title sits
+  above the stage badge. The header row is the wide door out, through the
+  same confirmation the × routes through, and clickable only while not
+  editing so a tap into the field is not a tap on the way out. Editing ends
+  on IME Done or when the pane closes, deliberately **not** on focus loss:
+  that fires once with `isFocused = false` before the field is ever focused
+  and would need a flag to tell the two cases apart.
+- **The pane can mark done, and can no longer drop a draft silently.** The
+  green check is `NowRow`'s own, on the seam's decided `canMarkDone`, wired
+  to the same `complete` lambda the collapsed rows call — one act path
+  whether the pane is open or shut. It sits on a line of its own below the
+  `ChoiceRow` rather than beside it, because that row wraps at narrow widths
+  (#576) and anything sharing its line moves when the buttons do. And
+  `select(sameId)` nulls the draft (`TriageViewModel.select`), so re-tapping
+  the already-open row dropped typed words without asking — the one leaving
+  gesture that skipped the confirmation the ×, Back and the header tap all
+  route through.
+
+`AxisRowWrappingTest` is the module's **third** layout-measuring test,
+`ChoiceRowWrappingTest`'s rig with the same two halves — the measurement and
+a control proving it has teeth. One thing in it is worth copying rather than
+re-deriving: it measures **unconstrained**, in a 2000dp box, not at the
+272dp budget. Rendered at exactly the budget the `Row` squeezes whatever
+runs out of width, so the trailing chip reports bounds *inside* the budget
+no matter how badly it overflows. The first draft of that test passed with
+the Filter chip measuring 272dp..272dp — crushed to nothing, which is the
+defect itself. Measuring what the strip *wants* is the only form of the
+assertion that can fail.
+
+And a second thing, which cost a shipped clip to learn: **a Compose
+measurement test measures the theme it is given.** That first draft rendered
+`AxisRow` bare, so `MaterialTheme.typography.labelSmall` resolved to
+Material's default — Roboto 11sp, no tracking — instead of the app's Space
+Mono at +0.08em. It measured 268dp and passed while the device clipped the
+Filter chip to "Fi". Wrapping the content in `HummingbirdTheme` is what made
+the numbers real, and it is not optional in any test that measures text.
+
+## Round 5: the capture panel's own shape
+
+Operator batch 2026-08-20, four requests, all on the capture surfaces. The
+sheet is what the operator was looking at; where a change is layout the two
+surfaces share, `CaptureActivity` took it too, because two doors onto one
+field set must not disclose it with two different controls.
+
+- **The sheet opens cold at the top of the window.** `skipPartiallyExpanded`
+  plus `Modifier.fillMaxHeight()`, and both are needed: the flag removes the
+  half-height resting stop, and the modifier is what makes the sheet tall at
+  all, since an expanded `ModalBottomSheet` is otherwise only as tall as its
+  content and this form is shorter than the window with the disclosure shut.
+  A sheet that starts half-height and grows moves its own fields under a
+  reader who is already typing into them.
+- **No heading on the sheet.** The FAB that opens it is labelled Capture and
+  the focused field's placeholder asks the question, so a headline spent the
+  top of a full-height panel restating the gesture. `CaptureActivity` keeps
+  its own — it is a launcher destination that arrives over whatever was on
+  screen before, and has no FAB behind it to have said so.
+- **The details disclosure is a chevron.** `ic_chevron_down`, rotated a
+  half-turn when the fields are out — `NowScreen`'s `ColumnHeader` idiom,
+  and the design system's "Unicode as icons: never" rule. The words it
+  replaces survive as the `contentDescription`, so the control still names
+  itself to a screen reader; a bare glyph with no accessible name would have
+  been a downgrade, not a simplification.
+- **Priority is one line of four chips.** "No priority" is gone — not
+  picking one already says it, and a chip for the absence of a choice is a
+  fifth target meaning what the resting state means. Clearing is what it
+  always was: re-tap the selected chip (the `""` sentinel `PriorityRow`
+  clears to, and the reason it differs from `LevelSlider`'s `null`). Losing
+  the fifth chip is what let the `FlowRow` become a fixed `Row` — measured,
+  four default `FilterChip`s want 303dp against the 395dp of content the
+  Fold's cover display leaves after 24dp gutters, and the five-chip row did
+  not fit. It is a `Row` rather than the compact `AxisChip` treatment
+  because `LevelSlider` sits one field above it in the same form: two
+  adjacent chip rows with different chrome read as two different controls.
+- **Deadline and scheduled date share a line.** They are read as a pair —
+  when it is due against when it is planned — and stacking them spent two
+  rows of a disclosure holding five fields. `weight(1f)` each, `Alignment.Top`
+  so a refusal under one does not shift the other. `CaptureDateField` grew a
+  `modifier` parameter for it, defaulting to the full-width field the Triage
+  editor still stacks inside its narrower card.
+
+`PriorityRowWrappingTest` is the module's **fourth** layout-measuring test —
+`ChoiceRowWrappingTest`, `FacetLabelAlignmentTest` and `AxisRowWrappingTest`
+are the others, and `docs/SURFACES.md`'s Android row names all four —
+`AxisRowWrappingTest`'s rig unchanged — including the two things that rig
+exists to carry: measure unconstrained (a `Row` rendered at its budget
+squeezes the overflow into bounds that look like a pass), and wrap the
+content in `HummingbirdTheme` (a bare render measures Material's default
+faces, not the app's). Its control renders the five-chip row this replaced
+and asserts it overflows, which is what makes dropping the fifth chip a
+recorded consequence rather than a taste.
+
+One structural test in this round was green and vacuous before it was
+right, and it is worth naming because the shape recurs. The date-pair pin
+counted `modifier = Modifier.weight(1f)` occurrences with an unbounded
+regex; the submit buttons a few lines below carry the same string, so
+deleting a date field's weight left the count at two and the file green. It
+was only caught by deliberately mutating the source and watching the test
+*not* fail. A structural pin over source text needs its search bounded to
+the block it is claiming something about — and needs the mutation run, since
+nothing else distinguishes a pin that holds from a pin that matches
+elsewhere.
 
 ## Proving the lane on hardware
 
@@ -709,9 +894,36 @@ costs the device token every run.
     line for the warm case. The `healthchecks/v1` fallback was fired too and
     landed on alert detail.
 
+### Round 5's capture-panel pass (2026-08-20, `be39ede`)
+
+Pixel 10 Pro Fold, folded, 443dp cover display. Read off the **accessibility
+tree** (`adb shell uiautomator dump`), not off the screenshots, and that is
+the transferable part: driving this by screenshot alone drifted twice — a
+`monkey -c LAUNCHER` launch picked the *second* launcher icon
+(`CaptureActivity`, not `MainActivity`; use `am start -n` and name the
+Activity), and a swipe meant to scroll the sheet dismissed it instead, after
+which taps at remembered coordinates landed on whatever screen was
+underneath. The dump gives node bounds, which answers the layout question
+directly and cannot land on the wrong screen without saying so.
+
+Measured: the four priority chips share `y=1064–1105` and trail at `x=768`
+of 1080 — one line, with room; Deadline `[98,1241]` and Scheduled date
+`[589,1241]` share a line; no `Capture` text node exists on the sheet; the
+drag handle sits at `y=213`, clear of the status bar.
+
+That last one is a fix, not a measurement. The first full-height build put
+the title field's outline against the status-bar clock: a half-height sheet
+had never met the status bar, so this sheet had never paid the inset and had
+never needed to. `contentWindowInsets = { WindowInsets.statusBars }`, and
+`CaptureSheetStructuralTest` pins it now — nothing else in the module can
+see it, since the sheet composes and every field pin passes with the line
+deleted.
+
 Screenshots need `adb exec-out screencap -p -d <display-id>`; without `-d`
-adb writes a warning banner into the PNG, and the ids differ inner vs cover
-(`adb shell dumpsys SurfaceFlinger --display-id`). On a folded Fold the
+adb writes a warning banner into the PNG **and the file is plain text, not a
+PNG at all**, and the ids differ inner vs cover — they are the long
+`SurfaceFlinger` ids (`adb shell dumpsys SurfaceFlinger --display-id`), not
+`0`/`1`, which `screencap` rejects as invalid. On a folded Fold the
 outer panel is the live one — `adb shell dumpsys display | grep -c
 mScreenState=ON` will not tell you which; read `state ON` off the
 `DisplayDeviceInfo` block for "Outer Display" / "Inner Display".

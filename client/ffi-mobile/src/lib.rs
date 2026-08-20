@@ -5435,7 +5435,7 @@ mod tests {
     }
 
     /// `ui/forms/PriorityRow.kt` hardcodes its display order as
-    /// `1, 2, 3, 4, 0` (Urgent..Low, then No priority last) because a plain
+    /// `1, 2, 3, 4` (Urgent..Low) because a plain
     /// JVM test cannot call a generated JNI binding directly
     /// (`CaptureSubmitRefusalTest`'s own doc — no host-arch `.so` in that
     /// process), so the pin lives here, on the Rust side of the seam: if
@@ -5448,6 +5448,13 @@ mod tests {
     /// per-item decision function on the mobile seam that no Kotlin caller
     /// wants (the module doc's own asymmetry — Android reads applied
     /// results), to buy a test nothing but the test would use.
+    ///
+    /// The wire value `0` is still sorted here though the row stopped
+    /// drawing a chip for it on 2026-08-20 (not picking a priority is what
+    /// says "none"): its landing *last*, behind every priority the row does
+    /// draw, is precisely what makes an unrendered `0` a safe resting state
+    /// rather than a value the reader is silently stuck at the top of the
+    /// board with.
     #[test]
     fn the_priority_row_order_matches_priority_rank() {
         let mut wire_values = vec![0i64, 1, 2, 3, 4];

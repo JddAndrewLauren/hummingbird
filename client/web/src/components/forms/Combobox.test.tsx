@@ -135,6 +135,9 @@ describe("Combobox", () => {
   it("lets Enter through when no option is active", () => {
     const onKeyDown = vi.fn();
     render(
+      // A stand-in for the capture form's own key handler — the enclosing
+      // handler this test is about. Not a control, and not shipped UI.
+      // eslint-disable-next-line jsx-a11y/no-static-element-interactions
       <div onKeyDown={onKeyDown}>
         <Combobox label="Context" value="" suggestions={CONTEXTS} onChange={() => {}} />
       </div>,
@@ -148,6 +151,9 @@ describe("Combobox", () => {
   it("keeps a committing Enter away from an enclosing submit", () => {
     const onKeyDown = vi.fn();
     render(
+      // A stand-in for the capture form's own key handler — the enclosing
+      // handler this test is about. Not a control, and not shipped UI.
+      // eslint-disable-next-line jsx-a11y/no-static-element-interactions
       <div onKeyDown={onKeyDown}>
         <Combobox label="Context" value="" suggestions={CONTEXTS} onChange={() => {}} />
       </div>,
