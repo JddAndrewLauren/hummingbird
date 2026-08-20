@@ -78,8 +78,11 @@ CREATE TABLE IF NOT EXISTS projects (
   version     INTEGER NOT NULL
 )";
 
-/// Route: 1:1 with project, separate table because /to-actions owns it
-/// (glossary: Destination, Fog, Notes, ordered actions).
+/// Route: 1:1 with project, a separate table because it carries the plan
+/// rather than the project's identity (glossary: Destination, Fog, Notes,
+/// ordered actions). ADR-0009 split it out because `/to-actions` owned it;
+/// since ADR-0030 the skill and the clients share the lane and the ordinary
+/// CAS arbitrates, so nothing here is single-writer.
 pub const CREATE_ROUTES: &str = "\
 CREATE TABLE IF NOT EXISTS routes (
   project_id  TEXT PRIMARY KEY REFERENCES projects(id),

@@ -69,6 +69,10 @@ Two things follow that are worth stating rather than discovering:
   regex" existed because a `## Fog` section might say "None — the unknowns are carried
   inside the two investigation actions". A row with a `resolved_at` needs no such reading:
   resolve a question when it is answered, and never write a row saying there is no fog.
+- **This skill is not the Route's only writer.** Since ADR-0030 the human edits
+  destination, notes, fog and action order from the app too, and the ordinary
+  compare-and-set arbitrates — a 409 on a re-run means someone edited that row, so re-read
+  and rebase rather than treating it as an error.
 
 Actions are listed by `project_pos` — orientation only; the `blocked_by` edges are the
 real sequencing.
