@@ -151,7 +151,10 @@ export function hasTriageEdits(draft: TriageDraft, item: TaskItemDTO): boolean {
  * that touches neither field never re-copies anything into an item already
  * sitting in the project — the acceptance's "nothing retroactive". A context
  * the human DID type always wins: `context.length === 0` is false the moment
- * they have, so nothing here ever overwrites it. This is also entry point 3
+ * they have, so nothing here ever overwrites it. An explicit CLEAR wins too —
+ * gated on `!("context" in edits)` — so a human who empties a seeded context
+ * and picks a project in the same save keeps the clear; the default is only
+ * copied when `edits.context` is still unset. This is also entry point 3
  * of the decision ("assigning a project to an already-existing context-less
  * item") for free — detail mode's Save calls this same function.
  *
@@ -195,9 +198,14 @@ export function buildTriageEdits(
   }
 
   // ADR-0030 decision 3's copy-at-mint — see this function's own doc for the
-  // transition gate and why it cannot fire on an untouched save.
+  // transition gate and why it cannot fire on an untouched save. Also gated
+  // on `!("context" in edits)`: when the block above already recorded an
+  // explicit clear (the human emptied a seeded context in this same save),
+  // that clear is human-typed and wins — never overwritten by the default,
+  // matching the sibling copy-at-mint path merged in #632.
   if (
     context.length === 0 &&
+    !("context" in edits) &&
     project !== null &&
     project.defaultContext !== null &&
     item.projectId !== project.id

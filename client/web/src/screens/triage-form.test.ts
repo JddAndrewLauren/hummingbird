@@ -235,6 +235,20 @@ describe("buildTriageEdits", () => {
         projectId: "p1",
       });
     });
+
+    it("keeps an explicit clear when the human also moves the item into a project in the same save", () => {
+      // The bug this guards: an item carrying `@errands` whose human deletes
+      // the context AND picks a project in one save must end up with the
+      // context cleared, not silently re-filled by the project's default —
+      // the human's clear is human-typed and always wins, same as a typed
+      // value above.
+      const stocked = itemDTO({ id: "i3", context: "@errands", projectId: null });
+      const draft = { ...draftFromItem(stocked), context: "", projectId: "p1" };
+      expect(buildTriageEdits(draft, stocked, withDefault)).toEqual({
+        projectId: "p1",
+        context: null,
+      });
+    });
   });
 });
 
