@@ -589,6 +589,10 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               task={task}
               onTriage={handleTriage}
               onComplete={(itemId) => handleAct(itemId, "complete")}
+              // #631: the same project create Projects' own grid uses
+              // (`useProjectsWiring.ts`) — one write door, reached from a
+              // second surface.
+              onCreateProject={handleCreateProject}
               nowMs={syncNowMs}
               grill={grillTakeover}
             />

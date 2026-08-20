@@ -20,12 +20,17 @@ import type { TaskState } from "../store/store";
 
 const NOW = 10 * 60 * 60 * 1000;
 
-function renderTriage(task: TaskState, options: { withTriage?: boolean } = {}) {
+function renderTriage(
+  task: TaskState,
+  options: { withTriage?: boolean; onCreateProject?: (name: string) => void } = {},
+) {
   const onTriage = vi.fn();
+  const onCreateProject = options.onCreateProject ?? vi.fn();
   const view = render(
     <TriageScreen
       task={task}
       onTriage={options.withTriage === false ? undefined : onTriage}
+      onCreateProject={onCreateProject}
       nowMs={NOW}
     />,
   );
@@ -34,10 +39,11 @@ function renderTriage(task: TaskState, options: { withTriage?: boolean } = {}) {
       <TriageScreen
         task={nextTask}
         onTriage={options.withTriage === false ? undefined : onTriage}
+        onCreateProject={onCreateProject}
         nowMs={NOW}
       />,
     );
-  return { onTriage, rerender };
+  return { onTriage, onCreateProject, rerender };
 }
 
 /** The collapsed row IS the button that expands it, and its accessible name is
@@ -401,6 +407,117 @@ describe("TriageScreen — the editor", () => {
     expect(
       screen.getByRole("button", { name: /promote to ready/i }).hasAttribute("disabled"),
     ).toBe(true);
+  });
+
+  // #631, ADR-0030 decision 3: promoting into a project the item carries no
+  // context of its own copies the project's default onto the item, editable
+  // and visible from that point exactly like a typed value. Proved here
+  // (through `TriageRow`/`ItemPanel`), not only in `triage-form.test.ts`,
+  // because this is the wiring `docs/SURFACES.md`'s own closing section says
+  // a unit test on the pure helper alone cannot reach.
+  it("copies the project's default context onto a context-less item at promotion", () => {
+    const { onTriage } = renderTriage(
+      taskState({
+        triageInbox: [itemDTO({ id: "i1", title: "vague thing", context: null })],
+        projects: [projectDTO({ id: "p1", name: "Kitchen rebuild", defaultContext: "@computer" })],
+      }),
+    );
+    fireEvent.click(row("vague thing"));
+    fireEvent.change(field("Project"), { target: { value: "p1" } });
+    fireEvent.click(screen.getByRole("button", { name: /promote to ready/i }));
+    expect(onTriage).toHaveBeenCalledWith("i1", "ready", { projectId: "p1", context: "@computer" });
+  });
+
+  it("a typed context wins over the project's default", () => {
+    const { onTriage } = renderTriage(
+      taskState({
+        triageInbox: [itemDTO({ id: "i1", title: "vague thing", context: null })],
+        projects: [projectDTO({ id: "p1", name: "Kitchen rebuild", defaultContext: "@computer" })],
+      }),
+    );
+    fireEvent.click(row("vague thing"));
+    fireEvent.change(field("Context"), { target: { value: "@errands" } });
+    fireEvent.change(field("Project"), { target: { value: "p1" } });
+    fireEvent.click(screen.getByRole("button", { name: /promote to ready/i }));
+    expect(onTriage).toHaveBeenCalledWith("i1", "ready", { projectId: "p1", context: "@errands" });
+  });
+});
+
+// #631: the triage row's Project field also offers minting a project inline,
+// so filing a capture into one that does not exist yet does not mean
+// abandoning the triage pass. `screens/projects/roster.ts`'s `awaitingCreate`
+// is this screen's own precedent for the "no optimistic overlay, so say it is
+// waiting" contract (`Core::create_project`'s own doc) — `triage-form.ts`'s
+// `awaitingProjectCreate` is that same read over the flat `projects` list a
+// row already has.
+describe("TriageScreen — inline project creation (#631)", () => {
+  function newProjectOption(): HTMLElement {
+    return within(editor()).getByRole("option", { name: "+ New project" });
+  }
+
+  it("switches the Project field to a name-and-create form", () => {
+    renderTriage(
+      taskState({ triageInbox: [itemDTO({ id: "i1", title: "vague thing" })] }),
+    );
+    fireEvent.click(row("vague thing"));
+    expect(newProjectOption()).toBeDefined();
+
+    fireEvent.change(field("Project"), { target: { value: "__new_project__" } });
+
+    expect(within(editor()).getByLabelText("New project")).toBeDefined();
+    expect(screen.queryByLabelText("Project")).toBeNull();
+    expect(within(editor()).getByRole("button", { name: "Create" })).toBeDefined();
+  });
+
+  it("creating sends the trimmed name and says it is waiting", () => {
+    const { onCreateProject } = renderTriage(
+      taskState({ triageInbox: [itemDTO({ id: "i1", title: "vague thing" })] }),
+    );
+    fireEvent.click(row("vague thing"));
+    fireEvent.change(field("Project"), { target: { value: "__new_project__" } });
+    fireEvent.change(within(editor()).getByLabelText("New project"), {
+      target: { value: "  Kitchen rebuild  " },
+    });
+    fireEvent.click(within(editor()).getByRole("button", { name: "Create" }));
+
+    expect(onCreateProject).toHaveBeenCalledWith("Kitchen rebuild");
+    expect(onCreateProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("Cancel returns to the picker with no create issued", () => {
+    const { onCreateProject } = renderTriage(
+      taskState({ triageInbox: [itemDTO({ id: "i1", title: "vague thing" })] }),
+    );
+    fireEvent.click(row("vague thing"));
+    fireEvent.change(field("Project"), { target: { value: "__new_project__" } });
+    fireEvent.click(within(editor()).getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByLabelText("New project")).toBeNull();
+    expect(field("Project")).toBeDefined();
+    expect(onCreateProject).not.toHaveBeenCalled();
+  });
+
+  it("says it is waiting once a create is enqueued, and stops once the project lands", () => {
+    const task = taskState({
+      triageInbox: [itemDTO({ id: "i1", title: "vague thing" })],
+      projects: [],
+      lastProjectWrite: { seed: "s1", projectId: "p-new", kind: "ok", error: null },
+    });
+    const { rerender } = renderTriage(task);
+    fireEvent.click(row("vague thing"));
+
+    expect(screen.getByText(/creating — appears when the round trip lands/i)).toBeDefined();
+
+    rerender(
+      taskState({
+        triageInbox: [itemDTO({ id: "i1", title: "vague thing" })],
+        projects: [projectDTO({ id: "p-new", name: "Kitchen rebuild" })],
+        lastProjectWrite: { seed: "s1", projectId: "p-new", kind: "ok", error: null },
+      }),
+    );
+
+    expect(screen.queryByText(/creating — appears when the round trip lands/i)).toBeNull();
+    expect(within(editor()).getByRole("option", { name: "Kitchen rebuild" })).toBeDefined();
   });
 });
 

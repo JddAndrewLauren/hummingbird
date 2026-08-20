@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  awaitingProjectCreate,
   buildTriageEdits,
   draftFromItem,
   effectiveDraft,
   hasTriageEdits,
   triageDraftProblems,
 } from "./triage-form";
-import { itemDTO } from "../test/component";
+import { itemDTO, projectDTO } from "../test/component";
+import type { TaskProjectResult } from "../store/store";
 
 // The draft is seeded from the item now, so every assertion here is about a
 // DIFF: what changed against the row on screen. That is what makes "an
@@ -170,6 +172,84 @@ describe("buildTriageEdits", () => {
       priority: 1,
     });
   });
+
+  // #631, ADR-0030 decision 3: copy-at-mint. The four combinations the
+  // acceptance names — draft context present/absent × project default
+  // present/absent — each against a promotion (`item.projectId` is `null`,
+  // `draft.projectId` names the project being entered), so the transition
+  // gate is satisfied in every case and the four differ only on the axes the
+  // acceptance is about.
+  describe("copy-at-mint: the project's default_context at promotion", () => {
+    const withDefault = projectDTO({ id: "p1", defaultContext: "@computer" });
+    const withoutDefault = projectDTO({ id: "p1", defaultContext: null });
+
+    it("copies the project's default onto a context-less draft", () => {
+      const draft = { ...draftFromItem(item), projectId: "p1" };
+      expect(buildTriageEdits(draft, item, withDefault)).toEqual({
+        projectId: "p1",
+        context: "@computer",
+      });
+    });
+
+    it("sends nothing for context when the project carries no default", () => {
+      const draft = { ...draftFromItem(item), projectId: "p1" };
+      expect(buildTriageEdits(draft, item, withoutDefault)).toEqual({
+        projectId: "p1",
+      });
+    });
+
+    it("a typed context wins over a default the project carries", () => {
+      const draft = { ...draftFromItem(item), projectId: "p1", context: "@errands" };
+      expect(buildTriageEdits(draft, item, withDefault)).toEqual({
+        projectId: "p1",
+        context: "@errands",
+      });
+    });
+
+    it("a typed context is sent as-is with no project default to compete with", () => {
+      const draft = { ...draftFromItem(item), projectId: "p1", context: "@errands" };
+      expect(buildTriageEdits(draft, item, withoutDefault)).toEqual({
+        projectId: "p1",
+        context: "@errands",
+      });
+    });
+
+    it("never copies onto an item already sitting in the project — nothing retroactive", () => {
+      // The item is already in `p1` and already context-less; this call
+      // changes an unrelated field (title) and touches neither context nor
+      // project. `item.projectId === project.id`, so the transition gate
+      // never opens.
+      const already = itemDTO({ id: "i2", title: "old title", projectId: "p1", context: null });
+      const draft = { ...draftFromItem(already), title: "new title" };
+      expect(buildTriageEdits(draft, already, withDefault)).toEqual({
+        title: "new title",
+      });
+    });
+
+    it("does nothing extra when no project is passed at all", () => {
+      const draft = { ...draftFromItem(item), projectId: "p1" };
+      expect(buildTriageEdits(draft, item, null)).toEqual({
+        projectId: "p1",
+      });
+      expect(buildTriageEdits(draft, item)).toEqual({
+        projectId: "p1",
+      });
+    });
+
+    it("keeps an explicit clear when the human also moves the item into a project in the same save", () => {
+      // The bug this guards: an item carrying `@errands` whose human deletes
+      // the context AND picks a project in one save must end up with the
+      // context cleared, not silently re-filled by the project's default —
+      // the human's clear is human-typed and always wins, same as a typed
+      // value above.
+      const stocked = itemDTO({ id: "i3", context: "@errands", projectId: null });
+      const draft = { ...draftFromItem(stocked), context: "", projectId: "p1" };
+      expect(buildTriageEdits(draft, stocked, withDefault)).toEqual({
+        projectId: "p1",
+        context: null,
+      });
+    });
+  });
 });
 
 describe("triageDraftProblems", () => {
@@ -223,5 +303,23 @@ describe("triageDraftProblems", () => {
         priority: expect.any(String),
       });
     }
+  });
+});
+
+describe("awaitingProjectCreate", () => {
+  function write(kind: TaskProjectResult["kind"], overrides: Partial<TaskProjectResult> = {}): TaskProjectResult {
+    return { seed: "s1", projectId: null, kind, error: null, ...overrides };
+  }
+
+  it("waits on a minted id the row has not seen, and stops once it lands", () => {
+    const ok = write("ok", { projectId: "p-new" });
+    expect(awaitingProjectCreate([], ok)).toBe(true);
+    expect(awaitingProjectCreate([projectDTO({ id: "p-new" })], ok)).toBe(false);
+  });
+
+  it("waits on nothing before the first write, or after one that did not go through", () => {
+    expect(awaitingProjectCreate([], null)).toBe(false);
+    expect(awaitingProjectCreate([], write("failed", { error: "boom" }))).toBe(false);
+    expect(awaitingProjectCreate([], write("busy"))).toBe(false);
   });
 });

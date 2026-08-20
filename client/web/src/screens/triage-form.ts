@@ -18,7 +18,8 @@
 //     against the item is what keeps an untouched field out of the mutation
 //     entirely.
 
-import type { TaskItemDTO, TriageEdits } from "../store/protocol";
+import type { ProjectDTO, TaskItemDTO, TriageEdits } from "../store/protocol";
+import type { TaskProjectResult } from "../store/store";
 import { captureMetaProblems } from "../decisions/seam";
 
 /** One triage-inbox item's editable draft. Every field is a string because
@@ -139,10 +140,32 @@ export function hasTriageEdits(draft: TriageDraft, item: TaskItemDTO): boolean {
  * either way; collapsing the fields into one `PATCH` is `Core::triage`'s job,
  * not this function's — this only decides WHICH fields are changes.
  *
+ * `project`, since #631, is whatever `ProjectDTO` `draft.projectId` currently
+ * resolves to (`null` when it resolves to none). It exists for ADR-0030
+ * decision 3's copy-at-mint: when this call assigns the item into a project
+ * it was not already in — `item.projectId !== project.id`, the "promotion"
+ * moment the decision names — and the draft's own `context` is empty, the
+ * project's `defaultContext` (when it has one) is copied onto `edits.context`
+ * as the item's own value, exactly as if the human had typed it. Gated on the
+ * transition (not merely "context empty, project selected") so a later save
+ * that touches neither field never re-copies anything into an item already
+ * sitting in the project — the acceptance's "nothing retroactive". A context
+ * the human DID type always wins: `context.length === 0` is false the moment
+ * they have, so nothing here ever overwrites it. An explicit CLEAR wins too —
+ * gated on `!("context" in edits)` — so a human who empties a seeded context
+ * and picks a project in the same save keeps the clear; the default is only
+ * copied when `edits.context` is still unset. This is also entry point 3
+ * of the decision ("assigning a project to an already-existing context-less
+ * item") for free — detail mode's Save calls this same function.
+ *
  * Callers are expected to have consulted `triageDraftProblems` first; this
  * does not re-check validity, the same trust `capture-validation.ts` is given
  * by its own caller. */
-export function buildTriageEdits(draft: TriageDraft, item: TaskItemDTO): TriageEdits {
+export function buildTriageEdits(
+  draft: TriageDraft,
+  item: TaskItemDTO,
+  project: ProjectDTO | null = null,
+): TriageEdits {
   const edits: TriageEdits = {};
 
   const title = draft.title.trim();
@@ -174,6 +197,22 @@ export function buildTriageEdits(draft: TriageDraft, item: TaskItemDTO): TriageE
     edits.context = context.length > 0 ? context : null;
   }
 
+  // ADR-0030 decision 3's copy-at-mint — see this function's own doc for the
+  // transition gate and why it cannot fire on an untouched save. Also gated
+  // on `!("context" in edits)`: when the block above already recorded an
+  // explicit clear (the human emptied a seeded context in this same save),
+  // that clear is human-typed and wins — never overwritten by the default,
+  // matching the sibling copy-at-mint path merged in #632.
+  if (
+    context.length === 0 &&
+    !("context" in edits) &&
+    project !== null &&
+    project.defaultContext !== null &&
+    item.projectId !== project.id
+  ) {
+    edits.context = project.defaultContext;
+  }
+
   // A number on the wire, a string in the control. `NOT NULL`, so there is no
   // clear — "No priority" is the real value `0`, not an absence.
   const priority = Number(draft.priority);
@@ -192,4 +231,27 @@ export function buildTriageEdits(draft: TriageDraft, item: TaskItemDTO): TriageE
   }
 
   return edits;
+}
+
+/** #631: the triage row's Project select carries this sentinel as its own
+ * option, alongside every real project id — never sent anywhere, only
+ * matched by the field's own `onChange` to switch the control from a picker
+ * into the inline "new project" form. */
+export const NEW_PROJECT_OPTION = "__new_project__";
+
+/** True while an inline project create issued from a triage row is still in
+ * flight — its minted id has not reached `projects` yet. Same read
+ * `screens/projects/roster.ts`'s `awaitingCreate` makes for the Projects
+ * grid, over the flat list a row already has on hand rather than that
+ * module's `ProjectRow[]`; there is no optimistic overlay to look in either
+ * way (`Core::create_project`'s own doc). */
+export function awaitingProjectCreate(
+  projects: ProjectDTO[],
+  lastProjectWrite: TaskProjectResult | null,
+): boolean {
+  if (lastProjectWrite === null || lastProjectWrite.kind !== "ok") {
+    return false;
+  }
+  const { projectId } = lastProjectWrite;
+  return projectId !== null && !projects.some((project) => project.id === projectId);
 }
