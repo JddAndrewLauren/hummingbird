@@ -10,6 +10,7 @@ import { SettingsScreen } from "./screens/SettingsScreen";
 import { StatusScreen } from "./screens/StatusScreen";
 import { TriageScreen } from "./screens/TriageScreen";
 import type { CaptureDestination } from "./screens/capture-destination";
+import { liveWriteFailureCount } from "./screens/write-failure";
 import { isCaptureHotkey } from "./shell/capture-hotkey";
 import { isRecallHotkey } from "./shell/recall-hotkey";
 import { escapeClaimant, type EscapeClaimant } from "./shell/escape-claimants";
@@ -454,7 +455,20 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // One counts object for whichever nav is mounted — the two forms show the
   // same numbers, so a second literal would be a second answer waiting to
   // diverge.
-  const navCounts = demo ? { triage: demo.triage.length, alerts: demo.alerts.length } : {};
+  //
+  // #455: derived from the store (`task`, which is `demoTask ?? liveTask`),
+  // not from `DemoData` — the kit fixture used to be the only source, which
+  // meant a real device never showed either badge at all, however full its
+  // triage inbox actually was. `triageInbox.length` is the same real count
+  // `TriageScreen`'s own "N captured" reads; `liveWriteFailureCount` is the
+  // one thing the store has that answers to "alerts" at all, since
+  // `AlertsScreen` itself stays demo-fixture-only (ADR-0016) — it is 0 on an
+  // ordinary real device and 2 under the board fixture, which seeds both of
+  // Now's stranded-write alerts on purpose (`demo-task-state.ts`).
+  const navCounts = {
+    triage: task.triageInbox.length,
+    alerts: liveWriteFailureCount(task.lastTriage, task.lastAct),
+  };
 
   function handleHome() {
     setScreen("now");
