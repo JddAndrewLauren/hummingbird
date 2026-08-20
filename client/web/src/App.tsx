@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { demoCalendar, demoData, demoTaskState } from "./fixtures/demo";
 import { AlertsScreen } from "./screens/AlertsScreen";
 import { DoneScreen } from "./screens/DoneScreen";
@@ -10,6 +10,7 @@ import { SettingsScreen } from "./screens/SettingsScreen";
 import { StatusScreen } from "./screens/StatusScreen";
 import { TriageScreen } from "./screens/TriageScreen";
 import type { CaptureDestination } from "./screens/capture-destination";
+import { CONTEXTS, contextSuggestions } from "./screens/field-vocabulary";
 import { isCaptureHotkey } from "./shell/capture-hotkey";
 import { isRecallHotkey } from "./shell/recall-hotkey";
 import { escapeClaimant, type EscapeClaimant } from "./shell/escape-claimants";
@@ -210,6 +211,30 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // Triage-screen version was a counter and not a boolean.
   const [captureOpen, setCaptureOpen] = useState(false);
   const [captureFocusRequestId, setCaptureFocusRequestId] = useState(0);
+  // What capture's Context combobox offers. The suggested list can never grow
+  // on its own, so a context typed once was invisible to the next capture;
+  // this is that list unioned with the contexts the live items actually carry
+  // (`field-vocabulary.ts`'s `contextSuggestions`, whose ordering is Rust's).
+  //
+  // The four current slices, and deliberately not Done or Ledger: a context
+  // that survives only on finished work is not a place this person still
+  // works, and offering it would grow the list monotonically forever. Blocked
+  // entries wrap their item, hence the `.map`.
+  //
+  // `useMemo` because it crosses the wasm seam and the popover re-renders on
+  // every keystroke in the field. `demo` takes the bare suggested list, the
+  // same gating shape as `projects` below — the fixture world has no worker
+  // and no reason to advertise its fixtures' contexts as real places.
+  const captureContexts = useMemo(
+    () =>
+      contextSuggestions([
+        ...task.frontier,
+        ...task.triageInbox,
+        ...task.grillingItems,
+        ...task.blocked.map((entry) => entry.item),
+      ]),
+    [task.frontier, task.triageInbox, task.grillingItems, task.blocked],
+  );
   // Whether `CaptureBox` currently has a live dictation session, reported up
   // through `CapturePopover`, and the bumped counter that asks it to cancel
   // one in place (#380) — see the Escape branch below and
@@ -652,6 +677,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         onClose={closeCapture}
         onSubmit={handleCapture}
         projects={demo ? [] : task.projects}
+        contextSuggestions={demo ? CONTEXTS : captureContexts}
         demo={demo !== null}
         lastCapture={demo ? null : task.lastCapture}
         cancelDictationRequestId={cancelDictationRequestId}

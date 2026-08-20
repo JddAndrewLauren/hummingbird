@@ -396,7 +396,8 @@ for (const theme of THEMES) {
     test("now's columns capture, at production's density", async ({ page }, testInfo) => {
       // #420, and the reason the board world exists. `NowScreen` branches to
       // `RealFrontier` only when `demo` is null, so everything ADR-0021
-      // decided — the wrapping columns, the switchable axis, the Filter
+      // decided — the columns (packed into lanes since the width became a
+      // measured fact, `screens/frontier-lanes.ts`), the switchable axis, the Filter
       // panel, the unsorted captures as cards among the startable actions,
       // and #418's stranded-triage alert — was invisible to this gate from
       // the day it landed. Decision 8 recorded that; this closes it.

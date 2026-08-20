@@ -29,7 +29,6 @@ import {
 } from "./capture-meta";
 import { energyIcon, levelColor, sizeIcon } from "./size-energy";
 import { canSubmitCapture } from "./capture-validation";
-import { CONTEXTS } from "./field-vocabulary";
 import { PRIORITY_OPTIONS } from "./priority";
 import type { CaptureDestination } from "./capture-destination";
 
@@ -41,9 +40,12 @@ import type { CaptureDestination } from "./capture-destination";
 // nothing left to hold and went away, along with the length assertion in
 // `capture-meta.test.ts` that was the only thing keeping the two aligned.
 //
-// The context list is NOT restated here. `screens/field-vocabulary.ts`'s
-// `CONTEXTS` is the one copy this branch left standing, and capture, the
-// triage editor and the frontier's chip order all read it. It reaches a
+// The context list is NOT restated here, and is no longer even imported: the
+// suggestions arrive as a prop, built by `field-vocabulary.ts`'s
+// `contextSuggestions` from `CONTEXTS` plus the contexts live items actually
+// carry, because the box has no store of its own to read them from. `CONTEXTS`
+// is still the one suggested copy this repo keeps standing, and the triage
+// editor and the frontier's chip order still read it directly. It reaches a
 // `Combobox` rather than a `Select` because context is an open vocabulary —
 // that module's header carries the decision.
 
@@ -71,6 +73,12 @@ export interface CaptureBoxProps {
    * the select still renders, offering "No project" alone, because an empty
    * list is a fact about the projects and not a reason to hide the control. */
   projects: ProjectDTO[];
+  /** What the Context `Combobox` offers — `field-vocabulary.ts`'s
+   * `contextSuggestions`, the suggested list unioned with the contexts live
+   * items actually carry, so a context typed once here is offered the next
+   * time instead of having to be retyped. A prop rather than a call in this
+   * file because the items are the caller's state; the box has no store. */
+  contextSuggestions: readonly string[];
   /** Demo mode has no worker behind it, so no `captureResult` will ever
    * arrive: the demo arm clears on submit (the fixture queue IS the
    * acknowledgement) and must never wear a stale failure from a previous
@@ -201,6 +209,7 @@ const SETUP_CLOSED: DictationSetupPhase = { phase: "closed" };
 export function CaptureBox({
   onSubmit,
   projects,
+  contextSuggestions,
   demo,
   focusRequestId,
   lastCapture,
@@ -512,12 +521,22 @@ export function CaptureBox({
   // clear a draft twice and a replayed/stale seed clears nothing at all. A
   // capture carries no item id, so there is no per-item keying to do — the
   // seed IS the identity.
+  //
+  // **Context is the one carve-out from that clear.** Adding three things for
+  // the same place is the normal sitting — the whole reason the popover does
+  // not close on submit — and re-picking `@errands` for each of them taxes
+  // every capture after the first for a decision already made. Size, energy,
+  // dates and project still clear, because those are genuinely per-item;
+  // where you are is not. The stickiness is bounded by the box's own life: the
+  // popover returns `null` when shut (`CapturePopover.tsx`), so the box
+  // unmounts and the preserved context dies with it — there is no teardown to
+  // write, and nothing survives to the next time capture is opened.
   const [processedCaptureSeed, setProcessedCaptureSeed] = useState<string | null>(null);
   if (lastCapture && lastCapture.seed !== processedCaptureSeed) {
     setProcessedCaptureSeed(lastCapture.seed);
     if (lastCapture.kind === "ok") {
       setDraft("");
-      setMeta(EMPTY_CAPTURE_META);
+      setMeta({ ...EMPTY_CAPTURE_META, context: meta.context });
       setDetailsOpen(false);
       // The dictation failure goes with the draft it happened to. Left
       // standing, a "Nothing was heard." would sit under a freshly emptied box
@@ -594,7 +613,9 @@ export function CaptureBox({
       onSubmit(draft, destination, resolveCaptureFields(meta));
       setLast({ destination, title: draft });
       setDraft("");
-      setMeta(EMPTY_CAPTURE_META);
+      // Same carve-out as the clear-on-ok block above: context stays, the
+      // rest goes. Two sites because demo has no result to wait for.
+      setMeta({ ...EMPTY_CAPTURE_META, context: meta.context });
       setDetailsOpen(false);
       focusField();
       return;
@@ -710,8 +731,15 @@ export function CaptureBox({
               Triage at all. A bare `+` because minting is the gesture the
               hand learns and then stops reading, and the accessible name
               still says the whole thing. */}
+          {/* `md`, not `lg`: at `lg` this square is 44px beside a `md` field
+              and a `md` Triage button that are both 36, so it stuck 8px above
+              the row it belongs to. `md`'s own box is 34, so the explicit 36
+              is what makes it exactly the field's height rather than merely
+              closer — `IconButton` spreads `style` last, over its own sizing.
+              The row's `alignItems: "flex-end"` then lines all three up. */}
           <IconButton
-            size="lg"
+            size="md"
+            style={{ height: 36, width: 36 }}
             variant="solid"
             icon="plus"
             label="Mint action"
@@ -767,7 +795,7 @@ export function CaptureBox({
             label="Context"
             value={meta.context}
             onChange={(context) => setMeta({ ...meta, context })}
-            suggestions={CONTEXTS}
+            suggestions={contextSuggestions}
             placeholder="Not set"
           />
         </div>

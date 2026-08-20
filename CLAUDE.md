@@ -56,7 +56,7 @@ grepping it.
 | The standing-question panes | `client/web/src/screens/questions/` + `*-pane/` | `questions/contract.ts`, ADR-0015 |
 | The Status screen (second surface of the ranked region) | `client/web/src/screens/StatusScreen.tsx` (#311) | `questions/contract.ts`, ADR-0017 |
 | Android's Status screen — the status four, plus the phone's own persisted sync history (#536/M4) | `client/android/.../Status{Screen,ViewModel}.kt`, `client/android/.../core/SyncHistoryStore.kt` | `StatusScreen.kt`, then `SyncHistoryStore.kt`; ADR-0017/0025 |
-| Now's centre column — the frontier in columns | `client/web/src/screens/{FrontierColumns.tsx,frontier-columns.ts,frontier-facets.ts,frontier-prefs.ts}` (#399) | `FrontierColumns.tsx`, ADR-0021 |
+| Now's centre column — the frontier in columns | `client/web/src/screens/{FrontierColumns.tsx,frontier-columns.ts,frontier-facets.ts,frontier-lanes.ts,frontier-prefs.ts}` (#399) | `FrontierColumns.tsx`, ADR-0021 |
 | Local dictation into capture (#379) | `client/web/src/speech/local-dictation.ts`, `client/web/src/screens/capture-dictation.ts` | those headers, then ADR-0022 |
 | The responsive layer and the two nav forms | `client/web/src/shell/{breakpoints.ts,responsive.css,useIsPhone.ts,NavBar.tsx,nav-bar.ts}` | `responsive.css` (why classes vs. a hook), then `nav-bar.ts` |
 | Surfaces registry (visual gate) | `client/web/visual/` | `docs/SURFACES.md` |
