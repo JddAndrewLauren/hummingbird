@@ -9,8 +9,9 @@
 
 A dedicated agent (`hummingbird-agent`, persona **Allen**) on the operator's OpenClaw gateway:
 it starts every session by sweeping the live task list, adds and edits
-items from chat, and is the operator's personal default way to run a grill
-interview or a microtask breakdown. It is deliberately **not** the
+items from chat, is the operator's personal default way to run a grill
+interview or a microtask breakdown, and since ADR-0031 can put things on
+the operator's Google Calendar. It is deliberately **not** the
 hummingbird chief-of-staff agent (`hummingbird`, persona **Rufous**, the
 `/deposit` target), whose charter discards exactly the status this agent
 lives on. Rufous held the name Allen until 2026-08-20, when the two
@@ -27,6 +28,7 @@ under the skill's name and carries the amendment.
 | `openclaw/hummingbird-tasks/` | The task CLI skill: `SKILL.md` + `scripts/hb-tasks.sh` (`sweep`/`add`/`edit`/`done`, items only, CAS writes). |
 | `openclaw/microtask/` | The microtask arm: `SKILL.md` + `scripts/hb.sh`, a **verbatim copy** of `.claude/skills/microtask/scripts/hb.sh` — same frozen step-id recipe, CI-pinned against drift. |
 | `openclaw/grill-me/` | The grill arm: `SKILL.md` + `scripts/grill-record.sh` (one verb: `POST /api/grills` for an accepted outcome). |
+| `openclaw/calendar/` | Google Calendar: `SKILL.md` + `scripts/gcal.sh` (`agenda`/`add`/`edit`/`move`/`cancel`, events only, frozen event-id recipe). The one skill here that writes somewhere other than the authority — ADR-0031. |
 | `openclaw/agent/AGENTS.md` | The agent's charter template — session-start sweep, the default gestures, the boundaries. |
 | `.github/workflows/openclaw.yml` | The gate: shellcheck over every script here, plus the step-id parity check between the two `hb.sh` copies. |
 
@@ -58,10 +60,21 @@ without it — this table is a description, not a ranking.
 The agent holds its own device token, id **`openclaw-agent`**, at
 `~/.config/hummingbird/api-token` on the gateway machine. A `device` token
 is write-everything, can cause runner spend via `POST /api/skills/run`, and
-since #577 can mint a Google calendar token — so this file is treated as a
-write credential with a spend faucet, exactly like every other device
-token (CLAUDE.md's blast-radius section). It is revocable on its own:
+since #577 can mint a Google `calendar.readonly` token — so this file is
+treated as a write credential with a spend faucet, exactly like every other
+device token (CLAUDE.md's blast-radius section). It is revocable on its own:
 `DELETE /api/admin/tokens/openclaw-agent`, no other device affected.
+
+Since ADR-0031 this one token is also **the only member of the `device`
+population that can write the operator's Google Calendar**. `POST
+/api/google/calendar_write_token` mints a `calendar.events` bearer for
+holders on an allowed-holder list — today `["openclaw-agent"]` — and answers
+403 to every other device token, browsers included. The Google credential
+itself never leaves the authority (three `GOOGLE_CALENDAR_WRITE_*` Wrangler
+secrets), so there is still exactly one credential file on this gateway, and
+the revoke above still kills everything at once: task writes, runner spend
+and calendar writes together. Whoever holds this file can move a meeting on
+the operator's real calendar.
 
 ## Operator runbook (nothing below is run by an agent slice)
 
@@ -150,13 +163,18 @@ names the step and points there.
    openclaw agents add hummingbird-agent
    ```
 
-4. **Install the three skills** into that agent from the clone:
+4. **Install the four skills** into that agent from the clone:
 
    ```sh
    openclaw skills install <clone>/openclaw/hummingbird-tasks --agent hummingbird-agent
    openclaw skills install <clone>/openclaw/microtask        --agent hummingbird-agent
    openclaw skills install <clone>/openclaw/grill-me         --agent hummingbird-agent
+   openclaw skills install <clone>/openclaw/calendar         --agent hummingbird-agent
    ```
+
+   `calendar` needs no credential of its own — it reads the same token file
+   step 2 placed. It does need the authority's write lane provisioned, which
+   is the operator step below.
 
 5. **Install the charter**: copy `openclaw/agent/AGENTS.md` over the new
    agent workspace's `AGENTS.md` — a plain `cp` at the gateway host, or,
@@ -254,6 +272,49 @@ names the step and points there.
    - One microtask breakdown on an item with no live plan: steps land,
      visible in the app; asking again for the same item reports the live
      plan instead of appending a second one (the SKILL.md live-plan rule).
+   - Calendar, **against a throwaway calendar first** (`HB_GCAL_ID` in the
+     agent's environment): show the week, add one timed event, ask for the
+     identical add again (it must report already-present, not double-book),
+     move it, cancel it. Only then point at `primary`.
+
+## The calendar write lane (ADR-0031)
+
+The `calendar` skill needs one thing the other three do not: a Google
+credential **on the authority**, not here. Operator steps, from a terminal
+with `op`, in this order:
+
+1. Mint a dedicated refresh token with the repo's existing minter —
+   `--scope` exists for exactly this (read its docstring first):
+
+   ```sh
+   python3 scripts/mint_refresh_token.py \
+     --scope https://www.googleapis.com/auth/calendar.events
+   ```
+
+   `calendar.events`, never full `calendar`: the difference is the power to
+   create calendars and change who they are shared with, which no verb of
+   this skill has any use for.
+
+2. **Prove it by negative space before storing it** (the #581 lesson). The
+   vault holds four near-identical Google OAuth clients, and the failure
+   mode is silent: the token must get 403 `insufficient authentication
+   scopes` from Gmail and from Tasks, 200 from Calendar, and `tokeninfo`'s
+   `aud` must match the client id it was minted with. Checking the granted
+   scope string proves nothing about which client minted it.
+
+3. Store it vault-first in 1Password `dev` as
+   `hummingbird-google-calendar-write`, with the scope in the item's notes —
+   the notes are how the four clients are told apart.
+
+4. Set three Wrangler secrets on `hummingbird-authority`, from the
+   operator's terminal and never Actions (CLAUDE.md's blast-radius rule,
+   same tier as `ADMIN_SECRET`):
+   `GOOGLE_CALENDAR_WRITE_CLIENT_ID` / `_SECRET` / `_REFRESH_TOKEN`. Any one
+   missing fails the route closed with a 503 and leaves the readonly lane —
+   a different credential entirely — working.
+
+Until all three are set, `gcal.sh` dies with the 503's prose, which names
+the write credential rather than the readonly one.
 
 ## Registering it on the Skills side
 
@@ -315,12 +376,13 @@ problem.
 Skills change in this repo, land on `main`, and reach the agent by `git
 pull` on the gateway clone followed by a re-install. That re-install needs
 `--force` — `openclaw skills install` refuses to overwrite an existing
-workspace skill without it — and it covers all three skills: they install
-independently and none of them updates the others, so it is all three or
-the agent runs a mixed set.
+workspace skill without it — and it covers all four skills: they install
+independently and none of them updates the others, so it is all four or
+the agent runs a mixed set. **A skill added to this repo and not added to
+the loop below never reaches the gateway at all**, silently.
 
 ```sh
-for s in hummingbird-tasks microtask grill-me; do
+for s in hummingbird-tasks microtask grill-me calendar; do
   openclaw skills install "<clone>/openclaw/$s" --agent hummingbird-agent --force
 done
 ```

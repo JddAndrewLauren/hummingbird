@@ -1,6 +1,14 @@
 # ADR-0029: An OpenClaw agent is a third interactive arm and a distinct credential holder
 
 **Status:** accepted · 2026-08-19
+**amended 2026-08-20 by [ADR-0031](0031-calendar-write-is-gated-on-a-token-id-not-a-scope.md):**
+the agent gained a **fourth** skill, `openclaw/calendar/`, and with it its
+first capability that is not a call to this repo's own authority — Google
+Calendar event writes, through a bearer the authority mints for its token id
+alone. Its device token is unchanged and still the only credential file on
+that machine; what changed is what that one token can reach. The skill
+tables and the credential section here read as three skills; the fourth is
+in ADR-0031 and in `docs/openclaw.md`.
 **Context:** #609, the OpenClaw-integration grilling session (that issue
 holds the decision list). Extends the two-arm skill posture `docs/runner.md` records for
 `microtask` (#272/#307/#317) and `grill-me` (#350) with a third arm, and

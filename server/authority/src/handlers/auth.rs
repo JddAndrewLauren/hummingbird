@@ -41,12 +41,22 @@ pub fn admin_ok(authorization: Option<&str>, admin_secret: Option<&str>) -> bool
     }
 }
 
-/// A resolved bearer token: its scope, plus the source it is bound to when
-/// `scope` is `ingest` (#145) — `None` for `device`/`sweeper`, always
-/// `Some` for a properly minted `ingest` token (a null-source `ingest` row
-/// can only exist via a raw seam that bypassed the mint handler).
+/// A resolved bearer token: its id, its scope, plus the source it is bound
+/// to when `scope` is `ingest` (#145) — `None` for `device`/`sweeper`,
+/// always `Some` for a properly minted `ingest` token (a null-source
+/// `ingest` row can only exist via a raw seam that bypassed the mint
+/// handler).
+///
+/// `id` is the operator-chosen token id (`openclaw-agent`, `runner`,
+/// `device-mac`), carried here since #581's successor so a handler can
+/// narrow to *which* token is calling, not only to its scope — the
+/// calendar-write route is the one caller (ADR-0031), and the reason it
+/// narrows here rather than in [`permitted`] is the same reason `#145`'s
+/// ingest source-binding does: the matrix is a scope matrix, and there is
+/// no scope that means "this one host".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Principal {
+    pub id: String,
     pub scope: Scope,
     pub source: Option<String>,
 }
@@ -79,9 +89,9 @@ pub fn authenticate(
     let id = r.text("id")?;
     sql.exec(
         "UPDATE tokens SET last_seen = ? WHERE id = ?",
-        &[SqlValue::Integer(now_ms), SqlValue::Text(id)],
+        &[SqlValue::Integer(now_ms), SqlValue::Text(id.clone())],
     )?;
-    Ok(Some(Principal { scope, source }))
+    Ok(Some(Principal { id, scope, source }))
 }
 
 /// The whole scope matrix. Device is a full task client: everything except

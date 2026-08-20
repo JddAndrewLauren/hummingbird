@@ -22,10 +22,10 @@ mod shim {
     use std::rc::Rc;
 
     use hummingbird_authority::{
-        calendar_secrets_unset, credential_rejected, forwardable, handle, init_schema,
-        revoke_dead_target, run_url, unconfigured, unreachable, upstream_status, ApiRequest,
-        DeliveryOutcome, Entropy, HandleContext, ProxyFailure, Row, SendVerdict, Sql, SqlError,
-        SqlValue,
+        calendar_secrets_unset, calendar_write_secrets_unset, credential_rejected, forwardable,
+        handle, init_schema, revoke_dead_target, run_url, unconfigured, unreachable,
+        upstream_status, ApiRequest, DeliveryOutcome, Entropy, HandleContext, ProxyFailure, Row,
+        SendVerdict, Sql, SqlError, SqlValue,
     };
     use hummingbird_domain::ApiError;
     use wasm_bindgen::JsValue;
@@ -118,6 +118,12 @@ mod shim {
         /// unlike `fcm`, nothing calling into it ever needs to outlive this
         /// `fetch()` inside a `wait_until` future.
         calendar: Option<CalendarMinter>,
+        /// The write-scoped calendar mint (ADR-0031), over the three
+        /// `GOOGLE_CALENDAR_WRITE_*` secrets; absent means that lane fails
+        /// closed with a 503 while the readonly one above goes on working.
+        /// A minter of its own, so its cached bearer can never be handed to
+        /// a caller of the readonly route.
+        calendar_write: Option<CalendarMinter>,
     }
 
     impl DurableObject for Authority {
@@ -128,6 +134,7 @@ mod shim {
                 admin_secret: env.secret("ADMIN_SECRET").map(|s| s.to_string()).ok(),
                 fcm: FcmSender::from_env(&env).map(Rc::new),
                 calendar: CalendarMinter::from_env(&env),
+                calendar_write: CalendarMinter::write_from_env(&env),
             }
         }
 
@@ -208,6 +215,20 @@ mod shim {
                 let (status, body) = match &self.calendar {
                     Some(minter) => minter.token_response(now_ms).await,
                     None => calendar_secrets_unset(),
+                };
+                return calendar_json_response(status, body);
+            }
+
+            // The write mint (ADR-0031), the same shape over the write
+            // credential. `handle()`'s 204 here means more than "device
+            // scope": it means the calling token's *id* is on the
+            // allowed-holder list, which is the whole gate — a device token
+            // that is not the agent's was already answered 403 above, and
+            // never reaches this minter.
+            if url.path() == "/api/google/calendar_write_token" && api.status == 204 {
+                let (status, body) = match &self.calendar_write {
+                    Some(minter) => minter.token_response(now_ms).await,
+                    None => calendar_write_secrets_unset(),
                 };
                 return calendar_json_response(status, body);
             }

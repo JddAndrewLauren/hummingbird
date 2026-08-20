@@ -43,6 +43,7 @@ grepping it.
 | The `/next-up-hb` seam | `client/next-up/` | `src/lib.rs` |
 | The wasm seams | `client/ffi-web/src/{task_host,calendar_host}.rs` | those headers |
 | The OpenClaw task agent (third interactive arm, ADR-0029) | `openclaw/` | `docs/openclaw.md` |
+| The agent's calendar write (ADR-0031) — the id-gated mint route, and the skill that calls it | `server/authority/src/handlers/calendar_token.rs`, `server/worker/src/calendar.rs`, `openclaw/calendar/` | `calendar_token.rs`'s `write_verdict`, then `openclaw/calendar/scripts/gcal.sh`; ADR-0031 |
 | The mobile seam + the Android app (#141, through the frontier-board slice) | `client/ffi-mobile/`, `client/android/` | `ffi-mobile/src/lib.rs`, `android/README.md`, ADR-0025 |
 | The bottom nav + Done/Ledger roster sink (M3/#532) | `client/core/src/decisions/roster.rs`, `client/ffi-mobile/src/lib.rs`, `client/android/.../{MainActivity,Done,Ledger}{Screen,ViewModel}.kt` | `decisions/roster.rs`, then `android/README.md`'s "The bottom nav" section; ADR-0025 |
 | Item detail, and where a tapped notification lands | `client/core/src/{item_detail.rs,decisions/notification.rs}`, `client/android/.../ItemDetail{Panel,Screen,ViewModel}.kt` (the panel is the body; the route hosts it, and Now expands it inline) | `item_detail.rs`, then `decisions/notification.rs`; ADR-0027 |
@@ -96,8 +97,16 @@ spend*, via `POST /api/skills/run`, and since #577 it can also mint a Google
 against a server-held credential shared by every device (ADR-0028). The
 population of `device` tokens is: one per operator device, the runner's
 (`runner`), and the OpenClaw agent's (`openclaw-agent`, on the gateway
-machine — ADR-0029, minted and rotated per `docs/openclaw.md`). See
-ADR-0011 for the per-source table.
+machine — ADR-0029, minted and rotated per `docs/openclaw.md`).
+**That population is no longer uniform in what it can reach.** Since
+ADR-0031 one named member of it, `openclaw-agent`, can additionally mint a
+`calendar.events` **write** bearer via `POST
+/api/google/calendar_write_token` — a third server-held Google credential —
+and so can change the operator's real calendar; every other device token,
+including every browser's, is answered 403 there. That gate is an
+allowed-holder list checked inside the handler, not a scope: a route gated
+on a token **id** is a first here, and ADR-0031 states why a fourth `Scope`
+was the wrong way to buy it. See ADR-0011 for the per-source table.
 
 **An item is named to the operator by its title, never `HB-<seq>`.** That ref
 is a client-side affordance: no route accepts it, `resolve_ref` maps it onto a

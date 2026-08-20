@@ -7,9 +7,27 @@
 //! the verdict, that reaching it writes nothing, and which method/path
 //! combinations are 404 vs. 405.
 
+use hummingbird_authority::SqlValue;
+
 use crate::rig::*;
 
 const CALENDAR_TOKEN: &str = "/api/google/calendar_token";
+const CALENDAR_WRITE_TOKEN: &str = "/api/google/calendar_write_token";
+
+/// The write lane's allowed holder, seeded as a real `device` row so the
+/// gate is exercised end to end — id resolution included — rather than by
+/// calling the verdict function directly (that unit test lives beside the
+/// function).
+const AGENT_TOKEN: &str = "hb_rig_openclaw_agent_token";
+
+fn seed_agent_token(sql: &RusqliteSql) {
+    sql.exec(
+        "INSERT INTO tokens (id, name, scope, token_hash, created_at) \
+         VALUES ('openclaw-agent', 'rig openclaw agent', 'device', ?, 0)",
+        &[SqlValue::Text(sha256_hex(AGENT_TOKEN))],
+    )
+    .expect("agent token seed inserts");
+}
 
 #[test]
 fn a_device_token_reaches_the_verdict() {
@@ -47,10 +65,80 @@ fn an_unauthenticated_or_garbage_caller_is_a_clean_401() {
 #[test]
 fn the_wrong_method_is_a_405_not_a_404() {
     let sql = RusqliteSql::new();
-    for method in ["GET", "DELETE", "PATCH", "PUT"] {
-        let resp = req_as(&sql, DEVICE_TOKEN, method, CALENDAR_TOKEN, None, None, 1_000);
-        assert_eq!(resp.status, 405, "{method} {CALENDAR_TOKEN}");
+    for path in [CALENDAR_TOKEN, CALENDAR_WRITE_TOKEN] {
+        for method in ["GET", "DELETE", "PATCH", "PUT"] {
+            let resp = req_as(&sql, DEVICE_TOKEN, method, path, None, None, 1_000);
+            assert_eq!(resp.status, 405, "{method} {path}");
+        }
     }
+}
+
+// ------------------------------------------------- the write mint (ADR-0031)
+
+/// The allowed holder reaches the verdict — the shim then performs the
+/// exchange, exactly as on the readonly route.
+#[test]
+fn the_openclaw_agent_reaches_the_write_verdict() {
+    let sql = RusqliteSql::new();
+    seed_agent_token(&sql);
+    let resp = req_as(&sql, AGENT_TOKEN, "POST", CALENDAR_WRITE_TOKEN, None, None, 1_000);
+    assert_eq!(resp.status, 204);
+    assert_eq!(resp.body, "");
+    assert!(resp.deliveries.is_empty());
+}
+
+/// **The whole security claim of ADR-0031**: a perfectly good `device`
+/// token that is not the agent's — every browser holds one — is refused,
+/// with an empty body and no 401 (which would make that client discard a
+/// working credential).
+#[test]
+fn another_device_token_cannot_reach_the_write_mint() {
+    let sql = RusqliteSql::new();
+    seed_agent_token(&sql);
+    let resp = req_as(&sql, DEVICE_TOKEN, "POST", CALENDAR_WRITE_TOKEN, None, None, 1_000);
+    assert_eq!(resp.status, 403);
+    assert_eq!(resp.body, "");
+
+    // …while the same token still reaches the readonly mint, so the
+    // narrowing is the route's and not the token's.
+    let readonly = req_as(&sql, DEVICE_TOKEN, "POST", CALENDAR_TOKEN, None, None, 1_000);
+    assert_eq!(readonly.status, 204);
+}
+
+#[test]
+fn every_other_scope_is_out_of_scope_on_the_write_mint_too() {
+    let sql = RusqliteSql::new();
+    for token in [SWEEPER_TOKEN, INGEST_TOKEN] {
+        let resp = req_as(&sql, token, "POST", CALENDAR_WRITE_TOKEN, None, None, 1_000);
+        assert_eq!(resp.status, 403, "{token} should be out of scope");
+        assert_eq!(resp.body, "", "403 must leak no body");
+    }
+}
+
+#[test]
+fn an_unauthenticated_write_caller_is_a_clean_401() {
+    let sql = RusqliteSql::new();
+    let anon = req_anon(&sql, "POST", CALENDAR_WRITE_TOKEN, None, None);
+    assert_eq!(anon.status, 401);
+    assert_eq!(anon.body, "");
+
+    let garbage =
+        req_as(&sql, "hb_not_a_real_token", "POST", CALENDAR_WRITE_TOKEN, None, None, 1_000);
+    assert_eq!(garbage.status, 401);
+    assert_eq!(garbage.body, "");
+}
+
+/// A tap must not dirty the sync cursor, on either lane and on either
+/// verdict — the 403 path writes nothing either.
+#[test]
+fn the_write_verdict_does_not_bump_meta_version() {
+    let sql = RusqliteSql::new();
+    seed_agent_token(&sql);
+    seed_item(&sql, "item-1");
+    let before = meta_version(&sql);
+    req_as(&sql, AGENT_TOKEN, "POST", CALENDAR_WRITE_TOKEN, None, None, 1_000);
+    req_as(&sql, DEVICE_TOKEN, "POST", CALENDAR_WRITE_TOKEN, None, None, 2_000);
+    assert_eq!(meta_version(&sql), before);
 }
 
 /// A tap must not dirty the sync cursor. `authenticate` stamps `last_seen`
