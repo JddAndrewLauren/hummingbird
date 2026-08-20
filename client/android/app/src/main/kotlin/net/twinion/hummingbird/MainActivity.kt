@@ -632,6 +632,10 @@ private fun AppRoot(
                         // lands on Now with the panel still standing, since the
                         // selection lives in the Activity-scoped NowViewModel.
                         onGrill = { itemId -> navController.navigate(Routes.grill(itemId, "detail")) },
+                        // The unbound panes' setup door — through `goToTab`,
+                        // never a plain `navigate` (#574's own reasoning on
+                        // the Status screen's identical door).
+                        onGoToSettings = { goToTab(Routes.SETTINGS) },
                     )
                 }
                 composable(Routes.STATUS) {

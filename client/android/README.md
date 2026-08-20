@@ -255,6 +255,34 @@ in `RecallViewModel` (never a `remember {}`), closes on any keystroke, and
 resets on a fresh open — the query itself survives, matching the web's
 App-owned query.
 
+## The standing-question panes (the pane-parity slice, over #536/#537)
+
+`PaneShell.kt` renders the web `RankedRegion.tsx`'s own two-form contract.
+Collapsed, a pane is one row: the band dot, the question's per-surface
+label, up to `MAX_GLYPHS` of the pane's own marks, and its one-line
+headline. Expanded (tap toggles), the same header collapses it again over
+the headline, an unbound pane's "Open Settings" door, and whatever
+expanded content the caller supplies per question (the pane-content slices
+fill that slot). The words and marks live in `ui/panes/PaneAnswers.kt` —
+each question's `collapsedHeadline`/glyph decisions ported from its web
+renderer (`client/web/src/screens/<q>-pane/`), composed from the decided
+facts every `MobileRankedPane` carries since the pane-facts seam slice.
+Nothing Kotlin-side re-derives a band or an answer state
+(`PaneShellStructuralTest`); the one recorded deviation from the web is
+the github/uptime stale-escalation wording, which prefers the staleness
+caveat over recomputing a raw band (`PaneAnswers.kt`'s header).
+
+Whether a pane STARTS collapsed is `ui/panes/PaneCollapse.kt`'s
+band-stamped rule — the web `collapse.ts`'s semantics verbatim (default
+collapsed when dormant or unanswered; an override applies only while the
+pane is still in the band it was made in; a mismatch is a read-time
+non-match, never a delete, so dormant → imminent → dormant resurrects it;
+writes prune unranked keys). Overrides persist per surface in `PanePrefs`
+(a Preferences DataStore, `FrontierPrefs`' reasons), owned by
+`NowViewModel`/`StatusViewModel` — never a `remember {}` (the recorded
+fold/unfold defect). `PaneCollapseTest` is `collapse.test.ts` ported case
+for case.
+
 ## The UI iteration: icons, compact cards, filter disclosure, inline expansion, the capture FAB
 
 Five slices bringing the surfaces in line with the design kit
@@ -401,9 +429,10 @@ needs rules on `alert_raised` keyed on `source` and `severity`.
    needed` before the paste and carries a `Sync now` button, and the DEVICE
    TOKEN card above it flips to `This device has a token`. Status shows no
    sync line at all since #536 replaced ProofScreen — read the panes
-   instead: an uncredentialed phone renders every one of them `Not read
-   yet` / `Not set up yet`, which is the fastest tell that the token is
-   missing.
+   instead: an uncredentialed phone renders every one of them with a
+   no-answer headline (`No answer yet` / `Not set up` / `Never synced on
+   this device.` since the pane-parity slice), which is the fastest tell
+   that the token is missing.
 3. Confirm `fcm_token` exists: `adb shell run-as net.twinion.hummingbird cat
    shared_prefs/hummingbird-push.xml`. Its absence means Firebase never
    initialised.

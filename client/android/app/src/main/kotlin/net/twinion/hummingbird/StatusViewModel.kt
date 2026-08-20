@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import net.twinion.hummingbird.core.CoreHolder
 import net.twinion.hummingbird.core.SyncHistoryStore
+import net.twinion.hummingbird.ui.panes.CollapseOverride
+import net.twinion.hummingbird.ui.panes.PaneCollapse
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 import uniffi.hummingbird_ffi_mobile.MobileSurface
 
@@ -21,7 +23,9 @@ import uniffi.hummingbird_ffi_mobile.MobileSurface
 sealed interface StatusState {
     data object Loading : StatusState
 
-    data class Loaded(val panes: List<MobileRankedPane>) : StatusState
+    /** [rankedAtMs] is the clock the rank was taken at — what the shell's
+     * age/countdown words render against. */
+    data class Loaded(val panes: List<MobileRankedPane>, val rankedAtMs: Long) : StatusState
 }
 
 // The Status screen's decision half (#536/M4, ADR-0025): calls
@@ -35,13 +39,45 @@ sealed interface StatusState {
 // straight through; #537's Now screen is what exercises the resolve leg.
 class StatusViewModel(
     private val rankPanesFn: suspend (nowMs: Long) -> List<MobileRankedPane>,
+    /** The pane collapse's device-local store (`PanePrefs`, surface-keyed
+     * to [MobileSurface.STATUS]) — injected like [rankPanesFn] so a JVM
+     * test needs no DataStore. */
+    private val readPaneCollapseFn: suspend () -> Map<String, CollapseOverride> = { emptyMap() },
+    private val writePaneCollapseFn: suspend (Map<String, CollapseOverride>) -> Unit = {},
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<StatusState>(StatusState.Loading)
     val state: StateFlow<StatusState> = _state.asStateFlow()
 
+    /** The band-stamped collapse overrides (`PaneCollapse`) — loaded once
+     * with the first rank, written through [togglePaneCollapsed]. Here,
+     * never in a `remember {}`: the recorded fold/unfold defect. */
+    private val _paneOverrides = MutableStateFlow<Map<String, CollapseOverride>>(emptyMap())
+    val paneOverrides: StateFlow<Map<String, CollapseOverride>> = _paneOverrides.asStateFlow()
+    private var paneOverridesLoaded = false
+
     suspend fun load(nowMs: Long) {
-        _state.value = StatusState.Loaded(rankPanesFn(nowMs))
+        _state.value = StatusState.Loaded(rankPanesFn(nowMs), nowMs)
+        if (!paneOverridesLoaded) {
+            _paneOverrides.value = readPaneCollapseFn()
+            paneOverridesLoaded = true
+        }
+    }
+
+    /** Flips one pane's collapse, stamped with the band it was made in and
+     * pruned of unranked keys — `PaneCollapse.write`'s whole contract. */
+    suspend fun togglePaneCollapsed(pane: MobileRankedPane) {
+        val current = _paneOverrides.value
+        val resolved = PaneCollapse.resolve(current, pane.paneKey, pane.answer)
+        val ranked = (state.value as? StatusState.Loaded)?.panes.orEmpty().map { it.paneKey }
+        val next = PaneCollapse.write(
+            current,
+            pane.paneKey,
+            CollapseOverride(pane.answer.band, !resolved),
+            ranked,
+        )
+        _paneOverrides.value = next
+        writePaneCollapseFn(next)
     }
 
     companion object {
@@ -56,6 +92,10 @@ class StatusViewModel(
                         emptyList(),
                         SyncHistoryStore.load(appContext),
                     )
+                },
+                readPaneCollapseFn = { PanePrefs.readCollapse(appContext, MobileSurface.STATUS) },
+                writePaneCollapseFn = { map ->
+                    PanePrefs.writeCollapse(appContext, MobileSurface.STATUS, map)
                 },
             )
         }

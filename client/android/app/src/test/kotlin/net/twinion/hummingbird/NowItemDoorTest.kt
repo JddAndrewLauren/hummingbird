@@ -61,7 +61,7 @@ class NowItemDoorTest {
         val src = source("NowScreen.kt")
         val lazyColumn = src.indexOf("LazyColumn(")
         val panel = src.indexOf("ItemDetailPanel(")
-        val paneSection = src.indexOf("nowPaneSection(panes)")
+        val paneSection = src.indexOf("nowPaneSection(", lazyColumn)
         assertTrue("NowScreen must keep its one LazyColumn", lazyColumn >= 0)
         assertTrue("the panel item must sit inside the LazyColumn, above the board's branches", panel > lazyColumn)
         assertTrue("the board (ending in the pane section) must render after the panel", paneSection > panel)

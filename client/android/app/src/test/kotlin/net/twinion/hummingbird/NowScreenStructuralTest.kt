@@ -409,7 +409,7 @@ class NowScreenStructuralTest {
             lazyColumnCount,
         )
         val lazyColumnIndex = nowScreenSrc.indexOf("LazyColumn(")
-        val paneCallIndex = nowScreenSrc.indexOf("nowPaneSection(panes)")
+        val paneCallIndex = nowScreenSrc.indexOf("nowPaneSection(", lazyColumnIndex)
         assertTrue("could not locate the LazyColumn( call", lazyColumnIndex >= 0)
         assertTrue("could not locate the nowPaneSection(panes) call", paneCallIndex >= 0)
         assertTrue(

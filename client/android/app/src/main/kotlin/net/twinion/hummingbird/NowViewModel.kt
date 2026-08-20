@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import net.twinion.hummingbird.core.CoreHolder
+import net.twinion.hummingbird.ui.panes.CollapseOverride
+import net.twinion.hummingbird.ui.panes.PaneCollapse
 import net.twinion.hummingbird.core.ZoneBridge
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
@@ -103,6 +105,11 @@ class NowViewModel(
     private val rankPanesFn: suspend (nowMs: Long, zoneFacts: List<MobileZoneFact>) -> List<MobileRankedPane>,
     private val setScheduledDateFn: suspend (itemId: String, date: String?, nowMs: Long) -> Unit,
     private val completeFn: suspend (itemId: String, nowMs: Long) -> Unit,
+    /** The pane collapse's device-local store (`PanePrefs`, surface-keyed
+     * to [MobileSurface.NOW]) — injected like every other door so a JVM
+     * test needs no DataStore. */
+    private val readPaneCollapseFn: suspend () -> Map<String, CollapseOverride> = { emptyMap() },
+    private val writePaneCollapseFn: suspend (Map<String, CollapseOverride>) -> Unit = {},
 ) : ViewModel() {
 
     private val _board = MutableStateFlow<NowBoardRecord?>(null)
@@ -115,6 +122,19 @@ class NowViewModel(
      * itself waits on [loading] rather than guessing). */
     private val _panes = MutableStateFlow<List<MobileRankedPane>>(emptyList())
     val panes: StateFlow<List<MobileRankedPane>> = _panes.asStateFlow()
+
+    /** The clock the current [panes] rank was taken at — what the shell's
+     * countdown/age words render against, so a sentence and the rank it
+     * describes can never read two different clocks. */
+    private val _panesNowMs = MutableStateFlow(0L)
+    val panesNowMs: StateFlow<Long> = _panesNowMs.asStateFlow()
+
+    /** The band-stamped collapse overrides (`PaneCollapse`) — loaded once
+     * with the first pane rank, written through [togglePaneCollapsed].
+     * Here, never in a `remember {}`: the recorded fold/unfold defect. */
+    private val _paneOverrides = MutableStateFlow<Map<String, CollapseOverride>>(emptyMap())
+    val paneOverrides: StateFlow<Map<String, CollapseOverride>> = _paneOverrides.asStateFlow()
+    private var paneOverridesLoaded = false
 
     private val _loading = MutableStateFlow(true)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
@@ -303,6 +323,26 @@ class NowViewModel(
         val queries = paneZoneQueriesFn(nowMs)
         val facts = ZoneBridge.resolve(queries)
         _panes.value = rankPanesFn(nowMs, facts)
+        _panesNowMs.value = nowMs
+        if (!paneOverridesLoaded) {
+            _paneOverrides.value = readPaneCollapseFn()
+            paneOverridesLoaded = true
+        }
+    }
+
+    /** Flips one pane's collapse, stamped with the band it was made in and
+     * pruned of unranked keys — `PaneCollapse.write`'s whole contract. */
+    suspend fun togglePaneCollapsed(pane: MobileRankedPane) {
+        val current = _paneOverrides.value
+        val resolved = PaneCollapse.resolve(current, pane.paneKey, pane.answer)
+        val next = PaneCollapse.write(
+            current,
+            pane.paneKey,
+            CollapseOverride(pane.answer.band, !resolved),
+            _panes.value.map { it.paneKey },
+        )
+        _paneOverrides.value = next
+        writePaneCollapseFn(next)
     }
 
     /** The weekend-plans pane's do-date chip (#537, #122): writes through
@@ -346,6 +386,12 @@ class NowViewModel(
                         // into `Surface::Now` (`panes::mod::SUNK`).
                         MobileSyncFacts(null, null, null),
                     )
+                },
+                readPaneCollapseFn = {
+                    PanePrefs.readCollapse(context.applicationContext, MobileSurface.NOW)
+                },
+                writePaneCollapseFn = { map ->
+                    PanePrefs.writeCollapse(context.applicationContext, MobileSurface.NOW, map)
                 },
                 setScheduledDateFn = { itemId, date, nowMs ->
                     CoreHolder.get(context.applicationContext).setScheduledDate(itemId, date, nowMs)

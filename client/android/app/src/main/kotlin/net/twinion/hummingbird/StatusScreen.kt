@@ -26,6 +26,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.ui.contentMaxWidth
+import net.twinion.hummingbird.ui.panes.PaneCollapse
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
 
@@ -88,6 +89,7 @@ fun StatusScreen(
     val scope = rememberCoroutineScope()
     val viewModel: StatusViewModel = viewModel(factory = StatusViewModel.factory(context))
     val state by viewModel.state.collectAsState()
+    val paneOverrides by viewModel.paneOverrides.collectAsState()
 
     suspend fun reload() = viewModel.load(System.currentTimeMillis())
 
@@ -149,7 +151,18 @@ fun StatusScreen(
                         modifier = Modifier.weight(1f, fill = false),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        rankedPaneItems(current.panes, paneLabel = ::paneLabel)
+                        rankedPaneItems(
+                            current.panes,
+                            paneLabel = ::paneLabel,
+                            nowMs = current.rankedAtMs,
+                            collapsed = { pane ->
+                                PaneCollapse.resolve(paneOverrides, pane.paneKey, pane.answer)
+                            },
+                            onToggle = { pane ->
+                                scope.launch { viewModel.togglePaneCollapsed(pane) }
+                            },
+                            onGoToSettings = onGoToSettings,
+                        )
                     }
                 }
 

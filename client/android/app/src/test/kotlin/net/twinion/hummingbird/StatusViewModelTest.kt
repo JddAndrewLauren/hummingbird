@@ -74,7 +74,7 @@ class StatusViewModelTest {
 
         vm.load(1_000L)
 
-        assertEquals(StatusState.Loaded(panes), vm.state.value)
+        assertEquals(StatusState.Loaded(panes, 1_000L), vm.state.value)
     }
 
     @Test

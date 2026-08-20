@@ -50,6 +50,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.ui.contentMaxWidth
+import net.twinion.hummingbird.ui.panes.PaneCollapse
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
@@ -162,12 +163,24 @@ private fun nowPaneLabel(pane: MobileRankedPane): String = when (pane.standingQu
  * outer scroll, or a frontier taller than the viewport pushes the panes
  * section past the bottom of the screen with nothing to scroll it into view
  * (#537 review). */
-private fun LazyListScope.nowPaneSection(panes: List<MobileRankedPane>) {
+private fun LazyListScope.nowPaneSection(
+    panes: List<MobileRankedPane>,
+    nowMs: Long,
+    collapsed: (MobileRankedPane) -> Boolean,
+    onToggle: (MobileRankedPane) -> Unit,
+    onGoToSettings: () -> Unit,
+) {
     if (panes.isEmpty()) return
     item(key = "panes-header") {
         Text("This week", style = MaterialTheme.typography.titleMedium)
     }
-    rankedPaneItems(panes, paneLabel = ::nowPaneLabel)
+    rankedPaneItems(panes,
+        paneLabel = ::nowPaneLabel,
+        nowMs = nowMs,
+        collapsed = collapsed,
+        onToggle = onToggle,
+        onGoToSettings = onGoToSettings,
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -177,6 +190,9 @@ fun NowScreen(
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
     onGrill: (String) -> Unit = {},
+    /** The unbound panes' setup door — Settings through the More stack
+     * (`goToTab`), `StatusScreen`'s own second, contextual door shape. */
+    onGoToSettings: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -190,6 +206,8 @@ fun NowScreen(
     val expanded by viewModel.expanded.collectAsState()
     val loading by viewModel.loading.collectAsState()
     val panes by viewModel.panes.collectAsState()
+    val panesNowMs by viewModel.panesNowMs.collectAsState()
+    val paneOverrides by viewModel.paneOverrides.collectAsState()
     val selectedId by viewModel.selectedItemId.collectAsState()
     val statusLine by viewModel.statusLine.collectAsState()
     val dark = isSystemInDarkTheme()
@@ -519,7 +537,17 @@ fun NowScreen(
                     // the queue's own state above was (loading, empty,
                     // populated): the panes are a separate crossing
                     // ([NowViewModel.loadPanes]), never gated on the board's.
-                    nowPaneSection(panes)
+                    nowPaneSection(
+                        panes = panes,
+                        nowMs = panesNowMs,
+                        collapsed = { pane ->
+                            PaneCollapse.resolve(paneOverrides, pane.paneKey, pane.answer)
+                        },
+                        onToggle = { pane ->
+                            scope.launch { viewModel.togglePaneCollapsed(pane) }
+                        },
+                        onGoToSettings = onGoToSettings,
+                    )
                 }
             }
         }
