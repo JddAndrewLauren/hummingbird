@@ -9,6 +9,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -40,8 +45,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
@@ -275,6 +285,58 @@ private fun navIcon(destination: NavDestination): Int = when (destination) {
 // `syncTick` is this root's only hand-off to the screens: it increments
 // once per completed sync cycle so they re-read the mirror after each one,
 // not only on their own resume.
+/** How far a scroll runs one way before the chrome hides (48px) or
+ * re-shows (16px) — hide reluctantly, reveal eagerly, Gmail's own feel. */
+private const val CHROME_HIDE_THRESHOLD_PX = 48f
+private const val CHROME_SHOW_THRESHOLD_PX = 16f
+
+/** Gmail-style chrome hiding: scrolling down hides the top bar and the
+ * bottom bar and collapses the Capture FAB to its round form; scrolling up
+ * brings them back. One boolean flipped by a delta accumulator — never an
+ * offset the bars track per-frame, because collapsing the slot's measured
+ * height (AnimatedVisibility below) is what lets the Scaffold's padding
+ * shrink and the content reclaim the space.
+ *
+ * The connection reads `consumed.y`, never `available.y` — the whole
+ * pull-to-refresh interplay: overscrolling down at the top of a list
+ * consumes nothing, and what `PullToRefreshBox` itself consumes during a
+ * pull is downward, so a pull can only ever move the accumulator toward
+ * "show". The two nested-scroll owners compose without knowing about each
+ * other. A direction flip resets the run so small reversals never jitter
+ * the bars; fling frames arrive through `onPostScroll` too, so momentum
+ * behaves without an `onPostFling` arm. */
+@Stable
+private class ChromeScrollState {
+    var chromeVisible by mutableStateOf(true)
+        private set
+    private var accumulated = 0f
+
+    fun reveal() {
+        chromeVisible = true
+        accumulated = 0f
+    }
+
+    val connection = object : NestedScrollConnection {
+        override fun onPostScroll(
+            consumed: Offset,
+            available: Offset,
+            source: NestedScrollSource,
+        ): Offset {
+            val dy = consumed.y
+            if (dy == 0f) return Offset.Zero
+            accumulated = if ((dy < 0f) != (accumulated < 0f) && accumulated != 0f) dy else accumulated + dy
+            if (accumulated < -CHROME_HIDE_THRESHOLD_PX) {
+                chromeVisible = false
+                accumulated = 0f
+            } else if (accumulated > CHROME_SHOW_THRESHOLD_PX) {
+                chromeVisible = true
+                accumulated = 0f
+            }
+            return Offset.Zero
+        }
+    }
+}
+
 @Composable
 private fun AppRoot(
     deepLinkedAlertId: MutableStateFlow<NotificationTap?>,
@@ -443,6 +505,11 @@ private fun AppRoot(
     // losing it to recreation costs one tap and no words.
     var captureSheetOpen by rememberSaveable { mutableStateOf(false) }
     val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
+    val chrome = remember { ChromeScrollState() }
+    // Whatever a scroll hid, a navigation reveals: a fresh route starts at
+    // its own top, and arriving with no chrome would leave no way to know
+    // where you are.
+    LaunchedEffect(currentRoute) { chrome.reveal() }
 
     // A bar or More-sheet tap: `popUpTo` + `saveState` + `restoreState` is
     // the standard bottom-nav idiom — each tab keeps its own back stack
@@ -462,15 +529,30 @@ private fun AppRoot(
     }
 
     Scaffold(
+        // The one hook for chrome hiding: every scrollable in every screen
+        // dispatches through the tree to this ancestor, so both LazyColumn
+        // screens and verticalScroll screens drive the same accumulator.
+        modifier = Modifier.nestedScroll(chrome.connection),
         topBar = {
             // The bottom bar's own visibility rule, applied above: chrome
             // belongs to the top-level surfaces, and a detail/takeover
             // route draws none of it.
             if (NavDestination.entries.any { it.route == currentRoute }) {
-                AppTopBar(
-                    dark = resolveDarkTheme(themePreference, isSystemInDarkTheme()),
-                    onSearch = { goToTab(Routes.RECALL) },
-                )
+                // Height-collapse, not offset: a 0-height slot shrinks the
+                // Scaffold's padding, the content reclaims the space, and
+                // the still-unconsumed status-bar inset falls through to
+                // each screen's own inner Scaffold (#615's arrangement,
+                // untouched) — no dead band, no content under the clock.
+                AnimatedVisibility(
+                    visible = chrome.chromeVisible,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut(),
+                ) {
+                    AppTopBar(
+                        dark = resolveDarkTheme(themePreference, isSystemInDarkTheme()),
+                        onSearch = { goToTab(Routes.RECALL) },
+                    )
+                }
             }
         },
         bottomBar = {
@@ -480,11 +562,17 @@ private fun AppRoot(
             // doc, above) — the same "not every screen carries the bar"
             // the web's shell holds by mounting exactly one nav form.
             if (NavDestination.entries.any { it.route == currentRoute }) {
-                BottomNavBar(
-                    currentRoute = currentRoute,
-                    onNavigate = ::goToTab,
-                    onMore = { moreSheetOpen = true },
-                )
+                AnimatedVisibility(
+                    visible = chrome.chromeVisible,
+                    enter = expandVertically(expandFrom = Alignment.Bottom) + fadeIn(),
+                    exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut(),
+                ) {
+                    BottomNavBar(
+                        currentRoute = currentRoute,
+                        onNavigate = ::goToTab,
+                        onMore = { moreSheetOpen = true },
+                    )
+                }
             }
         },
         floatingActionButton = {
@@ -499,6 +587,10 @@ private fun AppRoot(
             if (NavDestination.entries.any { it.route == currentRoute }) {
                 ExtendedFloatingActionButton(
                     onClick = { captureSheetOpen = true },
+                    // Gmail's own collapse: scrolled-away chrome shrinks the
+                    // extended FAB to its round icon form; the FAB itself
+                    // stays — capture must survive a reading scroll.
+                    expanded = chrome.chromeVisible,
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,
                     shape = RoundedCornerShape(20.dp),
