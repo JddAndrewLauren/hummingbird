@@ -10,6 +10,19 @@ import org.junit.Assert.fail
 import org.junit.Test
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 import uniffi.hummingbird_ffi_mobile.MobilePaneAnswer
+import uniffi.hummingbird_ffi_mobile.MobileKimiGap
+import uniffi.hummingbird_ffi_mobile.MobileKimiResolved
+import uniffi.hummingbird_ffi_mobile.MobilePaneFacts
+import uniffi.hummingbird_ffi_mobile.MobileProbeGap
+import uniffi.hummingbird_ffi_mobile.MobileProbeResolved
+import uniffi.hummingbird_ffi_mobile.MobileRaceGap
+import uniffi.hummingbird_ffi_mobile.MobileRaceResolved
+import uniffi.hummingbird_ffi_mobile.MobileWasteGap
+import uniffi.hummingbird_ffi_mobile.MobileWasteResolved
+import uniffi.hummingbird_ffi_mobile.MobileWeekendGap
+import uniffi.hummingbird_ffi_mobile.MobileWeekendResolved
+import uniffi.hummingbird_ffi_mobile.MobileWorkflowGap
+import uniffi.hummingbird_ffi_mobile.MobileWorkflowResolved
 import uniffi.hummingbird_ffi_mobile.MobilePaneAnswerState
 import uniffi.hummingbird_ffi_mobile.MobilePaneBand
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
@@ -69,7 +82,29 @@ class NowViewModelTest {
                 band = band,
                 withinBand = null,
             ),
+            facts = paneFacts(question),
         )
+
+    /** The simplest honest facts arm for [question] — the fresh-device gap
+     * (or the two genuinely-optional `null`s), so a fixture can never pair
+     * a question with a foreign arm. Exhaustive, no `else`: a ninth
+     * question breaks this fixture loudly. */
+    private fun paneFacts(question: MobileStandingQuestion): MobilePaneFacts = when (question) {
+        MobileStandingQuestion.WASTE ->
+            MobilePaneFacts.Waste(resolved = MobileWasteResolved.Gap(gap = MobileWasteGap.NotFetched))
+        MobileStandingQuestion.WEEKEND ->
+            MobilePaneFacts.Weekend(resolved = MobileWeekendResolved.Gap(gap = MobileWeekendGap.NOT_CONNECTED))
+        MobileStandingQuestion.VACATION -> MobilePaneFacts.Vacation(resolved = null)
+        MobileStandingQuestion.RACE ->
+            MobilePaneFacts.Race(resolved = MobileRaceResolved.Gap(gap = MobileRaceGap.NotFetched))
+        MobileStandingQuestion.KIMI ->
+            MobilePaneFacts.Kimi(resolved = MobileKimiResolved.Gap(gap = MobileKimiGap.NotFetched))
+        MobileStandingQuestion.GITHUB ->
+            MobilePaneFacts.Github(resolved = MobileWorkflowResolved.Gap(gap = MobileWorkflowGap.NotFetched))
+        MobileStandingQuestion.UPTIME ->
+            MobilePaneFacts.Uptime(resolved = MobileProbeResolved.Gap(gap = MobileProbeGap.NotFetched))
+        MobileStandingQuestion.REACHABILITY -> MobilePaneFacts.Reachability(facts = null)
+    }
 
     private fun viewModel(
         fetchBoardFn: suspend (MobileFrontierAxis, NowFacetSelectionRecord, String) -> NowBoardRecord = { _, _, _ -> board() },
