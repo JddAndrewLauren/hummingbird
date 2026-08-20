@@ -22,15 +22,19 @@
 //   by source        typed 21 · gmail/v1 7 · google-tasks/v1 1
 //   projects          0        blocked_by  0        priority  all 0
 //
+//   (`projects 0` is what production measured; departure 4 below seeds three,
+//   so this fixture no longer mirrors that number.)
+//
 // The mirror is deliberate down to the awkward parts, because those are the
 // findings: **the no-value bucket is the biggest column on every axis** (and
 // ADR-0021 decision 1 pins it always-last, so the largest column sits past the
-// fold), **two context columns exceed `COLUMN_CAP`** so `n more` is the normal
-// case rather than an edge one, and **grouping by Project yields exactly one
-// column** because production has no projects at all. A tidier fixture would
-// photograph a system nobody has.
+// fold), and **two context columns exceed `COLUMN_CAP`** so `n more` is the
+// normal case rather than an edge one. A tidier fixture would photograph a
+// system nobody has. (Grouping by Project used to yield exactly one column
+// here, for the same faithfulness reason; departure 4 ended that — see it for
+// why the Projects grid outranked the axis.)
 //
-// Three deliberate departures, all so the gate keeps covering states production
+// Four deliberate departures, all so the gate keeps covering states production
 // happens not to be in today:
 //
 //   1. Production holds ONE deadline, so a faithful mirror would paint every
@@ -52,6 +56,18 @@
 //      One item is seeded `stage: "grilling"` so its own `StageBadge` and its
 //      place in `triageProcessQueue`'s combined order both render somewhere
 //      the gate actually looks.
+//   4. Production holds NO projects (see the table above), so a faithful
+//      mirror would hand `?demo=board`'s Projects grid (#624) an empty list
+//      and the visual gate would photograph an empty screen and pass — a
+//      failure mode this repo has a documented history of. `PROJECT_SEEDS`
+//      seeds three, one of them archived so the grid's Show-archived toggle
+//      is reachable at all, and five existing board items carry a
+//      `projectId` so the cards' action counts are derived rather than zero.
+//      The cost is the finding this fixture used to carry about the Project
+//      axis: grouping by Project now yields three columns plus the no-value
+//      one, not the single column production would give. That trade was
+//      taken deliberately — an unphotographed screen is a worse gap than an
+//      over-populated axis.
 //
 // **#452 grows this seed to the whole of `TaskState`, not just the frontier
 // and the inbox**, so every screen that reads the store — not only Now —
@@ -117,7 +133,7 @@
 // test, and it runs in CI after the build.
 
 import { TRIPS_CALENDAR_BINDING_KEY } from "../calendar/selection";
-import type { BindingDTO, LedgerRowDTO, RecallRowDTO, TaskItemDTO } from "../store/protocol";
+import type { BindingDTO, LedgerRowDTO, ProjectDTO, RecallRowDTO, TaskItemDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
 import { DEMO_DATA } from "./demo-data";
 import {
@@ -159,6 +175,8 @@ interface Seed {
   scheduledInMs?: number;
   description?: string;
   source?: string;
+  /** Departure 4 (see the header): the project this item belongs to. */
+  projectId?: string;
 }
 
 /** `YYYY-MM-DDTHH:MM`, naive local — the only deadline spelling ADR-0009/0013
@@ -183,7 +201,7 @@ function item(seed: Seed, index: number, loadedAt: number): TaskItemDTO {
     // Production carries priority 0 on every item — nothing has ever been
     // prioritised — so the fixture does too.
     priority: 0,
-    projectId: null,
+    projectId: seed.projectId ?? null,
     projectPos: null,
     deadline: seed.deadlineInMs === undefined ? null : deadlineAt(loadedAt, seed.deadlineInMs),
     scheduledDate:
@@ -201,11 +219,38 @@ function item(seed: Seed, index: number, loadedAt: number): TaskItemDTO {
   };
 }
 
+/** Departure 4 (see the header): three projects, one archived. Production
+ * holds none, so a faithful mirror would photograph an empty Projects grid —
+ * and this repo has a documented history of a gate passing on an empty
+ * screen. `archivedAt` on the third is what makes the grid's Show-archived
+ * toggle photographable at all.
+ *
+ * `agoMs` becomes a real stamp in `project()` below, for the same
+ * no-top-level-clock reason the item seeds carry offsets rather than dates. */
+const PROJECT_SEEDS: { id: string; name: string; agoMs: number; archived?: boolean }[] = [
+  { id: "b-p1", name: "House repairs", agoMs: 30 * DAY },
+  { id: "b-p2", name: "Autumn garden clear-up", agoMs: 12 * DAY },
+  { id: "b-p3", name: "Sell the old bike", agoMs: 90 * DAY, archived: true },
+];
+
+function project(seed: (typeof PROJECT_SEEDS)[number], loadedAt: number): ProjectDTO {
+  const createdAt = loadedAt - seed.agoMs;
+  return {
+    id: seed.id,
+    name: seed.name,
+    archivedAt: seed.archived === true ? createdAt + DAY : null,
+    createdAt,
+    updatedAt: createdAt,
+    version: 1,
+  };
+}
+
 /** The startable twelve. Contexts here plus the captures' below sum to
  * production's own spread exactly — see the header's table. */
 const FRONTIER_SEEDS: Seed[] = [
   {
     id: "b-f1",
+    projectId: "b-p1",
     title: "Fit the new tap washer",
     stage: "ready",
     agoMs: 5 * DAY,
@@ -286,6 +331,7 @@ const FRONTIER_SEEDS: Seed[] = [
   },
   {
     id: "b-f9",
+    projectId: "b-p2",
     title: "Sort the shed shelves",
     stage: "ready",
     agoMs: 21 * DAY,
@@ -342,6 +388,7 @@ const TRIAGE_SEEDS: Seed[] = [
   },
   {
     id: "b-t4",
+    projectId: "b-p1",
     title: "Re: your quote for the glazing",
     stage: "triage",
     agoMs: 7 * HOUR,
@@ -380,6 +427,7 @@ const TRIAGE_SEEDS: Seed[] = [
   },
   {
     id: "b-t10",
+    projectId: "b-p2",
     title: "Re: gutter cleaning availability",
     stage: "triage",
     agoMs: 2 * DAY,
@@ -413,6 +461,7 @@ const TRIAGE_SEEDS: Seed[] = [
   },
   {
     id: "b-t14",
+    projectId: "b-p2",
     title: "Re: hedge trimmer service booking",
     stage: "triage",
     agoMs: 6 * DAY,
@@ -675,12 +724,21 @@ export function buildDemoTaskState(): TaskState {
     frontier,
     triageInbox,
     grillingItems,
-    // Production has no `blocked_by` edges and no projects at all — the second
-    // is why grouping by Project produces exactly one column here, which is a
-    // finding about the axis rather than a gap in the fixture.
+    // Production has no `blocked_by` edges, so this stays empty — a finding
+    // about the relation rather than a gap in the fixture. `projects` was
+    // empty for the same reason and no longer is: see departure 4.
     blocked: [],
     stepsByItem: {},
-    projects: [],
+    // Split exactly as the real answer splits it (#624): an archived project
+    // is absent in the mirror and arrives on the `archivedProjects` half, so
+    // a fixture that put all three in `projects` would photograph a shape the
+    // app never produces — and would hide the very bug this split fixed.
+    projects: PROJECT_SEEDS.filter((seed) => seed.archived !== true).map((seed) =>
+      project(seed, loadedAt),
+    ),
+    archivedProjects: PROJECT_SEEDS.filter((seed) => seed.archived === true).map((seed) =>
+      project(seed, loadedAt),
+    ),
     ledger,
     // #481: the board world's own Recall answer, seeded above — `task.search`
     // never falls through to whatever `Core::search` actually answers in
@@ -696,6 +754,7 @@ export function buildDemoTaskState(): TaskState {
     kindRegistry: DEMO_DATA.ruleKindRegistry,
     rules: DEMO_DATA.ruleDetails,
     lastRuleWrite: null,
+    lastProjectWrite: null,
     // Piece 3: every standing question's read, built by the SAME functions
     // the kit world's `demoQuestionInputs` calls (`demo-pane-reads.ts`) — one
     // input path, not a third fixture world hand-building the same six

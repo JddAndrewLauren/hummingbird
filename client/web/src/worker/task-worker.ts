@@ -173,6 +173,11 @@ export interface TaskHostLike {
   blocked(): string;
   steps(itemId: string): string;
   projects(): string;
+  /** #624's project create. Mirrors `TaskHost::createProject`, resolved to
+   * JSON: `{"kind": "ok"|"failed"|"busy", "id": string|null,
+   * "error": string|null}`. The name is trimmed and an empty one refused at
+   * the seam, before `Core`. */
+  createProject(seed: string, name: string, nowMs: number): Promise<string>;
   isPending(itemId: string): string;
   takeEvents(): string;
   runSync(
@@ -339,6 +344,17 @@ interface RawProject {
 interface RawProjectListResponse {
   kind: "ok" | "busy";
   projects: RawProject[];
+  /** #624: the archived half, on the same answer as the live one — an
+   * archived project is *absent* in the mirror, so `projects` cannot carry
+   * it, and giving the Projects grid a second request for the same read
+   * would be a second clock for it. */
+  archived: RawProject[];
+}
+
+interface RawCreateProjectResponse {
+  kind: "ok" | "failed" | "busy";
+  id: string | null;
+  error: string | null;
 }
 
 interface RawItemListResponse {
@@ -1077,7 +1093,24 @@ export async function handleTaskRequest(
       if (raw.kind === "busy") {
         return;
       }
-      post({ type: "projects", projects: raw.projects.map(mapProject) });
+      post({
+        type: "projects",
+        projects: raw.projects.map(mapProject),
+        archivedProjects: raw.archived.map(mapProject),
+      });
+      return;
+    }
+    case "createProject": {
+      const raw = JSON.parse(
+        await host.createProject(request.seed, request.name, request.nowMs),
+      ) as RawCreateProjectResponse;
+      post({
+        type: "createProjectResult",
+        seed: request.seed,
+        kind: raw.kind,
+        id: raw.id,
+        error: raw.error,
+      });
       return;
     }
     case "isPending": {

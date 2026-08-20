@@ -450,7 +450,7 @@ function RealFrontier({
           <TriageRow
             key={selectedCapture.id}
             item={selectedCapture}
-            projects={task.projects}
+            projects={task.projects ?? []}
             expanded
             onToggle={onCloseItemDetail}
             nowMs={nowMs}
@@ -468,7 +468,7 @@ function RealFrontier({
             key={selectedItem.id}
             mode="detail"
             item={selectedItem}
-            projects={task.projects}
+            projects={task.projects ?? []}
             steps={task.stepsByItem[selectedItem.id] ?? []}
             onClose={onCloseItemDetail}
             onAct={(action) => {
@@ -538,7 +538,7 @@ function RealFrontier({
           triage={task.triageInbox}
           grilling={task.grillingItems}
           draftItemIds={task.grillDraftItemIds}
-          projects={task.projects}
+          projects={task.projects ?? []}
           nowMs={nowMs}
           selectedItemId={selectedItemId}
           onOpenItem={onOpenItem}
@@ -679,7 +679,7 @@ export function NowScreen({
                 ) : null}
                 <div style={{ display: "flex", gap: "var(--space-4)", flexWrap: "wrap" }}>
                   <Button iconLeft="play">Resume</Button>
-                  <Button variant="secondary" iconLeft="list-checks" onClick={() => onScreen("routes")}>
+                  <Button variant="secondary" iconLeft="list-checks" onClick={() => onScreen("projects")}>
                     Steps ({top.steps})
                   </Button>
                   <Button variant="ghost" iconLeft="clock">
@@ -705,7 +705,7 @@ export function NowScreen({
                     energy={item.energy}
                     steps={item.steps}
                     blockedBy={item.blockedBy}
-                    onClick={() => onScreen("routes")}
+                    onClick={() => onScreen("projects")}
                     // Inert in demo mode, like Resume and Later today above —
                     // present so `?demo` photographs the real shell's
                     // mark-done affordance.

@@ -47,9 +47,11 @@ const SENTINELS = [
   // fixtures/demo-calendar.ts — the board world's Settings calendar card
   // (#452).
   { fixture: "demo-calendar.ts", needle: "Fictional (personal)" },
-  // fixtures/demo-data.ts again — the route checklist, which lived in
-  // RoutesScreen.tsx as a module-level literal until it was moved here.
-  { fixture: "demo-data.ts", needle: "Regenerate the Gmail fixture set" },
+  // fixtures/demo-task-state.ts — the seeded projects (#624's departure 4).
+  // Their own sentinel rather than leaning on the item seeds above: they are
+  // a separate literal in that module, and a project name is exactly the kind
+  // of string that would read as real UI copy if it shipped.
+  { fixture: "demo-task-state.ts", needle: "Autumn garden clear-up" },
 ];
 
 const DIST = new URL("../dist/", import.meta.url).pathname;

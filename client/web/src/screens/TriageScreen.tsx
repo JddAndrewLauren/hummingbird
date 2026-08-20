@@ -249,7 +249,7 @@ export function TriageScreen({
               <TriageRow
                 key={item.id}
                 item={item}
-                projects={task.projects}
+                projects={task.projects ?? []}
                 expanded={selectedId === item.id}
                 onToggle={() => setSelectedId(selectedId === item.id ? null : item.id)}
                 nowMs={nowMs}

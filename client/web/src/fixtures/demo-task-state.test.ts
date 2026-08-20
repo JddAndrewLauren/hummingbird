@@ -67,10 +67,32 @@ describe("buildDemoTaskState — production's shape, none of its content", () =>
     });
   });
 
-  it("has no projects and no blocked edges, which is why the Project axis is one column", () => {
-    expect(state.projects).toEqual([]);
+  it("has no blocked edges — production's own measured zero", () => {
     expect(state.blocked).toEqual([]);
-    expect(board.every((i) => i.projectId === null)).toBe(true);
+  });
+
+  // Departure 4: production measured zero projects, so a faithful mirror would
+  // hand the Projects grid (#624) an empty list and the visual gate would
+  // photograph an empty screen and pass. Three are seeded instead, one
+  // archived, with real items attached — see the fixture's own header for the
+  // trade (the Project axis is no longer one column).
+  // Split across the two lists exactly as the real `projects` answer splits
+  // them: the archived one is absent in the mirror and can only arrive on
+  // `archivedProjects`. A fixture that put it in `projects` would photograph
+  // a shape the app never produces.
+  it("seeds three projects, one archived, with real items attached", () => {
+    expect(state.projects?.map((p) => p.name)).toEqual([
+      "House repairs",
+      "Autumn garden clear-up",
+    ]);
+    expect(state.projects?.every((p) => p.archivedAt === null)).toBe(true);
+    expect(state.archivedProjects?.map((p) => p.id)).toEqual(["b-p3"]);
+    expect(state.archivedProjects?.every((p) => p.archivedAt !== null)).toBe(true);
+    expect(tally(board.map((i) => i.projectId))).toEqual({
+      "(none)": 25,
+      "b-p1": 2,
+      "b-p2": 3,
+    });
   });
 
   it("leaves priority at production's own flat zero", () => {
@@ -140,8 +162,7 @@ describe("buildDemoTaskState — #452 grows the seed past the frontier and the i
     expect(state.kindRegistry).not.toBeNull();
   });
 
-  it("keeps projects and blocked at production's own measured zero", () => {
-    expect(state.projects).toEqual([]);
+  it("keeps blocked at production's own measured zero", () => {
     expect(state.blocked).toEqual([]);
   });
 

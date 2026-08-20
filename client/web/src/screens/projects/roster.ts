@@ -1,0 +1,122 @@
+// #624's Projects grid display shape: which cards there are, in what order,
+// and what each one's counts line says. A pure module (no React, no worker),
+// the same split `triage-form.ts`/`frontier-facets.ts` use for their own
+// screen logic, so the rules below are unit-testable without mounting
+// anything.
+//
+// **The counts are derived, not read.** This slice adds no read beyond the
+// `projects` one that has existed since #108: an action's `projectId` is
+// already on every Ledger row (`LedgerRowDTO extends TaskItemDTO`), and the
+// Ledger is already app-wide state. So a card's "3 actions · 1 done" is a
+// tally over rows this device already holds, not a per-project query.
+//
+// That has one honest consequence, and `ProjectCounts` is `null` rather than
+// zeroed to carry it: until the Ledger has answered, this module cannot tell
+// a project with no actions from a project whose actions have not been read.
+// `0 actions` is a claim, and nothing here is entitled to make it early.
+
+import type { LedgerRowDTO, ProjectDTO } from "../../store/protocol";
+import type { TaskProjectResult } from "../../store/store";
+
+/** One project's tallied actions. `done` counts rows at the `done` stage;
+ * `live` is everything else this device holds for the project, archived rows
+ * included — the Ledger is the retained roster, so an archived action still
+ * belongs to its project. */
+export interface ProjectCounts {
+  live: number;
+  done: number;
+}
+
+/** One card in the grid. */
+export interface ProjectRow {
+  project: ProjectDTO;
+  archived: boolean;
+  /** `null` while the Ledger has not answered — see the module header. */
+  counts: ProjectCounts | null;
+}
+
+/** The grid's rows, live first and archived after, each half in the order
+ * `TaskState.projects` already arrives in (`Core::projects`' id order, which
+ * is stable and diffable). Archived rows are always built — the screen's
+ * Show-archived toggle filters `rows`, so the count line can name how many
+ * are hidden without a second pass. */
+export function projectRoster(
+  projects: ProjectDTO[],
+  ledger: LedgerRowDTO[] | null,
+): ProjectRow[] {
+  const counts = ledger === null ? null : tallyByProject(ledger);
+  const rows = projects.map((project) => ({
+    project,
+    archived: project.archivedAt !== null,
+    counts: counts === null ? null : (counts.get(project.id) ?? { live: 0, done: 0 }),
+  }));
+  return [...rows.filter((row) => !row.archived), ...rows.filter((row) => row.archived)];
+}
+
+function tallyByProject(ledger: LedgerRowDTO[]): Map<string, ProjectCounts> {
+  const counts = new Map<string, ProjectCounts>();
+  for (const row of ledger) {
+    if (row.projectId === null) {
+      continue;
+    }
+    const current = counts.get(row.projectId) ?? { live: 0, done: 0 };
+    if (row.stage === "done") {
+      current.done += 1;
+    } else {
+      current.live += 1;
+    }
+    counts.set(row.projectId, current);
+  }
+  return counts;
+}
+
+/** A card's meta line. Renders the not-read-yet state as a word rather than
+ * as `0 actions` — the module header's whole point. Voice per the design
+ * brief: bare counts, middle dot for the join. */
+export function countsMeta(counts: ProjectCounts | null): string {
+  if (counts === null) {
+    return "actions not read yet";
+  }
+  const actions = `${counts.live} ${counts.live === 1 ? "action" : "actions"}`;
+  return counts.done === 0 ? actions : `${actions} · ${counts.done} done`;
+}
+
+/** The grid's header line: how many projects are live, and how many archived
+ * ones the toggle is hiding. */
+export function rosterSummary(rows: ProjectRow[]): string {
+  const archived = rows.filter((row) => row.archived).length;
+  return `${rows.length - archived} live · ${archived} archived`;
+}
+
+/** The cards the Show-archived toggle actually leaves on screen. */
+export function visibleRows(rows: ProjectRow[], showArchived: boolean): ProjectRow[] {
+  return rows.filter((row) => showArchived || !row.archived);
+}
+
+/** True while a create is still in flight — its minted id has not reached the
+ * grid. `lastProjectWrite` is the only handle on it (there is no optimistic
+ * overlay to look in, per `Core::create_project`), and this clears itself the
+ * moment the cycle that pulls the project back lands. */
+export function awaitingCreate(
+  rows: ProjectRow[],
+  lastProjectWrite: TaskProjectResult | null,
+): boolean {
+  if (lastProjectWrite === null || lastProjectWrite.kind !== "ok") {
+    return false;
+  }
+  const { projectId } = lastProjectWrite;
+  return projectId !== null && !rows.some((row) => row.project.id === projectId);
+}
+
+/** What a non-`ok` project write says on the grid, or `null` when the last one
+ * went through. Both non-`ok` kinds land here on purpose: a `busy` result is a
+ * write the worker dropped rather than one it delivered, so it is as much a
+ * "this did not happen" as a `failed` is, and silence would be the one answer
+ * this screen must never give. `busy` carries no `error` of its own, which is
+ * what the fallback copy is for. */
+export function writeFailureMessage(lastProjectWrite: TaskProjectResult | null): string | null {
+  if (lastProjectWrite === null || lastProjectWrite.kind === "ok") {
+    return null;
+  }
+  return lastProjectWrite.error ?? "That project write did not go through.";
+}

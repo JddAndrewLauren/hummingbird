@@ -34,7 +34,7 @@ grepping it.
 | Evaluated-stream pollers | `server/{gmail-poll,calendar-poll,graph-poll}/` | each `src/lib.rs`, ADR-0011 |
 | The race lane (2 binaries) | `server/race-poll/` | `src/lib.rs` |
 | The client sync engine | `client/core/src/sync/` | `sync/mod.rs`, then `sync/cycle.rs`, ADR-0007/0008 |
-| The one client API | `client/core/src/lib.rs` | its `Core` docs — seven mutation entry points |
+| The one client API | `client/core/src/lib.rs` | its `Core` docs — every mutation entry point carries its own, including whether it overlays |
 | Ranking / freshness / panes / bindings | `client/core/src/{rank,freshness,pane,bindings}.rs` | each header; ADR-0015 for the Rust/TS carve-out, **as redrawn by ADR-0025** |
 | The decisions every client shares (#141/M1) | `client/core/src/decisions/`, `client/ffi-web/src/decisions.rs`, `client/web/src/decisions/seam.ts` | `decisions/mod.rs`, then `seam.ts`; ADR-0025 |
 | The panes' decision half + the zone bridge (#533/M4) | `client/core/src/decisions/panes/`, `client/web/src/screens/questions/zone-bridge.ts` | `panes/mod.rs`, then `panes/zone.rs`; ADR-0025 |
@@ -54,6 +54,7 @@ grepping it.
 | The web app | `client/web/` | `client/web/README.md` |
 | The SharedWorker layer | `client/web/src/worker/` | `core.worker.ts` (note its top-level-`await` invariant), ADR-0010 |
 | The standing-question panes | `client/web/src/screens/questions/` + `*-pane/` | `questions/contract.ts`, ADR-0015 |
+| The Projects page and the project lane's client write (#624, the first slice off #449) — grid, create, dossier shell | `client/core/src/lib.rs`'s `create_project`, `client/ffi-web/src/{task_host,lib}.rs`, `client/web/src/{shell/useProjectsWiring.ts,screens/ProjectsScreen.tsx,screens/projects/}` | `ProjectsScreen.tsx`, then `Core::create_project`'s doc for the no-overlay contract; ADR-0030 |
 | The Status screen (second surface of the ranked region) | `client/web/src/screens/StatusScreen.tsx` (#311) | `questions/contract.ts`, ADR-0017 |
 | Android's Status screen — the status four, plus the phone's own persisted sync history (#536/M4) | `client/android/.../Status{Screen,ViewModel}.kt`, `client/android/.../core/SyncHistoryStore.kt` | `StatusScreen.kt`, then `SyncHistoryStore.kt`; ADR-0017/0025 |
 | Now's centre column — the frontier in columns | `client/web/src/screens/{FrontierColumns.tsx,frontier-columns.ts,frontier-facets.ts,frontier-prefs.ts}` (#399) | `FrontierColumns.tsx`, ADR-0021 |

@@ -4,7 +4,7 @@ import { AlertsScreen } from "./screens/AlertsScreen";
 import { DoneScreen } from "./screens/DoneScreen";
 import { LedgerScreen } from "./screens/LedgerScreen";
 import { NowScreen } from "./screens/NowScreen";
-import { RoutesScreen } from "./screens/RoutesScreen";
+import { ProjectsScreen } from "./screens/ProjectsScreen";
 import { RulesScreen } from "./screens/RulesScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { StatusScreen } from "./screens/StatusScreen";
@@ -44,6 +44,7 @@ import { useOnlineStatus } from "./shell/useOnlineStatus";
 import { UpdateBanner } from "./shell/UpdateBanner";
 import { useAppUpdate } from "./shell/useAppUpdate";
 import { usePaneReadsWiring } from "./shell/usePaneReadsWiring";
+import { useProjectsWiring } from "./shell/useProjectsWiring";
 import { useRulesWiring } from "./shell/useRulesWiring";
 import { useSyncWiring } from "./shell/useSyncWiring";
 import { useTaskTokenWiring } from "./shell/useTaskTokenWiring";
@@ -186,6 +187,10 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     status,
     task.syncOutcomeSeq,
   );
+  // #624: a write door only — the `projects` read is already refreshed
+  // app-wide by `useFrontierWiring`, and a second per-cycle requester would
+  // be a competing clock for one read (see `useProjectsWiring`'s header).
+  const { createProject: handleCreateProject } = useProjectsWiring(worker);
   // #245: every source the registered standing questions need, refreshed on
   // the same per-cycle signal as the bindings they depend on.
   usePaneReadsWiring(worker, status, task.syncOutcomeSeq);
@@ -568,7 +573,20 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               grill={demo ? undefined : grillTakeover}
             />
           )}
-          {screen === "routes" && <RoutesScreen demo={demo} />}
+          {/* #624: never `demo`. Projects reads `TaskState` on every world,
+              so the kit world photographs its honest holding state. The
+              create is still gated the way `onCreateRule` below is: the kit
+              world's grid is a hand-authored fixture, and a Create pressed
+              over it would enqueue a real project against this device's own
+              core. The board world is deliberately NOT gated — a mutation
+              typed there goes to the real worker already (see `demoTask`'s
+              comment above), and this is the same bargain. */}
+          {screen === "projects" && (
+            <ProjectsScreen
+              task={task}
+              onCreateProject={demo ? () => {} : handleCreateProject}
+            />
+          )}
           {screen === "alerts" && <AlertsScreen demo={demo} />}
           {screen === "rules" && (
             <RulesScreen
@@ -651,7 +669,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         focusRequestId={captureFocusRequestId}
         onClose={closeCapture}
         onSubmit={handleCapture}
-        projects={demo ? [] : task.projects}
+        projects={demo ? [] : (task.projects ?? [])}
         demo={demo !== null}
         lastCapture={demo ? null : task.lastCapture}
         cancelDictationRequestId={cancelDictationRequestId}
@@ -679,7 +697,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         // mode's `task` is the static fixture, so an expanded live result
         // there gets no `onTriage` at all and renders with no Edit
         // affordance, exactly like a Done or archived one.
-        projects={demo ? [] : task.projects}
+        projects={demo ? [] : (task.projects ?? [])}
         onTriage={demo ? undefined : handleTriage}
         lastTriage={demo ? null : task.lastTriage}
         nowMs={syncNowMs}

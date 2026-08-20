@@ -35,7 +35,8 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     done: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     blocked: vi.fn().mockReturnValue('{"kind":"ok","entries":[]}'),
     steps: vi.fn().mockReturnValue('{"kind":"ok","steps":[]}'),
-    projects: vi.fn().mockReturnValue('{"kind":"ok","projects":[]}'),
+    createProject: vi.fn().mockResolvedValue('{"kind":"ok","id":"project-1","error":null}'),
+    projects: vi.fn().mockReturnValue('{"kind":"ok","projects":[],"archived":[]}'),
     isPending: vi.fn().mockReturnValue('{"kind":"ok","pending":false}'),
     takeEvents: vi.fn().mockReturnValue("[]"),
     runSync: vi.fn().mockResolvedValue(
@@ -827,7 +828,10 @@ describe("handleTaskRequest", () => {
     expect(await run({ type: "getSteps", itemId: "item-1" }, host)).toEqual([]);
   });
 
-  it("getProjects maps every raw project to its camelCase DTO", async () => {
+  // #624: both halves, mapped the same way and kept apart. An archived
+  // project is absent in the mirror, so it can only ever arrive on the
+  // second list — merging them here would put it in every project picker.
+  it("getProjects maps every raw project to its camelCase DTO, live and archived apart", async () => {
     const rawProject = {
       id: "p-1",
       name: "Ship it",
@@ -836,8 +840,13 @@ describe("handleTaskRequest", () => {
       updated_at: 1,
       version: 1,
     };
+    const rawArchived = { ...rawProject, id: "p-9", name: "Old bike", archived_at: 9_000 };
     const host = fakeHost({
-      projects: vi.fn().mockReturnValue(JSON.stringify({ kind: "ok", projects: [rawProject] })),
+      projects: vi
+        .fn()
+        .mockReturnValue(
+          JSON.stringify({ kind: "ok", projects: [rawProject], archived: [rawArchived] }),
+        ),
     });
     const posted = await run({ type: "getProjects" }, host);
 
@@ -847,13 +856,23 @@ describe("handleTaskRequest", () => {
         projects: [
           { id: "p-1", name: "Ship it", archivedAt: null, createdAt: 1, updatedAt: 1, version: 1 },
         ],
+        archivedProjects: [
+          {
+            id: "p-9",
+            name: "Old bike",
+            archivedAt: 9_000,
+            createdAt: 1,
+            updatedAt: 1,
+            version: 1,
+          },
+        ],
       },
     ]);
   });
 
   it('getProjects posts nothing when the host answers "busy"', async () => {
     const host = fakeHost({
-      projects: vi.fn().mockReturnValue('{"kind":"busy","projects":[]}'),
+      projects: vi.fn().mockReturnValue('{"kind":"busy","projects":[],"archived":[]}'),
     });
     expect(await run({ type: "getProjects" }, host)).toEqual([]);
   });

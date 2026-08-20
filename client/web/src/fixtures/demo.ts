@@ -22,7 +22,6 @@ export type {
   DemoCapture,
   DemoData,
   DemoItem,
-  DemoRoute,
   DemoRule,
 } from "./demo-data";
 

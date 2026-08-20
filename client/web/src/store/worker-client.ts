@@ -363,7 +363,28 @@ export function attachWorkerClient(
         store.setTaskSteps(message.itemId, message.steps);
         return;
       case "projects":
-        store.setTaskState({ projects: message.projects });
+        store.setTaskState({
+          projects: message.projects,
+          archivedProjects: message.archivedProjects,
+        });
+        return;
+      case "createProjectResult":
+        store.setTaskState({
+          lastProjectWrite: {
+            seed: message.seed,
+            projectId: message.id,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        if (message.kind === "ok") {
+          // No overlay for projects (`Core::create_project`'s own doc) — the
+          // new project becomes visible once the next completed cycle pulls
+          // it back, so this re-request answers the *old* list, which is the
+          // point: the grid says it is waiting rather than showing a card
+          // the authority has not confirmed.
+          requestProjects(worker);
+        }
         return;
       case "isPendingResult":
         store.setTaskPending(message.itemId, message.pending);
@@ -861,6 +882,13 @@ export function requestSteps(worker: WorkerLike, itemId: string): void {
  * (issue #108, PR #200 review). */
 export function requestProjects(worker: WorkerLike): void {
   worker.postMessage({ type: "getProjects" });
+}
+
+/** #624's project create. `seed` mints `Core::create_project`'s own
+ * queue-entry id — same caller-mints contract as `createRule`'s. The name is
+ * trimmed and an empty one refused at the wasm seam, not here. */
+export function createProject(worker: WorkerLike, seed: string, name: string, nowMs: number): void {
+  worker.postMessage({ type: "createProject", seed, name, nowMs });
 }
 
 export function requestIsPending(worker: WorkerLike, itemId: string): void {

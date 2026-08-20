@@ -12,7 +12,7 @@ import type { Screen } from "./screens";
 export const SCREEN_ICONS: Record<Screen, IconName> = {
   now: "zap",
   triage: "inbox",
-  routes: "route",
+  projects: "folder-kanban",
   alerts: "bell",
   rules: "siren",
   done: "circle-check",

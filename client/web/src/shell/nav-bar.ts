@@ -15,7 +15,7 @@ import { SCREENS, type Screen } from "./screens";
 // something looks wrong and you are nowhere near a desktop.
 //
 // What that leaves behind the sheet is the looking-and-configuring set:
-// `routes` and `rules` are edited rarely and badly suited to 390px anyway;
+// `projects` and `rules` are edited rarely and badly suited to 390px anyway;
 // `done` and `ledger` are history, read not acted on; `settings` is where
 // you go deliberately. None of them is unreachable — they are one tap
 // further, which is the whole trade.

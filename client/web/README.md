@@ -5,7 +5,7 @@ wasm sync core (`hummingbird-ffi-web`, #67) loaded in a **SharedWorker** —
 one core per origin, N views (ADR-0010, #126) — PWA offline shell, served
 from Cloudflare Workers static assets at `hb.twinion.net` (ADR-0006). The
 shell is built on the Hummingbird Design System (see the repo `CLAUDE.md`):
-a nav over nine surfaces — Now, Triage, Routes, Alerts, Rules, Done, Ledger,
+a nav over nine surfaces — Now, Triage, Projects, Alerts, Rules, Done, Ledger,
 Status, Settings — which is a **fixed rail on a desktop and a bottom bar on a
 phone**. That is the app's one breakpoint, 640px, defined in
 `src/shell/breakpoints.ts` and spelled again in `src/shell/responsive.css`
@@ -156,7 +156,11 @@ cannot show it — the flag compiles away and the fixtures leave the bundle.
   `questions/contract.ts` first, it is what a standing question owes the
   shell — with one pane directory per question (`waste-pane/`,
   `weekend-pane/`, `vacation-pane/`, `race-pane/`, each with its own header);
-  and `rules/` is #140's rule editor over the exported kind registry.
+  `rules/` is #140's rule editor over the exported kind registry; and
+  `projects/` is #624's Projects grid — `roster.ts` holds the whole of what
+  the screen decides (the card order and counts, what the Show-archived
+  toggle leaves on screen, whether a create is still in flight, and what a
+  write that did not go through says).
 - `src/skills/` — #273's skill-runner lane, and **the one place in this app
   that speaks HTTP without going through the Rust core**: `POST
   /api/skills/run` on the authority, which proxies to the cloud runner

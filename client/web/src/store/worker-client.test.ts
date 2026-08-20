@@ -55,7 +55,8 @@ const initialTask: TaskState = {
   grillingItems: [],
   blocked: [],
   stepsByItem: {},
-  projects: [],
+  projects: null,
+  archivedProjects: null,
   ledger: null,
   search: null,
   done: null,
@@ -63,6 +64,7 @@ const initialTask: TaskState = {
   kindRegistry: null,
   rules: null,
   lastRuleWrite: null,
+  lastProjectWrite: null,
   paneReads: {},
   pending: {},
   lastCapture: null,
@@ -406,6 +408,58 @@ describe("attachWorkerClient", () => {
     expect(worker.postMessage).not.toHaveBeenCalled();
   });
 
+  it("records a createProjectResult keyed by seed and re-requests projects on ok", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "createProjectResult",
+        seed: "seed-project-1",
+        kind: "ok",
+        id: "project-1",
+        error: null,
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastProjectWrite).toEqual({
+      seed: "seed-project-1",
+      projectId: "project-1",
+      kind: "ok",
+      error: null,
+    });
+    // #624: unlike `triageResult` above there is NO overlay to reveal — this
+    // re-request will answer the old list until a cycle lands, and that is
+    // the point. It exists so the grid updates on the very next answer
+    // rather than only on the next per-cycle refresh.
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getProjects" });
+  });
+
+  it("records a failed createProjectResult without re-requesting anything", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "createProjectResult",
+        seed: "seed-project-1",
+        kind: "failed",
+        id: null,
+        error: "name must be non-empty",
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastProjectWrite).toEqual({
+      seed: "seed-project-1",
+      projectId: null,
+      kind: "failed",
+      error: "name must be non-empty",
+    });
+    expect(worker.postMessage).not.toHaveBeenCalled();
+  });
+
   it("records a saveGrillDraftResult keyed by itemId", () => {
     const worker = fakeWorker();
     const store = createCoreStore();
@@ -721,9 +775,16 @@ describe("attachWorkerClient", () => {
       updatedAt: 1,
       version: 0,
     };
-    worker.onmessage?.({ data: { type: "projects", projects: [project] } } as MessageEvent);
+    const archived = { ...project, id: "p-9", name: "Old bike", archivedAt: 9_000 };
+    worker.onmessage?.({
+      data: { type: "projects", projects: [project], archivedProjects: [archived] },
+    } as MessageEvent);
 
+    // One answer sets both halves, and they stay apart: every project picker
+    // in the app renders `projects`, and an archived one offered there as a
+    // destination would be a bug (#624).
     expect(store.getSnapshot().task.projects).toEqual([project]);
+    expect(store.getSnapshot().task.archivedProjects).toEqual([archived]);
     // Untouched sibling field.
     expect(store.getSnapshot().task.frontier).toEqual([]);
   });
