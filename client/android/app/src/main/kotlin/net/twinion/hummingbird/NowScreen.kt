@@ -106,7 +106,7 @@ import uniffi.hummingbird_ffi_mobile.NowItemRecord
  * instant itself. */
 private val DEADLINE_SHAPE: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm")
 
-private fun nowDeadlineShaped(): String = LocalDateTime.now().format(DEADLINE_SHAPE)
+internal fun nowDeadlineShaped(): String = LocalDateTime.now().format(DEADLINE_SHAPE)
 
 /** [MobileUrgencyBand]'s dot colour, or `null` for the band that gets no
  * dot — exhaustive, no `else` arm: the compile-time drift gate the brief

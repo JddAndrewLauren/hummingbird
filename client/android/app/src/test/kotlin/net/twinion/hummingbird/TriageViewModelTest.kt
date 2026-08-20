@@ -13,6 +13,7 @@ import uniffi.hummingbird_ffi_mobile.FieldPatch
 import uniffi.hummingbird_ffi_mobile.ItemEdit
 import uniffi.hummingbird_ffi_mobile.MetaProblems
 import uniffi.hummingbird_ffi_mobile.TriageBoardRecord
+import uniffi.hummingbird_ffi_mobile.MobileUrgencyBand
 import uniffi.hummingbird_ffi_mobile.TriageItemRecord
 
 // `TriageViewModel`'s load/select/promote/complete control flow, with fakes
@@ -23,7 +24,7 @@ import uniffi.hummingbird_ffi_mobile.TriageItemRecord
 class TriageViewModelTest {
 
     private fun vm(
-        fetch: suspend () -> TriageBoardRecord = { triageBoardFixture() },
+        fetch: suspend (String) -> TriageBoardRecord = { _ -> triageBoardFixture() },
         triage: suspend (String, Boolean, ItemEdit, Long) -> Unit = { _, _, _, _ -> },
         complete: suspend (String, Long) -> Unit = { _, _ -> },
     ) = TriageViewModel(
@@ -55,7 +56,7 @@ class TriageViewModelTest {
     fun `loading reads the whole board`() = runBlocking {
         val model = vm(fetch = { triageBoardFixture(capturedCount = 2, grillingCount = 1) })
 
-        model.load()
+        model.load("2026-08-15T12:00")
 
         val loaded = model.state.value as TriageState.Loaded
         assertEquals(2u, loaded.board.capturedCount)
@@ -65,7 +66,7 @@ class TriageViewModelTest {
     @Test
     fun `selecting a row opens exactly it, seeded from the record`() = runBlocking {
         val model = vm(fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1", title = "buy milk"))) })
-        model.load()
+        model.load("2026-08-15T12:00")
 
         model.select("i-1")
 
@@ -76,7 +77,7 @@ class TriageViewModelTest {
     @Test
     fun `selecting the open row again closes it`() = runBlocking {
         val model = vm(fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) })
-        model.load()
+        model.load("2026-08-15T12:00")
         model.select("i-1")
 
         model.select("i-1")
@@ -95,7 +96,7 @@ class TriageViewModelTest {
                 triageBoardFixture(items = listOf(triageItemFixture("i-1", title = "first"), triageItemFixture("i-2", title = "second")))
             },
         )
-        model.load()
+        model.load("2026-08-15T12:00")
         model.select("i-1")
 
         model.select("i-2")
@@ -114,11 +115,11 @@ class TriageViewModelTest {
             fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1", title = "buy milk"))) },
             triage = { _, promote, edit, _ -> sentPromote = promote; sentEdit = edit },
         )
-        model.load()
+        model.load("2026-08-15T12:00")
         model.select("i-1")
         model.updateDraft(model.draft.value!!.copy(title = "buy oat milk"))
 
-        model.promote("i-1", 2_000)
+        model.promote("i-1", "2026-08-15T12:00", 2_000)
 
         assertEquals(true, sentPromote)
         assertEquals("buy oat milk", sentEdit?.title)
@@ -135,10 +136,10 @@ class TriageViewModelTest {
             fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) },
             triage = { _, _, edit, _ -> sentEdit = edit },
         )
-        model.load()
+        model.load("2026-08-15T12:00")
         model.select("i-1")
 
-        model.promote("i-1", 2_000)
+        model.promote("i-1", "2026-08-15T12:00", 2_000)
 
         assertEquals(FieldPatch.Untouched, sentEdit?.description)
         assertEquals(FieldPatch.Untouched, sentEdit?.deadline)
@@ -151,12 +152,12 @@ class TriageViewModelTest {
             fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) },
             triage = { _, _, edit, _ -> sent = edit },
         )
-        model.load()
+        model.load("2026-08-15T12:00")
         model.select("i-1")
         model.updateDraft(model.draft.value!!.copy(title = ""))
 
         assertFalse(model.canSave)
-        model.promote("i-1", 2_000)
+        model.promote("i-1", "2026-08-15T12:00", 2_000)
 
         assertNull("nothing may reach the queue", sent)
         assertEquals("i-1", model.selectedId.value)
@@ -169,11 +170,11 @@ class TriageViewModelTest {
             fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) },
             triage = { _, _, _, _ -> throw RuntimeException("offline") },
         )
-        model.load()
+        model.load("2026-08-15T12:00")
         model.select("i-1")
         model.updateDraft(model.draft.value!!.copy(title = "renamed"))
 
-        model.promote("i-1", 2_000)
+        model.promote("i-1", "2026-08-15T12:00", 2_000)
 
         assertEquals("i-1", model.selectedId.value)
         assertEquals("renamed", model.draft.value?.title)
@@ -190,10 +191,10 @@ class TriageViewModelTest {
             fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) },
             complete = { itemId, _ -> completed = itemId },
         )
-        model.load()
+        model.load("2026-08-15T12:00")
         model.select("i-1")
 
-        model.complete("i-1", 2_000)
+        model.complete("i-1", "2026-08-15T12:00", 2_000)
 
         assertEquals("i-1", completed)
         assertNull(model.selectedId.value)
@@ -209,10 +210,10 @@ class TriageViewModelTest {
             fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) },
             complete = { _, _ -> throw RuntimeException("offline") },
         )
-        model.load()
+        model.load("2026-08-15T12:00")
         model.select("i-1")
 
-        model.complete("i-1", 2_000)
+        model.complete("i-1", "2026-08-15T12:00", 2_000)
 
         assertEquals("i-1", model.selectedId.value)
         assertEquals("item i-1", model.draft.value?.title)
@@ -227,10 +228,10 @@ class TriageViewModelTest {
             fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) },
             complete = { _, _ -> throw CancellationException("scope left") },
         )
-        model.load()
+        model.load("2026-08-15T12:00")
 
         try {
-            model.complete("i-1", 2_000)
+            model.complete("i-1", "2026-08-15T12:00", 2_000)
             fail("complete must rethrow cancellation")
         } catch (expected: CancellationException) {
         }
@@ -241,11 +242,11 @@ class TriageViewModelTest {
     @Test
     fun `a reload while a row is open leaves its draft alone`() = runBlocking {
         val model = vm(fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1", title = "buy milk"))) })
-        model.load()
+        model.load("2026-08-15T12:00")
         model.select("i-1")
         model.updateDraft(model.draft.value!!.copy(title = "half-typed"))
 
-        model.load()
+        model.load("2026-08-15T12:00")
 
         assertEquals("half-typed", model.draft.value?.title)
     }
@@ -277,6 +278,7 @@ private fun triageItemFixture(
     priority = 0,
     projectId = null,
     deadline = null,
+    urgency = MobileUrgencyBand.CALM,
     scheduledDate = null,
     source = null,
     createdAt = 0,
