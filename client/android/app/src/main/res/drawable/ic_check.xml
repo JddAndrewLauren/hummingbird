@@ -1,0 +1,18 @@
+<!-- Lucide `check` at 24dp — the Now card's mark-done affordance — outline,
+     1.75px stroke, rounded caps, `ic_inbox.xml`'s recipe. Drawn in white and
+     tinted at use; the mark-done green is the one documented exception to
+     "icons never carry colour independently of their label"
+     (`MarkDoneButton.tsx`'s own note: the colour encodes the Done status,
+     and the accessible label still says it in words). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M20,6 9,17l-5,-5"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

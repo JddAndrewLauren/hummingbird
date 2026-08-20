@@ -252,9 +252,11 @@ Five slices bringing the surfaces in line with the design kit
   `BottomNavStructuralTest` pins the mechanism.
 - **Compact cards.** A collapsed card is title + meta only — the action
   `FlowRow` left the Now cards for the opened item (the web `ItemCard`'s
-  own shape), and with it `NowViewModel`'s whole act door.
-  `NowScreenStructuralTest` pins the inverse: `NowScreen.kt` never reads
-  `availableActions`.
+  own shape). `NowScreenStructuralTest` pins that `NowScreen.kt` never
+  reads `availableActions`. The refinement round (below) brought back
+  exactly one inline act — the mark-done checkmark, gated on the seam's
+  `canMarkDone`, with a complete-only door on `NowViewModel` — and the
+  structural test now pins the door to that one verb.
 - **The filter disclosure.** Only the axis switch keeps permanent space;
   the facet groups open behind one Filter chip carrying the active count.
   "N of M shown" comes decided across the seam
@@ -270,9 +272,45 @@ Five slices bringing the surfaces in line with the design kit
 - **The capture FAB and sheet.** The design kit's extended FAB (the one
   sanctioned large ember fill) opens `CaptureSheet` — the light form over
   the same `CaptureViewModel` and `ui/forms/` components, no details
-  disclosure and no mic (`CaptureActivity`, still the launcher icon's and
+  disclosure (`CaptureActivity`, still the launcher icon's and
   shortcut's door, keeps the full form; `CaptureSheetStructuralTest` pins
-  both the FAB and the no-second-Intent-door rule).
+  both the FAB and the no-second-Intent-door rule). The sheet shipped
+  mic-less first — a mic without recognizer plumbing is ADR-0022's dead
+  control — and gained one in the refinement round via #611's extraction.
+
+## The refinement round: top bar, mark-done, panel chrome, width parity (continues the iteration above)
+
+Operator feedback on the iteration, applied as six slices on top of it:
+
+- **The top bar.** The design kit's Android `TopBar`: the brand icon at
+  24dp on its squircle plate (light/dark exports from
+  `client/web/src/design/brand/`, swapped with the resolved theme), the
+  lowercase wordmark, and a "Search everything" trigger to Recall — which
+  until then was two taps deep in the More sheet. Same visibility rule as
+  the bottom bar: top-level surfaces only.
+- **Title-first cards, and the checkmark.** `NowRow` reads
+  title-over-meta (the web phone `ItemRow`'s wrap order) and carries the
+  web's `MarkDoneButton` as a trailing check `IconButton` in the Done
+  green, gated on `NowItemRecord.can_mark_done` (decided in
+  `ffi-mobile`, `MobileLedgerRowRecord`'s own field). Completing acts
+  through `NowViewModel.complete` — `TriageViewModel.complete`'s exact
+  shape — and re-reads the board in the same gesture.
+- **One-line axis strip.** `AxisRow` scrolls horizontally instead of
+  wrapping; the facet groups inside the disclosure keep their
+  one-labelled-row-per-facet layout.
+- **Panel chrome.** `ItemDetailPanel`'s header is the web `ItemPanel`'s:
+  `HB-<seq>` mono meta line over a `titleMedium` title, the × close
+  IconButton top-right (Cancel while editing, dirty path still confirms),
+  StageBadge leading the meta row, 12dp gaps.
+- **Width parity.** `ui/ContentMax.kt` caps the bar-tab screens' content
+  at the web's `--content-max` (880dp), centred — the unfolded display
+  stops stretching rows across its whole width.
+- **The capture-sheet mic (#611).** `speech/Dictation.kt` extracted from
+  `CaptureActivity` (`DictationHost` + `DictationFailure` + the
+  raw-transcript listener, ADR-0022 invariants intact); the sheet wires
+  the mic through it, its host living exactly as long as the sheet is
+  composed. `DictationLocalityTest` retargeted; the sheet test's no-mic
+  pin flipped to its positive.
 
 ## Choice rows, and the app's one layout gate (#576)
 

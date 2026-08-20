@@ -612,6 +612,12 @@ pub struct NowItemRecord {
     pub energy: Option<String>,
     pub available_actions: Vec<String>,
     pub stage: String,
+    /// `item-actions.ts`'s widened one-click rule ([`can_mark_done`]: any
+    /// live, unarchived stage but Done), decided here exactly as
+    /// [`MobileLedgerRowRecord`] carries it — the card's trailing check
+    /// renders from this, never from `available_actions`, whose vocabulary
+    /// a blocked row narrows.
+    pub can_mark_done: bool,
 }
 
 fn to_frontier_item(item: &Item) -> frontier::FrontierItem {
@@ -647,6 +653,7 @@ fn to_now_item_record(item: &Item, now: &str) -> NowItemRecord {
         energy: item.energy.map(|energy| energy.as_str().to_string()),
         available_actions: actions,
         stage: item.stage.as_str().to_string(),
+        can_mark_done: can_mark_done(item.stage, item.archived_at.is_some()),
     }
 }
 

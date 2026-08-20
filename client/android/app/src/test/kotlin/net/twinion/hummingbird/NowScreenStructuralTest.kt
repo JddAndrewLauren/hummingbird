@@ -35,18 +35,43 @@ class NowScreenStructuralTest {
     }
 
     @Test
-    fun `NowViewModel imports the real uniffi nowBoard binding, and no act door`() {
+    fun `NowViewModel imports the real uniffi nowBoard binding, and a complete-only act door`() {
         assertTrue(
             "expected NowViewModel to close over CoreHolder.get(...).nowBoard",
             nowViewModelSrc.contains(".nowBoard("),
         )
-        // Acting left this surface with the cards' action buttons: the
-        // opened item acts through ItemDetailViewModel, so an act door
-        // reappearing here would be a second mutation path to keep in
-        // step with that one.
-        assertFalse(
-            "NowViewModel must not carry an act door",
-            nowViewModelSrc.contains(".act("),
+        // Acting left this surface with the cards' action buttons; the row
+        // checkmark (the web ItemRow's MarkDoneButton, ported on operator
+        // feedback 2026-08-19) brought back exactly one verb —
+        // TriageViewModel's own complete-only shape. The wider act
+        // vocabulary (start/block/cancel) still belongs to the opened
+        // item's ItemDetailViewModel, so this pins the door to the one
+        // spelling and refuses a second one.
+        val actDoors = Regex("""\.act\(""").findAll(nowViewModelSrc).count()
+        assertTrue(
+            "NowViewModel's one act door must be the complete verb",
+            nowViewModelSrc.contains(""".act(itemId, "complete", nowMs)"""),
+        )
+        assertTrue(
+            "NowViewModel must carry no act door beyond the complete one (found $actDoors)",
+            actDoors == 1,
+        )
+    }
+
+    @Test
+    fun `the row checkmark renders from the seam's decided canMarkDone, in the done green`() {
+        assertTrue(
+            "the checkmark must gate on the record's own canMarkDone — availableActions " +
+                "stays banned on this screen (the test below)",
+            nowScreenSrc.contains("record.canMarkDone"),
+        )
+        assertTrue(
+            "the checkmark glyph is the vendored Lucide check",
+            nowScreenSrc.contains("R.drawable.ic_check"),
+        )
+        assertTrue(
+            "the mark-done green is the Done stage's own token pair, never a new constant",
+            nowScreenSrc.contains("if (dark) StatusDoneFgDark else Moss600"),
         )
     }
 

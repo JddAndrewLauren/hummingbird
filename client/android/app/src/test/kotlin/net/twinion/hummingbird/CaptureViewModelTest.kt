@@ -1,6 +1,7 @@
 package net.twinion.hummingbird
 
 import kotlinx.coroutines.runBlocking
+import net.twinion.hummingbird.speech.DictationFailure
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
