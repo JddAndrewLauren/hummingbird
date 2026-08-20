@@ -54,21 +54,40 @@ fn percent_encode(input: &str) -> String {
     out
 }
 
+/// The one scope this credential is allowed to yield, asserted on every
+/// exchange. See [`calendar_refresh_grant_body`] for why it is sent.
+pub const CALENDAR_SCOPE: &str = "https://www.googleapis.com/auth/calendar.readonly";
+
 /// The `refresh_token` grant's `POST oauth2.googleapis.com/token` body.
-/// Passing `scope` here would be ignored — Google's `refresh_token` grant
-/// does not honour down-scoping, which is exactly why #577 mints a second,
-/// dedicated `calendar.readonly`-only refresh token rather than reusing the
-/// shared one.
+///
+/// **`scope` is sent, and Google honours it (#581).** This module used to
+/// omit it, on the stated ground that a `refresh_token` grant returns a token
+/// bearing the whole grant and ignores the parameter. That was measured
+/// during #581's provisioning and is false: asking the *shared* three-scope
+/// credential for `calendar.readonly` alone yields a token that Gmail and
+/// Tasks both refuse with 403 `insufficient authentication scopes`, while
+/// Calendar answers 200 — a real narrowing, not an echo in the response body.
+///
+/// Sending it is not what keeps this lane safe — `GOOGLE_CALENDAR_REFRESH_TOKEN`
+/// is a dedicated one-scope credential (ADR-0028), so there is nothing to
+/// narrow when provisioning is correct. It is what makes *incorrect*
+/// provisioning fail closed. The dedicated credential and the shared one sit
+/// in the same 1Password vault under titles one word apart, and pasting the
+/// wrong one here would otherwise hand every browser holding a `device` token
+/// a live `gmail.modify` bearer, silently, with nothing on any surface
+/// looking wrong. With `scope` sent, that mistake is a 403 from Gmail instead
+/// of a granted one.
 pub fn calendar_refresh_grant_body(
     client_id: &str,
     client_secret: &str,
     refresh_token: &str,
 ) -> String {
     format!(
-        "grant_type=refresh_token&client_id={}&client_secret={}&refresh_token={}",
+        "grant_type=refresh_token&client_id={}&client_secret={}&refresh_token={}&scope={}",
         percent_encode(client_id),
         percent_encode(client_secret),
         percent_encode(refresh_token),
+        percent_encode(CALENDAR_SCOPE),
     )
 }
 
@@ -181,8 +200,26 @@ mod tests {
         assert_eq!(
             body,
             "grant_type=refresh_token&client_id=client%20id&client_secret=GOCSPX-a%2Bb\
-             &refresh_token=1%2F%2Frefresh%20token",
+             &refresh_token=1%2F%2Frefresh%20token\
+             &scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.readonly",
         );
+    }
+
+    /// #581: the scope is the mis-provisioning guard, so it is pinned on its
+    /// own rather than only inside the whole-body assertion above. Dropping
+    /// it would widen a stolen `device` token's reach to whatever the
+    /// configured refresh token happens to carry — the exact failure
+    /// ADR-0028 exists to prevent — and no test that only checked encoding
+    /// would notice.
+    #[test]
+    fn refresh_grant_body_asks_for_calendar_readonly_only() {
+        let body = calendar_refresh_grant_body("id", "secret", "token");
+        assert!(
+            body.contains("&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.readonly"),
+            "the exchange must down-scope: {body}",
+        );
+        assert!(!body.contains("gmail"), "no Gmail scope may ever be requested here: {body}");
+        assert!(!body.contains("tasks"), "no Tasks scope may ever be requested here: {body}");
     }
 
     fn token(expires_at_ms: i64) -> AccessToken {

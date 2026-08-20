@@ -581,14 +581,18 @@ export function SettingsScreen({
                   app has stopped retrying, and saying only "the credential no
                   longer works" would leave the reader waiting for a recovery
                   that is never coming. `calendar/remint-health.ts` decides.
-                  ADR-0028: the credential that can go bad now is the
-                  server-held `GOOGLE_CALENDAR_REFRESH_TOKEN`, not anything
-                  this browser holds, so the blocked sentence names that and
-                  points at the operator rather than at a browser session. */}
+                  #581: this sentence names no cause. It is one string for all
+                  five of `remint-health.ts`'s `BLOCKING_ERRORS`, which have
+                  five different causes — the earlier "most likely a revoked
+                  refresh token" was right for one of them and sent the reader
+                  hunting a revocation that never happened for the other four.
+                  The cause is `connect-error.ts`'s per-code copy, rendered
+                  directly beneath; this says only the part that copy does not,
+                  which is that retrying has stopped. */}
               {calendar.connected && calendar.needsReconnect ? (
                 <p style={{ font: "var(--type-body-sm)", color: "var(--status-warn-fg)" }}>
                   {calendar.silentRemintBlocked
-                    ? "The credential no longer works, and renewing it in the background has stopped working too — the server-held Google credential needs attention, most likely a revoked refresh token. Ask the operator to check it. The last snapshot is still showing, and stays honest about its age. Retry polling on this device once it's fixed."
+                    ? "The credential no longer works, and renewing it in the background has stopped working too. The last snapshot is still showing, and stays honest about its age. Retry polling on this device once it's fixed."
                     : "The credential no longer works. The last snapshot is still showing, and stays honest about its age."}
                 </p>
               ) : null}
