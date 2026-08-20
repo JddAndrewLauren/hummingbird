@@ -320,9 +320,12 @@ all, which establishes nothing, since an insecure context is expected to
 withhold the API. Origin is not wholly irrelevant, though: per #368,
 `on-device-speech-recognition` is a Permissions-Policy directive gating
 `install()`. It defaults to a `self` allowlist, so a **top-level** probe on any
-secure origin behaves the same — but a cross-origin iframe would not, and that
-directive name is itself unverified (it comes from MDN, not from this
-session's measurement).
+secure origin behaves the same — but a cross-origin iframe would not.
+
+*The directive name was flagged here as unverified, sourced from MDN rather
+than from this session's measurement. Amended 2026-08-14 (#441): verified —
+`document.featurePolicy.features()` on Chrome 151 lists
+`on-device-speech-recognition` directly.*
 
 ### The install, and "install once"
 
@@ -342,6 +345,85 @@ per-language check rather than a blanket yes. The `en-GB` result is incidental
 but worth recording — installing `en-US` also satisfied `en-GB`, so the
 installed unit is evidently broader than the exact tag requested, and code
 must not infer the set of installed languages from the tag it passed.
+
+### Amendment 2026-08-14 (#441): per-origin scope, `install() → false`, and the headless crash
+
+**Measured on Google Chrome 151 (Chromium 151), macOS, one browser, one
+profile, one session, 2026-08-13/14**, while verifying #379's tracer bullet.
+Three facts move past what Decision 5 established; nothing here rewrites a
+prior measurement, and each is a new fact discovered by calling the API in a
+context Decision 5 did not exercise.
+
+**1. `available()` is scoped per origin, not per browser profile.** "Install
+once" (above) is real, but it is real *on the origin the install ran on*. The
+same profile, queried from other origins in the same session, does not see
+it:
+
+| Origin | `available({langs: ["en-US"], processLocally: true})` |
+| --- | --- |
+| `https://hb.twinion.net` | `"available"` |
+| `https://example.com` | `"downloadable"` |
+| `http://localhost:5173` (the dev server) | `"downloadable"` |
+
+The en-US pack was installed on `hb.twinion.net` in the "install once"
+measurement above and survived a full browser restart *there*. It is not
+visible from any other origin in the same profile. Consequence: **#397's
+verdict cannot be taken on the dev server** — `localhost` reports
+`setup-required` there regardless of what is installed elsewhere, so the
+verdict needs a build served from an origin that already holds the pack
+(`hb.twinion.net`), or #381 landing first with a working install control on
+whatever origin is used.
+
+**2. `install()` can resolve `false`, not only reject or resolve `true`.**
+From a real click handler (`navigator.userActivation.isActive === true`) on
+`http://localhost:5173`:
+
+```
+SpeechRecognition.install({langs: ["en-US"]})  →  resolved false in ~0 ms
+available({langs: ["en-US"], processLocally: true})  →  still "downloadable"
+```
+
+Compare Decision 5's measurement on `hb.twinion.net`, where the same call
+from a gesture resolved `true` after ~6.9 s. Two things this is **not**:
+
+- Not the Permissions-Policy gate: `document.featurePolicy.allowsFeature("on-device-speech-recognition")` is `true` on both origins.
+- Not a secure-context problem: `isSecureContext` is `true` on `http://localhost:5173`.
+
+**Still open, and not resolved by this issue:** whether the blocker is the
+`http` scheme (localhost is a secure context but not HTTPS), a repeat-install
+refusal, or something else. The discriminating experiment is one
+gesture-driven `install()` on a second **HTTPS** origin that lacks the pack —
+`true` there points at the scheme, `false` points at a broader refusal.
+Running it is out of scope for #441.
+
+**3. Headless Chromium crashes the renderer on `available()`.** Isolated with
+a two-line harness against Playwright's bundled Chromium 151.0.7922.34, same
+origin, same build, one variable:
+
+```
+headless: true   → Error: page.evaluate: Target crashed
+headless: false  → "downloadable"
+```
+
+It is the **renderer** that dies, not the promise that rejects — nothing in
+the page can defend against it; a `try`/`catch` around the probe catches
+nothing. **Standing mitigation, landed in #442, in the harness rather than
+product code:** `client/web/visual/surfaces.spec.ts`'s `openApp` deletes both
+`SpeechRecognition` and `webkitSpeechRecognition` in an init script before the
+app loads, which pins the capability at `unsupported` (Decision 2 renders
+nothing for `unsupported`, same as `setup-required`) for the run. A
+`navigator.webdriver` check in `CaptureBox` was rejected for the same reason
+Decision 2 exists: it would let a browser bug shape the app, and it would
+silently disable the real render path if the gate ever ran headed. **Any
+headless Chromium is a crash risk for the capture popover, not merely a
+browser without dictation** — any future headless smoke test that opens the
+popover needs the same stub.
+
+**The directive-name caveat is retired.** Decision 5's "obstacle" note below
+flagged `on-device-speech-recognition` as an MDN-sourced, unverified
+Permissions-Policy directive name. It is now verified from the browser:
+`document.featurePolicy.features()` on Chrome 151 lists
+`on-device-speech-recognition` directly.
 
 ## Rejected alternatives
 
