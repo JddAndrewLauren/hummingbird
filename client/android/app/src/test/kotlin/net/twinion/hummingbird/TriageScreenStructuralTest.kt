@@ -250,6 +250,75 @@ class TriageScreenStructuralTest {
         )
     }
 
+    /** The header title is the display and the edit both (operator batch
+     * 2026-08-20). The standalone "Title" box said the same words the
+     * header said, so the panel claimed the title twice and editing one
+     * changed the other — this pins both halves: the box must not come
+     * back, and the pencil that replaced it must be there. */
+    @Test
+    fun `the title is edited in the header, never in a second box below it`() {
+        assertFalse(
+            "the standalone Title box must not come back — the header title is the edit",
+            screenSrc.contains("""label = { Text("Title") }"""),
+        )
+        assertTrue(
+            "the header must carry the pencil that opens the inline title edit",
+            screenSrc.contains("R.drawable.ic_pencil"),
+        )
+        // The header shows the DRAFT's title, not the record's: an edit
+        // that does not show where it was made reads as having been lost.
+        // The `Text(` call form, not a bare `draft.title` — the inline edit
+        // field binds the same expression, so a bare check would pass with
+        // the header still reading `item.title`.
+        assertTrue(
+            "the header title must read the draft, not the record",
+            Regex("""Text\(\s*draft\.title,""").containsMatchIn(screenSrc),
+        )
+        // The whole header row is the wide door out, through the same
+        // confirmation the X routes through — and only while not editing,
+        // so a tap into the title field is not a tap on the way out.
+        assertTrue(
+            "the header row must close the pane on a tap, unless the title is being edited",
+            screenSrc.contains("if (editingTitle) Modifier else Modifier.clickable(onClick = onClose)"),
+        )
+    }
+
+    /** The opened pane's mark-done, the collapsed rows' own affordance:
+     * `NowRow`'s green check on the seam's decided `canMarkDone`, never a
+     * Material `Checkbox` (operator decision 2026-08-20) and never a
+     * hand-rolled stage test. */
+    @Test
+    fun `the opened pane offers the same mark-done check the collapsed rows do`() {
+        assertTrue(
+            "the check must be gated on the seam's own decided fact",
+            screenSrc.contains("item.canMarkDone"),
+        )
+        assertTrue(
+            "the check must be NowRow's own glyph",
+            screenSrc.contains("R.drawable.ic_check"),
+        )
+        assertTrue(
+            "the check must carry NowRow's own mark-done green token pair",
+            screenSrc.contains("if (dark) StatusDoneFgDark else Moss600"),
+        )
+        assertFalse(
+            "the mark-done is an IconButton, not a Material Checkbox",
+            screenSrc.contains("Checkbox("),
+        )
+    }
+
+    /** Every leaving gesture asks the same question. `select(sameId)` nulls
+     * the draft (`TriageViewModel.select`), so re-tapping the open row was
+     * the one exit that dropped typed words without asking — the X, Back
+     * and the header tap all route through `DiscardConfirmation`. */
+    @Test
+    fun `re-tapping the open row on a dirty draft asks before dropping it`() {
+        assertTrue(
+            "the queue's rows must guard a re-tap of the already-open row",
+            screenSrc.contains("if (item.id == selectedId && viewModel.isDirty)"),
+        )
+    }
+
     @Test
     fun `no triage surface writes its own blank check`() {
         for ((name, src) in both) {
