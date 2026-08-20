@@ -4,14 +4,17 @@ import { Card } from "../components/core/Card";
 import { AlertCard } from "../components/domain/AlertCard";
 import { EmptyState } from "../components/feedback/EmptyState";
 import { Switch } from "../components/forms/Switch";
-import type { DemoData } from "../fixtures/demo";
+import { demoData } from "../fixtures/demo-data";
 import { Aside, Column, TwoColumn } from "./layout";
 
-export interface AlertsScreenProps {
-  demo: DemoData | null;
-}
-
-export function AlertsScreen({ demo }: AlertsScreenProps) {
+// #457: this screen's own dev-gated fixture accessor, read directly rather
+// than threaded through `App.tsx` as a `demo` prop. Alerts has no backing
+// lane at all (ADR-0016), so its only populated render stays the kit
+// world's, reachable at `?demo=kit`.
+export function AlertsScreen() {
+  // Lazy initializer: same once-per-mount reasoning as `RoutesScreen`'s own
+  // `demoData()` read.
+  const [demo] = useState(demoData);
   const [acked, setAcked] = useState<Record<string, boolean>>({});
   const alerts = demo?.alerts ?? [];
   const live = alerts.filter((alert) => !acked[alert.id]);

@@ -2,7 +2,6 @@ package net.twinion.hummingbird
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -46,6 +45,7 @@ import net.twinion.hummingbird.ui.SizeGlyph
 import net.twinion.hummingbird.ui.StageBadge
 import net.twinion.hummingbird.ui.levelColor
 import net.twinion.hummingbird.ui.levelPosition
+import net.twinion.hummingbird.ui.theme.LocalHbDark
 import uniffi.hummingbird_ffi_mobile.ItemDetailRecord
 import uniffi.hummingbird_ffi_mobile.MetaProblems
 import uniffi.hummingbird_ffi_mobile.MobileMicrotaskAffordance
@@ -152,7 +152,7 @@ fun ItemDetailPanel(
         BackendPreference.ENTRIES.find { it.id == id }?.label ?: id
     }
     val hasGrillDraft by viewModel.hasGrillDraft.collectAsState()
-    val dark = isSystemInDarkTheme()
+    val dark = LocalHbDark.current
     // Saveable: an Activity recreation mid-question must not silently
     // answer it.
     var confirmingDiscard by rememberSaveable { mutableStateOf(false) }
@@ -787,9 +787,11 @@ private fun VocabularyRow(
 }
 
 /** The discard confirmation — the app's first dialog, and deliberately its
- * only one. See this file's header for why a draft earns it. */
+ * only one: `TriageScreen`'s editor guards its own draft with THIS
+ * composable rather than a second dialog of its own. See this file's header
+ * for why a draft earns it. */
 @Composable
-private fun DiscardConfirmation(onKeep: () -> Unit, onDiscard: () -> Unit) {
+internal fun DiscardConfirmation(onKeep: () -> Unit, onDiscard: () -> Unit) {
     AlertDialog(
         onDismissRequest = onKeep,
         title = { Text("Discard changes?") },

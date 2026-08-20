@@ -40,7 +40,7 @@ class NowItemDoorTest {
         assertTrue(
             "the row's Card must take onClick -- a clickable modifier would drop the " +
                 "ripple, the Button role and the minimum touch target",
-            Regex("""Card\(\s*onClick = onOpen""").containsMatchIn(src),
+            Regex("""Card\(\s*onClick = onOpen""").containsMatchIn(source("NowRow.kt")),
         )
         assertTrue(
             "tapping a card must drive the ViewModel's selection, not a navigation",
@@ -61,7 +61,7 @@ class NowItemDoorTest {
         val src = source("NowScreen.kt")
         val lazyColumn = src.indexOf("LazyColumn(")
         val panel = src.indexOf("ItemDetailPanel(")
-        val paneSection = src.indexOf("nowPaneSection(panes)")
+        val paneSection = src.indexOf("nowPaneSection(", lazyColumn)
         assertTrue("NowScreen must keep its one LazyColumn", lazyColumn >= 0)
         assertTrue("the panel item must sit inside the LazyColumn, above the board's branches", panel > lazyColumn)
         assertTrue("the board (ending in the pane section) must render after the panel", paneSection > panel)

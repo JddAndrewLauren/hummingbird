@@ -1,6 +1,5 @@
 package net.twinion.hummingbird
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -32,6 +31,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.ui.StageBadge
+import net.twinion.hummingbird.ui.theme.LocalHbDark
 import uniffi.hummingbird_ffi_mobile.MobileLedgerRowRecord
 import uniffi.hummingbird_ffi_mobile.MobileLedgerRowState
 
@@ -53,7 +53,7 @@ fun LedgerScreen(
     val scope = rememberCoroutineScope()
     val viewModel: LedgerViewModel = viewModel(factory = LedgerViewModel.factory(context))
     val rows by viewModel.rows.collectAsState()
-    val dark = isSystemInDarkTheme()
+    val dark = LocalHbDark.current
     val loading by viewModel.loading.collectAsState()
     val statusLine by viewModel.statusLine.collectAsState()
 

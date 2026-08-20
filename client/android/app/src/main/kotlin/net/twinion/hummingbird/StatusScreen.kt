@@ -5,11 +5,15 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -22,6 +26,8 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.ui.contentMaxWidth
+import net.twinion.hummingbird.ui.panes.PaneCollapse
+import net.twinion.hummingbird.ui.panes.StatusPaneExpanded
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
 
@@ -66,9 +72,12 @@ private fun paneLabel(pane: MobileRankedPane): String = when (pane.standingQuest
         error("a Now-surface question reached the Status screen: ${pane.standingQuestion}")
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StatusScreen(
     syncTick: Int = 0,
+    isRefreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
     /** `ProofScreen`'s one incidental door onto Settings, carried forward
      * (#536 review). [Routes.SETTINGS] has a permanent More-sheet entry
      * since #541; this link stays as a second, contextual door — a device
@@ -81,6 +90,8 @@ fun StatusScreen(
     val scope = rememberCoroutineScope()
     val viewModel: StatusViewModel = viewModel(factory = StatusViewModel.factory(context))
     val state by viewModel.state.collectAsState()
+    val paneOverrides by viewModel.paneOverrides.collectAsState()
+    val statusLine by viewModel.statusLine.collectAsState()
 
     suspend fun reload() = viewModel.load(System.currentTimeMillis())
 
@@ -96,41 +107,86 @@ fun StatusScreen(
     }
 
     Scaffold { padding ->
-        Column(
+        // The pull gesture is a second door onto AppRoot's one sync cadence
+        // (`sync("user")` via [onRefresh]) — never a screen-local cycle; the
+        // reload itself still arrives through `syncTick` when the cycle lands.
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = onRefresh,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .contentMaxWidth()
-                .padding(24.dp)
-                // A fixed inset, unlike the list screens' scrolled
-                // clearance: the Settings link below the weighted list is
-                // anchored, not scrolled, so only shrinking the viewport
-                // keeps it clear of the Capture FAB.
-                .padding(bottom = 64.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+                .padding(padding),
         ) {
-            Text("Status", style = MaterialTheme.typography.headlineLarge)
-
-            when (val current = state) {
-                StatusState.Loading -> CircularProgressIndicator()
-                // `weight(fill = false)`, never a bare `LazyColumn`: an
-                // unweighted lazy list in a `Column` measures against the
-                // whole remaining height, and enough GitHub/uptime panes
-                // then push the Settings link below the viewport with
-                // nothing to scroll it back into view. Weighted, the link
-                // is measured first and the panes take what is left;
-                // `fill = false` keeps a short list from stranding the link
-                // at the bottom of the screen.
-                is StatusState.Loaded -> LazyColumn(
-                    modifier = Modifier.weight(1f, fill = false),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    rankedPaneItems(current.panes, paneLabel = ::paneLabel)
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .contentMaxWidth()
+                    // Top 12dp, not the outer 24dp: with the title gone the
+                    // panes sit directly under the app row.
+                    .padding(start = 24.dp, top = 12.dp, end = 24.dp, bottom = 24.dp)
+                    // A fixed inset, unlike the list screens' scrolled
+                    // clearance: the Settings link below the weighted list is
+                    // anchored, not scrolled, so only shrinking the viewport
+                    // keeps it clear of the Capture FAB.
+                    .padding(bottom = 64.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                // A failed rank, worded — the same line every other screen
+                // carries, above whatever the last good read left standing.
+                statusLine?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
-            }
 
-            TextButton(onClick = onGoToSettings) {
-                Text("Manage device token in Settings")
+                when (val current = state) {
+                    // A scrollable around the spinner so the pull gesture works
+                    // before the first load lands too.
+                    StatusState.Loading -> Column(
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                    // `weight(fill = false)`, never a bare `LazyColumn`: an
+                    // unweighted lazy list in a `Column` measures against the
+                    // whole remaining height, and enough GitHub/uptime panes
+                    // then push the Settings link below the viewport with
+                    // nothing to scroll it back into view. Weighted, the link
+                    // is measured first and the panes take what is left;
+                    // `fill = false` keeps a short list from stranding the link
+                    // at the bottom of the screen.
+                    is StatusState.Loaded -> LazyColumn(
+                        modifier = Modifier.weight(1f, fill = false),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        rankedPaneItems(
+                            current.panes,
+                            paneLabel = ::paneLabel,
+                            nowMs = current.rankedAtMs,
+                            collapsed = { pane ->
+                                PaneCollapse.resolve(paneOverrides, pane.paneKey, pane.answer)
+                            },
+                            onToggle = { pane ->
+                                scope.launch { viewModel.togglePaneCollapsed(pane) }
+                            },
+                            onGoToSettings = onGoToSettings,
+                            // The Status four's expanded renderings (the
+                            // pane-content slice) — dispatched here and
+                            // nowhere else.
+                            expandedContent = { pane ->
+                                StatusPaneExpanded(pane, current.rankedAtMs)
+                            },
+                        )
+                    }
+                }
+
+                TextButton(onClick = onGoToSettings) {
+                    Text("Manage device token in Settings")
+                }
             }
         }
     }

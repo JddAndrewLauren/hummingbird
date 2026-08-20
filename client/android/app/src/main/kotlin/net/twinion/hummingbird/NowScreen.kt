@@ -1,12 +1,9 @@
 package net.twinion.hummingbird
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -22,18 +19,17 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -42,44 +38,24 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.semantics.selected
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.ui.contentMaxWidth
-import net.twinion.hummingbird.ui.EnergyGlyph
-import net.twinion.hummingbird.ui.SizeGlyph
-import net.twinion.hummingbird.ui.StageBadge
-import net.twinion.hummingbird.ui.energyTitle
-import net.twinion.hummingbird.ui.levelColor
-import net.twinion.hummingbird.ui.levelPosition
-import net.twinion.hummingbird.ui.sizeTitle
-import net.twinion.hummingbird.ui.theme.Amber500
-import net.twinion.hummingbird.ui.theme.Crimson500
-import net.twinion.hummingbird.ui.theme.Ember400
-import net.twinion.hummingbird.ui.theme.Ember500
-import net.twinion.hummingbird.ui.theme.Moss600
-import net.twinion.hummingbird.ui.theme.StatusDoneFgDark
-import net.twinion.hummingbird.ui.theme.UrgencyOverdueDark
-import net.twinion.hummingbird.ui.theme.UrgencySoonDark
+import net.twinion.hummingbird.ui.panes.NowPaneExpanded
+import net.twinion.hummingbird.ui.panes.PaneCollapse
+import net.twinion.hummingbird.ui.theme.LocalHbDark
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
-import uniffi.hummingbird_ffi_mobile.MobileUrgencyBand
 import uniffi.hummingbird_ffi_mobile.NowBlockedEntryRecord
-import uniffi.hummingbird_ffi_mobile.NowItemRecord
 
 // M1-6's whole surface (#141/#504), widened to the frontier board by
 // M3/#530: the board, decided by `hummingbird-ffi-mobile::MobileTaskHost.
@@ -98,48 +74,7 @@ import uniffi.hummingbird_ffi_mobile.NowItemRecord
 // cadence and hands this screen its completion via `syncTick` (see that
 // parameter's own note).
 
-/** `YYYY-MM-DDTHH:MM`, the reader's own local wall clock — the shape
- * `hummingbird_core::decisions::urgency::compute_urgency`'s module doc
- * requires from every caller, since that crate resolves no civil date to an
- * instant itself. */
-private val DEADLINE_SHAPE: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm")
 
-private fun nowDeadlineShaped(): String = LocalDateTime.now().format(DEADLINE_SHAPE)
-
-/** [MobileUrgencyBand]'s dot colour, or `null` for the band that gets no
- * dot — exhaustive, no `else` arm: the compile-time drift gate the brief
- * names for a `uniffi::Enum` crossing. Values are the design mirror's
- * `--urgency-*` tokens (`.claude/skills/hummingbird-design/tokens/colors.css`),
- * light/dark split exactly `HummingbirdTheme`'s own mapping notes state the
- * pattern for.
- *
- * `CALM` maps to `null` rather than to a grey, because ADR-0021 decision 2
- * is explicit: "`calm` gets no swatch — the default is not a claim worth
- * colouring". Encoding that here rather than at the call site keeps the
- * rule with the mapping the rule is about, and keeps the `when` the one
- * place a new band has to be answered for. */
-private fun urgencyColor(band: MobileUrgencyBand, dark: Boolean): Color? = when (band) {
-    MobileUrgencyBand.CALM -> null
-    MobileUrgencyBand.SOON -> if (dark) UrgencySoonDark else Amber500
-    MobileUrgencyBand.NOW -> if (dark) Ember400 else Ember500
-    MobileUrgencyBand.OVERDUE -> if (dark) UrgencyOverdueDark else Crimson500
-}
-
-/** [MobileUrgencyBand]'s mono-meta label (README: "UPPERCASE only in the
- * 11px mono meta style") — exhaustive, no `else` arm, the same discipline
- * [urgencyColor] uses.
- *
- * `CALM` maps to `null` for the same reason it takes no swatch: ADR-0021
- * decision 2 says "the default is not a claim worth colouring", and a card
- * that spends its most prominent meta slot printing "CALM" claims exactly
- * that. The word is the non-colour carrier for the three bands that *do*
- * make a claim, so only this arm goes. */
-private fun urgencyLabel(band: MobileUrgencyBand): String? = when (band) {
-    MobileUrgencyBand.CALM -> null
-    MobileUrgencyBand.SOON -> "SOON"
-    MobileUrgencyBand.NOW -> "NOW"
-    MobileUrgencyBand.OVERDUE -> "OVERDUE"
-}
 
 /** [MobileFrontierAxis]'s switch label — `AXIS_LABEL` in
  * `FrontierColumns.tsx`, ported. */
@@ -172,11 +107,11 @@ private val NO_VALUE_LABEL: Map<MobileFrontierAxis, String> = mapOf(
 /** `hummingbird_domain::Size`'s closed vocabulary — `ItemDetailPanel.kt`'s
  * own list (`listOf("quick", "normal", "deep")`), mirrored for the facet
  * chips rather than re-declared with different values. */
-private val SIZE_VALUES = listOf("quick", "normal", "deep")
+internal val SIZE_VALUES = listOf("quick", "normal", "deep")
 
 /** `hummingbird_domain::Energy`'s closed vocabulary — `ItemDetailPanel.kt`'s
  * own list, mirrored. */
-private val ENERGY_VALUES = listOf("low", "medium", "high")
+internal val ENERGY_VALUES = listOf("low", "medium", "high")
 
 /** The urgency facet's closed vocabulary — `client/web/src/decisions/
  * seam.ts:387`'s own list and order (`overdue, now, soon`), ported.
@@ -229,22 +164,43 @@ private fun nowPaneLabel(pane: MobileRankedPane): String = when (pane.standingQu
  * outer scroll, or a frontier taller than the viewport pushes the panes
  * section past the bottom of the screen with nothing to scroll it into view
  * (#537 review). */
-private fun LazyListScope.nowPaneSection(panes: List<MobileRankedPane>) {
+private fun LazyListScope.nowPaneSection(
+    panes: List<MobileRankedPane>,
+    nowMs: Long,
+    collapsed: (MobileRankedPane) -> Boolean,
+    onToggle: (MobileRankedPane) -> Unit,
+    onGoToSettings: () -> Unit,
+) {
     if (panes.isEmpty()) return
     item(key = "panes-header") {
         Text("This week", style = MaterialTheme.typography.titleMedium)
     }
-    rankedPaneItems(panes, paneLabel = ::nowPaneLabel)
+    rankedPaneItems(panes,
+        paneLabel = ::nowPaneLabel,
+        nowMs = nowMs,
+        collapsed = collapsed,
+        onToggle = onToggle,
+        onGoToSettings = onGoToSettings,
+        // The Now surface's expanded renderings (the pane-content slice) —
+        // dispatched here and nowhere else.
+        expandedContent = { pane -> NowPaneExpanded(pane, nowMs) },
+    )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NowScreen(
     syncTick: Int = 0,
+    isRefreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
     onGrill: (String) -> Unit = {},
+    /** The unbound panes' setup door — Settings through the More stack
+     * (`goToTab`), `StatusScreen`'s own second, contextual door shape. */
+    onGoToSettings: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    // Activity-scoped, not composition-scoped: see NowViewModel.factory.
+    // In a ViewModelStore, not a composition: see NowViewModel.factory.
     val viewModel: NowViewModel = viewModel(factory = NowViewModel.factory(context))
     val board by viewModel.board.collectAsState()
     val axis by viewModel.axis.collectAsState()
@@ -254,9 +210,11 @@ fun NowScreen(
     val expanded by viewModel.expanded.collectAsState()
     val loading by viewModel.loading.collectAsState()
     val panes by viewModel.panes.collectAsState()
+    val panesNowMs by viewModel.panesNowMs.collectAsState()
+    val paneOverrides by viewModel.paneOverrides.collectAsState()
     val selectedId by viewModel.selectedItemId.collectAsState()
     val statusLine by viewModel.statusLine.collectAsState()
-    val dark = isSystemInDarkTheme()
+    val dark = LocalHbDark.current
     val listState = rememberLazyListState()
 
     // The panel's own ViewModel, by the panel's own key — the SAME
@@ -326,204 +284,245 @@ fun NowScreen(
     }
 
     Scaffold { padding ->
-        Column(
+        // The pull gesture is a second door onto AppRoot's one sync cadence
+        // (`sync("user")` via [onRefresh]) — never a screen-local cycle; the
+        // reload itself still arrives through `syncTick` when the cycle lands.
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = onRefresh,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .contentMaxWidth()
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(padding),
         ) {
-            // The product name is lowercase everywhere; the screen
-            // title is the one exception the design system already
-            // carries (a verb/noun, not the brand).
-            // No header links: Alerts and Status are bottom-bar tabs
-            // (#588 item 2) — the header text links predated the bar and
-            // duplicated it.
-            Text("Now", style = MaterialTheme.typography.headlineLarge)
-
-            val currentBoard = board
-
-            // "N of M shown" — the seam's own pre/post-facet counts
-            // ([uniffi.hummingbird_ffi_mobile.NowBoardRecord.shownCount]/
-            // [.totalCount], never re-derived here), spoken only while a
-            // facet actually narrows the board: an unfiltered "12 of 12
-            // shown" is reassurance, not information.
-            val shownLine = currentBoard
-                ?.takeIf { facets.count() > 0 }
-                ?.let { "${it.shownCount} of ${it.totalCount} shown" }
-
-            AxisRow(
-                axis = axis,
-                onPick = { next -> scope.launch { viewModel.setAxis(next, nowDeadlineShaped()) } },
-                filtersOpen = filtersOpen,
-                facetCount = facets.count(),
-                // Beside the Filter chip only while the panel is shut —
-                // open, the panel's own footer carries it, and saying it
-                // twice would claim two different facts can disagree.
-                shownLine = shownLine.takeIf { !filtersOpen },
-                onToggleFilters = { viewModel.toggleFiltersOpen() },
-            )
-
-            // The row checkmark's failure line ([NowViewModel.statusLine])
-            // — absent until a complete actually fails, `TriageScreen`'s
-            // own honesty shape: never a toast, the words stay until the
-            // next attempt clears them.
-            statusLine?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-
-            // Behind the disclosure — filtering is the occasional gesture,
-            // so only the axis switch earns permanent space
-            // (`FrontierColumns.tsx`'s own split, ported).
-            if (filtersOpen) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        FacetFilterRow(
-                            facets = facets,
-                            // The live vocabulary the axis's own board carries
-                            // (`contexts_of` over the pre-facet list, `board.contexts`
-                            // — never a hardcoded suggested list, which would offer a
-                            // chip for a context nothing on the board has, or omit one
-                            // an item actually carries).
-                            contexts = currentBoard?.contexts ?: emptyList(),
-                            shownLine = shownLine,
-                            onToggle = { facet, value ->
-                                scope.launch { viewModel.toggleFacet(facet, value, nowDeadlineShaped()) }
-                            },
-                            onClear = { scope.launch { viewModel.clearFacets(nowDeadlineShaped()) } },
-                        )
-                    }
-                }
-            }
-
-            // One LazyColumn for the whole rest of the screen — the queue
-            // (whichever of its three states applies) and, appended after
-            // it, the now-surface panes (#537). A second, non-scrolling
-            // container after this one pushed the panes past the bottom of
-            // the viewport with nothing to scroll them into view once the
-            // frontier was taller than the screen (#537 review); one shared
-            // scroll is the fix, not a `weight` modifier on a still-split
-            // layout, since the queue's own three states already need to
-            // sit inside *some* `LazyListScope` for `item`/`items` below.
-            // The panel is always index 0 when present; opening one (or
-            // switching cards) brings it into view rather than leaving the
-            // reader staring at the still-standing board they tapped in —
-            // `SelectedItemSection`'s own scrollIntoView (`NowScreen.tsx`).
-            // Only on a *change* of selection: `remember` starts equal to
-            // whatever an Activity recreation restored, so a fold/unfold
-            // keeps its scroll position instead of animating back to top.
-            var lastScrolledSelection by remember { mutableStateOf(selectedId) }
-            LaunchedEffect(selectedId) {
-                if (selectedId != null && selectedId != lastScrolledSelection) {
-                    listState.animateScrollToItem(0)
-                }
-                lastScrolledSelection = selectedId
-            }
-            LazyColumn(
-                state = listState,
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                // The last row scrolls clear of the Capture FAB.
-                contentPadding = PaddingValues(bottom = 64.dp),
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .contentMaxWidth()
+                    // No screen title: the bottom bar already names this tab,
+                    // so the axis strip is the first thing under the app row
+                    // (top 12dp, not the outer 24dp, to keep them adjacent).
+                    .padding(start = 24.dp, top = 12.dp, end = 24.dp, bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                // The opened item, ABOVE the board, which keeps rendering
-                // below — never an early return of the panel instead of the
-                // frontier (ADR-0021 decision 7 / #404: the board vanishing
-                // on tap was the bug). The panel lives in its own file, so
-                // acting/editing/steps stay one implementation with the
-                // notification door's full-screen route.
-                selectedId?.let { id ->
-                    item(key = "selected-item") {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surface,
-                            ),
-                        ) {
-                            ItemDetailPanel(
-                                itemId = id,
-                                syncTick = syncTick,
-                                closeLabel = "Close",
-                                onClose = { viewModel.closeItem() },
-                                onGrill = onGrill,
-                                onMutated = { scope.launch { reload() } },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
+                val currentBoard = board
+
+                // "N of M shown" — the seam's own pre/post-facet counts
+                // ([uniffi.hummingbird_ffi_mobile.NowBoardRecord.shownCount]/
+                // [.totalCount], never re-derived here), spoken only while a
+                // facet actually narrows the board: an unfiltered "12 of 12
+                // shown" is reassurance, not information.
+                val shownLine = currentBoard
+                    ?.takeIf { facets.count() > 0 }
+                    ?.let { "${it.shownCount} of ${it.totalCount} shown" }
+
+                AxisRow(
+                    axis = axis,
+                    onPick = { next -> scope.launch { viewModel.setAxis(next, nowDeadlineShaped()) } },
+                    filtersOpen = filtersOpen,
+                    facetCount = facets.count(),
+                    // Beside the Filter chip only while the panel is shut —
+                    // open, the panel's own footer carries it, and saying it
+                    // twice would claim two different facts can disagree.
+                    shownLine = shownLine.takeIf { !filtersOpen },
+                    onToggleFilters = { viewModel.toggleFiltersOpen() },
+                )
+
+                // The row checkmark's failure line ([NowViewModel.statusLine])
+                // — absent until a complete actually fails, `TriageScreen`'s
+                // own honesty shape: never a toast, the words stay until the
+                // next attempt clears them.
+                statusLine?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+
+                // Behind the disclosure — filtering is the occasional gesture,
+                // so only the axis switch earns permanent space
+                // (`FrontierColumns.tsx`'s own split, ported).
+                if (filtersOpen) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            FacetFilterRow(
+                                facets = facets,
+                                // The live vocabulary the axis's own board carries
+                                // (`contexts_of` over the pre-facet list, `board.contexts`
+                                // — never a hardcoded suggested list, which would offer a
+                                // chip for a context nothing on the board has, or omit one
+                                // an item actually carries).
+                                contexts = currentBoard?.contexts ?: emptyList(),
+                                shownLine = shownLine,
+                                onToggle = { facet, value ->
+                                    scope.launch { viewModel.toggleFacet(facet, value, nowDeadlineShaped()) }
+                                },
+                                onClear = { scope.launch { viewModel.clearFacets(nowDeadlineShaped()) } },
                             )
                         }
                     }
                 }
 
-                when {
-                    loading && currentBoard == null -> item(key = "loading") { CircularProgressIndicator() }
-                    currentBoard == null ||
-                        (currentBoard.columns.isEmpty() && currentBoard.blocked.isEmpty()) ->
-                        item(key = "empty") {
-                            Text(
-                                // "Nothing matches what you picked" and
-                                // "nothing is startable" are different facts
-                                // and must not look alike
-                                // (`FrontierColumns.tsx`'s own empty-result
-                                // branch, ADR-0021 decision 5's whole reason
-                                // for never persisting the filter): a
-                                // facet-emptied board says so, rather than
-                                // reporting an empty frontier it is not.
-                                if (facets.count() > 0) {
-                                    "Nothing matches what you picked."
-                                } else {
-                                    // Honesty over reassurance (README): an
-                                    // empty frontier is reported as a fact,
-                                    // not apologised for.
-                                    "Nothing on the frontier."
-                                },
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    else -> {
-                        for (column in currentBoard.columns) {
-                            val key = column.value ?: ""
-                            val isCollapsed = collapsed.contains(key)
-                            val heading = if (column.value == null) {
-                                NO_VALUE_LABEL[axis] ?: "No value"
-                            } else {
-                                column.label ?: "Project ${column.value}"
-                            }
-
-                            item(key = "header-$key") {
-                                ColumnHeader(
-                                    heading = heading,
-                                    count = column.items.size,
-                                    collapsed = isCollapsed,
-                                    onToggleCollapsed = {
-                                        scope.launch { viewModel.toggleCollapsed(key) }
-                                    },
+                // One LazyColumn for the whole rest of the screen — the queue
+                // (whichever of its three states applies) and, appended after
+                // it, the now-surface panes (#537). A second, non-scrolling
+                // container after this one pushed the panes past the bottom of
+                // the viewport with nothing to scroll them into view once the
+                // frontier was taller than the screen (#537 review); one shared
+                // scroll is the fix, not a `weight` modifier on a still-split
+                // layout, since the queue's own three states already need to
+                // sit inside *some* `LazyListScope` for `item`/`items` below.
+                // The panel is always index 0 when present; opening one (or
+                // switching cards) brings it into view rather than leaving the
+                // reader staring at the still-standing board they tapped in —
+                // `SelectedItemSection`'s own scrollIntoView (`NowScreen.tsx`).
+                // Only on a *change* of selection: `remember` starts equal to
+                // whatever an Activity recreation restored, so a fold/unfold
+                // keeps its scroll position instead of animating back to top.
+                var lastScrolledSelection by remember { mutableStateOf(selectedId) }
+                LaunchedEffect(selectedId) {
+                    if (selectedId != null && selectedId != lastScrolledSelection) {
+                        listState.animateScrollToItem(0)
+                    }
+                    lastScrolledSelection = selectedId
+                }
+                LazyColumn(
+                    state = listState,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    // The last row scrolls clear of the Capture FAB.
+                    contentPadding = PaddingValues(bottom = 64.dp),
+                ) {
+                    // The opened item, ABOVE the board, which keeps rendering
+                    // below — never an early return of the panel instead of the
+                    // frontier (ADR-0021 decision 7 / #404: the board vanishing
+                    // on tap was the bug). The panel lives in its own file, so
+                    // acting/editing/steps stay one implementation with the
+                    // notification door's full-screen route.
+                    selectedId?.let { id ->
+                        item(key = "selected-item") {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surface,
+                                ),
+                            ) {
+                                ItemDetailPanel(
+                                    itemId = id,
+                                    syncTick = syncTick,
+                                    closeLabel = "Close",
+                                    onClose = { viewModel.closeItem() },
+                                    onGrill = onGrill,
+                                    onMutated = { scope.launch { reload() } },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
                                 )
                             }
+                        }
+                    }
 
-                            if (!isCollapsed) {
-                                val isExpanded = expanded.contains(key)
-                                val visible = if (isExpanded) column.items else column.items.take(COLUMN_CAP)
-                                val hidden = column.items.size - visible.size
+                    when {
+                        loading && currentBoard == null -> item(key = "loading") { CircularProgressIndicator() }
+                        currentBoard == null ||
+                            (currentBoard.columns.isEmpty() && currentBoard.blocked.isEmpty()) ->
+                            item(key = "empty") {
+                                Text(
+                                    // "Nothing matches what you picked" and
+                                    // "nothing is startable" are different facts
+                                    // and must not look alike
+                                    // (`FrontierColumns.tsx`'s own empty-result
+                                    // branch, ADR-0021 decision 5's whole reason
+                                    // for never persisting the filter): a
+                                    // facet-emptied board says so, rather than
+                                    // reporting an empty frontier it is not.
+                                    if (facets.count() > 0) {
+                                        "Nothing matches what you picked."
+                                    } else {
+                                        // Honesty over reassurance (README): an
+                                        // empty frontier is reported as a fact,
+                                        // not apologised for.
+                                        "Nothing on the frontier."
+                                    },
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        else -> {
+                            for (column in currentBoard.columns) {
+                                val key = column.value ?: ""
+                                val isCollapsed = collapsed.contains(key)
+                                val heading = if (column.value == null) {
+                                    NO_VALUE_LABEL[axis] ?: "No value"
+                                } else {
+                                    column.label ?: "Project ${column.value}"
+                                }
 
-                                items(visible, key = { "$key-${it.id}" }) { record ->
-                                    NowRow(
-                                        record = record,
+                                item(key = "header-$key") {
+                                    ColumnHeader(
+                                        heading = heading,
+                                        count = column.items.size,
+                                        collapsed = isCollapsed,
+                                        onToggleCollapsed = {
+                                            scope.launch { viewModel.toggleCollapsed(key) }
+                                        },
+                                    )
+                                }
+
+                                if (!isCollapsed) {
+                                    val isExpanded = expanded.contains(key)
+                                    val visible = if (isExpanded) column.items else column.items.take(COLUMN_CAP)
+                                    val hidden = column.items.size - visible.size
+
+                                    items(visible, key = { "$key-${it.id}" }) { record ->
+                                        NowRow(
+                                            record = record.asRowModel(),
+                                            dark = dark,
+                                            selected = record.id == selectedId,
+                                            onOpen = { viewModel.selectItem(record.id) },
+                                            onComplete = {
+                                                scope.launch {
+                                                    viewModel.complete(
+                                                        record.id,
+                                                        nowDeadlineShaped(),
+                                                        System.currentTimeMillis(),
+                                                    )
+                                                }
+                                            },
+                                        )
+                                    }
+
+                                    if (hidden > 0 || (isExpanded && column.items.size > COLUMN_CAP)) {
+                                        item(key = "more-$key") {
+                                            TextButton(onClick = { viewModel.toggleExpanded(key) }) {
+                                                Text(if (isExpanded) "Show fewer" else "$hidden more")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (currentBoard.blocked.isNotEmpty()) {
+                                item(key = "blocked-header") {
+                                    ColumnHeader(
+                                        heading = "Blocked",
+                                        count = currentBoard.blocked.size,
+                                        collapsed = false,
+                                        onToggleCollapsed = null,
+                                    )
+                                }
+                                items(currentBoard.blocked, key = { "blocked-${it.item.id}" }) { entry ->
+                                    BlockedRow(
+                                        entry = entry,
                                         dark = dark,
-                                        selected = record.id == selectedId,
-                                        onOpen = { viewModel.selectItem(record.id) },
+                                        selected = entry.item.id == selectedId,
+                                        onOpen = { viewModel.selectItem(entry.item.id) },
                                         onComplete = {
                                             scope.launch {
                                                 viewModel.complete(
-                                                    record.id,
+                                                    entry.item.id,
                                                     nowDeadlineShaped(),
                                                     System.currentTimeMillis(),
                                                 )
@@ -531,55 +530,29 @@ fun NowScreen(
                                         },
                                     )
                                 }
-
-                                if (hidden > 0 || (isExpanded && column.items.size > COLUMN_CAP)) {
-                                    item(key = "more-$key") {
-                                        TextButton(onClick = { viewModel.toggleExpanded(key) }) {
-                                            Text(if (isExpanded) "Show fewer" else "$hidden more")
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if (currentBoard.blocked.isNotEmpty()) {
-                            item(key = "blocked-header") {
-                                ColumnHeader(
-                                    heading = "Blocked",
-                                    count = currentBoard.blocked.size,
-                                    collapsed = false,
-                                    onToggleCollapsed = null,
-                                )
-                            }
-                            items(currentBoard.blocked, key = { "blocked-${it.item.id}" }) { entry ->
-                                BlockedRow(
-                                    entry = entry,
-                                    dark = dark,
-                                    selected = entry.item.id == selectedId,
-                                    onOpen = { viewModel.selectItem(entry.item.id) },
-                                    onComplete = {
-                                        scope.launch {
-                                            viewModel.complete(
-                                                entry.item.id,
-                                                nowDeadlineShaped(),
-                                                System.currentTimeMillis(),
-                                            )
-                                        }
-                                    },
-                                )
                             }
                         }
                     }
-                }
 
-                // #537: the now-surface panes — waste/weekend/vacation/race
-                // — below the queue, the same placement the web's own aside
-                // stacks into at 390px (this issue's own "the parity
-                // reference, not a simplification" line). Appended whatever
-                // the queue's own state above was (loading, empty,
-                // populated): the panes are a separate crossing
-                // ([NowViewModel.loadPanes]), never gated on the board's.
-                nowPaneSection(panes)
+                    // #537: the now-surface panes — waste/weekend/vacation/race
+                    // — below the queue, the same placement the web's own aside
+                    // stacks into at 390px (this issue's own "the parity
+                    // reference, not a simplification" line). Appended whatever
+                    // the queue's own state above was (loading, empty,
+                    // populated): the panes are a separate crossing
+                    // ([NowViewModel.loadPanes]), never gated on the board's.
+                    nowPaneSection(
+                        panes = panes,
+                        nowMs = panesNowMs,
+                        collapsed = { pane ->
+                            PaneCollapse.resolve(paneOverrides, pane.paneKey, pane.answer)
+                        },
+                        onToggle = { pane ->
+                            scope.launch { viewModel.togglePaneCollapsed(pane) }
+                        },
+                        onGoToSettings = onGoToSettings,
+                    )
+                }
             }
         }
     }
@@ -793,7 +766,7 @@ private fun BlockedRow(
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         NowRow(
-            record = entry.item,
+            record = entry.item.asRowModel(),
             dark = dark,
             selected = selected,
             onOpen = onOpen,
@@ -805,155 +778,5 @@ private fun BlockedRow(
             color = MaterialTheme.colorScheme.error,
             modifier = Modifier.padding(start = 12.dp, end = 12.dp),
         )
-    }
-}
-
-@Composable
-private fun NowRow(
-    record: NowItemRecord,
-    dark: Boolean,
-    selected: Boolean,
-    onOpen: () -> Unit,
-    onComplete: () -> Unit,
-) {
-    // The card is the door to the item's expanded panel, in place above
-    // the board (#521's tap target, retargeted from the full-screen route
-    // by the inline-expansion slice). Material3's `onClick` overload
-    // rather than a `clickable` modifier: it carries the ripple, the
-    // `role = Button` semantics and the minimum touch target that a bare
-    // modifier leaves to the caller. No chevron and no other added chrome
-    // -- the design system's `interactive` card is the whole affordance,
-    // and its icon vocabulary has no chevron in it.
-    //
-    // No action ROW on the card: acting is what the opened item is for,
-    // and the four-button FlowRow was most of the card's ~130dp height.
-    // The one inline affordance is the web `ItemRow`'s own mark-done
-    // checkmark (`MarkDoneButton.tsx`), trailing and gated on the seam's
-    // `canMarkDone` — an earlier slice left it out as a mis-tap risk
-    // beside the whole-card target, reversed on operator feedback
-    // (2026-08-19): `IconButton`'s 48dp minimum target is its own slip
-    // margin. `availableActions` still arrives decided on the record;
-    // the opened item renders it.
-    Card(
-        onClick = onOpen,
-        modifier = Modifier
-            .fillMaxWidth()
-            .semantics { this.selected = selected },
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        // The originating card stays marked while its panel stands — an
-        // ember-tinted BORDER, never a fill (the design README's accent
-        // rule; the web ItemCard's `accent` + `aria-current` treatment).
-        border = if (selected) {
-            BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
-        } else {
-            null
-        },
-    ) {
-        Row(
-            // --space-5 / --space-2: the web ItemCard's own density class,
-            // not the 16/8 a full-width content card gets.
-            modifier = Modifier.padding(12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                // Title first, meta below — the web phone `ItemRow`'s own wrap
-                // order (`.hb-item-row-title` takes the first line; the mono
-                // chips wrap under it).
-                Text(record.title, style = MaterialTheme.typography.bodyLarge)
-                // Every entry on the meta row is conditional -- the swatch and the
-                // word both go for `calm`, the deadline draws only when set, and
-                // `ready` says nothing -- so the ordinary minted action reaches
-                // this row with nothing to put on it. An empty `Row` is not free:
-                // it measures zero high but the Column's `spacedBy(4.dp)` still
-                // pays for it, stranding 4dp below the title. Read once here and
-                // reused below, so the guard cannot disagree with what draws.
-                val swatch = urgencyColor(record.urgency, dark)
-                val urgencyWord = urgencyLabel(record.urgency)
-                // `ItemRow`'s own `item.stage === "ready" ? null : <StageBadge>`
-                // (web), ported: `Ready` alone says nothing at card size.
-                val stageChip = if (record.stage == "ready") null else record.stage
-                // Word-free glyph positions (#558, ADR-0024): only a judged,
-                // known dimension draws on a card — an absent one is omitted
-                // entirely (that omission is what licenses dropping the word),
-                // and an unknown wire word maps to position 0, which a card
-                // never draws (the unset ghost is detail-only).
-                val sizePos = record.size?.let { levelPosition(SIZE_VALUES, it) }?.takeIf { it > 0 }
-                val energyPos = record.energy?.let { levelPosition(ENERGY_VALUES, it) }?.takeIf { it > 0 }
-                if (swatch != null || urgencyWord != null || record.deadline != null ||
-                    stageChip != null || sizePos != null || energyPos != null
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        swatch?.let {
-                            // 6dp: the web ItemRow's own dot size.
-                            Box(
-                                modifier = Modifier
-                                    .size(6.dp)
-                                    .background(it, CircleShape),
-                            )
-                        }
-                        urgencyWord?.let { label ->
-                            Text(
-                                label,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        record.deadline?.let {
-                            Text(
-                                it,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        // The stage chip IS the triage label: a capture riding
-                        // inline into these columns is marked by the app's one
-                        // stage vocabulary, never a badge invented for this
-                        // surface (`ItemRow`'s own rule, ported) — and since
-                        // #557 the one treatment too, `ui/StageBadge.kt`.
-                        stageChip?.let {
-                            StageBadge(stage = it, dark = dark)
-                        }
-                        // ADR-0024: drawn, not written — the glyph names itself
-                        // (`Size: quick`) since no word sits beside it here.
-                        sizePos?.let { pos ->
-                            SizeGlyph(
-                                position = pos,
-                                color = levelColor(pos, dark),
-                                contentDescription = sizeTitle(record.size),
-                            )
-                        }
-                        energyPos?.let { pos ->
-                            EnergyGlyph(
-                                position = pos,
-                                color = levelColor(pos, dark),
-                                contentDescription = energyTitle(record.energy),
-                            )
-                        }
-                    }
-                }
-            }
-
-            if (record.canMarkDone) {
-                IconButton(onClick = onComplete) {
-                    Icon(
-                        painterResource(R.drawable.ic_check),
-                        contentDescription = "Mark \"${record.title}\" done",
-                        modifier = Modifier.size(18.dp),
-                        // The mark-done green — the web MarkDoneButton's
-                        // own token, `--status-done-fg` (the status green),
-                        // and its documented exception to "icons never
-                        // carry colour independently of their label".
-                        tint = if (dark) StatusDoneFgDark else Moss600,
-                    )
-                }
-            }
-        }
     }
 }

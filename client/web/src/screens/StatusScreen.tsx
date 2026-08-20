@@ -1,4 +1,3 @@
-import { demoQuestions } from "../fixtures/demo";
 import type { Screen } from "../shell/screens";
 import type { CalendarReadDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
@@ -42,9 +41,7 @@ export function StatusScreen({
     <SingleColumn>
       <RankedRegion
         surface="status"
-        inputs={
-          demoQuestions(nowMs) ?? realQuestionInputs(task, calendarReads, calendarConnected)
-        }
+        inputs={realQuestionInputs(task, calendarReads, calendarConnected)}
         nowMs={nowMs}
         syncOutcomeSeq={task.syncOutcomeSeq}
         storage={typeof localStorage === "undefined" ? undefined : localStorage}

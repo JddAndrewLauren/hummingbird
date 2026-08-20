@@ -49,7 +49,7 @@ grepping it.
 | The rules surface (#141/M4) — the sink, both seams, the Compose screen | `client/core/src/decisions/rules/`, `client/ffi-mobile/src/lib.rs`, `client/android/.../Rules{Screen,ViewModel}.kt` | `decisions/rules/mod.rs`, then `backtest.rs`; ADR-0013/0025 |
 | The Settings screen (#141/M4) — bindings, token, sync, dead letters, theme | `client/core/src/decisions/settings.rs`, `client/ffi-mobile/src/lib.rs`, `client/android/.../Settings{Screen,ViewModel}.kt`, `theme/` | `decisions/settings.rs`, then `SettingsViewModel.kt`; ADR-0025 |
 | The Grill takeover and the microtask affordance (#141/M4) — the affordance/review/backend-fallback sinks, both seams, the Android takeover and Settings' backend picker | `client/core/src/decisions/skills/{affordance,review,backend}.rs`, `client/ffi-mobile/src/lib.rs`, `client/android/.../{GrillTakeover,Microtask}{Screen,ViewModel}.kt`, `client/android/.../skills/{MicrotaskRunner,BackendPreference}.kt` | `decisions/skills/mod.rs`, then `affordance.rs`; ADR-0023/0025 |
-| Recall on Android (#478/#542, M4's closer) — the mobile seam door, the Compose screen | `client/core/src/search.rs`, `client/ffi-mobile/src/lib.rs`, `client/android/.../Recall{Screen,ViewModel}.kt` | `search.rs`, then `android/README.md`'s "The Recall screen" section; ADR-0025 |
+| Recall on Android (#478/#542, M4's closer) — the mobile seam door, and the overlay it draws (a gesture over the NavHost since #634, not a route) | `client/core/src/search.rs`, `client/ffi-mobile/src/lib.rs`, `client/android/.../Recall{Overlay,ViewModel}.kt` | `search.rs`, then `android/README.md`'s "The Recall overlay" section; ADR-0025 |
 | Android's notification lane (#141/M2) | `client/android/app/src/main/kotlin/net/twinion/hummingbird/{notify,push}/` | `notify/NotificationChannels.kt`, `push/AckRunner.kt`; ADR-0012/0014 |
 | The web app | `client/web/` | `client/web/README.md` |
 | The SharedWorker layer | `client/web/src/worker/` | `core.worker.ts` (note its top-level-`await` invariant), ADR-0010 |
@@ -57,7 +57,7 @@ grepping it.
 | The Projects page and the project lane's client write (#624, the first slice off #449) — grid, create, dossier shell | `client/core/src/lib.rs`'s `create_project`, `client/ffi-web/src/{task_host,lib}.rs`, `client/web/src/{shell/useProjectsWiring.ts,screens/ProjectsScreen.tsx,screens/projects/}` | `ProjectsScreen.tsx`, then `Core::create_project`'s doc for the no-overlay contract; ADR-0030 |
 | The Status screen (second surface of the ranked region) | `client/web/src/screens/StatusScreen.tsx` (#311) | `questions/contract.ts`, ADR-0017 |
 | Android's Status screen — the status four, plus the phone's own persisted sync history (#536/M4) | `client/android/.../Status{Screen,ViewModel}.kt`, `client/android/.../core/SyncHistoryStore.kt` | `StatusScreen.kt`, then `SyncHistoryStore.kt`; ADR-0017/0025 |
-| Now's centre column — the frontier in columns | `client/web/src/screens/{FrontierColumns.tsx,frontier-columns.ts,frontier-facets.ts,frontier-prefs.ts}` (#399) | `FrontierColumns.tsx`, ADR-0021 |
+| Now's centre column — the frontier in columns | `client/web/src/screens/{FrontierColumns.tsx,frontier-columns.ts,frontier-facets.ts,frontier-lanes.ts,frontier-prefs.ts}` (#399) | `FrontierColumns.tsx`, ADR-0021 |
 | Local dictation into capture (#379) | `client/web/src/speech/local-dictation.ts`, `client/web/src/screens/capture-dictation.ts` | those headers, then ADR-0022 |
 | The responsive layer and the two nav forms | `client/web/src/shell/{breakpoints.ts,responsive.css,useIsPhone.ts,NavBar.tsx,nav-bar.ts}` | `responsive.css` (why classes vs. a hook), then `nav-bar.ts` |
 | Surfaces registry (visual gate) | `client/web/visual/` | `docs/SURFACES.md` |
@@ -98,6 +98,15 @@ population of `device` tokens is: one per operator device, the runner's
 (`runner`), and the OpenClaw agent's (`openclaw-agent`, on the gateway
 machine — ADR-0029, minted and rotated per `docs/openclaw.md`). See
 ADR-0011 for the per-source table.
+
+**An item is named to the operator by its title, never `HB-<seq>`.** That ref
+is a client-side affordance: no route accepts it, `resolve_ref` maps it onto a
+uuid off a fetched sweep, and **no client surface displays `seq`** — so an
+`HB-42` in prose, a report or a commit message is a handle the operator cannot
+look up in the app. It stays legitimate as script input and inside a skill's
+own plumbing; it is not how any agent, skill or doc refers to an item when a
+human is reading. Disambiguate same-titled items by stage, due date or
+context.
 
 **No competing clocks.** Exactly one thing owns each cadence: supercronic owns
 the sweeper's, the Durable Object's `alarm()` owns the sweep tick's. A second

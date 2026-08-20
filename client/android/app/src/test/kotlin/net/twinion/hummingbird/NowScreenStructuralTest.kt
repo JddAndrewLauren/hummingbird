@@ -34,6 +34,12 @@ class NowScreenStructuralTest {
         repoFile("client/android/app/src/main/kotlin/net/twinion/hummingbird/NowViewModel.kt")
     }
 
+    // The compact card moved to its own file for the Triage-parity slice
+    // (both Now and Triage render it), so the card-shape pins read there.
+    private val nowRowSrc by lazy {
+        repoFile("client/android/app/src/main/kotlin/net/twinion/hummingbird/NowRow.kt")
+    }
+
     @Test
     fun `NowViewModel imports the real uniffi nowBoard binding, and a complete-only act door`() {
         assertTrue(
@@ -63,15 +69,15 @@ class NowScreenStructuralTest {
         assertTrue(
             "the checkmark must gate on the record's own canMarkDone — availableActions " +
                 "stays banned on this screen (the test below)",
-            nowScreenSrc.contains("record.canMarkDone"),
+            nowRowSrc.contains("record.canMarkDone"),
         )
         assertTrue(
             "the checkmark glyph is the vendored Lucide check",
-            nowScreenSrc.contains("R.drawable.ic_check"),
+            nowRowSrc.contains("R.drawable.ic_check"),
         )
         assertTrue(
             "the mark-done green is the Done stage's own token pair, never a new constant",
-            nowScreenSrc.contains("if (dark) StatusDoneFgDark else Moss600"),
+            nowRowSrc.contains("if (dark) StatusDoneFgDark else Moss600"),
         )
     }
 
@@ -101,6 +107,7 @@ class NowScreenStructuralTest {
         // grouped, so neither file may re-group locally either.
         for ((name, src) in listOf(
             "NowScreen.kt" to nowScreenSrc,
+            "NowRow.kt" to nowRowSrc,
             "NowViewModel.kt" to nowViewModelSrc,
         )) {
             assertFalse(
@@ -128,8 +135,8 @@ class NowScreenStructuralTest {
         // compile-time drift gate the brief names. Every `when (band)`
         // block in this file must cover exactly the four known cases and
         // carry no `else ->` arm.
-        val whenBlocks = Regex("""when\s*\(band\)\s*\{([\s\S]*?)\n}""").findAll(nowScreenSrc).toList()
-        assertTrue("expected at least one `when (band)` block in NowScreen.kt", whenBlocks.isNotEmpty())
+        val whenBlocks = Regex("""when\s*\(band\)\s*\{([\s\S]*?)\n}""").findAll(nowRowSrc).toList()
+        assertTrue("expected at least one `when (band)` block in NowRow.kt", whenBlocks.isNotEmpty())
         for (block in whenBlocks) {
             val body = block.groupValues[1]
             assertFalse("a when(band) block must not carry an else arm", body.contains("else ->"))
@@ -150,14 +157,14 @@ class NowScreenStructuralTest {
         // asserts the mapping and that the caller honours a null.
         assertTrue(
             "urgencyColor must return a nullable Color so CALM can map to no swatch",
-            Regex("""fun urgencyColor\([^)]*\): Color\?""").containsMatchIn(nowScreenSrc),
+            Regex("""fun urgencyColor\([^)]*\): Color\?""").containsMatchIn(nowRowSrc),
         )
         assertTrue(
             "urgencyColor must map MobileUrgencyBand.CALM to null",
             // Anchored on urgencyColor's own `fun`: since urgencyLabel maps CALM
             // to null too, a bare arm regex would pass on either one's mapping.
             Regex("""fun urgencyColor\([\s\S]*?MobileUrgencyBand\.CALM\s*->\s*null""")
-                .containsMatchIn(nowScreenSrc),
+                .containsMatchIn(nowRowSrc),
         )
         assertTrue(
             "the swatch Box must be rendered only when urgencyColor gives one",
@@ -165,7 +172,7 @@ class NowScreenStructuralTest {
             // emptiness guard reads the same value the Box draws from — the
             // null is honoured on that val rather than on the call itself.
             Regex("""val swatch = urgencyColor\([^)]*\)[\s\S]*?swatch\?\.let""")
-                .containsMatchIn(nowScreenSrc),
+                .containsMatchIn(nowRowSrc),
         )
     }
 
@@ -177,18 +184,18 @@ class NowScreenStructuralTest {
         // nothing. Held in urgencyLabel's own mapping, like the swatch rule.
         assertTrue(
             "urgencyLabel must return a nullable String so CALM can map to no word",
-            Regex("""fun urgencyLabel\([^)]*\): String\?""").containsMatchIn(nowScreenSrc),
+            Regex("""fun urgencyLabel\([^)]*\): String\?""").containsMatchIn(nowRowSrc),
         )
         assertTrue(
             "urgencyLabel must map MobileUrgencyBand.CALM to null",
             Regex("""fun urgencyLabel\([\s\S]*?MobileUrgencyBand\.CALM\s*->\s*null""")
-                .containsMatchIn(nowScreenSrc),
+                .containsMatchIn(nowRowSrc),
         )
         assertTrue(
             "the urgency Text must be rendered only when urgencyLabel gives a word",
             // Hoisted for the same reason the swatch is — see that test.
             Regex("""val urgencyWord = urgencyLabel\([^)]*\)[\s\S]*?urgencyWord\?\.let""")
-                .containsMatchIn(nowScreenSrc),
+                .containsMatchIn(nowRowSrc),
         )
     }
 
@@ -203,7 +210,7 @@ class NowScreenStructuralTest {
         for (value in listOf("val swatch = urgencyColor(", "val urgencyWord = urgencyLabel(")) {
             assertTrue(
                 "NowRow must read $value once and reuse it, not recompute it inside the Row",
-                nowScreenSrc.contains(value),
+                nowRowSrc.contains(value),
             )
         }
         assertTrue(
@@ -212,7 +219,7 @@ class NowScreenStructuralTest {
                 """if \(swatch != null \|\| urgencyWord != null \|\|\s*""" +
                     """record\.deadline != null \|\|\s*""" +
                     """stageChip != null \|\| sizePos != null \|\| energyPos != null\s*\)""",
-            ).containsMatchIn(nowScreenSrc),
+            ).containsMatchIn(nowRowSrc),
         )
     }
 
@@ -225,11 +232,11 @@ class NowScreenStructuralTest {
         // `stageChip` val the guard test above pins.
         assertTrue(
             "the stage chip must render through StageBadge (#557)",
-            Regex("""stageChip\?\.let \{[\s\S]{0,120}?StageBadge\(""").containsMatchIn(nowScreenSrc),
+            Regex("""stageChip\?\.let \{[\s\S]{0,120}?StageBadge\(""").containsMatchIn(nowRowSrc),
         )
         assertFalse(
             "no STAGE_LABEL word map may return — the label lives in StageBadge now",
-            nowScreenSrc.contains("STAGE_LABEL"),
+            nowRowSrc.contains("STAGE_LABEL"),
         )
     }
 
@@ -242,20 +249,20 @@ class NowScreenStructuralTest {
         // word-free ghost is indistinguishable from deep at card size.
         assertTrue(
             "size position must come from levelPosition over SIZE_VALUES, judged-only",
-            nowScreenSrc.contains(
+            nowRowSrc.contains(
                 "record.size?.let { levelPosition(SIZE_VALUES, it) }?.takeIf { it > 0 }",
             ),
         )
         assertTrue(
             "energy position must come from levelPosition over ENERGY_VALUES, judged-only",
-            nowScreenSrc.contains(
+            nowRowSrc.contains(
                 "record.energy?.let { levelPosition(ENERGY_VALUES, it) }?.takeIf { it > 0 }",
             ),
         )
         assertTrue(
             "the size glyph draws word-free, naming itself through sizeTitle",
             Regex("""SizeGlyph\([\s\S]{0,200}?contentDescription = sizeTitle\(record\.size\)""")
-                .containsMatchIn(nowScreenSrc),
+                .containsMatchIn(nowRowSrc),
         )
     }
 
@@ -317,13 +324,15 @@ class NowScreenStructuralTest {
         // still arrives decided on every record; the opened item renders
         // it. Comments are stripped so a doc sentence may name what this
         // forbids.
-        val code = nowScreenSrc
-            .replace(Regex("""/\*[\s\S]*?\*/"""), "")
-            .replace(Regex("""(?m)^\s*//.*$"""), "")
-        assertFalse(
-            "NowScreen.kt must not read availableActions — actions live on the opened item",
-            code.contains("availableActions"),
-        )
+        for ((name, raw) in listOf("NowScreen.kt" to nowScreenSrc, "NowRow.kt" to nowRowSrc)) {
+            val code = raw
+                .replace(Regex("""/\*[\s\S]*?\*/"""), "")
+                .replace(Regex("""(?m)^\s*//.*$"""), "")
+            assertFalse(
+                "$name must not read availableActions — actions live on the opened item",
+                code.contains("availableActions"),
+            )
+        }
     }
 
     // ------------------------------------------------------ panes (#537)
@@ -400,7 +409,7 @@ class NowScreenStructuralTest {
             lazyColumnCount,
         )
         val lazyColumnIndex = nowScreenSrc.indexOf("LazyColumn(")
-        val paneCallIndex = nowScreenSrc.indexOf("nowPaneSection(panes)")
+        val paneCallIndex = nowScreenSrc.indexOf("nowPaneSection(", lazyColumnIndex)
         assertTrue("could not locate the LazyColumn( call", lazyColumnIndex >= 0)
         assertTrue("could not locate the nowPaneSection(panes) call", paneCallIndex >= 0)
         assertTrue(

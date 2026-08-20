@@ -3,12 +3,19 @@
 // fictional data in it.
 //
 // Why this exists at all. The kit world (`demo-data.ts`) cannot reach Now's
-// centre column: `NowScreen` branches to `RealFrontier` only when `demo` is
-// null, so the frontier's columns, the unsorted captures among them, the axis
-// switch, the Filter panel and #418's stranded-triage alert have never been
-// photographed by the visual gate — ADR-0021 decision 8 recorded that gap and
-// this closes it. `DemoItem` could not have expressed them anyway: it carries
-// no `context` and no `energy`, having been written before either was an axis.
+// centre column: until #456, `NowScreen` branched to `RealFrontier` only
+// when `demo` was null, so the frontier's columns, the unsorted captures
+// among them, the axis switch, the Filter panel and #418's stranded-triage
+// alert had never been photographed by the visual gate — ADR-0021 decision 8
+// recorded that gap and this closes it. `DemoItem` could not have expressed
+// them anyway: it carries no `context` and no `energy`, having been written
+// before either was an axis.
+//
+// *Amended 2026-08-20 (#456): `NowScreen` deleted its `demo` prop and the
+// branch above with it — it renders `RealFrontier` unconditionally now, on
+// every world. The board world above is unaffected: it is still what this
+// module seeds and still the only populated render of Now's centre column
+// the visual gate photographs.*
 //
 // **Nothing here is real data.** Every title, description and source below is
 // invented. What *is* taken from production is the SHAPE — measured once from
@@ -700,9 +707,9 @@ export function buildDemoTaskState(): TaskState {
   // #481's Recall search seed — one row per group `RecallOverlay` renders
   // differently: `b-f7` ("Rewrite the backup script…", `stage: "ready"`) is
   // the LIVE row, carrying a description so its expanded `ItemPanel` has
-  // more than a title to show and wired with `onTriage` (`App.tsx`'s
-  // `demo ? undefined : handleTriage`, and `demo` is null in board mode) so
-  // its expansion offers Edit; `b-d2` ("Reply to the HOA…") is the DONE row
+  // more than a title to show and wired with `onTriage` (`App.tsx` passes
+  // `handleTriage` through unconditionally since #456) so its expansion
+  // offers Edit; `b-d2` ("Reply to the HOA…") is the DONE row
   // and `b-a2` ("Chase the warranty claim", one of `ARCHIVED_ONLY_SEEDS`) is
   // the ARCHIVED row — both expand read-only, since `RecallRow` only ever
   // passes `onTriage` through for a `"live"` group. `archivedLedgerRow`'s
@@ -755,12 +762,13 @@ export function buildDemoTaskState(): TaskState {
     rules: DEMO_DATA.ruleDetails,
     lastRuleWrite: null,
     lastProjectWrite: null,
-    // Piece 3: every standing question's read, built by the SAME functions
-    // the kit world's `demoQuestionInputs` calls (`demo-pane-reads.ts`) — one
-    // input path, not a third fixture world hand-building the same six
-    // fields. The weekend/vacation panes' own `calendarReads`/
-    // `calendarConnected` arrive through `App.tsx`'s live `CalendarState`
-    // prop threading, unchanged, and need no entry here.
+    // Piece 3: every standing question's read, built by `demo-pane-reads.ts`
+    // — the kit world's own `demoQuestionInputs` called the same functions
+    // before #452 folded its content into this seed and #455 deleted that
+    // module, so this remains one input path, not a third fixture world
+    // hand-building the same six fields. The weekend/vacation panes' own
+    // `calendarReads`/`calendarConnected` arrive through `App.tsx`'s live
+    // `CalendarState` prop threading, unchanged, and need no entry here.
     paneReads: {
       [WASTE_SOURCE]: wasteRead(loadedAt),
       [RACE_SOURCE]: raceRead(loadedAt),

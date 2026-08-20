@@ -1,15 +1,17 @@
-// The standing-question pane reads both demo worlds answer with — moved out
-// of `demo-questions.ts` (#452) so the board world (`demo-task-state.ts`) can
-// seed the SAME `PaneReadDTO`s rather than hand-authoring a second, drifting
-// copy. `demo-questions.ts`'s own header states the rule this file exists to
-// keep: "one input path, not a parallel copy of it that drifts from it."
+// The standing-question pane reads the board world's seed answers with —
+// moved out of `demo-questions.ts` (#452) so the board world
+// (`demo-task-state.ts`) could seed the SAME `PaneReadDTO`s the kit world's
+// own fixture used to hand-author a second, drifting copy of. That module's
+// own header stated the rule this file exists to keep: "one input path, not
+// a parallel copy of it that drifts from it" — and #455, flipping the
+// default from the kit world to the board world, deleted `demo-questions.ts`
+// outright, leaving this module's one caller `demo-task-state.ts`.
 //
 // Every function here takes `nowMs` and returns a value — no clock read at
 // module scope, no top-level literal built from one — for the same bundling
 // reason `demo-task-state.ts`'s header documents at length: a fixture module
 // Rollup cannot prove side-effect-free at the top level does not drop from
-// the production bundle. Both callers (`demo-questions.ts`'s kit world,
-// `demo-task-state.ts`'s board world) are themselves gated behind
+// the production bundle. Its caller is itself gated behind
 // `import.meta.env.DEV`, so this module carries no gate of its own.
 
 import { SOURCE as GITHUB_SOURCE } from "../screens/github-pane/github";

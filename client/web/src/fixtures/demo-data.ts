@@ -1,11 +1,14 @@
 // A typed mirror of the design kit's fixtures
 // (.claude/skills/hummingbird-design/ui_kits/web/data.js), used only by
 // demo mode. Nothing here is real data and nothing here reaches a
-// production build — see demo.ts for the gate.
+// production build — `demoData()` below is the gate, the same
+// `import.meta.env.DEV` double gate `fixtures/demo.ts`'s board-world
+// accessors sit behind.
 
 import type { Stage } from "../components/domain/StageBadge";
 import type { AlertTier } from "../components/domain/AlertCard";
 import type { BindingDTO, KindRegistryDTO, RuleDTO, TaskItemDTO } from "../store/protocol";
+import { isDemoEnabled } from "./demo-mode";
 
 export type Urgency = "calm" | "soon" | "now" | "overdue";
 
@@ -99,14 +102,17 @@ export interface DemoData {
 export const DEMO_DATA: DemoData = {
   items: [
     { id: "ION-142", title: "Order the replacement sensor", stage: "ready", urgency: "soon", deadline: "Fri", size: "quick", steps: "2/5", project: "Greenhouse" },
-    // ION-118's title is visual/surfaces.spec.ts's kit-world marker
-    // (KIT_ONLY_TEXT). The invariant: this exact title must stay on some
-    // kit-world item that renders on Now (the landing screen the
-    // world-identity check reads) and must never appear in the board world.
-    // Hero-ness is NOT load-bearing — NowScreen renders every non-`done`
-    // item's title (hero or "Also startable"), so a demoted ION-118 still
-    // satisfies the check; renaming this title, marking the item `done`, or
-    // reusing the title in demo-task-state.ts is what breaks it.
+    // ION-118's title is visual/surfaces.spec.ts's KIT_ONLY_TEXT constant —
+    // but the invariant that comment used to describe no longer holds. #456
+    // deleted NowScreen's kit-only hero card and "Also startable" list (its
+    // only render path now is RealFrontier, against the live — normally
+    // empty — TaskState, under `?demo=kit` too), so no kit-world item can
+    // render on Now, the landing screen the world-identity check reads, any
+    // more. Nothing in this file currently opens the kit world at all
+    // (`surfaces.spec.ts`'s own header note), so this string is not acting
+    // as a live marker for anything right now — see that file's `World`
+    // type doc for the honest state of the mechanism it used to drive.
+    // Renaming this title is no longer load-bearing for the visual gate.
     { id: "ION-118", title: "Rewrite the sweeper's Gmail adapter", stage: "in_progress", urgency: "now", size: "deep", steps: "3/7", project: "Hummingbird", note: "Started 40 minutes ago. Three of seven steps ticked; the next one is 'delete the two dead label cases'." },
     { id: "ION-151", title: "Hear back from the shop about the part", stage: "blocked", urgency: "calm", blockedBy: "ION-142", project: "Greenhouse" },
     { id: "ION-160", title: "Book the annual boiler service", stage: "ready", urgency: "calm", scheduled: "Mon", size: "quick", project: "House" },
@@ -180,6 +186,22 @@ export const DEMO_DATA: DemoData = {
       eventKind: null,
       conditions: [{ field: "source", op: "contains", value: "cloudflare", negate: false }],
       severity: "normal",
+      tier: "normal",
+      enabled: true,
+      updatedAt: 1_755_000_000_000,
+      version: 1,
+    },
+    // #374: last on purpose — the other three each have a reason to stay
+    // where they are (the first is the backtest capture's target; the rest
+    // are the demo's own narrative order), so the rule that exists only to
+    // photograph the unranked-severity badge's wrapping row goes at the
+    // end. "urgent-plus" is not in `ruleKindRegistry.severities` below.
+    {
+      id: "rule-unranked-severity",
+      name: "Backup generator test overdue",
+      eventKind: null,
+      conditions: [{ field: "source", op: "contains", value: "generator", negate: false }],
+      severity: "urgent-plus",
       tier: "normal",
       enabled: true,
       updatedAt: 1_755_000_000_000,
@@ -298,3 +320,23 @@ export const DEMO_DATA: DemoData = {
     },
   ],
 };
+
+/** The kit world's own dev-gated accessor (#457) — `AlertsScreen` calls
+ * this directly rather than reading a `demo` prop `App.tsx` threads down,
+ * which is what let `DemoData` leave `App.tsx` entirely. Colocated with the
+ * data it gates instead of living in `fixtures/demo.ts` (the board world's
+ * accessors stay there, unaffected — `demoTaskState`/`demoCalendar` still
+ * feed `App.tsx`'s lazy-initializer state).
+ *
+ * The same double gate every fixture accessor in this app sits behind:
+ * `import.meta.env.DEV` is substituted with the literal `false` at build
+ * time, so the production bundle contains `if (false && …)` and Rollup
+ * drops both this function and `DEMO_DATA` with the dead branch — see
+ * `fixtures/demo.ts`'s header for the whole argument, which applies here
+ * unchanged. */
+export function demoData(): DemoData | null {
+  if (!import.meta.env.DEV) {
+    return null;
+  }
+  return isDemoEnabled(window.location.search) ? DEMO_DATA : null;
+}

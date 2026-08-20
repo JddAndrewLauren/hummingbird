@@ -98,8 +98,11 @@ class StageBadgeTest {
         // `ChoiceRowWrappingTest` rule). And the ban half: no screen keeps
         // a raw `stage.uppercase()` behind the import.
         val sites = mapOf(
-            "NowScreen.kt" to 1,
+            // The compact card (Now's columns AND Triage's queue rows since
+            // the Triage-parity slice) carries the one stage chip.
+            "NowRow.kt" to 1,
             "ItemDetailPanel.kt" to 1,
+            // TriageScreen's own site is the opened editor's panel header.
             "TriageScreen.kt" to 1,
             "LedgerScreen.kt" to 1,
         )

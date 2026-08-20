@@ -107,7 +107,7 @@ data class TriageDraft(
 // applies verbatim: a composition-scoped draft is lost on Activity
 // recreation, and a draft is human-authored content.
 class TriageViewModel(
-    private val fetchFn: suspend () -> TriageBoardRecord,
+    private val fetchFn: suspend (now: String) -> TriageBoardRecord,
     private val triageFn: suspend (itemId: String, promoteToReady: Boolean, edit: ItemEdit, nowMs: Long) -> Unit,
     private val completeFn: suspend (itemId: String, nowMs: Long) -> Unit,
     /** The core's blank rule, injected the same way [ItemDetailViewModel]'s
@@ -153,6 +153,27 @@ class TriageViewModel(
             return problems.deadline == null && problems.scheduledDate == null
         }
 
+    /** Whether the open row's draft still matches the record it was seeded
+     * from — [ItemDetailViewModel.isDirty]'s own shape and its own purpose:
+     * it is the whole condition of `TriageScreen`'s Back guard, so that an
+     * *unchanged* draft is never fought over and a changed one is never
+     * thrown away without asking. */
+    val isDirty: Boolean
+        get() {
+            val draft = _draft.value ?: return false
+            val id = _selectedId.value ?: return false
+            val item = currentItems().find { it.id == id } ?: return false
+            return draft != TriageDraft.of(item)
+        }
+
+    /** Throws the open draft away and closes the editor — the discard
+     * confirmation's own arm, and the only path that ends a draft without
+     * either promoting it or the human closing the row themselves. */
+    fun discardDraft() {
+        _selectedId.value = null
+        _draft.value = null
+    }
+
     private fun currentItems(): List<TriageItemRecord> =
         (_state.value as? TriageState.Loaded)?.board?.items.orEmpty()
 
@@ -163,9 +184,9 @@ class TriageViewModel(
      * cycle. A reload never disturbs an open draft — the same "the
      * 60-second cadence must not erase what the human is typing" rule
      * [ItemDetailViewModel.load]'s own doc states. */
-    suspend fun load() {
+    suspend fun load(now: String) {
         try {
-            _state.value = TriageState.Loaded(fetchFn())
+            _state.value = TriageState.Loaded(fetchFn(now))
             _statusLine.value = null
         } catch (error: Exception) {
             _statusLine.value = "Couldn't read Triage — ${error.message}"
@@ -197,7 +218,7 @@ class TriageViewModel(
      * the only destination this screen offers (the AC this method exists
      * to satisfy): there is no "save without promoting" affordance here,
      * unlike item detail's own edit mode. */
-    suspend fun promote(itemId: String, nowMs: Long) {
+    suspend fun promote(itemId: String, now: String, nowMs: Long) {
         val item = currentItems().find { it.id == itemId } ?: return
         val draft = _draft.value ?: return
         if (!canSave) {
@@ -213,7 +234,7 @@ class TriageViewModel(
             _statusLine.value = "Couldn't promote — ${error.message}"
             return
         }
-        load()
+        load(now)
     }
 
     /** The row checkmark: `Core::act`'s `complete`, never a triage — a
@@ -223,7 +244,7 @@ class TriageViewModel(
      * leaves the row on the board, so its editor stays where [statusLine]
      * can be read against it and the act retried. Cancellation rethrows
      * rather than being worded as a failure. */
-    suspend fun complete(itemId: String, nowMs: Long) {
+    suspend fun complete(itemId: String, now: String, nowMs: Long) {
         val failure = try {
             completeFn(itemId, nowMs)
             null
@@ -236,14 +257,14 @@ class TriageViewModel(
             _selectedId.value = null
             _draft.value = null
         }
-        load()
+        load(now)
         failure?.let { _statusLine.value = it }
     }
 
     companion object {
         fun create(context: Context): TriageViewModel =
             TriageViewModel(
-                fetchFn = { CoreHolder.get(context.applicationContext).triageBoard() },
+                fetchFn = { now -> CoreHolder.get(context.applicationContext).triageBoard(now) },
                 triageFn = { itemId, promoteToReady, edit, nowMs ->
                     CoreHolder.get(context.applicationContext)
                         .triageItem(itemId, promoteToReady, edit, nowMs)

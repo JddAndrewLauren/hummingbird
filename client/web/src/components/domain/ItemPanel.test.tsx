@@ -400,7 +400,7 @@ describe("ItemPanel — detail mode's Edit", () => {
     expect((screen.getByLabelText("Description") as HTMLTextAreaElement).value).toBe("");
   });
 
-  it("offers no Edit at all without an onTriage — demo mode has no worker", () => {
+  it("offers no Edit at all without an onTriage", () => {
     render(
       <ItemPanel
         mode="detail"
@@ -513,7 +513,7 @@ describe("ItemPanel — detail mode's Grill me (#359)", () => {
     }
   });
 
-  it("offers no Grill me at all without an onGrillMe — demo mode has no real item to grill", () => {
+  it("offers no Grill me at all without an onGrillMe", () => {
     render(
       <ItemPanel
         mode="detail"

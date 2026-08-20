@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { demoCalendar, demoData, demoTaskState } from "./fixtures/demo";
+import { useEffect, useMemo, useState } from "react";
+import { demoCalendar, demoTaskState } from "./fixtures/demo";
 import { AlertsScreen } from "./screens/AlertsScreen";
 import { DoneScreen } from "./screens/DoneScreen";
 import { LedgerScreen } from "./screens/LedgerScreen";
@@ -10,6 +10,8 @@ import { SettingsScreen } from "./screens/SettingsScreen";
 import { StatusScreen } from "./screens/StatusScreen";
 import { TriageScreen } from "./screens/TriageScreen";
 import type { CaptureDestination } from "./screens/capture-destination";
+import { contextSuggestions } from "./screens/field-vocabulary";
+import { liveWriteFailureCount } from "./screens/write-failure";
 import { isCaptureHotkey } from "./shell/capture-hotkey";
 import { isRecallHotkey } from "./shell/recall-hotkey";
 import { escapeClaimant, type EscapeClaimant } from "./shell/escape-claimants";
@@ -96,17 +98,23 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // once per mount either way.
   const [worker] = useState<WorkerLike>(() => injectedWorker ?? realWorker());
 
-  // Lazy initializer, not a ref: `demoData()` returns null in production, and
-  // `ref.current ??= …` would re-run it on every render forever.
-  const [demo] = useState(demoData);
-
-  // The board world (#420), same lazy-initializer reason. Read-only by
+  // The board world (#420). A lazy initializer, not a ref: reading
+  // `ref.current` during render is what React's rules forbid, and this needs
+  // to be constructed exactly once per mount either way. Read-only by
   // construction: it substitutes for the published state the sync engine would
   // have sent, and no mutation is rewired to it — the point is photographing
   // and eyeballing the real render path at production's density, not a second
-  // writable world. A capture typed into the popover still goes to the worker,
-  // which knows nothing of these fixture ids; `demo`'s own fixture-queue arm
-  // does not apply here because `demoData()` is null in this mode.
+  // writable world. A capture typed into the popover still goes to the
+  // worker, which knows nothing of these fixture ids.
+  //
+  // `DemoData` and the kit world it seeds left this component in #457 —
+  // `AlertsScreen`, now its only consumer (#624 deleted the other, Routes),
+  // reads it through its own dev-gated accessor (`fixtures/demo-data.ts`'s
+  // `demoData()`) instead of a `demo` prop threaded from here, and every
+  // guard that used to keep writes
+  // inert while the kit world showed went with it: this component no longer
+  // has any opinion about the KIT world. The board world below is still its
+  // own — `demoTask` and `settingsDemoCalendar` are substituted from here.
   const [demoTask] = useState(demoTaskState);
   const task = demoTask ?? liveTask;
 
@@ -215,6 +223,30 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // Triage-screen version was a counter and not a boolean.
   const [captureOpen, setCaptureOpen] = useState(false);
   const [captureFocusRequestId, setCaptureFocusRequestId] = useState(0);
+  // What capture's Context combobox offers. The suggested list can never grow
+  // on its own, so a context typed once was invisible to the next capture;
+  // this is that list unioned with the contexts the live items actually carry
+  // (`field-vocabulary.ts`'s `contextSuggestions`, whose ordering is Rust's).
+  //
+  // The four current slices, and deliberately not Done or Ledger: a context
+  // that survives only on finished work is not a place this person still
+  // works, and offering it would grow the list monotonically forever. Blocked
+  // entries wrap their item, hence the `.map`.
+  //
+  // `useMemo` because it crosses the wasm seam and the popover re-renders on
+  // every keystroke in the field. There is no second world to gate on since
+  // #457: under the board world `task` is the fixture, so what this offers is
+  // the fixture's own contexts.
+  const captureContexts = useMemo(
+    () =>
+      contextSuggestions([
+        ...task.frontier,
+        ...task.triageInbox,
+        ...task.grillingItems,
+        ...task.blocked.map((entry) => entry.item),
+      ]),
+    [task.frontier, task.triageInbox, task.grillingItems, task.blocked],
+  );
   // Whether `CaptureBox` currently has a live dictation session, reported up
   // through `CapturePopover`, and the bumped counter that asks it to cancel
   // one in place (#380) — see the Escape branch below and
@@ -276,29 +308,8 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     setCaptureDictating(false);
   };
 
-  // Demo mode's unsorted list. Held here, not in `TriageScreen`, because the
-  // capture box is in the shell now: a fixture capture typed in the popover
-  // has to land in the list the Triage screen renders. Dev-only either way —
-  // `demoData()` is null in production.
-  const [demoCaptures, setDemoCaptures] = useState(() => demo?.triage ?? []);
-
   function handleCapture(title: string, destination: CaptureDestination, fields: CaptureFields) {
-    if (demo) {
-      // Fixtures, so `destination` is not honoured — and neither is `fields`:
-      // the demo frontier is a hand-authored world, and a minted fixture
-      // appearing on it would be a second, divergent source of truth for what
-      // the demo shows.
-      setDemoCaptures((current) => [
-        { id: `CAP-${current.length + 8}`, title, source: "Typed here", age: "just now" },
-        ...current,
-      ]);
-      return;
-    }
     submitCapture(title, destination, Date.now(), fields);
-  }
-
-  function dropDemoCapture(id: string) {
-    setDemoCaptures((current) => current.filter((capture) => capture.id !== id));
   }
 
   // The global focus hotkey (#107's decision: shell level, not a leaf
@@ -344,12 +355,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         })
       ) {
         event.preventDefault();
-        // Demo mode's `task` is the static fixture, same as the header's
-        // `onSearch` above and reported for the identical reason: opening it
-        // there would spin forever on "Searching…" for any typed query.
-        if (!demo) {
-          requestSearchOpen();
-        }
+        requestSearchOpen();
         return;
       }
 
@@ -393,7 +399,6 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [
-    demo,
     captureOpen,
     captureDictating,
     searchOpen,
@@ -406,8 +411,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   const { triage: handleTriage } = useTriageWiring(worker);
   // #355/ADR-0023's Grill takeover — the Triage screen's own composition of
   // the turn lane and the Confirm mutation (`useGrillTakeoverWiring.ts`'s
-  // own doc). Absent in demo mode, same reason `onTriage` is: demo has no
-  // real `TaskItemDTO` to grill.
+  // own doc).
   useGrillDraftListWiring(worker, status);
   const grillTakeover = useGrillTakeoverWiring(
     worker,
@@ -459,7 +463,20 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // One counts object for whichever nav is mounted — the two forms show the
   // same numbers, so a second literal would be a second answer waiting to
   // diverge.
-  const navCounts = demo ? { triage: demo.triage.length, alerts: demo.alerts.length } : {};
+  //
+  // #455: derived from the store (`task`, which is `demoTask ?? liveTask`),
+  // not from `DemoData` — the kit fixture used to be the only source, which
+  // meant a real device never showed either badge at all, however full its
+  // triage inbox actually was. `triageInbox.length` is the same real count
+  // `TriageScreen`'s own "N captured" reads; `liveWriteFailureCount` is the
+  // one thing the store has that answers to "alerts" at all, since
+  // `AlertsScreen` itself stays demo-fixture-only (ADR-0016) — it is 0 on an
+  // ordinary real device and 2 under the board fixture, which seeds both of
+  // Now's stranded-write alerts on purpose (`demo-task-state.ts`).
+  const navCounts = {
+    triage: task.triageInbox.length,
+    alerts: liveWriteFailureCount(task.lastTriage, task.lastAct),
+  };
 
   function handleHome() {
     setScreen("now");
@@ -492,7 +509,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           collapsed={railCollapsed}
           onToggleCollapsed={handleToggleRailCollapsed}
           onHome={handleHome}
-          onSearch={demo ? undefined : requestSearchOpen}
+          onSearch={requestSearchOpen}
         />
       )}
 
@@ -508,17 +525,9 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
       >
         <Header
           title={SCREEN_TITLES[screen]}
-          // The demo badge stands in for a real cycle only in demo mode;
-          // everywhere else this is now backed by one (S9) — see
-          // `sync-status.ts`.
-          syncLabel={demo?.syncBadge ?? (hasTaskToken ? syncLabel : undefined)}
+          syncLabel={hasTaskToken ? syncLabel : undefined}
           onRefresh={refreshEnabled ? handleRefresh : undefined}
-          // Demo mode's `task` is the static fixture (`demoTask`), never the
-          // live store slice `useRecallWiring`'s answer lands in — the same
-          // reason `onSetScheduledDate`/`microtask`/`onTriage` below are all
-          // `demo ? undefined : …`. Opening it there would spin forever on
-          // "Searching…" for any typed query.
-          onSearch={demo ? undefined : requestSearchOpen}
+          onSearch={requestSearchOpen}
           // Only on Now — the aside exists on no other screen. Same rule as
           // `onSearch`/`onRefresh` above: the affordance appears exactly where
           // it would do something.
@@ -539,7 +548,6 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         <div className="hb-scroll">
           {screen === "now" && (
             <NowScreen
-              demo={demo}
               onScreen={setScreen}
               task={task}
               nowMs={syncNowMs}
@@ -549,54 +557,45 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               onAct={handleAct}
               calendarReads={calendar.eventReads}
               calendarConnected={calendar.connected}
-              onSetScheduledDate={demo ? undefined : handleSetScheduledDate}
-              microtask={demo ? undefined : microtaskWiring}
+              onSetScheduledDate={handleSetScheduledDate}
+              microtask={microtaskWiring}
               // The same two callbacks the Triage screen gets below: Now is a
               // second view of one inbox, never a second entry point into it.
-              onTriage={demo ? undefined : handleTriage}
+              onTriage={handleTriage}
               asideCollapsed={asideCollapsed}
               // #359: the SAME `grillTakeover` instance the Triage screen gets
               // below — one interview session for the whole app, not a second
               // one per screen.
-              grill={demo ? undefined : grillTakeover}
+              grill={grillTakeover}
             />
           )}
           {screen === "triage" && (
             <TriageScreen
-              demo={demo}
               task={task}
-              demoCaptures={demo ? demoCaptures : undefined}
-              onDropDemoCapture={demo ? dropDemoCapture : undefined}
-              onTriage={demo ? undefined : handleTriage}
-              onComplete={demo ? undefined : (itemId) => handleAct(itemId, "complete")}
+              onTriage={handleTriage}
+              onComplete={(itemId) => handleAct(itemId, "complete")}
               nowMs={syncNowMs}
-              grill={demo ? undefined : grillTakeover}
+              grill={grillTakeover}
             />
           )}
-          {/* #624: never `demo`. Projects reads `TaskState` on every world,
-              so the kit world photographs its honest holding state. The
-              create is still gated the way `onCreateRule` below is: the kit
-              world's grid is a hand-authored fixture, and a Create pressed
-              over it would enqueue a real project against this device's own
-              core. The board world is deliberately NOT gated — a mutation
-              typed there goes to the real worker already (see `demoTask`'s
-              comment above), and this is the same bargain. */}
+          {/* #624: Projects reads `TaskState` on every world, so the board
+              world photographs its honest holding state. The create is NOT
+              gated — since #457 this component has no kit world to be inert
+              for, and a mutation typed over the board world goes to the real
+              worker already (see `demoTask`'s comment above). */}
           {screen === "projects" && (
-            <ProjectsScreen
-              task={task}
-              onCreateProject={demo ? () => {} : handleCreateProject}
-            />
+            <ProjectsScreen task={task} onCreateProject={handleCreateProject} />
           )}
-          {screen === "alerts" && <AlertsScreen demo={demo} />}
+          {screen === "alerts" && <AlertsScreen />}
           {screen === "rules" && (
             <RulesScreen
-              rules={demo ? demo.ruleDetails : task.rules}
-              kindRegistry={demo ? demo.ruleKindRegistry : task.kindRegistry}
-              frontier={demo ? demo.ruleBacktestItems : task.frontier}
-              lastRuleWrite={demo ? null : task.lastRuleWrite}
+              rules={task.rules}
+              kindRegistry={task.kindRegistry}
+              frontier={task.frontier}
+              lastRuleWrite={task.lastRuleWrite}
               syncOutcomeSeq={task.syncOutcomeSeq}
-              onCreateRule={demo ? () => {} : handleCreateRule}
-              onPatchRule={demo ? () => {} : handlePatchRule}
+              onCreateRule={handleCreateRule}
+              onPatchRule={handlePatchRule}
             />
           )}
           {screen === "done" && <DoneScreen task={task} nowMs={syncNowMs} />}
@@ -618,7 +617,6 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           )}
           {screen === "settings" && (
             <SettingsScreen
-              demo={demo}
               status={status}
               apiVersion={apiVersion}
               coreId={coreId}
@@ -657,7 +655,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           onToggleTheme={() => setPreference(toggledPreference(theme))}
           sheetOpen={navSheetOpen}
           onSheetOpen={setNavSheetOpen}
-          onSearch={demo ? undefined : requestSearchOpen}
+          onSearch={requestSearchOpen}
         />
       ) : null}
 
@@ -669,9 +667,16 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         focusRequestId={captureFocusRequestId}
         onClose={closeCapture}
         onSubmit={handleCapture}
-        projects={demo ? [] : (task.projects ?? [])}
-        demo={demo !== null}
-        lastCapture={demo ? null : task.lastCapture}
+        // #624 made `TaskState.projects` nullable (`null` = not read yet);
+        // this component's other readers handle it themselves.
+        projects={task.projects ?? []}
+        contextSuggestions={captureContexts}
+        // #457: this component no longer has a kit world to be inert for —
+        // `demo`'s own fixture-queue arm lives on in `CaptureBox`'s own
+        // `demo` prop for a future caller, but nothing left in this
+        // component ever passes `true`.
+        demo={false}
+        lastCapture={task.lastCapture}
         cancelDictationRequestId={cancelDictationRequestId}
         onDictatingChange={setCaptureDictating}
       />
@@ -693,13 +698,11 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         onClose={() => setSearchOpen(false)}
         rows={task.search?.rows ?? null}
         total={task.search?.total ?? 0}
-        // Same gating as `onSearch`/`onTriage` elsewhere in this render: demo
-        // mode's `task` is the static fixture, so an expanded live result
-        // there gets no `onTriage` at all and renders with no Edit
-        // affordance, exactly like a Done or archived one.
-        projects={demo ? [] : (task.projects ?? [])}
-        onTriage={demo ? undefined : handleTriage}
-        lastTriage={demo ? null : task.lastTriage}
+        // `?? []` for the same reason as `CapturePopover` above: #624 made
+        // `TaskState.projects` nullable and this prop is not.
+        projects={task.projects ?? []}
+        onTriage={handleTriage}
+        lastTriage={task.lastTriage}
         nowMs={syncNowMs}
       />
     </div>

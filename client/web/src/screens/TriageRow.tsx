@@ -27,9 +27,10 @@ export interface TriageRowProps {
   expanded: boolean;
   onToggle: () => void;
   nowMs: number;
-  /** S13/#111's triage mutation. Absent for a render with no worker behind it
-   * (demo mode), in which case the row is readable and never expands into an
-   * editor that could not send anything. */
+  /** S13/#111's triage mutation. `App.tsx` passes `handleTriage`
+   * unconditionally (since #456); optional only so a render with no worker
+   * behind it can omit it, in which case the row is readable and never
+   * expands into an editor that could not send anything. */
   onTriage?: (
     itemId: string,
     destination: "ready" | null,
@@ -37,20 +38,20 @@ export interface TriageRowProps {
   ) => void;
   /** The one-click "mark done" checkmark — `Core::act`'s `complete`, NOT a
    * triage: a capture that turned out already finished skips the editor
-   * entirely. Absent in demo mode, same as `onTriage`. This is the recorded
-   * amendment to "Triage is pre-action by definition" (CONTEXT.md): the
-   * detail-panel act vocabulary still offers nothing here, but finishing is
-   * one click on every screen (`item-actions.ts`'s `canMarkDone`). */
+   * entirely. Optional for the same reason `onTriage` is. This is the
+   * recorded amendment to "Triage is pre-action by definition" (CONTEXT.md):
+   * the detail-panel act vocabulary still offers nothing here, but finishing
+   * is one click on every screen (`item-actions.ts`'s `canMarkDone`). */
   onComplete?: (itemId: string) => void;
   /** "Grill me" (#355, ADR-0023): opens the center-column takeover over
-   * this item, decided by `item-actions.ts`'s `canGrill`. Absent in demo
-   * mode, same as `onTriage`. Since #360, promoting straight into Grilling
+   * this item, decided by `item-actions.ts`'s `canGrill`, not by which demo
+   * world (if any) is active. Since #360, promoting straight into Grilling
    * is no longer a triage gesture at all: this is the only way an item gets
    * there. */
   onGrillMe?: (itemId: string) => void;
   /** Whether this item already carries a Grill draft (#356) — decides
-   * `item-actions.ts`'s `grillButtonLabel`. `false` in demo mode, same as
-   * `onGrillMe`. */
+   * `item-actions.ts`'s `grillButtonLabel`. `false` when there is no draft
+   * to have read. */
   hasGrillDraft?: boolean;
   /** The most recent triage result any row got back (`TaskState.lastTriage`)
    * — matched here by the item id the result itself carries, the same

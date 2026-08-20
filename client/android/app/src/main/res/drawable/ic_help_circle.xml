@@ -1,0 +1,27 @@
+<!-- Lucide `circle-help` at 24dp — the pane shell's not-set-up glyph — outline, 1.75px stroke, rounded caps,
+     `ic_inbox.xml`'s recipe. Drawn in white and tinted at use: icons never
+     carry colour independently of their label. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M12 17h0.01"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

@@ -1,0 +1,27 @@
+<!-- Lucide `cloud-fog` at 24dp — the pane shell's waiting-on-data glyph — outline, 1.75px stroke, rounded caps,
+     `ic_inbox.xml`'s recipe. Drawn in white and tinted at use: icons never
+     carry colour independently of their label. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M16 17H7"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M17 21H9"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

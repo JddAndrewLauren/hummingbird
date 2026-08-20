@@ -5,7 +5,6 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -15,14 +14,19 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -43,6 +47,7 @@ import net.twinion.hummingbird.ui.contentMaxWidth
 import net.twinion.hummingbird.ui.theme.Crimson100
 import net.twinion.hummingbird.ui.theme.Crimson600
 import net.twinion.hummingbird.ui.theme.CrimsonDark
+import net.twinion.hummingbird.ui.theme.LocalHbDark
 import net.twinion.hummingbird.ui.theme.Sky100
 import net.twinion.hummingbird.ui.theme.Sky600
 import net.twinion.hummingbird.ui.theme.StatusDangerBgDark
@@ -100,9 +105,12 @@ internal fun severityLabel(severity: String?): String = severity?.uppercase() ?:
  * hand-ported like every other value the web card carries (ADR-0026). */
 private const val ACKED_ALPHA = 0.55f
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AlertsScreen(
     syncTick: Int = 0,
+    isRefreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
     onOpenAlert: (String) -> Unit,
 ) {
     val context = LocalContext.current
@@ -112,7 +120,7 @@ fun AlertsScreen(
     val alerts by viewModel.alerts.collectAsState()
     val loading by viewModel.loading.collectAsState()
     val statusLine by viewModel.statusLine.collectAsState()
-    val dark = isSystemInDarkTheme()
+    val dark = LocalHbDark.current
 
     suspend fun reload() {
         viewModel.refresh(System.currentTimeMillis())
@@ -136,52 +144,76 @@ fun AlertsScreen(
     }
 
     Scaffold { padding ->
-        Column(
+        // The pull gesture is a second door onto AppRoot's one sync cadence
+        // (`sync("user")` via [onRefresh]) — never a screen-local cycle; the
+        // reload itself still arrives through `syncTick` when the cycle lands.
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = onRefresh,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .contentMaxWidth()
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+                .padding(padding),
         ) {
-            Text("Alerts", style = MaterialTheme.typography.headlineLarge)
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .contentMaxWidth()
+                    // Top 12dp, not the outer 24dp: with the title gone the
+                    // health rows sit directly under the app row.
+                    .padding(start = 24.dp, top = 12.dp, end = 24.dp, bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                NotificationHealthRows()
 
-            NotificationHealthRows()
+                statusLine?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
 
-            statusLine?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-
-            when {
-                loading && alerts.isEmpty() -> CircularProgressIndicator()
-                alerts.isEmpty() -> Text(
-                    // An empty lane is good news reported as a fact, and
-                    // the reason it is empty is worth saying: default-deny
-                    // means silence is the designed resting state.
-                    "Nothing is ringing. What no rule matches stays silent.",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                else -> LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    // The last row scrolls clear of the Capture FAB.
-                    contentPadding = PaddingValues(bottom = 64.dp),
-                ) {
-                    items(alerts, key = { it.id }) { record ->
-                        AlertRow(
-                            record = record,
-                            dark = dark,
-                            onOpen = { onOpenAlert(record.id) },
-                            onAck = {
-                                scope.launch {
-                                    viewModel.ack(record.id, System.currentTimeMillis())
-                                }
-                            },
+                when {
+                    // The no-list branches still sit in a scrollable so the pull
+                    // gesture works from an empty or still-loading lane too.
+                    loading && alerts.isEmpty() -> Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                    alerts.isEmpty() -> Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        Text(
+                            // An empty lane is good news reported as a fact, and
+                            // the reason it is empty is worth saying: default-deny
+                            // means silence is the designed resting state.
+                            "Nothing is ringing. What no rule matches stays silent.",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    }
+                    else -> LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        // The last row scrolls clear of the Capture FAB.
+                        contentPadding = PaddingValues(bottom = 64.dp),
+                    ) {
+                        items(alerts, key = { it.id }) { record ->
+                            AlertRow(
+                                record = record,
+                                dark = dark,
+                                onOpen = { onOpenAlert(record.id) },
+                                onAck = {
+                                    scope.launch {
+                                        viewModel.ack(record.id, System.currentTimeMillis())
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
             }

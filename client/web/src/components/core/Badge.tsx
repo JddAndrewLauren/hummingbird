@@ -11,6 +11,15 @@ export interface BadgeProps extends Omit<HTMLAttributes<HTMLSpanElement>, "style
   dot?: boolean;
   /** Space Mono, uppercase, tracked — for codes and counts (12M AGO, 3 ACTIONS). */
   mono?: boolean;
+  /** Wraps sentence-length text across multiple lines instead of clipping at
+   * the fixed 22px single-line height (#374). Swaps the pill radius for
+   * `--radius-md` — a full pill reads oddly once its ends are no longer a
+   * single arc — drops `whiteSpace: nowrap` plus the fixed height, and sets
+   * leading to body-sm's declared `1.45` (`design/tokens/typography.css`)
+   * instead of the single-line pill's solid `1`, so 2-3 wrapped lines don't
+   * collide. Every existing call site is unaffected: this is opt-in, not
+   * the default. */
+  wrap?: boolean;
   style?: CSSProperties;
   children?: ReactNode;
 }
@@ -26,16 +35,17 @@ const TONES: Record<BadgeTone, [string, string, string]> = {
   info: ["var(--status-info-fg)", "var(--status-info-bg)", "transparent"],
 };
 
-export function Badge({ tone = "neutral", icon, dot = false, mono = false, style = {}, children, ...rest }: BadgeProps) {
+export function Badge({ tone = "neutral", icon, dot = false, mono = false, wrap = false, style = {}, children, ...rest }: BadgeProps) {
   const [fg, bg, bd] = TONES[tone] || TONES.neutral;
   return (
     <span style={{
-      display: "inline-flex", alignItems: "center", gap: "var(--space-3)",
-      height: 22, padding: "0 var(--space-4)", color: fg, background: bg,
-      border: `1px solid ${bd}`, borderRadius: "var(--radius-pill)",
-      font: mono ? "var(--type-meta)" : "var(--weight-semibold) var(--size-body-sm)/1 var(--font-sans)",
+      display: "inline-flex", alignItems: wrap ? "flex-start" : "center", gap: "var(--space-3)",
+      ...(wrap ? { padding: "var(--space-2) var(--space-4)" } : { height: 22, padding: "0 var(--space-4)" }),
+      color: fg, background: bg,
+      border: `1px solid ${bd}`, borderRadius: wrap ? "var(--radius-md)" : "var(--radius-pill)",
+      font: mono ? "var(--type-meta)" : `var(--weight-semibold) var(--size-body-sm)/${wrap ? "1.45" : "1"} var(--font-sans)`,
       letterSpacing: mono ? "var(--tracking-meta)" : "0",
-      textTransform: mono ? "uppercase" : "none", whiteSpace: "nowrap", ...style,
+      textTransform: mono ? "uppercase" : "none", whiteSpace: wrap ? "normal" : "nowrap", ...style,
     }} {...rest}>
       {dot ? <span style={{ width: 6, height: 6, borderRadius: "50%", background: fg }} /> : null}
       {icon ? <Icon name={icon} size={13} /> : null}

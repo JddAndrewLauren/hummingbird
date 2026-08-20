@@ -94,11 +94,23 @@ pnpm dev            # build the wasm core, then vite dev
 
 ## Demo mode
 
-`pnpm dev` and then `http://localhost:5173/?demo` renders the design kit's
-fixture data on every surface, so the shell can be compared against
-`.claude/skills/hummingbird-design/ui_kits/web/`. It is gated on
-`import.meta.env.DEV` as well as the query string, so a production build
-cannot show it — the flag compiles away and the fixtures leave the bundle.
+Two mutually exclusive worlds, both gated on `import.meta.env.DEV` as well as
+the query string, so a production build cannot show either — the flag
+compiles away and the fixtures leave the bundle.
+
+`pnpm dev` and then `http://localhost:5173/?demo` (bare, or any spelling but
+`?demo=kit`) renders the **board world** (#420): a seeded `TaskState`, the
+same shape the sync engine publishes, so the screens take their real render
+path with fictional data in it — this is what the visual gate photographs
+(`pnpm visual` above) and the default since #455.
+
+`http://localhost:5173/?demo=kit` renders the **design kit's** fixture data
+instead, so the shell can be compared against
+`.claude/skills/hummingbird-design/ui_kits/web/`. Since #456/#457 that is
+Alerts only (#624 deleted the other reader, Routes) — its other readers were
+render branches that shipped to nobody, and the screens that had them (Now,
+Triage, Settings, Rules) now take their real/empty path under `?demo=kit`
+like any other world.
 
 ## Layout
 

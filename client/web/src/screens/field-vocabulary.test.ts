@@ -16,9 +16,44 @@
 // resting "not set" entry is where the forms expect it.
 
 import { describe, expect, it } from "vitest";
-import { contextsFromCore, energyOptionsFromCore, sizeOptionsFromCore } from "../decisions/seam";
+import {
+  contextsFromCore,
+  energyOptionsFromCore,
+  NO_CONTEXT,
+  sizeOptionsFromCore,
+} from "../decisions/seam";
+import type { TaskItemDTO } from "../store/protocol";
 import { CAPTURE_ENERGY_NAMES, CAPTURE_SIZE_NAMES } from "./capture-meta";
-import { CONTEXTS, ENERGY_OPTIONS, SIZE_OPTIONS } from "./field-vocabulary";
+import { CONTEXTS, contextSuggestions, ENERGY_OPTIONS, SIZE_OPTIONS } from "./field-vocabulary";
+
+/** A minimal live item — only `context` is ever read here. Spelled out
+ * locally rather than imported from `test/component.tsx`: that helper pulls
+ * in testing-library, and this file needs no DOM. */
+function item(context: string | null): TaskItemDTO {
+  return {
+    id: `id-${context ?? "none"}`,
+    seq: null,
+    title: "untitled",
+    description: null,
+    stage: "ready",
+    size: null,
+    energy: null,
+    context,
+    priority: 0,
+    projectId: null,
+    projectPos: null,
+    deadline: null,
+    scheduledDate: null,
+    source: null,
+    sourceKey: null,
+    sourceUrl: null,
+    archivedAt: null,
+    createdAt: 1,
+    updatedAt: 1,
+    version: 0,
+    pending: false,
+  };
+}
 
 describe("field-vocabulary — the size and energy option lists", () => {
   it("offers exactly the wire's size names, in the slider's own order", () => {
@@ -76,6 +111,45 @@ describe("field-vocabulary — the context suggestions", () => {
     // expresses it by being empty, so a `""` in here would be an offered
     // suggestion of nothing.
     expect([...CONTEXTS]).not.toContain("");
+  });
+});
+
+// The composition the capture form actually offers. The ordering rule is
+// Rust's (`contexts_of`) and pinned by `frontier-facets.test.ts`; what is
+// provable here is the union itself — that the suggested list is never lost,
+// that a context somebody typed reaches the form that could reuse it, and
+// that neither duplicates nor `NO_CONTEXT` leak into a list of places.
+describe("field-vocabulary — contextSuggestions", () => {
+  it("offers exactly the suggested list when no item carries a context", () => {
+    expect(contextSuggestions([])).toEqual([...CONTEXTS]);
+    expect(contextSuggestions([item(null)])).toEqual([...CONTEXTS]);
+  });
+
+  it("appends a context the suggested list has never heard of", () => {
+    // The paper cut itself: `@calls` was mintable and then invisible to the
+    // next capture, because `CONTEXTS` cannot grow.
+    expect(contextSuggestions([item("@calls")])).toEqual([...CONTEXTS, "@calls"]);
+  });
+
+  it("never offers the same place twice", () => {
+    const offered = contextSuggestions([item("@home"), item("@home")]);
+    expect(offered).toEqual([...CONTEXTS]);
+    expect(new Set(offered).size).toBe(offered.length);
+  });
+
+  it("drops NO_CONTEXT, which names an absence rather than a place", () => {
+    // `contexts_of` ends with it whenever anything is unfiled, and every
+    // capture with no context set is exactly that — so this is the common
+    // case, not an edge one.
+    expect(contextSuggestions([item(null), item("@calls")])).not.toContain(NO_CONTEXT);
+  });
+
+  it("keeps the extras in the core's order, which is alphabetical", () => {
+    expect(contextSuggestions([item("@zeta"), item("@alpha")])).toEqual([
+      ...CONTEXTS,
+      "@alpha",
+      "@zeta",
+    ]);
   });
 });
 

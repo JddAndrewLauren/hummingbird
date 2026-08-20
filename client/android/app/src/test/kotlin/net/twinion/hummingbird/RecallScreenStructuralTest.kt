@@ -5,7 +5,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-// The M4/#542 counterpart of `RulesScreenStructuralTest`: `Core::search`
+// The M4/#542 counterpart of `RulesScreenStructuralTest` (the file under
+// test is `RecallOverlay.kt` since the search-overlay slice): `Core::search`
 // (via `MobileTaskHost.search`) does every bit of Recall's matching,
 // grouping and ordering core-side (ADR-0025) — this gate refuses a Kotlin
 // copy of any of it. A hand-rolled `sortedBy` or `groupBy` here would
@@ -30,12 +31,12 @@ class RecallScreenStructuralTest {
             .replace(Regex("""/\*[\s\S]*?\*/"""), "")
             .replace(Regex("""(?m)^\s*//.*$"""), "")
 
-    private val screenSrc by lazy { source("RecallScreen.kt") }
+    private val screenSrc by lazy { source("RecallOverlay.kt") }
     private val viewModelSrc by lazy { source("RecallViewModel.kt") }
 
     private val both by lazy {
         listOf(
-            "RecallScreen.kt" to screenSrc,
+            "RecallOverlay.kt" to screenSrc,
             "RecallViewModel.kt" to viewModelSrc,
         )
     }
@@ -80,7 +81,7 @@ class RecallScreenStructuralTest {
     @Test
     fun `total is read from the seam, never re-derived from the row list`() {
         assertTrue(
-            "RecallScreen must read the seam's own total",
+            "RecallOverlay must read the seam's own total",
             screenSrc.contains("total"),
         )
         for ((name, src) in both) {
@@ -95,11 +96,11 @@ class RecallScreenStructuralTest {
     fun `every when over MobileRecallGroup is exhaustive with no wildcard arm`() {
         val arm = Regex("""MobileRecallGroup\.[A-Z_]+\s*->""")
         assertTrue(
-            "RecallScreen.kt must map MobileRecallGroup by its variants",
+            "RecallOverlay.kt must map MobileRecallGroup by its variants",
             arm.containsMatchIn(screenSrc),
         )
         assertFalse(
-            "RecallScreen.kt must not fall back to a wildcard arm over MobileRecallGroup",
+            "RecallOverlay.kt must not fall back to a wildcard arm over MobileRecallGroup",
             Regex("""when\s*\([^)]*group[^)]*\)\s*\{[^}]*else\s*->""", RegexOption.DOT_MATCHES_ALL)
                 .containsMatchIn(screenSrc),
         )
@@ -128,14 +129,27 @@ class RecallScreenStructuralTest {
     }
 
     @Test
-    fun `only a live row opens item detail`() {
+    fun `only a live row expands, in place, into the shared panel`() {
+        // The search-overlay slice: a live row's tap toggles the ViewModel's
+        // selection and the shared ItemDetailPanel renders directly below
+        // the row — the web RecallOverlay's own in-place expansion. Inert
+        // rows (Done/archived) take no click at all, and nothing navigates:
+        // Routes.ITEM_DETAIL stays the notification door's.
         assertTrue(
-            "RecallScreen.kt must gate onOpenItem on the LIVE group",
+            "RecallOverlay.kt must gate the row tap on the LIVE group",
             screenSrc.contains("MobileRecallGroup.LIVE"),
         )
         assertTrue(
-            "RecallScreen.kt must wire onOpenItem",
-            screenSrc.contains("onOpenItem"),
+            "a live row's tap must drive the ViewModel's selection",
+            screenSrc.contains("viewModel.select(row.id)"),
+        )
+        assertTrue(
+            "the expanded row must render the shared ItemDetailPanel in place",
+            screenSrc.contains("ItemDetailPanel("),
+        )
+        assertFalse(
+            "the overlay must not navigate to item detail",
+            screenSrc.contains("Routes.itemDetail"),
         )
     }
 
@@ -148,16 +162,111 @@ class RecallScreenStructuralTest {
     }
 
     @Test
-    fun `the recall route is registered, reachable, and opens item detail`() {
+    fun `the overlay is AppRoot's, drawn over the NavHost, and Back closes it`() {
+        // Not a route: AppRoot hosts the overlay as a sibling drawn after
+        // the chrome Scaffold inside one Box, so it covers whatever screen
+        // is showing — the web RecallOverlay's scrim-dialog contract. Back
+        // closes the overlay itself (the deeper panel handlers still win
+        // while an edit is dirty), never navigates the screen underneath.
         val main = source("MainActivity.kt")
         assertTrue(
-            "MainActivity must register composable(Routes.RECALL)",
-            main.contains("composable(Routes.RECALL)"),
+            "AppRoot must draw RecallOverlay when the flag is up",
+            main.contains("if (recallOpen) {"),
         )
-        val recallBlock = main.substringAfter("composable(Routes.RECALL) {").substringBefore("\n            }")
+        val box = main.substringAfter("Box {")
         assertTrue(
-            "the Recall route must wire onOpenItem to Routes.itemDetail",
-            recallBlock.contains("Routes.itemDetail(itemId)"),
+            "the overlay must be drawn after the Scaffold, inside the same Box",
+            box.contains("Scaffold(") && box.indexOf("RecallOverlay(") > box.indexOf("Scaffold("),
+        )
+        assertTrue(
+            "the overlay must own a BackHandler that closes it",
+            Regex("""BackHandler\s*\{[\s\S]*?onClose\(\)""").containsMatchIn(screenSrc),
+        )
+        assertTrue(
+            "the overlay's selection lives in the ViewModel, never a remember {}",
+            screenSrc.contains("viewModel.selectedId") || screenSrc.contains("viewModel.clearSelection()"),
+        )
+    }
+
+    @Test
+    fun `a fresh open clears the expansion at the gesture, never in the composition`() {
+        // A1a. `LaunchedEffect(Unit)` reads as "on open" and is not: it
+        // re-fires on every Activity recreation, which on the install
+        // target is every fold/unfold — collapsing a panel that was open,
+        // and possibly mid-edit, a moment before. The reset belongs at the
+        // state write that opens the surface.
+        val main = source("MainActivity.kt")
+        assertTrue(
+            "AppRoot must open the overlay through one door that resets the selection",
+            Regex("""fun openRecall\(\)\s*\{\s*recallViewModel\.clearSelection\(\)\s*recallOpen = true""")
+                .containsMatchIn(main),
+        )
+        assertFalse(
+            "no open gesture may raise the flag without going through that door",
+            Regex("""recallOpen = true""").findAll(main).count() > 1,
+        )
+        assertFalse(
+            "the overlay must not clear the selection from its own composition",
+            Regex("""LaunchedEffect\(Unit\)\s*\{\s*viewModel\.clearSelection\(\)""")
+                .containsMatchIn(screenSrc),
+        )
+        assertTrue(
+            "the overlay must read AppRoot's own instance, not resolve a second one",
+            main.contains("RecallOverlay(") &&
+                Regex("""viewModel\s*=\s*recallViewModel""").containsMatchIn(main) &&
+                Regex("""viewModel:\s*RecallViewModel,""").containsMatchIn(screenSrc),
+        )
+    }
+
+    @Test
+    fun `Back with a dirty draft scrolled out of view scrolls it back rather than dismissing`() {
+        // A1b. The panel's own BackHandler is registered inside a
+        // LazyColumn item; scrolling that item out of the viewport disposes
+        // it, and the overlay's own Back then dismisses straight past the
+        // discard confirmation, taking the words with it. `NowScreen`'s
+        // guard, ported: the same keyed ViewModel lookup, the same
+        // re-check, the same scroll-back-into-view answer.
+        assertTrue(
+            "the overlay must look the panel's ViewModel up by the panel's own key",
+            screenSrc.contains("key = \"item-\$id\""),
+        )
+        assertTrue(
+            "Back must re-check the draft's dirtiness for itself",
+            screenSrc.contains("panelViewModel.isDirty"),
+        )
+        assertTrue(
+            "and answer a dirty draft by scrolling it back into view",
+            screenSrc.contains("listState.animateScrollToItem("),
+        )
+        assertTrue(
+            "which needs the overlay's LazyColumn to own that state",
+            screenSrc.contains("rememberLazyListState()") && screenSrc.contains("state = listState"),
+        )
+    }
+
+    @Test
+    fun `the query field takes focus once per open, not once per composition`() {
+        // The same A1a trap as the selection reset above, in the one place a
+        // key cannot dodge it: a `LaunchedEffect` re-runs on Activity
+        // recreation whatever it is keyed on, because the composition itself
+        // is new. So a bare `LaunchedEffect(Unit) { requestFocus() }` re-takes
+        // focus and re-opens the IME on every fold/unfold, over whatever the
+        // reader had scrolled to. The "already focused" fact has to SURVIVE
+        // the recreation — `rememberSaveable` — and be discarded when the
+        // overlay leaves composition, so the next open focuses again.
+        assertFalse(
+            "the overlay must not request focus unconditionally from its composition",
+            Regex("""LaunchedEffect\(Unit\)\s*\{\s*focusRequester\.requestFocus\(\)""")
+                .containsMatchIn(screenSrc),
+        )
+        assertTrue(
+            "the already-focused fact must survive an Activity recreation",
+            Regex("""hasFocused by rememberSaveable""").containsMatchIn(screenSrc),
+        )
+        assertTrue(
+            "and must gate the one focus request",
+            Regex("""if \(!hasFocused\)\s*\{\s*hasFocused = true\s*focusRequester\.requestFocus\(\)""")
+                .containsMatchIn(screenSrc),
         )
     }
 }
