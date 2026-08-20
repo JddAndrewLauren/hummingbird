@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.ui.contentMaxWidth
 import net.twinion.hummingbird.ui.ChoiceRow
 import net.twinion.hummingbird.ui.LevelGlyphFamily
 import net.twinion.hummingbird.ui.StageBadge
@@ -99,6 +100,7 @@ fun TriageScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .contentMaxWidth()
                 .padding(24.dp)
                 .verticalScroll(rememberScrollState())
                 // Scrolled, not a fixed inset: the last row

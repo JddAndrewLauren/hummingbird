@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.ui.contentMaxWidth
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
 
@@ -99,6 +100,7 @@ fun StatusScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .contentMaxWidth()
                 .padding(24.dp)
                 // A fixed inset, unlike the list screens' scrolled
                 // clearance: the Settings link below the weighted list is
