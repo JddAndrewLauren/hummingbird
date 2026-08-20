@@ -99,7 +99,12 @@ fun StatusScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(24.dp),
+                .padding(24.dp)
+                // A fixed inset, unlike the list screens' scrolled
+                // clearance: the Settings link below the weighted list is
+                // anchored, not scrolled, so only shrinking the viewport
+                // keeps it clear of the Capture FAB.
+                .padding(bottom = 64.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text("Status", style = MaterialTheme.typography.headlineLarge)

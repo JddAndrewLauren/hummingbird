@@ -35,7 +35,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -247,13 +250,30 @@ fun NowScreen(
     val panes by viewModel.panes.collectAsState()
     val selectedId by viewModel.selectedItemId.collectAsState()
     val dark = isSystemInDarkTheme()
+    val listState = rememberLazyListState()
+
+    // The panel's own ViewModel, by the panel's own key — the SAME
+    // instance `ItemDetailPanel` resolves, looked up here because the
+    // handler below needs its dirtiness while the panel may not be
+    // composed at all.
+    val panelViewModel: ItemDetailViewModel? = selectedId?.let { id ->
+        viewModel(factory = ItemDetailViewModel.factory(context), key = "item-$id")
+    }
 
     // Collapse before leaving: with a panel open, Back is "close the item",
-    // not "exit the app" — and while a draft is dirty the panel's own
-    // deeper BackHandler wins, so the discard confirmation still comes
-    // first.
+    // not "exit the app". While the panel is on screen its own deeper
+    // BackHandler wins and the discard confirmation comes first — but the
+    // panel is a LazyColumn item, and scrolling it out of the viewport
+    // DISPOSES it, unregistering that handler. So a dirty draft is
+    // re-checked here: Back then scrolls the panel back into view (where
+    // its own handler and dialog take over) rather than silently closing
+    // an edit mid-flight.
     BackHandler(enabled = selectedId != null) {
-        viewModel.closeItem()
+        if (panelViewModel?.draft?.value != null && panelViewModel.isDirty) {
+            scope.launch { listState.animateScrollToItem(0) }
+        } else {
+            viewModel.closeItem()
+        }
     }
 
     suspend fun reload() {
@@ -373,13 +393,19 @@ fun NowScreen(
             // scroll is the fix, not a `weight` modifier on a still-split
             // layout, since the queue's own three states already need to
             // sit inside *some* `LazyListScope` for `item`/`items` below.
-            val listState = rememberLazyListState()
             // The panel is always index 0 when present; opening one (or
             // switching cards) brings it into view rather than leaving the
             // reader staring at the still-standing board they tapped in —
             // `SelectedItemSection`'s own scrollIntoView (`NowScreen.tsx`).
+            // Only on a *change* of selection: `remember` starts equal to
+            // whatever an Activity recreation restored, so a fold/unfold
+            // keeps its scroll position instead of animating back to top.
+            var lastScrolledSelection by remember { mutableStateOf(selectedId) }
             LaunchedEffect(selectedId) {
-                if (selectedId != null) listState.animateScrollToItem(0)
+                if (selectedId != null && selectedId != lastScrolledSelection) {
+                    listState.animateScrollToItem(0)
+                }
+                lastScrolledSelection = selectedId
             }
             LazyColumn(
                 state = listState,
@@ -750,9 +776,11 @@ private fun NowRow(
     // -- the design system's `interactive` card is the whole affordance,
     // and its icon vocabulary has no chevron in it.
     //
-    // No action buttons on the card: the web's `ItemCard` carries none —
-    // acting is what the opened item is for — and the four-button FlowRow
-    // was most of the card's ~130dp height. `availableActions` still
+    // No action row on the card: acting is what the opened item is for,
+    // and the four-button FlowRow was most of the card's ~130dp height.
+    // The web `ItemCard`'s one inline affordance — the mark-done checkmark
+    // — is deliberately not ported either: on touch it would sit one slip
+    // away from the whole-card tap target. `availableActions` still
     // arrives decided on the record; the opened item renders it.
     Card(
         onClick = onOpen,

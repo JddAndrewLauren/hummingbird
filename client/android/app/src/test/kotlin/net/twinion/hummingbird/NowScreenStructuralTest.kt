@@ -282,13 +282,16 @@ class NowScreenStructuralTest {
 
     @Test
     fun `the cards carry no action buttons`() {
-        // The web ItemCard's own shape: a collapsed card is title + meta
-        // only, and acting is what the opened item is for. The four-button
-        // FlowRow was most of a card's ~130dp height, so a read of
-        // `availableActions` reappearing in this file is the density
-        // regression this pins against — the list still arrives decided on
-        // every record; the opened item renders it. Comments are stripped
-        // so a doc sentence may name what this forbids.
+        // A collapsed card is title + meta only; acting is what the opened
+        // item is for. (The web ItemCard keeps exactly one inline
+        // affordance, its mark-done checkmark — Android ports neither it
+        // nor the action row, a deliberate touch-target call recorded on
+        // NowRow itself.) The four-button FlowRow was most of a card's
+        // ~130dp height, so a read of `availableActions` reappearing in
+        // this file is the density regression this pins against — the list
+        // still arrives decided on every record; the opened item renders
+        // it. Comments are stripped so a doc sentence may name what this
+        // forbids.
         val code = nowScreenSrc
             .replace(Regex("""/\*[\s\S]*?\*/"""), "")
             .replace(Regex("""(?m)^\s*//.*$"""), "")

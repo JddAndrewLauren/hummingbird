@@ -506,10 +506,11 @@ private fun ReadBody(
         }
     }
 
-    // #576: the same four actions `NowScreen`'s card offers, and the same
-    // reason it wraps them — "Start / Complete / Mark blocked / Cancel" is
-    // wider than a phone, and a plain `Row` left `Cancel` a column of
-    // letters rather than a button.
+    // #576: "Start / Complete / Mark blocked / Cancel" is wider than a
+    // phone, and a plain `Row` left `Cancel` a column of letters rather
+    // than a button — hence `ChoiceRow`. Since the compaction slice this
+    // panel is the only surface offering these actions at all (the Now
+    // cards carry none; `ACTION_LABEL`'s doc above).
     ChoiceRow {
         for (action in record.availableActions) {
             OutlinedButton(onClick = { onAct(action) }) {
