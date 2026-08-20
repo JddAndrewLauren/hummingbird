@@ -243,4 +243,30 @@ class RecallScreenStructuralTest {
             screenSrc.contains("rememberLazyListState()") && screenSrc.contains("state = listState"),
         )
     }
+
+    @Test
+    fun `the query field takes focus once per open, not once per composition`() {
+        // The same A1a trap as the selection reset above, in the one place a
+        // key cannot dodge it: a `LaunchedEffect` re-runs on Activity
+        // recreation whatever it is keyed on, because the composition itself
+        // is new. So a bare `LaunchedEffect(Unit) { requestFocus() }` re-takes
+        // focus and re-opens the IME on every fold/unfold, over whatever the
+        // reader had scrolled to. The "already focused" fact has to SURVIVE
+        // the recreation — `rememberSaveable` — and be discarded when the
+        // overlay leaves composition, so the next open focuses again.
+        assertFalse(
+            "the overlay must not request focus unconditionally from its composition",
+            Regex("""LaunchedEffect\(Unit\)\s*\{\s*focusRequester\.requestFocus\(\)""")
+                .containsMatchIn(screenSrc),
+        )
+        assertTrue(
+            "the already-focused fact must survive an Activity recreation",
+            Regex("""hasFocused by rememberSaveable""").containsMatchIn(screenSrc),
+        )
+        assertTrue(
+            "and must gate the one focus request",
+            Regex("""if \(!hasFocused\)\s*\{\s*hasFocused = true\s*focusRequester\.requestFocus\(\)""")
+                .containsMatchIn(screenSrc),
+        )
+    }
 }

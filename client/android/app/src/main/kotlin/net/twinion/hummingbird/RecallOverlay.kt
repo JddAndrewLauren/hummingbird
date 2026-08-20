@@ -28,8 +28,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -136,7 +139,22 @@ internal fun RecallOverlay(
     }
 
     val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    // Focus the query field once per OPEN, not once per composition — the
+    // same trap the selection reset above dodges, in the one place a key
+    // cannot dodge it: a `LaunchedEffect` re-runs on Activity recreation
+    // whatever it is keyed on, because the composition itself is new. So
+    // the "already focused" fact has to survive the recreation, which is
+    // what `rememberSaveable` does — and it is discarded when the overlay
+    // leaves composition, so the next open focuses again. Without this, a
+    // fold/unfold with the overlay open re-takes focus and re-opens the
+    // IME over whatever the reader had scrolled to.
+    var hasFocused by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (!hasFocused) {
+            hasFocused = true
+            focusRequester.requestFocus()
+        }
+    }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
