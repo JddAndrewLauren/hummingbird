@@ -9,6 +9,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -16,10 +17,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
@@ -38,9 +41,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.navigation.NavHostController
@@ -434,6 +440,17 @@ private fun AppRoot(
     }
 
     Scaffold(
+        topBar = {
+            // The bottom bar's own visibility rule, applied above: chrome
+            // belongs to the top-level surfaces, and a detail/takeover
+            // route draws none of it.
+            if (NavDestination.entries.any { it.route == currentRoute }) {
+                AppTopBar(
+                    dark = resolveDarkTheme(themePreference, isSystemInDarkTheme()),
+                    onSearch = { goToTab(Routes.RECALL) },
+                )
+            }
+        },
         bottomBar = {
             // Hidden on a route with no [NavDestination] entry — a
             // detail/takeover route (item, alert, Grill) or the Recall
@@ -605,6 +622,52 @@ private fun AppRoot(
             // Now/Triage re-read.
             onCaptured = { scope.launch { sync("user") } },
         )
+    }
+}
+
+/** The design kit's Android `TopBar` (`ui_kits/android/AndroidScreens.jsx`):
+ * the app icon at 24dp on its 22.37% squircle plate, the lowercase wordmark
+ * in the display face, and the Recall trigger trailing under the name every
+ * web trigger shares ("Search everything" — `Header.tsx`, `NavRail.tsx`,
+ * `NavBar.tsx`). The icon is `Image`, never `Icon`: the plate is part of
+ * the artwork and must not be tinted, and the light/dark plates are two
+ * separate exports swapped with the resolved theme, the same way
+ * `NavRail.tsx` swaps its `srcSet`. */
+@Composable
+private fun AppTopBar(
+    dark: Boolean,
+    onSearch: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .padding(horizontal = 24.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Image(
+            painterResource(if (dark) R.drawable.app_icon_dark else R.drawable.app_icon_light),
+            contentDescription = null,
+            modifier = Modifier
+                .size(24.dp)
+                .clip(RoundedCornerShape(percent = 22)),
+        )
+        Text(
+            "hummingbird",
+            style = MaterialTheme.typography.headlineSmall.copy(
+                fontSize = 20.sp,
+                letterSpacing = (-0.02).em,
+            ),
+            modifier = Modifier.weight(1f),
+        )
+        IconButton(onClick = onSearch) {
+            Icon(
+                painterResource(R.drawable.ic_search),
+                contentDescription = "Search everything",
+                modifier = Modifier.size(20.dp),
+            )
+        }
     }
 }
 
