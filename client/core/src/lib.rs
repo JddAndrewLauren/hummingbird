@@ -627,7 +627,8 @@ impl ItemAction {
 /// What is deliberately absent: `source`/`source_key`/`source_url` (owned by
 /// whatever captured the item, never edited here), `stage` (that IS the
 /// destination), `archived_at` (cancelling is [`Core::act`]'s), `project_pos`
-/// (a Route's ordering, owned by the Route), and every server-stamped field.
+/// (a Route's ordering — shared-owned since ADR-0030, but reordering is the
+/// Projects surface's gesture, not triage's), and every server-stamped field.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TriagePatch {
     pub title: Option<String>,
