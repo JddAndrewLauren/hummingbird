@@ -35,7 +35,7 @@ retargeted off Linear in
 | `Dockerfile` | `python:3.12-slim` + supercronic pinned by version and sha256. |
 | `fly.toml` | `hummingbird-sweeper`, one 256MB always-on worker. |
 | `.github/workflows/deploy.yml` | Tests on push to `main` and on `pull_request`; `flyctl deploy` on push to `main` only. |
-| `scripts/mint_refresh_token.py` | One-time local OAuth consent helper (Tasks + Gmail + Calendar scopes). |
+| `scripts/mint_refresh_token.py` | One-time local OAuth consent helper (Tasks + Gmail + Calendar scopes by default; `--scope` mints a dedicated narrower credential — its header says when that is the right call). |
 | `tests/test_sweep.py`, `tests/test_gmail.py` | `python3 -m unittest discover -s tests`. Cred-free. |
 
 ## How it runs
