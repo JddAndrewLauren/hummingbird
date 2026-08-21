@@ -125,7 +125,7 @@ export type StandingQuestion =
  * order the wiring unions its sources in. Declaration order, not
  * alphabetical, so a question's place does not move when another is
  * renamed. The four infra questions (ADR-0017, #311) are declared after
- * Now's four so neither surface's existing order moves when the other
+ * Now's own so neither surface's existing order moves when the other
  * surface's questions are filtered in or out.
  *
  * `homework` is declared **first** (#675): it is the only question about

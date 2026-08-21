@@ -1,5 +1,5 @@
 //! The standing-question panes' decision half (#533/M4, ADR-0025) — the
-//! pane shell contract, the cross-pane sort, the zone bridge, and all eight
+//! pane shell contract, the cross-pane sort, the zone bridge, and all nine
 //! real panes.
 //!
 //! # Why this family exists

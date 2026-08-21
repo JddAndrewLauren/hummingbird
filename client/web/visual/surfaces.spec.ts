@@ -377,10 +377,11 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     await expect(page.getByText("6 done")).toBeVisible();
   },
   ledger: async (page) => {
-    // frontier (12) + triageInbox (17) + grillingItems (1) + done (6) + the
-    // archived-only seeds (3) = 39 — the Ledger's pool is every live list
+    // frontier (14, including departure 5's two `@homework` items) +
+    // triageInbox (17) + grillingItems (1) + done (6) + the archived-only
+    // seeds (3) = 41 — the Ledger's pool is every live list
     // `demo-task-state.ts` builds, not just three of the four.
-    await expect(page.getByText("39 ever · derived, not recorded")).toBeVisible();
+    await expect(page.getByText("41 ever · derived, not recorded")).toBeVisible();
   },
   status: async (page) => {
     // Ten poller-backed panes — `docs/SURFACES.md`'s own count, made
