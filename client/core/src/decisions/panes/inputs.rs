@@ -128,9 +128,17 @@ pub struct PaneAlertFacts {
     pub subject_key: Option<String>,
 }
 
-/// One `items` row, trimmed to the fields the weekend pane's merge reads
-/// (`TaskItemDTO`'s `id`/`title`/`deadline`/`scheduledDate`) — never the
-/// whole DTO, on this module's own discipline.
+/// One `items` row, trimmed to the fields a sunk pane's item reasoning
+/// reads — never the whole DTO, on this module's own discipline.
+///
+/// Four fields at #534 (the weekend pane's merge: `id`/`title`/`deadline`/
+/// `scheduledDate`), eight since #675, which added the first pane whose
+/// *subject* is the operator's own items rather than an outside source.
+/// Each of the four newcomers was added because [`super::homework`] reads
+/// it and for no other reason: `stage` classifies "open" (and pins the
+/// weekend merge against the widened list — see
+/// [`super::weekend`]'s merge), `context` is the match, `description` is
+/// the expanded body, and `created_at` is the deadline-less tiebreak.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaneItemFacts {
@@ -138,6 +146,27 @@ pub struct PaneItemFacts {
     pub title: String,
     pub deadline: Option<String>,
     pub scheduled_date: Option<String>,
+    /// `TaskItemDTO`'s `stage`, as the wire spells it (`triage`,
+    /// `grilling`, `ready`, `in_progress`, `blocked`, `done`) — a plain
+    /// string rather than a second closed enum here, on
+    /// [`SyncFacts::latest_outcome_kind`]'s own reasoning: this crate has
+    /// no reason to reject a stage it does not recognise, only to classify
+    /// the ones a rule names.
+    pub stage: String,
+    /// The item's context (`@home`, `@homework`, …), or `None`. Matched
+    /// case-insensitively after a trim by [`super::homework`]; never
+    /// registry-checked, since `items.context` is an open vocabulary
+    /// (`decisions::vocabulary`'s own header).
+    pub context: Option<String>,
+    /// The item's notes. The one field here that no *band* reads: it
+    /// crosses because [`super::homework::homework_facts`] is what both
+    /// clients' expanded bodies render, and a pane that made each client
+    /// re-fetch the winning item's notes for itself would be two lookups
+    /// that can disagree about which item won.
+    pub description: Option<String>,
+    /// Epoch ms, `TaskItemDTO`'s own `createdAt` — read only as
+    /// [`super::homework`]'s tiebreak among deadline-less items.
+    pub created_at: i64,
 }
 
 /// One calendar event, trimmed to the fields a sunk pane's calendar arm

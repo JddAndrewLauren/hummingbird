@@ -2967,15 +2967,22 @@ fn to_binding_fact(binding: &Binding) -> BindingFact {
     }
 }
 
-/// [`hummingbird_domain::Item`] → [`PaneItemFacts`], trimmed to the four
-/// fields the weekend pane's merge reads (`inputs.rs`'s own doc on
-/// [`PaneItemFacts`]) — never the whole DTO.
+/// [`hummingbird_domain::Item`] → [`PaneItemFacts`], trimmed to the eight
+/// fields a sunk pane's item reasoning reads (`inputs.rs`'s own doc on
+/// [`PaneItemFacts`]) — never the whole DTO. `stage` crosses as
+/// [`hummingbird_domain::Stage::as_str`]'s wire spelling, which is what
+/// the web's own `TaskItemDTO.stage` carries, so the two hosts hand the
+/// core byte-identical strings.
 fn to_pane_item_facts(item: &hummingbird_domain::Item) -> PaneItemFacts {
     PaneItemFacts {
         id: item.id.clone(),
         title: item.title.clone(),
         deadline: item.deadline.clone(),
         scheduled_date: item.scheduled_date.clone(),
+        stage: item.stage.as_str().to_string(),
+        context: item.context.clone(),
+        description: item.description.clone(),
+        created_at: item.created_at,
     }
 }
 

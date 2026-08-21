@@ -299,6 +299,21 @@ fn scheduled_to_ms(scheduled: &str, facts: &ZoneFacts) -> Option<i64> {
     facts.midnight_ms(DEVICE_ZONE, scheduled)
 }
 
+/// The stages the merge counts an item from — the *frontier* stages, plus
+/// `blocked`.
+///
+/// Explicit since #675, and behaviour-preserving on the day it was written:
+/// `QuestionInputs.items` was `frontier ∪ blocked` on both clients, so
+/// every row already had one of these stages. #675 widens that union to
+/// every live item (the homework pane's own subject is the operator's
+/// items, including the ones still in Triage), and without this filter a
+/// captured-but-untriaged item with a deadline would have started
+/// appearing on a weekend day — a silent change to a shipped pane, made by
+/// a different pane's inputs. The filter is where the weekend pane's own
+/// reading of "a plan" is stated rather than inherited from whoever
+/// assembles the list.
+const MERGED_STAGES: [&str; 3] = ["ready", "in_progress", "blocked"];
+
 /// The merge, folded straight to counts — events overlapping the window,
 /// plus due/scheduled items inside it, with #122's own dedupe rule: an item
 /// both due and scheduled in the window counts once, as due (a deadline is
@@ -348,6 +363,9 @@ fn merge_counts(
     }
 
     for item in items {
+        if !MERGED_STAGES.contains(&item.stage.as_str()) {
+            continue;
+        }
         let due_ms = item.deadline.as_deref().and_then(|d| deadline_to_ms(d, facts));
         let scheduled_ms = item.scheduled_date.as_deref().and_then(|s| scheduled_to_ms(s, facts));
         let due_here = due_ms.is_some_and(|ms| in_window(ms, window));
@@ -509,11 +527,24 @@ mod tests {
     }
 
     fn item(id: &str, deadline: Option<&str>, scheduled_date: Option<&str>) -> PaneItemFacts {
+        staged_item(id, deadline, scheduled_date, "ready")
+    }
+
+    fn staged_item(
+        id: &str,
+        deadline: Option<&str>,
+        scheduled_date: Option<&str>,
+        stage: &str,
+    ) -> PaneItemFacts {
         PaneItemFacts {
             id: id.to_string(),
             title: id.to_string(),
             deadline: deadline.map(str::to_string),
             scheduled_date: scheduled_date.map(str::to_string),
+            stage: stage.to_string(),
+            context: None,
+            description: None,
+            created_at: 0,
         }
     }
 
@@ -685,6 +716,41 @@ mod tests {
         let scheduled =
             merge_counts(&window, &[], &[item("sched-1", None, Some(&day_key(2026, 8, 16)))], &facts);
         assert_eq!((scheduled.due, scheduled.scheduled), (0, 1));
+    }
+
+    #[test]
+    fn an_item_still_in_triage_never_reaches_a_weekend_day() {
+        // The #675 pin. `QuestionInputs.items` widened from
+        // `frontier ∪ blocked` to every live item so the homework pane
+        // could see its own subject; this pane's answer must not move
+        // because of it. A triage-stage item due squarely inside the
+        // window counts zero, and the same item at `ready` counts one —
+        // so the assertion is about the *filter*, not about the fixture
+        // happening to fall outside the window.
+        let now_ms = at(2026, 8, 10, 9, 0);
+        let window = window_at(now_ms);
+        let facts = resolve(&weekend_zone_queries(now_ms));
+        let saturday = day_key(2026, 8, 15);
+
+        for stage in ["triage", "grilling", "done"] {
+            let counts = merge_counts(
+                &window,
+                &[],
+                &[staged_item("captured", Some(&saturday), Some(&saturday), stage)],
+                &facts,
+            );
+            assert_eq!((counts.due, counts.scheduled), (0, 0), "{stage}");
+        }
+
+        for stage in MERGED_STAGES {
+            let counts = merge_counts(
+                &window,
+                &[],
+                &[staged_item("planned", Some(&saturday), None, stage)],
+                &facts,
+            );
+            assert_eq!((counts.due, counts.scheduled), (1, 0), "{stage}");
+        }
     }
 
     #[test]
