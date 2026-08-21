@@ -213,11 +213,21 @@ fun ItemDetailPanel(
     // item's title field by itself.
     var editingTitle by rememberSaveable(itemId) { mutableStateOf(false) }
     val titleFocus = remember { FocusRequester() }
-    // Keyed on the flag, so the field is focused the moment the pencil
-    // flips it and never again — not `LaunchedEffect(Unit)`, which #634
-    // found re-firing on Activity recreation and undoing state.
-    LaunchedEffect(editingTitle) {
-        if (editingTitle) titleFocus.requestFocus()
+    // **Keyed on whether the field is actually there, not on the flag
+    // alone.** `editingTitle` is restored per item, so reopening a pane
+    // that was left mid-title-edit composes with the flag already `true`
+    // while the record is still loading — and the field only renders once
+    // there is a draft to bind, so the request would have no target and
+    // `requestFocus()` throws `FocusRequester is not initialized`. That
+    // crash was sighted on hardware and is invisible to every JVM test
+    // here. Keying on the same condition the field renders on fires the
+    // effect in the composition that places it, and never before.
+    //
+    // Keyed at all (rather than `LaunchedEffect(Unit)`) because #634 found
+    // that shape re-firing on Activity recreation and undoing state.
+    val titleFieldOpen = editingTitle && draft != null
+    LaunchedEffect(titleFieldOpen) {
+        if (titleFieldOpen) titleFocus.requestFocus()
     }
 
     suspend fun reload() {
@@ -291,7 +301,7 @@ fun ItemDetailPanel(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             val openDraft = draft
-            if (editingTitle && openDraft != null) {
+            if (titleFieldOpen && openDraft != null) {
                 OutlinedTextField(
                     value = openDraft.title,
                     onValueChange = { viewModel.updateDraft(openDraft.copy(title = it)) },

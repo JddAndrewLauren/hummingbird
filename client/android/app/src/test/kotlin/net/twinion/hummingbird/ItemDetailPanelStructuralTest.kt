@@ -172,6 +172,32 @@ class ItemDetailPanelStructuralTest {
         )
     }
 
+    /** The crash this pane shipped for one device pass: `editingTitle` is
+     * restored per item, so reopening a pane left mid-title-edit composes
+     * with the flag already true while the record is still loading — and
+     * the field, which carries the `focusRequester`, only renders once
+     * there is a draft. Requesting focus then throws. The fix is that the
+     * effect and the field read the SAME condition, which is what this
+     * pins: a `LaunchedEffect(editingTitle)` would be the defect back. */
+    @Test
+    fun `the title focus request keys on the field being composed, not on the flag`() {
+        val panelBody = functionBody(panelSrc, "ItemDetailPanel")
+        assertTrue(
+            "the condition must name both the flag and the draft's presence",
+            panelBody.contains("val titleFieldOpen = editingTitle && draft != null"),
+        )
+        assertTrue(
+            "the focus effect must key on that condition",
+            panelBody.replace(Regex("""\s+"""), " ").contains(
+                "LaunchedEffect(titleFieldOpen) { if (titleFieldOpen) titleFocus.requestFocus() }",
+            ),
+        )
+        assertTrue(
+            "and the field must render on the same condition it focuses on",
+            panelBody.contains("if (titleFieldOpen && openDraft != null)"),
+        )
+    }
+
     /** The mark-done check, on every surface: `NowRow`'s green glyph on the
      * core's own `canMarkDone` — the wider rule that answers for Triage and
      * Grilling, where `availableActions` is empty. And drawn once: the act
