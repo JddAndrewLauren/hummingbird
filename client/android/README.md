@@ -178,15 +178,20 @@ Triage-parity slice, operator request 2026-08-20), fed by a verbatim-copy
 adapter over `TriageItemRecord` (whose `urgency` band arrives decided from
 the seam, like every other pill). One item opens at a time, expanding at
 index 0 of the queue's one `LazyColumn` — `NowScreen`'s inline-expansion
-pattern — into the seeded editor built from #529's shared `ui/forms/`
-components (`LevelSlider`/`ContextField`/`CaptureDateField`) under the Now
-panel's chrome (stage chip, `titleMedium` title, X close). The expanded
-pane is deliberately NOT `ItemDetailPanel`: `available_actions` answers
-nothing for Triage/Grilling stages, and the panel's plain save is the
-non-promoting write this surface bans. Promote-to-Ready is the only save
-destination this screen offers — there is no "save without promoting"
-method on `TriageViewModel` at all, unlike item detail's own edit mode. The row checkmark goes through the existing
-`act("complete")` path, never a triage. The Grill button is live (#539):
+pattern — into **`ItemDetailPanel`, in `ItemDetailPanelMode.PROMOTE`**.
+
+That pane used to be a second, Triage-only editor (`TriageEditorPanel` over
+its own `TriageDraft`), because `available_actions` answers nothing for the
+Triage and Grilling stages and the panel's plain save is the non-promoting
+write this surface bans. Both reasons are answered on the record instead
+now: `can_mark_done` rides beside `available_actions` and gates the check
+(core `ItemDetail` → `ItemDetailRecord`), and the *mode* is what makes
+promote the pane's only submit — so #360 holds with one implementation
+rather than two. Promote-to-Ready is still the only save destination this
+screen offers; the row checkmark still goes through the existing
+`act("complete")` path, never a triage. What remains
+`TriageViewModel`'s is the board and the selection: the draft, the promote
+and their refusals live in `ItemDetailViewModel` with the panel. The Grill button is live (#539):
 gated on the row's own `canGrill` fact from the seam, it navigates to the
 standalone `GrillTakeoverScreen`/`GrillTakeoverViewModel` rather than opening
 an interview inline, so neither `TriageScreen.kt` nor `TriageViewModel.kt`
@@ -329,7 +334,8 @@ Five slices bringing the surfaces in line with the design kit
 - **Inline expansion.** Tapping a Now card opens `ItemDetailPanel` — the
   whole former `ItemDetailScreen` body, extracted so the route (still the
   notification and Recall door, ADR-0027) and Now render one
-  implementation — as item 0 of Now's one `LazyColumn`, above the board,
+  implementation, and since the unification the Recall overlay and Triage
+  render it too, four hosts in all — as item 0 of Now's one `LazyColumn`, above the board,
   which keeps rendering below (ADR-0021 decision 7). Selection is
   `NowViewModel.selectedItemId`, Triage's one-open-at-a-time shape.
   `NowItemDoorTest` pins the door end to end.
@@ -365,9 +371,11 @@ Operator feedback on the iteration, applied as six slices on top of it:
   one-labelled-row-per-facet layout. (Round 4 kept the one line and dropped
   the scroll — the chips shrink to fit instead. See below.)
 - **Panel chrome.** `ItemDetailPanel`'s header is the web `ItemPanel`'s:
-  `HB-<seq>` mono meta line over a `titleMedium` title, the × close
-  IconButton top-right (Cancel while editing, dirty path still confirms),
-  StageBadge leading the meta row, 12dp gaps.
+  `HB-<seq>` mono meta line under a `titleMedium` title, the × close
+  IconButton top-right, StageBadge below, 12dp gaps. (The unification
+  reshaped this again: the title is now the draft's and carries a pencil,
+  the whole header row closes the pane, and every leaving gesture routes
+  through the one dirty-draft confirmation.)
 - **Width parity.** `ui/ContentMax.kt` caps the bar-tab screens' content
   at the web's `--content-max` (880dp), centred — the unfolded display
   stops stretching rows across its whole width.

@@ -12,10 +12,12 @@ import androidx.compose.ui.unit.dp
 // The full-screen route around `ItemDetailPanel` — the door a tapped
 // `item-threshold/v1` notification and a Recall row open (ADR-0027;
 // `NavigationStructuralTest` pins the notification leg's `popUpTo`).
-// Everything the item shows and does lives in the panel, which Now's
-// inline expansion renders too; this host only owns what a route owns —
-// the screen chrome, the scroll (the panel's header says why the host
-// must), and the word "Back".
+// Everything the item shows and does lives in the panel, which three other
+// hosts render too (Now's inline expansion, the Recall overlay, and Triage
+// in its promoting mode); this host only owns what a route owns — the
+// screen chrome, the scroll (the panel's header says why the host must),
+// and the word "Back". It takes the panel's default mode, so its submit is
+// "Save".
 @Composable
 fun ItemDetailScreen(
     itemId: String,

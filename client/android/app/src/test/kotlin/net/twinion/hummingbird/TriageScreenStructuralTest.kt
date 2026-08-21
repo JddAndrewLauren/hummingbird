@@ -232,9 +232,21 @@ class TriageScreenStructuralTest {
         // panel's own key — a lookup under any other key is a DIFFERENT
         // instance, which would report a clean draft while the pane holds a
         // dirty one.
+        // Whitespace-collapsed, and the WHOLE guard rather than any line
+        // of it: `panelViewModel?.isDirty` appears twice in this file (the
+        // re-tap guard below is the other), so an assertion that only
+        // looked for that spelling stayed green with this handler gutted —
+        // green for the wrong one of two indistinguishable reasons.
+        val flat = screenSrc.replace(Regex("""\s+"""), " ")
         assertTrue(
-            "the screen must guard Back whenever a pane is open",
-            screenSrc.contains("BackHandler(enabled = selectedId != null)"),
+            "the screen must guard Back whenever a pane is open, and route a dirty " +
+                "draft to the panel's own dialog rather than closing the pane",
+            flat.contains(
+                "BackHandler(enabled = selectedId != null) { " +
+                    "if (panelViewModel?.isDirty == true) { " +
+                    "scope.launch { listState.animateScrollToItem(0) } " +
+                    "} else { viewModel.closeSelection() } }",
+            ),
         )
         val handler = screenSrc.indexOf("BackHandler(")
         val lazyColumn = screenSrc.indexOf("LazyColumn(")
@@ -244,10 +256,6 @@ class TriageScreenStructuralTest {
             screenSrc.contains(
                 "ItemDetailViewModel.factory(context), key = \"item-" + "\$" + "id\"",
             ),
-        )
-        assertTrue(
-            "a dirty draft must scroll the pane back where its dialog can be answered",
-            screenSrc.contains("panelViewModel?.isDirty == true"),
         )
         // The confirmation is the panel's — this screen holds no dialog of
         // its own, and the house is dialog-wary (`ItemDetailPanel`'s header
