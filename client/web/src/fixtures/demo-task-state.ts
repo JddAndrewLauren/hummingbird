@@ -154,6 +154,7 @@
 // test, and it runs in CI after the build.
 
 import { TRIPS_CALENDAR_BINDING_KEY } from "../calendar/selection";
+import { LINK_BINDING_KEY } from "../screens/homework-pane/homework";
 import type { BindingDTO, LedgerRowDTO, ProjectDTO, RecallRowDTO, TaskItemDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
 import { DEMO_DATA } from "./demo-data";
@@ -719,6 +720,22 @@ const boundTripsBinding: BindingDTO = {
   value: { state: "text", text: "demo-family" },
 };
 
+/** The homework pane's standing session link (#675's follow-on), seeded so
+ * the "Join the session" button is photographed at all — the visual gate
+ * shoots the board world, and without a value here the button would exist
+ * on no capture.
+ *
+ * **Fictional, and it must stay that way.** The operator's real link
+ * carries a meeting passcode and this repo is public; the whole reason the
+ * link is a binding rather than a literal is that the real value never
+ * enters git, fixture included. */
+const boundHomeworkLinkBinding: BindingDTO = {
+  key: LINK_BINDING_KEY,
+  known: true,
+  pending: false,
+  value: { state: "text", text: "https://example.com/j/000000000" },
+};
+
 /** The seeded state, typed as the real `TaskState` so a field added to that
  * interface fails this file at build time rather than shipping a fixture that
  * silently omits it.
@@ -845,7 +862,12 @@ export function buildDemoTaskState(): TaskState {
     // render "Searching…" forever for any query typed against `?demo=board`.
     search,
     done,
-    bindings: [boundWasteBinding, boundRaceBinding, boundTripsBinding],
+    bindings: [
+      boundWasteBinding,
+      boundRaceBinding,
+      boundTripsBinding,
+      boundHomeworkLinkBinding,
+    ],
     // Moved from `demo-data.ts`'s kit-only `DEMO_DATA`, which already typed
     // these as the real `RuleDTO[]`/`KindRegistryDTO` (piece 1's "a move
     // rather than a rewrite") — the kit world keeps its own reference to the

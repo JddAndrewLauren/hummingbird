@@ -1,9 +1,11 @@
+import type { ReactNode } from "react";
+import { Button } from "../../components/core/Button";
 import { Card } from "../../components/core/Card";
 import { Icon } from "../../components/core/Icon";
 import { EmptyState } from "../../components/feedback/EmptyState";
 import type { HomeworkItemCore } from "../../decisions/seam";
 import type { QuestionInputs } from "../questions/contract";
-import { homeworkHeadline, homeworkView } from "./homework";
+import { homeworkHeadline, homeworkLink, homeworkView } from "./homework";
 
 // The homework pane's own expanded rendering (#675) — the winning item, the
 // notes written on it, and whatever else is still open beneath.
@@ -14,7 +16,11 @@ import { homeworkHeadline, homeworkView } from "./homework";
 // write path onto the same item for no reason but proximity, and #675's own
 // decision table is flat that the body is a read. The pane's job is that
 // the notes are *reachable* without hunting for the item, which a rendering
-// alone satisfies.
+// alone satisfies. The standing session link does not breach that: a link
+// is a navigation, not a second write path onto the item — and it is not
+// attached to the winning item at all, which is the whole point of
+// "standing". It is drawn in *every* arm below, the empty one and the
+// broken one included, for the same reason.
 //
 // **Not `ItemRow`, which is what this was first built on.** The visual gate
 // caught it: `ItemRow` lays a title beside a stage badge, an urgency dot
@@ -51,13 +57,54 @@ function OtherItem({ item }: { item: HomeworkItemCore }) {
   );
 }
 
+/** The one shell every arm renders inside, so the standing link is appended
+ * to all of them rather than to the answered one alone.
+ *
+ * The link is a `Button` (the `AlertCard` "Open source" idiom) rather than a
+ * bare anchor: `window.open` with `noopener,noreferrer`, matching the one
+ * other place this app leaves itself for an operator-supplied URL. Watch the
+ * 320px aside — a labelled control there is exactly what ellipsised a title
+ * down to `P.` before (see above); only the visual gate's PNG proves this
+ * one reads. */
+function HomeworkCard({
+  link,
+  padding,
+  children,
+}: {
+  link: string | null;
+  padding: string;
+  children: ReactNode;
+}) {
+  return (
+    <Card
+      padding={padding}
+      style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}
+    >
+      {children}
+      {link === null ? null : (
+        <div>
+          <Button
+            size="sm"
+            variant="ghost"
+            iconRight="arrow-up-right"
+            onClick={() => window.open(link, "_blank", "noopener,noreferrer")}
+          >
+            Join the session
+          </Button>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export function HomeworkPaneExpanded({ inputs }: { subjectKey: string; inputs: QuestionInputs }) {
   const facts = homeworkView(inputs);
+  const link = homeworkLink(inputs);
   if (facts === null) {
     // Visibly broken, never quietly empty — and it says which thing is
     // missing rather than showing an empty list that reads as "nothing due".
     return (
-      <Card padding="var(--space-3)">
+      <HomeworkCard link={link} padding="var(--space-3)">
         <EmptyState
           compact
           icon="cloud-fog"
@@ -65,7 +112,7 @@ export function HomeworkPaneExpanded({ inputs }: { subjectKey: string; inputs: Q
           title="Can't read this device's time zone"
           body="Without it there is no way to say which day a deadline falls on."
         />
-      </Card>
+      </HomeworkCard>
     );
   }
 
@@ -74,7 +121,7 @@ export function HomeworkPaneExpanded({ inputs }: { subjectKey: string; inputs: Q
     // An empty homework list is good news, reported as a fact — the brand's
     // own rule about empty states.
     return (
-      <Card padding="var(--space-3)">
+      <HomeworkCard link={link} padding="var(--space-3)">
         <EmptyState
           compact
           icon="circle-check"
@@ -82,15 +129,12 @@ export function HomeworkPaneExpanded({ inputs }: { subjectKey: string; inputs: Q
           title="No open homework"
           body="Capture one with the @homework context and it shows up here."
         />
-      </Card>
+      </HomeworkCard>
     );
   }
 
   return (
-    <Card
-      padding="var(--space-5)"
-      style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}
-    >
+    <HomeworkCard link={link} padding="var(--space-5)">
       <span className="hb-meta">{homeworkHeadline(facts)}</span>
 
       <h3
@@ -130,6 +174,6 @@ export function HomeworkPaneExpanded({ inputs }: { subjectKey: string; inputs: Q
           ))}
         </>
       )}
-    </Card>
+    </HomeworkCard>
   );
 }

@@ -1,0 +1,29 @@
+<!-- Lucide `arrow-up-right` at 24dp — the homework pane's standing session
+     link (#675's follow-on), the trailing mark on "Join the session" that
+     says the tap leaves the app. It exists so both clients point the same
+     way: the web button already carries this glyph
+     (`HomeworkPaneExpanded.tsx`'s `iconRight`, the `AlertCard` "Open
+     source" idiom), and a bare label here would have been the two surfaces
+     saying the same words with only one of them warning you.
+
+     Outline, 1.75px stroke, rounded caps — `ic_route.xml`'s recipe. Drawn
+     in white and tinted at use: icons never carry colour independently of
+     their label. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M7 7h10v10"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M7 17 17 7"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

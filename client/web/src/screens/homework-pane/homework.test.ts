@@ -2,7 +2,15 @@ import { describe, expect, it } from "vitest";
 import { homeworkConstantsFromCore } from "../../decisions/seam";
 import type { TaskItemDTO } from "../../store/protocol";
 import { EMPTY_QUESTION_SYNC, type QuestionInputs } from "../questions/contract";
-import { SUBJECT_KEY, homeworkAnswer, homeworkHeadline, homeworkSubjects, homeworkView } from "./homework";
+import {
+  LINK_BINDING_KEY,
+  SUBJECT_KEY,
+  homeworkAnswer,
+  homeworkHeadline,
+  homeworkLink,
+  homeworkSubjects,
+  homeworkView,
+} from "./homework";
 
 // #675's homework pane: the sentence and the glyphs, which are what stayed
 // on this client, plus the round trip through the core that produces the
@@ -51,10 +59,14 @@ function item(overrides: Partial<TaskItemDTO> & { id: string }): TaskItemDTO {
   };
 }
 
-function inputs(nowMs: number, items: TaskItemDTO[]): QuestionInputs {
+function inputs(
+  nowMs: number,
+  items: TaskItemDTO[],
+  bindings: QuestionInputs["bindings"] = [],
+): QuestionInputs {
   return {
     sync: EMPTY_QUESTION_SYNC,
-    bindings: [],
+    bindings,
     paneReads: {},
     calendarReads: {},
     calendarConnected: false,
@@ -72,6 +84,7 @@ describe("the homework pane's own literals", () => {
     expect(constants.subjectKey).toBe(SUBJECT_KEY);
     // The band cutoff the headline's "in N days" form runs up to.
     expect(constants.nearWithinDays).toBe(3);
+    expect(constants.linkBindingKey).toBe(LINK_BINDING_KEY);
   });
 
   it("always emits exactly one subject, so the question is discoverable", () => {
@@ -155,6 +168,29 @@ describe("homeworkAnswer", () => {
       ]),
     );
     expect(answer.icon).toContainEqual({ kind: "icon", name: "list-checks", label: "1 more open" });
+  });
+});
+
+describe("homeworkLink", () => {
+  function withLink(text: string): QuestionInputs {
+    return inputs(NOW, [], [
+      { key: LINK_BINDING_KEY, known: true, pending: false, value: { state: "text", text } },
+    ]);
+  }
+
+  it("offers a bound web URL, whatever the pane is answering", () => {
+    const url = "https://example.com/j/000000000";
+    // Standing: nothing is open here at all and the link is still offered.
+    expect(homeworkLink(withLink(url))).toBe(url);
+    expect(homeworkView(withLink(url))?.winner).toBeNull();
+  });
+
+  it("offers nothing when the binding is unset or is not a web URL", () => {
+    // The scheme filter is the core's — this is the client-side proof that
+    // what reaches `window.open` has been through it.
+    expect(homeworkLink(inputs(NOW, []))).toBeNull();
+    expect(homeworkLink(withLink(""))).toBeNull();
+    expect(homeworkLink(withLink("javascript:alert(1)"))).toBeNull();
   });
 });
 

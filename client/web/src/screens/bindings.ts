@@ -33,6 +33,14 @@ const BINDING_COPY: Record<string, BindingCopy> = {
     label: "Waste schedule page",
     help: "The council page the collection schedule is read from.",
   },
+  // Not a source binding: this one names something the homework pane
+  // *draws* rather than something it reads (`bindings.rs`'s own note on the
+  // key). It is here rather than in the code because it carries a passcode
+  // and this repo is public.
+  "homework-link": {
+    label: "Homework session link",
+    help: "The meeting link the homework answer offers. Kept here, not in the code — it carries a passcode.",
+  },
 };
 
 /** Copy for one binding row. A key this build cannot write still gets a row

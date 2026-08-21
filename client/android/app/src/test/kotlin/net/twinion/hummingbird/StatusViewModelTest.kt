@@ -58,6 +58,7 @@ class StatusViewModelTest {
                 resolved = MobileHomeworkResolved.Facts(
                     facts = MobileHomeworkFacts(winner = null, others = emptyList(), daysAway = null),
                 ),
+                link = null,
             )
         MobileStandingQuestion.WASTE ->
             MobilePaneFacts.Waste(

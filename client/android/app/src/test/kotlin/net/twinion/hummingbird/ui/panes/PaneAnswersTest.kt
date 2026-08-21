@@ -54,6 +54,13 @@ class PaneAnswersTest {
         )
     }
 
+    @Test
+    fun `the standing session link's label is the web's own words`() {
+        // `HomeworkPaneExpanded.tsx`'s button label verbatim — the link is
+        // the same standing fact on both clients, so it must read the same.
+        assertEquals("Join the session", HOMEWORK_LINK_LABEL)
+    }
+
     private fun homework(daysAway: Long?) = MobileHomeworkFacts(
         winner = MobileHomeworkItem(
             id = "hw",

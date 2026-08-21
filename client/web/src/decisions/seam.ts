@@ -208,6 +208,7 @@ export interface DecisionsModule {
   homework_zone_queries_json(inputsJson: string): string;
   homework_facts_json(inputsJson: string, zoneFactsJson: string): string;
   homework_answer_json(inputsJson: string, zoneFactsJson: string): string;
+  homework_link_json(inputsJson: string): string;
   homework_constants_json(): string;
   weekend_zone_queries_json(nowMs: number): string;
   weekend_window_json(nowMs: number, zoneFactsJson: string): string;
@@ -1964,10 +1965,24 @@ export function homeworkAnswerFromCore(
   ) as PaneAnswerCore;
 }
 
+/** `hummingbird_core::decisions::panes::homework::homework_link` — the
+ * standing session link, or `null` when nothing usable is bound.
+ *
+ * Its own door rather than a field on the facts: the link is *standing*, so
+ * it has to answer in the zone-gap arm too, and that arm carries no facts.
+ * The `http`/`https` filter behind it is the core's — this value goes
+ * straight to `window.open`, and deciding the scheme twice (once per
+ * client) is exactly what ADR-0025 puts in the core instead. */
+export function homeworkLinkFromCore(inputs: PaneInputsSource): string | null {
+  return JSON.parse(required().homework_link_json(paneInputsPayload(inputs))) as string | null;
+}
+
 export interface HomeworkConstants {
   context: string;
   subjectKey: string;
   nearWithinDays: number;
+  /** The `settings` key the standing session link is held under. */
+  linkBindingKey: string;
 }
 
 export function homeworkConstantsFromCore(): HomeworkConstants {
