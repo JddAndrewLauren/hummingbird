@@ -279,6 +279,15 @@ names the step and points there.
 
 ## The calendar write lane (ADR-0031)
 
+> **Status (2026-08-20): steps 1–4 below are done.** The credential is
+> minted, measured and installed, and the gate was confirmed against
+> production — a non-agent `device` token gets 403 with an empty body from
+> `POST /api/google/calendar_write_token` while the readonly lane still
+> answers 200. **What is still owed is the rehearsal**, which can only run
+> on the gateway because that is where the `openclaw-agent` token lives:
+> the `HB_GCAL_ID` walk-through in the checklist above, and the first 200
+> from the write route.
+
 The `calendar` skill needs one thing the other three do not: a Google
 credential **on the authority**, not here. Operator steps, from a terminal
 with `op`, in this order:
@@ -296,15 +305,20 @@ with `op`, in this order:
    this skill has any use for.
 
 2. **Prove it by negative space before storing it** (the #581 lesson). The
-   vault holds four near-identical Google OAuth clients, and the failure
-   mode is silent: the token must get 403 `insufficient authentication
-   scopes` from Gmail and from Tasks, 200 from Calendar, and `tokeninfo`'s
-   `aud` must match the client id it was minted with. Checking the granted
-   scope string proves nothing about which client minted it.
+   vault holds four Google OAuth clients, three of them near-identical, and
+   the failure mode is silent: the token must get 403 `insufficient
+   authentication scopes` from Gmail and from Tasks, 200 from Calendar, and
+   `tokeninfo`'s `aud` must match the client id it was minted with. Checking
+   the granted scope string proves nothing about which client minted it.
 
 3. Store it vault-first in 1Password `dev` as
-   `hummingbird-google-calendar-write`, with the scope in the item's notes —
-   the notes are how the four clients are told apart.
+   `hummingbird-openclaw-calendar-write`, with the scope in the item's notes.
+   **This is the one that is not named `hummingbird-google-oauth-*`**, and
+   deliberately so: the other three are titles one word apart, which is the
+   confusion this credential most needed not to inherit. Fields are
+   `client_id`, `client_secret` and `GOOGLE_REFRESH_TOKEN`, all concealed,
+   none in a section. An `op item list` filtered on "google" will not find
+   it.
 
 4. Set three Wrangler secrets on `hummingbird-authority`, from the
    operator's terminal and never Actions (CLAUDE.md's blast-radius rule,

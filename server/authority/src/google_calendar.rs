@@ -96,10 +96,18 @@ pub fn calendar_refresh_grant_body(
 
 /// The write lane's grant body (ADR-0031): [`calendar_refresh_grant_body`]
 /// with [`CALENDAR_WRITE_SCOPE`], and the same mis-provisioning argument
-/// with one more credential to confuse — the vault holds three
-/// near-identical Google OAuth clients and this lane's own makes a
-/// **fourth** once the operator mints it, so an exchange that names its
+/// with one more credential to confuse — the vault holds **four** Google
+/// OAuth clients, this lane's own among them, so an exchange that names its
 /// scope is what makes pasting the wrong refresh token here fail closed.
+///
+/// Provisioned 2026-08-20. Unlike the other three it is *not* named
+/// `hummingbird-google-oauth-*`: it is `hummingbird-openclaw-calendar-write`,
+/// titled after its consumer precisely because
+/// [`calendar_refresh_grant_body`]'s "titles one word apart" hazard is the
+/// thing this lane most needed not to inherit. Its grant was measured to
+/// carry `calendar.events` and nothing else — Gmail and Tasks both 403 — so
+/// pasting it into the readonly lane's secrets fails closed rather than
+/// arming every browser holding a `device` token.
 pub fn calendar_write_refresh_grant_body(
     client_id: &str,
     client_secret: &str,
