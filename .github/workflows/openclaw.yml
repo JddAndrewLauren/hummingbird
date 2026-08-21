@@ -56,3 +56,35 @@ jobs:
             echo "Edit the .claude copy and re-copy it here — the step-id recipe must stay identical across arms (ADR-0029)." >&2
             exit 1
           fi
+
+      # The calendar skill's frozen event-id recipe (ADR-0031), pinned the
+      # way the copy above is pinned — by a value, not by a source-text
+      # regex, which would go green both when the recipe is intact and when
+      # the block it matched has moved out from under it.
+      #
+      # A changed id is a *different event*, so a drift here double-books
+      # everything already on the operator's calendar instead of colliding
+      # with it — which is the whole reason the block says FROZEN. The pin
+      # is scoped to that block: it evals the namespace and `event_id`
+      # alone, so it fails for a change to the namespace, the seed
+      # ordering, the separator, the prefix or the length, and stays quiet
+      # for everything else in the file.
+      - name: Pin the frozen event-id recipe by value
+        run: |
+          recipe=$(sed -n '/^EVENT_ID_NAMESPACE=/,/^}/p' openclaw/calendar/scripts/gcal.sh)
+          if [ -z "$recipe" ]; then
+            echo "could not find the FROZEN event-id block in gcal.sh — has it moved or been renamed?" >&2
+            exit 1
+          fi
+          eval "$recipe"
+          # shellcheck disable=SC2034  # read by the eval'd recipe, not here
+          CALENDAR_ID=primary
+          sha256_hex() { sha256sum | cut -d' ' -f1; }
+          actual=$(event_id "lunch with Peter" "2026-08-27T12:00")
+          expected=hb14653c51c664da2368266b06c3aa191b
+          if [ "$actual" != "$expected" ]; then
+            echo "the frozen event-id recipe changed: got $actual, expected $expected" >&2
+            echo "An id minted under a different recipe is a different event, so this double-books" >&2
+            echo "every event already on the calendar. Revert the recipe (ADR-0031)." >&2
+            exit 1
+          fi

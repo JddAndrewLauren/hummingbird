@@ -96,9 +96,10 @@ pub fn calendar_refresh_grant_body(
 
 /// The write lane's grant body (ADR-0031): [`calendar_refresh_grant_body`]
 /// with [`CALENDAR_WRITE_SCOPE`], and the same mis-provisioning argument
-/// with one more credential to confuse — the vault now holds *four*
-/// near-identical Google OAuth clients, so an exchange that names its scope
-/// is what makes pasting the wrong refresh token here fail closed.
+/// with one more credential to confuse — the vault holds three
+/// near-identical Google OAuth clients and this lane's own makes a
+/// **fourth** once the operator mints it, so an exchange that names its
+/// scope is what makes pasting the wrong refresh token here fail closed.
 pub fn calendar_write_refresh_grant_body(
     client_id: &str,
     client_secret: &str,
