@@ -108,17 +108,51 @@ export function awaitingCreate(
   return projectId !== null && !rows.some((row) => row.project.id === projectId);
 }
 
-/** What a non-`ok` project write says on the grid, or `null` when the last one
- * went through. Both non-`ok` kinds land here on purpose: a `busy` result is a
- * write the worker dropped rather than one it delivered, so it is as much a
- * "this did not happen" as a `failed` is, and silence would be the one answer
- * this screen must never give. `busy` carries no `error` of its own, which is
- * what the fallback copy is for. */
-export function writeFailureMessage(lastProjectWrite: TaskProjectResult | null): string | null {
-  if (lastProjectWrite === null || lastProjectWrite.kind === "ok") {
+/** The minimal shape every project-lane write result shares —
+ * `TaskProjectResult`, `TaskProjectLinkResult` and `TaskRouteResult` alike
+ * (`store.ts`'s own docs) — everything this pure function needs. */
+export interface ProjectLaneWriteResult {
+  seed: string;
+  kind: "ok" | "failed" | "busy";
+  error: string | null;
+}
+
+/** What a non-`ok` write says, or `null` when there is nothing to say. Both
+ * non-`ok` kinds land here on purpose: a `busy` result is a write the worker
+ * dropped rather than one it delivered, so it is as much a "this did not
+ * happen" as a `failed` is, and silence would be the one answer this screen
+ * must never give. `busy` carries no `error` of its own, which is what
+ * `fallback` is for.
+ *
+ * **`issuedSeed` is what makes this seed-keyed** (batch review,
+ * projects-dossier #668, generalised for #669). `lastWrite` is one broadcast
+ * slot shared by every reader of the same project-lane write —
+ * `PropertiesCard` and `ArchiveCard` both patch the same `project.id`, and
+ * `LinksCard`/`RouteCard` share their own slot across every open dossier
+ * (`TaskProjectResult`'s own doc) — so a reader gating on the target id
+ * alone can resolve on a write a SIBLING reader issued rather than its own.
+ * Passing the reader's own `issuedSeed` (the seed its own write minted,
+ * `null` whenever it holds no write outstanding) is what tells them apart:
+ * the message renders only once `lastWrite.seed` matches it.
+ *
+ * `issuedSeed` is optional for the one caller with no per-write seed to
+ * scope to: the grid's create banner has no single in-flight write of its
+ * own (a create's minted seed is dropped — `useProjectsWiring`'s own doc),
+ * so omitting the argument keeps its pre-existing, ungated read — the grid
+ * still names ANY project write's failure, same as it always has. Every
+ * other caller passes its own `issuedSeed` and gets the scoped read. */
+export function writeFailureMessage(
+  lastWrite: ProjectLaneWriteResult | null,
+  issuedSeed?: string | null,
+  fallback = "That project write did not go through.",
+): string | null {
+  if (lastWrite === null || lastWrite.kind === "ok") {
     return null;
   }
-  return lastProjectWrite.error ?? "That project write did not go through.";
+  if (issuedSeed !== undefined && lastWrite.seed !== issuedSeed) {
+    return null;
+  }
+  return lastWrite.error ?? fallback;
 }
 
 /** How many of a project's items are currently live (#630, ADR-0030

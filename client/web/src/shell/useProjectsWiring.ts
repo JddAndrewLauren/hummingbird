@@ -38,7 +38,11 @@ import {
 // own doc on this interface.
 
 export interface ProjectsWiring {
-  createProject: (name: string) => void;
+  /** Returns the create's minted seed (#669, the same "return the seed"
+   * contract every write here now carries) — the grid does not currently
+   * scope its create banner to it (`roster.ts`'s `writeFailureMessage`'s own
+   * doc states why), but the seed is there for a caller that wants it. */
+  createProject: (name: string) => string;
   /** #625's properties-card write, widened by #630's archive/unarchive
    * gesture: `patch` carries only the fields the caller actually changed,
    * `undefined` for the rest — [`patchProject`]'s own "leave this alone"
@@ -66,28 +70,37 @@ export interface ProjectsWiring {
   requestProjectLinks: (projectId: string) => void;
   /** #626's link create: the dossier aside's add-a-link gesture. `position`
    * is the caller's to compute (append to the end of the list it already
-   * has) — this hook mints no ordering of its own. */
-  createProjectLink: (projectId: string, url: string, label: string | null, position: number) => void;
+   * has) — this hook mints no ordering of its own. **Returns the minted
+   * seed** (#669) — `LinksCard` holds it to recognise its own write in
+   * `lastProjectLinkWrite`, one broadcast slot shared by every open
+   * dossier's links card (same reasoning `patchProject`'s own doc states). */
+  createProjectLink: (projectId: string, url: string, label: string | null, position: number) => string;
   /** #626's link patch: editing, reordering and removing a link, all
    * through this one entry point — same "leave this alone" contract
-   * `patchProject` carries. */
+   * `patchProject` carries. **Returns the minted seed** (#669), same
+   * reasoning as `createProjectLink` above. */
   patchProjectLink: (
     current: ProjectLinkDTO,
     patch: { url?: string; label?: string | null; position?: number; removedAt?: number | null },
-  ) => void;
+  ) => string;
   /** #627's per-project Route read — same "scoped to one open dossier, the
    * caller's own effect decides when" shape as `requestProjectLinks`. */
   requestRoute: (projectId: string) => void;
   /** #627's route patch: the dossier's reading column edits
    * destination/notes, `patch` carrying only the fields the card actually
-   * changed — same "leave this alone" contract `patchProject` carries. */
-  patchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => void;
+   * changed — same "leave this alone" contract `patchProject` carries.
+   * **Returns the minted seed** (#669) — `RouteCard` holds it to recognise
+   * its own write in `lastRouteWrite`, one broadcast slot shared across
+   * every open dossier. */
+  patchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => string;
 }
 
 export function useProjectsWiring(worker: WorkerLike): ProjectsWiring {
   return {
     createProject: (name) => {
-      createProject(worker, mintProjectCreateSeed(), name, Date.now());
+      const seed = mintProjectCreateSeed();
+      createProject(worker, seed, name, Date.now());
+      return seed;
     },
     patchProject: (current, patch) => {
       const nowMs = Date.now();
@@ -100,18 +113,24 @@ export function useProjectsWiring(worker: WorkerLike): ProjectsWiring {
     },
     createProjectLink: (projectId, url, label, position) => {
       const nowMs = Date.now();
-      createProjectLink(worker, mintProjectLinkCreateSeed(), projectId, url, label, position, nowMs);
+      const seed = mintProjectLinkCreateSeed();
+      createProjectLink(worker, seed, projectId, url, label, position, nowMs);
+      return seed;
     },
     patchProjectLink: (current, patch) => {
       const nowMs = Date.now();
-      patchProjectLink(worker, mintProjectLinkPatchSeed(current.id, nowMs), current, patch, nowMs);
+      const seed = mintProjectLinkPatchSeed(current.id, nowMs);
+      patchProjectLink(worker, seed, current, patch, nowMs);
+      return seed;
     },
     requestRoute: (projectId) => {
       requestRoute(worker, projectId);
     },
     patchRoute: (current, patch) => {
       const nowMs = Date.now();
-      patchRoute(worker, mintRoutePatchSeed(current.projectId, nowMs), current, patch, nowMs);
+      const seed = mintRoutePatchSeed(current.projectId, nowMs);
+      patchRoute(worker, seed, current, patch, nowMs);
+      return seed;
     },
   };
 }
