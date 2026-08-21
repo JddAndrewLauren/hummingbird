@@ -95,11 +95,14 @@ export interface ProjectsScreenProps {
    * card — `patch` carries only the fields the caller actually changed.
    * `archivedAt` drives ADR-0030 decision 5's server-side cascade onto the
    * project's live items; this prop itself enqueues the project's own
-   * field change only. */
+   * field change only. Returns the write's minted seed — `ArchiveCard`
+   * holds it to recognise its OWN resolution in `lastProjectWrite`, the one
+   * broadcast slot it shares with `PropertiesCard` for the same
+   * `project.id` (batch review, projects-dossier #668). */
   onPatchProject: (
     current: ProjectDTO,
     patch: { githubRepo?: string | null; defaultContext?: string | null; archivedAt?: number | null },
-  ) => void;
+  ) => string;
   /** #626: the links card's read — fetches one project's links. The caller
    * (this component's own effect) decides when: on open, and again on
    * every completed cycle it is still open for. */
@@ -405,7 +408,7 @@ function Dossier({
   onPatchProject: (
     current: ProjectDTO,
     patch: { githubRepo?: string | null; defaultContext?: string | null; archivedAt?: number | null },
-  ) => void;
+  ) => string;
   /** The Ledger (#630's `ArchiveCard`'s own read) — already app-wide state,
    * the same "counts are derived, not read" doctrine `roster.ts` states for
    * the grid's own counts. `null` while it has not answered yet. */
@@ -1079,8 +1082,22 @@ function LinkEditRow({
  * (success — the archived/unarchived state repaints from `project` itself)
  * or when `lastProjectWrite.kind !== "ok"` (failure, which clears `pending`
  * directly since no version bump is ever coming to do it) — `RouteCard`'s
- * own pattern, ported verbatim including the failed/busy-clears-the-flag
- * rule the #627/#628/#629 reviews paid for. Unarchiving carries no
+ * own pattern, adapted rather than ported verbatim: `RouteCard` is the only
+ * card patching its own broadcast slot (`lastRouteWrite`), where this card
+ * shares `lastProjectWrite` with `PropertiesCard`, mounted alongside it on
+ * the same dossier and patching the same `project.id`. Gating the failure
+ * read on `projectId` alone let a **failed properties write** satisfy this
+ * card's `failedHere` and clear `pending` mid-flight while its own archive
+ * write was still queued — `confirming` stayed true, re-arming "Archive
+ * project" over a write already in the queue, a double-submit that 409s
+ * into the dead-letter journal (batch review, projects-dossier #668). The
+ * fix: this card also holds the **seed its own write minted**
+ * (`onPatchProject`'s return, since a card cannot otherwise know which
+ * broadcast result is its own) and requires `lastProjectWrite.seed` to
+ * match it before treating a result as its own — same discrimination
+ * `TaskRuleResult`/`TaskProjectResult`'s own doc calls "matched back by
+ * seed" for every other CAS write in this codebase, just not previously
+ * threaded out to a caller that needed it. Unarchiving carries no
  * confirmation step of its own: ADR-0030's brief asks the dialog to name
  * archiving's consequence, not unarchiving's, and unarchiving is the
  * reversing gesture, not a destructive one. */
@@ -1093,10 +1110,11 @@ function ArchiveCard({
   project: ProjectDTO;
   liveCount: number | null;
   lastProjectWrite: TaskProjectResult | null;
-  onPatchProject: (current: ProjectDTO, patch: { archivedAt?: number | null }) => void;
+  onPatchProject: (current: ProjectDTO, patch: { archivedAt?: number | null }) => string;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [pending, setPending] = useState(false);
+  const [issuedSeed, setIssuedSeed] = useState<string | null>(null);
   const [syncedVersion, setSyncedVersion] = useState(project.version);
 
   if (project.version !== syncedVersion) {
@@ -1107,11 +1125,19 @@ function ArchiveCard({
     }
   }
 
-  // Gated on `project.id`, same reasoning `PropertiesCard`'s own failure
-  // read carries: `lastProjectWrite` is one broadcast slot shared by every
-  // open dossier's own patch.
+  // Scoped to THIS card's own outstanding write, not merely to `project.id`:
+  // `lastProjectWrite` is one broadcast slot shared with `PropertiesCard`,
+  // mounted alongside this card on the same dossier and patching the same
+  // project — a `projectId`-only gate let a failed properties write clear
+  // this card's `pending` while its own archive write was still queued (see
+  // this function's own doc). `issuedSeed` is `null` whenever this card has
+  // no write outstanding, so a stray broadcast never matches by accident.
   const failedHere =
-    lastProjectWrite !== null && lastProjectWrite.projectId === project.id && lastProjectWrite.kind !== "ok";
+    issuedSeed !== null &&
+    lastProjectWrite !== null &&
+    lastProjectWrite.projectId === project.id &&
+    lastProjectWrite.seed === issuedSeed &&
+    lastProjectWrite.kind !== "ok";
   if (pending && failedHere) {
     setPending(false);
   }
@@ -1120,12 +1146,12 @@ function ArchiveCard({
   const archived = project.archivedAt !== null;
 
   function archive() {
-    onPatchProject(project, { archivedAt: Date.now() });
+    setIssuedSeed(onPatchProject(project, { archivedAt: Date.now() }));
     setPending(true);
   }
 
   function unarchive() {
-    onPatchProject(project, { archivedAt: null });
+    setIssuedSeed(onPatchProject(project, { archivedAt: null }));
     setPending(true);
   }
 

@@ -32,11 +32,18 @@ import {
 // appears in `TaskState.projects` only when a completed cycle pulls it back
 // (`Core::create_project`'s own doc). The caller says it is waiting in the
 // meantime, keyed on the *minted id* in `lastProjectWrite` — not on the seed,
-// which this hook mints and drops. `lastProjectWrite` is one broadcast slot
-// shared by every connected view (`protocol.ts`), so a second tab's create
-// briefly moves this tab's waiting line; that is `RulesScreen`'s behaviour
-// too (`lastRuleWrite`), and closing the gap is a change to both surfaces at
-// once rather than a private one here.
+// which this hook mints and (for `createProject`) drops. `lastProjectWrite`
+// is one broadcast slot shared by every connected view (`protocol.ts`), so a
+// second tab's create briefly moves this tab's waiting line; that is
+// `RulesScreen`'s behaviour too (`lastRuleWrite`), and closing the gap is a
+// change to both surfaces at once rather than a private one here.
+// `patchProject` is the one exception: it RETURNS its minted seed (batch
+// review, projects-dossier #668), because unlike a create — which only ever
+// has one caller mounted at a time (`NewProjectCard`) — a patch on an open
+// dossier can be issued by either of two sibling cards patching the same
+// `project.id` (`PropertiesCard`, `ArchiveCard`), and `projectId` alone
+// cannot tell them apart in the shared broadcast slot. See `patchProject`'s
+// own doc on this interface.
 
 export interface ProjectsWiring {
   createProject: (name: string) => void;
@@ -45,11 +52,18 @@ export interface ProjectsWiring {
    * `undefined` for the rest — [`patchProject`]'s own "leave this alone"
    * contract, unchanged across this hook. `archivedAt` triggers ADR-0030
    * decision 5's cascade server-side; this hook enqueues the project's own
-   * field change only, same as every other field here. */
+   * field change only, same as every other field here. **Returns the
+   * minted seed** (batch review, projects-dossier #668): `lastProjectWrite`
+   * is one broadcast slot shared by every card mounted on the same
+   * dossier (`PropertiesCard` and `ArchiveCard` both patch the same
+   * `project.id`), so `projectId` alone cannot tell a caller its OWN write
+   * apart from a sibling card's. A caller that needs to react only to its
+   * own outstanding write (`ArchiveCard`'s `pending` gate) holds this seed
+   * and compares it against `lastProjectWrite.seed`. */
   patchProject: (
     current: ProjectDTO,
     patch: { githubRepo?: string | null; defaultContext?: string | null; archivedAt?: number | null },
-  ) => void;
+  ) => string;
   /** #626's per-project link read. Unlike `createProject`/`patchProject`
    * above, this is a read door, not a write — but it stays here rather than
    * joining `useFrontierWiring`'s app-wide refresh because it is scoped to
@@ -120,7 +134,9 @@ export function useProjectsWiring(worker: WorkerLike): ProjectsWiring {
     },
     patchProject: (current, patch) => {
       const nowMs = Date.now();
-      patchProject(worker, mintProjectPatchSeed(current.id, nowMs), current, patch, nowMs);
+      const seed = mintProjectPatchSeed(current.id, nowMs);
+      patchProject(worker, seed, current, patch, nowMs);
+      return seed;
     },
     requestProjectLinks: (projectId) => {
       requestProjectLinks(worker, projectId);

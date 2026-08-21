@@ -22,6 +22,11 @@ import {
 import { ProjectsScreen, type ProjectsScreenProps } from "./ProjectsScreen";
 
 const noop = () => {};
+/** `onPatchProject` returns its minted seed (batch review, projects-dossier
+ * #668) — `ArchiveCard` needs it to recognise its own write. Tests that do
+ * not care what the seed is (most of this file) pass this default rather
+ * than `noop`, which cannot satisfy the `=> string` return type. */
+const noopPatchProject = (): string => "unused-seed";
 
 /** #626 added three more required props (the links card's read/write doors)
  * — every call site here cares only about the
@@ -32,7 +37,7 @@ function renderProjectsScreen(props: Partial<ProjectsScreenProps> & Pick<Project
   const element = (next: Partial<ProjectsScreenProps> & Pick<ProjectsScreenProps, "task">) => (
     <ProjectsScreen
       onCreateProject={noop}
-      onPatchProject={noop}
+      onPatchProject={noopPatchProject}
       onRequestProjectLinks={noop}
       onCreateProjectLink={noop}
       onPatchProjectLink={noop}
@@ -61,14 +66,14 @@ function renderProjectsScreen(props: Partial<ProjectsScreenProps> & Pick<Project
 
 describe("ProjectsScreen", () => {
   it("holds rather than claiming 'no projects' while the read has not answered", () => {
-    renderProjectsScreen({ task: taskState(), onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: taskState(), onCreateProject: noop, onPatchProject: noopPatchProject });
 
     expect(screen.getByText("Reading projects…")).toBeTruthy();
     expect(screen.queryByText("No projects yet")).toBeNull();
   });
 
   it("renders the empty state only for a real, empty answer", () => {
-    renderProjectsScreen({ task: taskState({ projects: [] }), onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: taskState({ projects: [] }), onCreateProject: noop, onPatchProject: noopPatchProject });
 
     expect(screen.getByText("No projects yet")).toBeTruthy();
   });
@@ -81,7 +86,7 @@ describe("ProjectsScreen", () => {
         ledgerRowDTO({ id: "i-2", projectId: "p-1", stage: "done" }),
       ],
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
 
     expect(screen.getByRole("heading", { level: 3, name: "House repairs" })).toBeTruthy();
     expect(screen.getByText("1 action · 1 done")).toBeTruthy();
@@ -98,7 +103,7 @@ describe("ProjectsScreen", () => {
       archivedProjects: [projectDTO({ id: "p-9", name: "Old bike", archivedAt: 5_000 })],
       ledger: [],
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
 
     expect(screen.getByText("1 live · 1 archived")).toBeTruthy();
     expect(screen.queryByRole("heading", { level: 3, name: "Old bike" })).toBeNull();
@@ -111,7 +116,7 @@ describe("ProjectsScreen", () => {
 
   it("sends the trimmed name to onCreateProject and refuses a blank one", () => {
     const onCreateProject = vi.fn();
-    renderProjectsScreen({ task: taskState({ projects: [], ledger: [] }), onCreateProject: onCreateProject, onPatchProject: noop });
+    renderProjectsScreen({ task: taskState({ projects: [], ledger: [] }), onCreateProject: onCreateProject, onPatchProject: noopPatchProject });
 
     const create = screen.getByRole("button", { name: "Create" });
     expect(create.hasAttribute("disabled")).toBe(true);
@@ -132,7 +137,7 @@ describe("ProjectsScreen", () => {
       ledger: [],
       lastProjectWrite: { seed: "s-1", projectId: "p-new", kind: "ok", error: null },
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
 
     expect(screen.getByText("creating — appears when the round trip lands")).toBeTruthy();
   });
@@ -143,7 +148,7 @@ describe("ProjectsScreen", () => {
       ledger: [],
       lastProjectWrite: { seed: "s-1", projectId: "p-new", kind: "ok", error: null },
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
 
     expect(screen.queryByText("creating — appears when the round trip lands")).toBeNull();
     expect(screen.getByRole("heading", { level: 3, name: "Rebuild the deck" })).toBeTruthy();
@@ -160,7 +165,7 @@ describe("ProjectsScreen", () => {
         error: "name must be non-empty",
       },
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
 
     expect(screen.getByText("name must be non-empty")).toBeTruthy();
   });
@@ -175,7 +180,7 @@ describe("ProjectsScreen", () => {
       ledger: [],
       lastProjectWrite: { seed: "s-1", projectId: null, kind: "busy", error: null },
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
 
     expect(screen.getByText("That project write did not go through.")).toBeTruthy();
     expect(screen.queryByText("creating — appears when the round trip lands")).toBeNull();
@@ -186,7 +191,7 @@ describe("ProjectsScreen", () => {
       projects: [projectDTO({ id: "p-1", name: "House repairs" })],
       ledger: [],
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
 
     fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
 
@@ -210,7 +215,7 @@ describe("ProjectsScreen", () => {
       ],
       ledger: [],
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
 
     fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
 
@@ -258,7 +263,7 @@ describe("ProjectsScreen", () => {
       ledger: [],
       lastProjectWrite: { seed: "s-1", projectId: "p-2", kind: "failed", error: "no can do" },
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
 
     fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
 
@@ -270,7 +275,7 @@ describe("ProjectsScreen", () => {
       projects: [projectDTO({ id: "p-1", name: "House repairs" })],
       ledger: [],
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
     fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
 
     expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
@@ -381,7 +386,10 @@ describe("ProjectsScreen", () => {
     it("clears the pending flag and shows the failure on a dropped write, not a silent stall", () => {
       const project = projectDTO({ id: "p-1", name: "House repairs" });
       const task = taskState({ projects: [project], ledger: [] });
-      const { rerenderWith } = renderProjectsScreen({ task });
+      // Must return the seed the simulated broadcast below carries — since
+      // #668's fix, `ArchiveCard` only reacts to a `lastProjectWrite` whose
+      // `seed` matches the one its own write minted.
+      const { rerenderWith } = renderProjectsScreen({ task, onPatchProject: () => "s-1" });
       fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
 
       fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
@@ -392,6 +400,7 @@ describe("ProjectsScreen", () => {
           ...task,
           lastProjectWrite: { seed: "s-1", projectId: "p-1", kind: "failed", error: "no can do" },
         },
+        onPatchProject: () => "s-1",
       });
 
       // `lastProjectWrite` is one broadcast slot shared by every card that
@@ -414,6 +423,43 @@ describe("ProjectsScreen", () => {
       fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
 
       expect(screen.queryByText("no can do")).toBeNull();
+    });
+
+    // Batch review, projects-dossier #668 (FINAL-GATE finding 2): a failed
+    // *properties* write used to satisfy this card's `failedHere` on
+    // `projectId` alone — both cards share the one `lastProjectWrite`
+    // broadcast slot for the same project — clearing `pending` while this
+    // card's own archive write was still queued. `confirming` was never
+    // touched by that path, so the confirm dialog stayed open over a
+    // re-enabled "Archive project" button while the real write was still
+    // in flight: a double-submit that 409s into the dead-letter journal.
+    it("does not let a failed properties write clear this card's pending or re-arm its button", () => {
+      const project = projectDTO({ id: "p-1", name: "House repairs" });
+      const task = taskState({ projects: [project], ledger: [] });
+      // The archive write's own seed — distinct from the properties write's
+      // seed simulated below, so a correct fix must tell them apart.
+      const { rerenderWith } = renderProjectsScreen({ task, onPatchProject: () => "archive-seed" });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+      fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+      expect(screen.getByRole("button", { name: "Archiving…" }).hasAttribute("disabled")).toBe(true);
+
+      // A sibling `PropertiesCard` write on the SAME project fails and
+      // broadcasts, with a different seed — this card issued no such write.
+      rerenderWith({
+        task: {
+          ...task,
+          lastProjectWrite: { seed: "properties-seed", projectId: "p-1", kind: "failed", error: "no can do" },
+        },
+        onPatchProject: () => "archive-seed",
+      });
+
+      // Still pending, still confirming — the archive write this card
+      // issued is still queued, so the button must stay disabled and the
+      // confirm dialog must not re-arm a second submit.
+      expect(screen.getByRole("button", { name: "Archiving…" }).hasAttribute("disabled")).toBe(true);
+      expect(screen.queryByRole("button", { name: "Archive project" })).toBeNull();
     });
   });
 
@@ -466,7 +512,7 @@ describe("ProjectsScreen", () => {
         <ProjectsScreen
           task={{ ...task, syncOutcomeSeq: 2 }}
           onCreateProject={noop}
-          onPatchProject={noop}
+          onPatchProject={noopPatchProject}
           onRequestProjectLinks={onRequestProjectLinks}
           onCreateProjectLink={noop}
           onPatchProjectLink={noop}
