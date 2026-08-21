@@ -34,6 +34,7 @@ import {
   screen,
   taskState,
   wasteBody,
+  within,
 } from "../test/component";
 import { BINDING_KEY, SOURCE } from "./waste-pane/waste";
 import type { CalendarReadDTO } from "../store/protocol";
@@ -768,10 +769,12 @@ describe("NowScreen — the captures in the columns", () => {
     options: {
       selectedItemId?: string | null;
       storage?: ReturnType<typeof fakeStorage>;
+      onCreateProject?: (name: string) => void;
     } = {},
   ) {
     const onTriage = vi.fn();
     const onAct = vi.fn();
+    const onCreateProject = options.onCreateProject ?? vi.fn();
     const storage = options.storage ?? fakeStorage();
     render(
       <NowScreen
@@ -785,10 +788,11 @@ describe("NowScreen — the captures in the columns", () => {
         calendarReads={{}}
         calendarConnected={false}
         onTriage={onTriage}
+        onCreateProject={onCreateProject}
         storage={storage}
       />,
     );
-    return { onTriage, onAct, storage };
+    return { onTriage, onAct, onCreateProject, storage };
   }
 
   /** `renderWithTriage`'s twin for the one thing it cannot express: changing
@@ -1206,6 +1210,98 @@ describe("NowScreen — the captures in the columns", () => {
     );
 
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+// #652: Now's forced-open `TriageRow` gets the same inline "new project"
+// affordance `TriageScreen`'s own rows have had since #631 — the coverage
+// below mirrors `TriageScreen.test.tsx`'s "inline project creation" describe,
+// proving the SAME wiring reaches Now's slot rather than re-deriving it.
+describe("NowScreen — inline project creation from the forced-open row (#652)", () => {
+  const capture = (id: string, title: string, createdAt: number) =>
+    itemDTO({ id, title, stage: "triage", createdAt });
+
+  function editor(): HTMLElement {
+    const promote = screen.getByRole("button", { name: /promote to ready/i });
+    const form = promote.parentElement?.parentElement;
+    if (!form) {
+      throw new Error("triage row editor not found — the row's markup changed");
+    }
+    return form;
+  }
+
+  function field(label: string): HTMLElement {
+    return within(editor()).getByLabelText(label);
+  }
+
+  function renderNowTriage(
+    onCreateProject: (name: string) => void,
+    task: TaskState = taskState({ triageInbox: [capture("c1", "vague thing", 500)] }),
+  ) {
+    const screenFor = (t: TaskState) => (
+      <NowScreen
+        onScreen={() => {}}
+        task={t}
+        nowMs={NOW_MS}
+        selectedItemId="c1"
+        onOpenItem={() => {}}
+        onCloseItemDetail={() => {}}
+        onAct={() => {}}
+        calendarReads={{}}
+        calendarConnected={false}
+        onTriage={() => {}}
+        onCreateProject={onCreateProject}
+      />
+    );
+    const view = render(screenFor(task));
+    return { rerender: (nextTask: TaskState) => view.rerender(screenFor(nextTask)) };
+  }
+
+  it('switches the Project field to a name-and-create form, offering "+ New project"', () => {
+    renderNowTriage(vi.fn());
+
+    expect(within(editor()).getByRole("option", { name: "+ New project" })).toBeDefined();
+
+    fireEvent.change(field("Project"), { target: { value: "__new_project__" } });
+
+    expect(within(editor()).getByLabelText("New project")).toBeDefined();
+    expect(screen.queryByLabelText("Project")).toBeNull();
+  });
+
+  it("creating from Now sends the trimmed name through the same onCreateProject Triage uses", () => {
+    const onCreateProject = vi.fn();
+    renderNowTriage(onCreateProject);
+
+    fireEvent.change(field("Project"), { target: { value: "__new_project__" } });
+    fireEvent.change(within(editor()).getByLabelText("New project"), {
+      target: { value: "  Kitchen rebuild  " },
+    });
+    fireEvent.click(within(editor()).getByRole("button", { name: "Create" }));
+
+    expect(onCreateProject).toHaveBeenCalledWith("Kitchen rebuild");
+    expect(onCreateProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("says it is waiting once a create is enqueued, and stops once the project lands", () => {
+    const task = taskState({
+      triageInbox: [capture("c1", "vague thing", 500)],
+      projects: [],
+      lastProjectWrite: { seed: "s1", projectId: "p-new", kind: "ok", error: null },
+    });
+    const { rerender } = renderNowTriage(vi.fn(), task);
+
+    expect(screen.getByText(/creating — appears when the round trip lands/i)).toBeDefined();
+
+    rerender(
+      taskState({
+        triageInbox: [capture("c1", "vague thing", 500)],
+        projects: [projectDTO({ id: "p-new", name: "Kitchen rebuild" })],
+        lastProjectWrite: { seed: "s1", projectId: "p-new", kind: "ok", error: null },
+      }),
+    );
+
+    expect(screen.queryByText(/creating — appears when the round trip lands/i)).toBeNull();
+    expect(within(editor()).getByRole("option", { name: "Kitchen rebuild" })).toBeDefined();
   });
 });
 

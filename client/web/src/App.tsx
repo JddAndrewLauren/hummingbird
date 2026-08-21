@@ -580,9 +580,13 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               calendarConnected={calendar.connected}
               onSetScheduledDate={handleSetScheduledDate}
               microtask={microtaskWiring}
-              // The same two callbacks the Triage screen gets below: Now is a
+              // The same three callbacks the Triage screen gets below: Now is a
               // second view of one inbox, never a second entry point into it.
               onTriage={handleTriage}
+              // #652: the same inline "new project" affordance Triage's own
+              // rows get (#631) — one write door, reached from a second
+              // surface.
+              onCreateProject={handleCreateProject}
               asideCollapsed={asideCollapsed}
               // #359: the SAME `grillTakeover` instance the Triage screen gets
               // below — one interview session for the whole app, not a second
