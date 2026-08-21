@@ -372,10 +372,11 @@ Operator feedback on the iteration, applied as six slices on top of it:
   the scroll — the chips shrink to fit instead. See below.)
 - **Panel chrome.** `ItemDetailPanel`'s header is the web `ItemPanel`'s:
   `HB-<seq>` mono meta line under a `titleMedium` title, the × close
-  IconButton top-right, StageBadge below, 12dp gaps. (The unification
-  reshaped this again: the title is now the draft's and carries a pencil,
-  the whole header row closes the pane, and every leaving gesture routes
-  through the one dirty-draft confirmation.)
+  IconButton top-right, StageBadge below, 8dp gaps. (The unification
+  reshaped this again: the title is now the draft's, the whole header row
+  closes the pane, and every leaving gesture routes through the one
+  dirty-draft confirmation. The polish pass then took the pencils out —
+  see below.)
 - **Width parity.** `ui/ContentMax.kt` caps the bar-tab screens' content
   at the web's `--content-max` (880dp), centred — the unfolded display
   stops stretching rows across its whole width.
@@ -495,8 +496,8 @@ Operator batch 2026-08-20, three areas on one branch.
   text box below the header used to say the same words the header said, so
   the panel claimed the title twice and editing one changed the other. The
   header now reads the *draft's* title — an edit has to show where it was
-  made — and `ic_pencil` swaps an inline field in for it; the title sits
-  above the stage badge. The header row is the wide door out, through the
+  made — and tapping the title itself swaps an inline field in for it; the
+  title sits above the stage badge. The header row is the wide door out, through the
   same confirmation the × routes through, and clickable only while not
   editing so a tap into the field is not a tap on the way out. Editing ends
   on IME Done or when the pane closes, deliberately **not** on focus loss:
@@ -960,8 +961,8 @@ and a `rememberSaveable` keyed per item makes "the flag is true before the
 content exists" reachable on the very first frame.
 
 Exercised and settled: title-edit mode does **not** leak across selections
-(the fixed bug — open the pencil on one row, close, open another, and the
-accessibility tree shows no `EditText`); a dirty draft raises the one
+(the fixed bug — open the title edit on one row, close, open another, and
+the accessibility tree shows no `EditText`); a dirty draft raises the one
 `DiscardConfirmation` from Back, and Discard resets the draft to its seed
 while leaving the pane open; a promote closes the pane and drops the
 captured count (12 → 11); the pane's own mark-done check does the same
@@ -969,3 +970,66 @@ captured count (12 → 11); the pane's own mark-done check does the same
 per round 5's lesson — and note the pane's check is a full 48dp target only
 when it is not clipped by the viewport edge, so measure it scrolled into
 view or a clipped 15px node reads as a layout defect it is not.
+
+## The item pane's polish pass
+
+Operator batch 2026-08-20, three requests on `ItemDetailPanel` — the pane
+all four hosts render. Each one is a decision about an affordance, not a
+restyle, so each is recorded with what it replaced.
+
+- **No pencils.** Five shipped — one per detail section plus the title's —
+  and every one is now the tapped thing itself: the condensed line opens its
+  editor, the title opens its inline field. The behaviour is unchanged; the
+  glyph is gone, and `ic_pencil.xml` went with it (nothing else referenced
+  it). Two reasons beyond taste. Each pencil was a 48dp `IconButton` whose
+  only content was 18dp of icon, so four of them cost most of the pane's
+  height before any content; and the pencil was *also* the way back out of a
+  section, which made a pencil mean "done". The rows are
+  `NowScreen.ColumnHeader`'s idiom — `heightIn(min = 44.dp)` plus
+  `clickable` — so they are the design system's 44dp row and its minimum
+  touch target at once, gaining a hit target while losing height.
+  What a glyph gives for free and a bare row must pay for deliberately is
+  the gesture's **name**: `onClickLabel` carries the words the pencil's
+  `contentDescription` did ("Edit NOTES" / "Done editing NOTES", "Edit
+  title"), so nothing is lost from the accessibility tree.
+  `ItemDetailPanelStructuralTest` pins the absence of the glyph, the absence
+  of the drawable, and the presence of both labels.
+- **The reference rows sit behind one chevron.** `NOTES`, `CONTEXT` and
+  `DATES` — `SIZE · ENERGY · PRIORITY` stays out, because the axes are the
+  ranker's own inputs and what a glance is for, while the other three are
+  reference material. It is `CaptureSheet`'s "More details" disclosure
+  exactly: same `ic_chevron_down`, same half-turn, same two words, over
+  nearly the same field set, so the gesture is learned once. It is also the
+  pane's *only* chevron, which is what keeps the two gestures legible — a
+  chevron means "more below", a row means "edit this". Default open in
+  `PROMOTE` mode: an unset section opens editable on Triage, and a field
+  that opens editable behind a shut disclosure is invisible work. The panel
+  gap came down 12dp → 8dp in the same pass.
+- **The submit row never wraps.** `Grill me`/`Resume grill` + the mode's
+  submit. `ChoiceRow` stays — the act row above it genuinely cannot fit
+  three buttons on a phone — but this row is now required never to *use* the
+  wrapping, and the word is what buys that: `Promote to ready` became
+  `Promote`, the same domain term (CONTEXT.md's Promotion) three chars
+  shorter than the space it needed. The Grill label is the core's, shared
+  verbatim with the web, and was not ours to shorten.
+
+`ItemDetailSubmitRowTest` is the module's **fourth** layout-measuring test,
+and it contributed a lesson the other three had not: **measure the width the
+component is actually given, not the width of the display.** Its first draft
+used `ChoiceRowWrappingTest`'s bare 320dp qualifier, where the old
+`Promote to ready` row fits with 21dp to spare — so the control test failed,
+saying in effect "the thing you just fixed was not broken". The pane never
+gets 320dp: the notification route pays `.padding(24.dp)`, which is 272dp on
+a 320dp phone, and at 272dp the old pair (299dp) does wrap while the new one
+(244dp) does not. The fix was real; the first measurement was aimed at the
+wrong subject. That is the same species of error as #581's falsified premise
+— the right check on the wrong subject — and it is worth assuming the
+subject is wrong whenever a control test refuses to fail.
+
+Two smaller notes from the same test. The pair asserted is the **widest that
+can occur**, not the common one: the Grill label lengthens to `Resume grill`
+when a draft exists, and `Grill me` + `Promote to ready` fits 272dp perfectly
+well, so a pane measured only in its resting state would have called the old
+label safe. And sharing a line is asserted as *equal tops* rather than
+against a height constant — a wrapped `ChoiceRow` puts the second control a
+full button lower, and nothing else moves either of them.

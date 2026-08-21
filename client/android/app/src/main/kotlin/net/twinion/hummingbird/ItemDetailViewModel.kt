@@ -336,9 +336,9 @@ class ItemDetailViewModel(
         val record = (_state.value as? ItemDetailState.Loaded)?.record ?: return false
         val draft = _draft.value ?: return false
         // Recall's rule (#478) enforced where it is acted on, not only
-        // where it is rendered: the panel draws no pencil and no submit for
-        // a non-editable item, and this is the second lock on the same door
-        // — history stays readable.
+        // where it is rendered: the panel opens no editor and draws no
+        // submit for a non-editable item, and this is the second lock on
+        // the same door — history stays readable.
         if (!record.isEditable) {
             _statusLine.value = "This item is history — readable, not editable."
             return false

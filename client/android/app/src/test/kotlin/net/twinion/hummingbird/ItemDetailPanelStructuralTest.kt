@@ -157,8 +157,10 @@ class ItemDetailPanelStructuralTest {
             panelBody.contains("value = openDraft.title"),
         )
         assertTrue(
-            "the header must carry the pencil that opens the inline edit",
-            panelBody.contains("R.drawable.ic_pencil"),
+            "the title itself must be the thing that opens the inline edit",
+            panelBody.replace(Regex("""\s+"""), " ").contains(
+                """Modifier.clickable(onClickLabel = "Edit title") { editingTitle = true }""",
+            ),
         )
         assertTrue(
             "the header row must close the pane on a tap, unless the title is being edited",
@@ -282,7 +284,7 @@ class ItemDetailPanelStructuralTest {
             body.contains("Button(onClick = onSubmit, enabled = canSave)"),
         )
         assertTrue(body.contains("ItemDetailPanelMode.SAVE -> \"Save\""))
-        assertTrue(body.contains("ItemDetailPanelMode.PROMOTE -> \"Promote to ready\""))
+        assertTrue(body.contains("ItemDetailPanelMode.PROMOTE -> \"Promote\""))
     }
 
     /** The seam between the panel and its hosts, and the one thing that
@@ -323,7 +325,7 @@ class ItemDetailPanelStructuralTest {
     fun `an unset section opens editable only on the promoting host`() {
         val body = functionBody(panelSrc, "DetailSection")
         assertTrue(
-            "the default must follow the data until the human taps a pencil",
+            "the default must follow the data until the human taps the row",
             body.contains("openOverride ?: (mode == ItemDetailPanelMode.PROMOTE && !isSet)"),
         )
         assertTrue(
@@ -338,14 +340,103 @@ class ItemDetailPanelStructuralTest {
         }
     }
 
-    /** Recall's rule (#478) at both locks: no pencil and no submit for an
+    /** The pane draws no pencil, anywhere (operator decision 2026-08-20).
+     *
+     * Five of them shipped — one per section plus the title's — and every
+     * one is now the tapped thing itself. This is a whole-file assertion on
+     * purpose, unlike its neighbours: the claim is about the *absence* of a
+     * shape, which no bounded block can make, and `ic_pencil.xml` was
+     * deleted in the same change, so a reintroduced `R.drawable.ic_pencil`
+     * would not even resolve. What this catches is the drawable coming back
+     * with it.
+     *
+     * The gesture's *name* is the thing a glyph gave for free, so it is
+     * pinned in the same breath: every tap-to-edit target carries an
+     * `onClickLabel`, or the pane loses an accessible door it used to
+     * have. */
+    @Test
+    fun `nothing in the pane is opened by a pencil`() {
+        assertFalse(
+            "the pane must draw no pencil — the tapped thing is the affordance",
+            panelSrc.contains("ic_pencil"),
+        )
+        assertFalse(
+            "and the drawable must not come back with one",
+            File(
+                System.getProperty("hummingbird.repoRoot")!!,
+                "client/android/app/src/main/res/drawable/ic_pencil.xml",
+            ).exists(),
+        )
+        assertEquals(
+            "both tap-to-edit targets must name their gesture for a screen reader",
+            2,
+            Regex("""clickable\(\s*onClickLabel""").findAll(panelSrc).count(),
+        )
+        // Bounded to the section, because the section's label is the only
+        // one that has to say "done" — the header's title edit ends on the
+        // field's IME Done, not on a second tap.
+        assertTrue(
+            "a section's own label must flip with its state",
+            functionBody(panelSrc, "DetailSection").replace(Regex("""\s+"""), " ").contains(
+                "onClickLabel = if (open) \"Done editing \$label\" " +
+                    "else \"Edit \$label\",",
+            ),
+        )
+    }
+
+    /** The disclosure (operator decision 2026-08-20): the axes line is what
+     * the pane is read for, and the three reference rows under it —
+     * `NOTES`, `CONTEXT`, `DATES` — sit behind one chevron.
+     *
+     * Two things make this a defect rather than a preference if they drift.
+     * The chevron must be the pane's **only** one, or it stops reading as
+     * "there is more below" and starts competing with the rows that mean
+     * "tap to edit". And it must default open on the promoting host: an
+     * unset section opens editable there (the test above), and a field that
+     * opens editable behind a shut disclosure is invisible work. */
+    @Test
+    fun `the reference rows sit behind the pane's one disclosure`() {
+        val body = functionBody(panelSrc, "DetailBody")
+        assertEquals(
+            "exactly one chevron in the pane",
+            1,
+            Regex("""R\.drawable\.ic_chevron_down""").findAll(panelSrc).count(),
+        )
+        assertTrue(
+            "the disclosure must default to the mode, and open on the promoting host",
+            body.contains("detailsOverride ?: (mode == ItemDetailPanelMode.PROMOTE)"),
+        )
+        assertTrue(
+            "its state must be keyed on the item like every other piece here",
+            body.contains("var detailsOverride by rememberSaveable(itemId) { mutableStateOf<Boolean?>(null) }"),
+        )
+        // The three that are behind it, and the one that is not: `isSet`
+        // reads uniquely enough to locate each section, and the axes line
+        // must stay outside the disclosed block or the pane discloses the
+        // very thing it exists to show.
+        val disclosed = body.substringAfter("if (detailsOpen) {")
+        for (label in listOf("NOTES", "CONTEXT", "DATES")) {
+            assertTrue(
+                "$label must be inside the disclosure",
+                disclosed.contains("""label = "$label","""),
+            )
+        }
+        assertFalse(
+            "the axes line must stay outside it",
+            disclosed.contains("""label = "SIZE · ENERGY · PRIORITY","""),
+        )
+    }
+
+    /** Recall's rule (#478) at both locks: no editor and no submit for an
      * archived item, and the ViewModel refuses the write even so. */
     @Test
     fun `an archived item is readable and offers no way to edit it`() {
         val section = functionBody(panelSrc, "DetailSection")
         assertTrue(
-            "a section's pencil must be gated on editability",
-            section.contains("if (editable) {"),
+            "a section's row must only be tappable-to-edit while editable",
+            section.replace(Regex("""\s+"""), " ").contains(
+                "if (editable) { Modifier.clickable(",
+            ),
         )
         val body = functionBody(panelSrc, "DetailBody")
         assertTrue(

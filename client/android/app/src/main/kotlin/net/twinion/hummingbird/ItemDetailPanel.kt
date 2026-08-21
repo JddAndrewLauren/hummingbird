@@ -9,8 +9,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -40,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -90,8 +93,8 @@ import uniffi.hummingbird_ffi_mobile.skillRunStampLabel
 // differs between hosts.
 //
 // This file decides nothing. `availableActions` gates the act buttons,
-// `canMarkDone` gates the check, `isEditable` gates every pencil and the
-// submit, `canAck` gates the Ack, and the open-blocker list is rendered
+// `canMarkDone` gates the check, `isEditable` gates every editable row
+// and the submit, `canAck` gates the Ack, and the open-blocker list is rendered
 // exactly as the core assembled it — a titleless row means an id this
 // device has not synced, and it is shown as the bare id rather than
 // dropped, because a count that understates what holds an item back is
@@ -144,7 +147,7 @@ enum class ItemDetailPanelMode {
      * form on a surface that is mostly for reading. */
     SAVE,
 
-    /** Triage: the submit is "Promote to ready", and an unset field opens
+    /** Triage: the submit is "Promote", and an unset field opens
      * editable, because filling those in is the work this queue exists
      * for. */
     PROMOTE,
@@ -282,22 +285,36 @@ fun ItemDetailPanel(
 
     // The host owns any scrolling (this file's header) — the route wraps
     // `modifier` in its own `verticalScroll`; the inline hosts must not.
+    // 8dp, not 12: with the detail rows behind a disclosure the blocks that
+    // remain are short, and the wider gap read as air rather than as
+    // separation on the Fold's 443dp cover display. Both are steps on the
+    // design system's spacing scale.
     Column(
         modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         val loadedRecord = (state as? ItemDetailState.Loaded)?.record
         // The header: the title (the draft's, so an edit shows where it was
-        // made), a pencil that swaps an inline field in for it, and the X.
-        // The row itself is the wide door out — tapping it closes through
-        // the same guarded path the X does. Two things make that safe
-        // rather than a trap: the row is only clickable while *not* editing,
-        // so a tap into the title field is not a tap on the way out; and
-        // `IconButton` consumes its own gesture, so neither the pencil nor
-        // the X falls through to the row underneath. Editing ends on the
-        // field's IME Done — deliberately not on focus loss, which fires
-        // once with `isFocused = false` before the field is ever focused and
-        // would need a flag to tell the two apart.
+        // made) and the X. The row itself is the wide door out — tapping it
+        // closes through the same guarded path the X does.
+        //
+        // **The title is its own edit affordance** (operator decision
+        // 2026-08-20). It used to carry a pencil beside it; the pane now
+        // draws no pencil anywhere, and every editable thing here is opened
+        // by tapping the thing itself. Two gestures share this row, which is
+        // only safe because each consumes its own: the title's `clickable`
+        // is the innermost node under a tap on the words, so it never falls
+        // through to the row's close, and `IconButton` does the same for the
+        // X. The row is also clickable only while *not* editing, so a tap
+        // into the open field is not a tap on the way out.
+        //
+        // The word the pencil used to carry survives as `onClickLabel`, so
+        // the gesture still names itself to a screen reader — the accessible
+        // door does not close with the glyph.
+        //
+        // Editing ends on the field's IME Done — deliberately not on focus
+        // loss, which fires once with `isFocused = false` before the field is
+        // ever focused and would need a flag to tell the two apart.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -323,20 +340,28 @@ fun ItemDetailPanel(
                 // panel is a card over a board, not a screen. Before the
                 // record lands there is nothing to name, and the meta line
                 // below says so rather than this line guessing.
+                val titleEditable = loadedRecord?.isEditable == true && openDraft != null
                 Text(
                     openDraft?.title ?: loadedRecord?.title.orEmpty(),
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .then(
+                            if (titleEditable) {
+                                Modifier.clickable(onClickLabel = "Edit title") {
+                                    editingTitle = true
+                                }
+                            } else {
+                                Modifier
+                            },
+                        )
+                        // The design system's 44dp row, which is also its
+                        // minimum touch target: a line of `titleMedium` is
+                        // shorter than that, so the target is grown to it
+                        // rather than left at the height of the words.
+                        .heightIn(min = 44.dp)
+                        .wrapContentHeight(Alignment.CenterVertically),
                     style = MaterialTheme.typography.titleMedium,
                 )
-                if (loadedRecord?.isEditable == true && openDraft != null) {
-                    IconButton(onClick = { editingTitle = true }) {
-                        Icon(
-                            painterResource(R.drawable.ic_pencil),
-                            contentDescription = "Edit title",
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
-                }
             }
             // The visible door out; the header tap is the wide one. One ×
             // whatever the state — a loading or unsynced panel must still
@@ -500,11 +525,11 @@ private fun DetailBody(
         )
     }
 
-    // The three axes the system computes with, then the words a human
-    // wrote, then the context, then the two dates. Each section reads
-    // condensed with a pencil beside it and swaps its shared `ui/forms`
-    // editor in when the pencil is tapped — the values live in the draft
-    // either way, and one submit sends them.
+    // The three axes the system computes with, then — behind one
+    // disclosure — the words a human wrote, the context, and the two dates.
+    // Each section reads condensed and swaps its shared `ui/forms` editor in
+    // when its line is tapped; the values live in the draft either way, and
+    // one submit sends them.
     DetailSection(
         itemId = itemId,
         label = "SIZE · ENERGY · PRIORITY",
@@ -588,87 +613,124 @@ private fun DetailBody(
         )
     }
 
-    DetailSection(
-        itemId = itemId,
-        label = "NOTES",
-        isSet = record.description != null,
-        mode = mode,
-        editable = record.isEditable,
-        condensed = {
-            record.description?.let {
-                Text(it, style = MaterialTheme.typography.bodyLarge)
-            } ?: GhostValue("NOTES")
-        },
+    // Everything under the axes line, behind one disclosure (operator
+    // decision 2026-08-20): the axes are what the pane is read *for* — the
+    // ranker's own inputs, and what a glance is after — while the notes, the
+    // context and the two dates are reference material. Three condensed rows
+    // at rest were most of the pane's height on the cover display.
+    //
+    // The chevron is `CaptureSheet`'s "More details" idiom exactly — same
+    // glyph, same half-turn, same two words, and disclosing very nearly the
+    // same field set, so the gesture is learned once. It is also the pane's
+    // ONLY chevron, which is what keeps it from reading as the pencil it
+    // replaced: a chevron here means "there is more below", and a tap on a
+    // row means "edit this".
+    //
+    // Open by default on the promoting host, for `DetailSection`'s own
+    // reason: filling these in is what the Triage queue is *for*, and fields
+    // that open editable behind a shut disclosure would be invisible work.
+    var detailsOverride by rememberSaveable(itemId) { mutableStateOf<Boolean?>(null) }
+    val detailsOpen = detailsOverride ?: (mode == ItemDetailPanelMode.PROMOTE)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center,
     ) {
-        OutlinedTextField(
-            value = draft.description,
-            onValueChange = { onDraftChange(draft.copy(description = it)) },
-            label = { Text("Notes") },
-            modifier = Modifier.fillMaxWidth(),
-        )
-    }
-
-    DetailSection(
-        itemId = itemId,
-        label = "CONTEXT",
-        isSet = record.context != null,
-        mode = mode,
-        editable = record.isEditable,
-        condensed = {
-            record.context?.let {
-                Text(
-                    "CONTEXT:${it.uppercase()}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } ?: GhostValue("CONTEXT")
-        },
-    ) {
-        // Free text over a suggestion list, not a picker: the set of places
-        // a person works is theirs (CONTEXT.md's Context — an open
-        // vocabulary), and the suggestions come from the seam.
-        ContextField(
-            value = draft.context,
-            onValueChange = { onDraftChange(draft.copy(context = it)) },
-            suggestions = formMeta.suggestedContexts,
-        )
-    }
-
-    DetailSection(
-        itemId = itemId,
-        label = "DATES",
-        isSet = record.deadline != null || record.scheduledDate != null,
-        mode = mode,
-        editable = record.isEditable,
-        condensed = {
-            Text(
-                listOf(
-                    "DUE:${record.deadline ?: "—"}",
-                    "SCHEDULED:${record.scheduledDate ?: "—"}",
-                ).joinToString(" · "),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        IconButton(onClick = { detailsOverride = !detailsOpen }) {
+            Icon(
+                painterResource(R.drawable.ic_chevron_down),
+                contentDescription = if (detailsOpen) "Fewer details" else "More details",
+                modifier = Modifier.rotate(if (detailsOpen) 180f else 0f),
             )
-        },
-    ) {
-        // The two free-text dates are the only fields that can be
-        // malformed — everything else is a closed vocabulary offered as
-        // choices, or the title. The problem strings are the core's,
-        // shared with the web's capture box and triage form, so a bad date
-        // is refused with the same words everywhere instead of being sent
-        // for the authority to 400.
-        CaptureDateField(
-            label = "Deadline",
-            value = draft.deadline,
-            error = problems?.deadline,
-            onValueChange = { onDraftChange(draft.copy(deadline = it)) },
-        )
-        CaptureDateField(
-            label = "Scheduled date",
-            value = draft.scheduledDate,
-            error = problems?.scheduledDate,
-            onValueChange = { onDraftChange(draft.copy(scheduledDate = it)) },
-        )
+        }
+    }
+
+    if (detailsOpen) {
+        // 4dp between the three, not the panel's own gap: they are one block
+        // of reference material rather than three peers of the act row.
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            DetailSection(
+                itemId = itemId,
+                label = "NOTES",
+                isSet = record.description != null,
+                mode = mode,
+                editable = record.isEditable,
+                condensed = {
+                    record.description?.let {
+                        Text(it, style = MaterialTheme.typography.bodyLarge)
+                    } ?: GhostValue("NOTES")
+                },
+            ) {
+                OutlinedTextField(
+                    value = draft.description,
+                    onValueChange = { onDraftChange(draft.copy(description = it)) },
+                    label = { Text("Notes") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            DetailSection(
+                itemId = itemId,
+                label = "CONTEXT",
+                isSet = record.context != null,
+                mode = mode,
+                editable = record.isEditable,
+                condensed = {
+                    record.context?.let {
+                        Text(
+                            "CONTEXT:${it.uppercase()}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } ?: GhostValue("CONTEXT")
+                },
+            ) {
+                // Free text over a suggestion list, not a picker: the set of places
+                // a person works is theirs (CONTEXT.md's Context — an open
+                // vocabulary), and the suggestions come from the seam.
+                ContextField(
+                    value = draft.context,
+                    onValueChange = { onDraftChange(draft.copy(context = it)) },
+                    suggestions = formMeta.suggestedContexts,
+                )
+            }
+
+            DetailSection(
+                itemId = itemId,
+                label = "DATES",
+                isSet = record.deadline != null || record.scheduledDate != null,
+                mode = mode,
+                editable = record.isEditable,
+                condensed = {
+                    Text(
+                        listOf(
+                            "DUE:${record.deadline ?: "—"}",
+                            "SCHEDULED:${record.scheduledDate ?: "—"}",
+                        ).joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+            ) {
+                // The two free-text dates are the only fields that can be
+                // malformed — everything else is a closed vocabulary offered as
+                // choices, or the title. The problem strings are the core's,
+                // shared with the web's capture box and triage form, so a bad date
+                // is refused with the same words everywhere instead of being sent
+                // for the authority to 400.
+                CaptureDateField(
+                    label = "Deadline",
+                    value = draft.deadline,
+                    error = problems?.deadline,
+                    onValueChange = { onDraftChange(draft.copy(deadline = it)) },
+                )
+                CaptureDateField(
+                    label = "Scheduled date",
+                    value = draft.scheduledDate,
+                    error = problems?.scheduledDate,
+                    onValueChange = { onDraftChange(draft.copy(scheduledDate = it)) },
+                )
+            }
+        }
     }
 
     if (record.openBlockers.isNotEmpty()) {
@@ -776,8 +838,10 @@ private fun DetailBody(
 
     // #576: "Start / Mark blocked / Cancel" is wider than a phone, and a
     // plain `Row` left `Cancel` a column of letters rather than a button —
-    // hence `ChoiceRow`. `complete` is filtered out: the green check below
-    // is that gesture, and drawing both would offer it twice.
+    // hence `ChoiceRow`. This row genuinely cannot fit three-plus buttons on
+    // a phone, so wrapping is the right answer for it and it keeps
+    // `ChoiceRow`. `complete` is filtered out: the green check below is that
+    // gesture, and drawing both would offer it twice.
     ChoiceRow {
         for (action in record.availableActions.filter { it != "complete" }) {
             OutlinedButton(onClick = { onAct(action) }) {
@@ -797,7 +861,7 @@ private fun DetailBody(
             // item still carries a `canGrill`-eligible stage. Without the
             // enclosing check, that archived row would offer a live "Grill
             // me" whose Confirm could still enqueue a `CompleteGrill` on
-            // history (the same recall rule gates every pencil here).
+            // history (the same recall rule gates every editable row here).
             if (itemCanGrill(record.stage)) {
                 OutlinedButton(onClick = onGrill) {
                     Text(itemGrillButtonLabel(hasGrillDraft))
@@ -806,11 +870,25 @@ private fun DetailBody(
             // One submit for the whole draft, whatever section it was typed
             // in. Its word and its destination are the mode's only job —
             // see [ItemDetailPanelMode].
+            //
+            // **This row must never wrap** (operator decision 2026-08-20),
+            // and the word is what buys that rather than the layout: the
+            // promoting submit read "Promote to ready", which with a
+            // `Resume grill` beside it does not share a line on a phone.
+            // `ChoiceRow` would then drop the submit to a second line — not
+            // the letter-column defect #576 fixed, but the pane's two most
+            // important controls stacking and moving as the Grill label
+            // changes under them. `Promote` is the same domain word
+            // (CONTEXT.md's Promotion) short enough to sit beside the widest
+            // Grill label at the narrowest width the app ships to, which is
+            // what `ItemDetailSubmitRowTest` measures. The Grill label
+            // itself is not ours to shorten — it is the core's, shared
+            // verbatim with the web.
             Button(onClick = onSubmit, enabled = canSave) {
                 Text(
                     when (mode) {
                         ItemDetailPanelMode.SAVE -> "Save"
-                        ItemDetailPanelMode.PROMOTE -> "Promote to ready"
+                        ItemDetailPanelMode.PROMOTE -> "Promote"
                     },
                 )
             }
@@ -859,11 +937,27 @@ private fun DetailBody(
     }
 }
 
-/** One field group: its condensed line with a pencil beside it, or its
- * shared `ui/forms` editor in place of that line.
+/** One field group: its condensed line, or its shared `ui/forms` editor in
+ * place of that line — and **the line is the control**. Tapping anywhere on
+ * it opens the editor, tapping the label above the open editor shuts it
+ * again.
+ *
+ * There is no pencil (operator decision 2026-08-20). It was a 48dp
+ * `IconButton` per section, four of them stacked, and it read wrong in both
+ * states: it did not say "editable" any louder than the em-dash ghost
+ * beside it already does, and re-tapping it to *collapse* a section made a
+ * pencil mean "done". The row-as-control costs no vertical space of its own
+ * and is the same idiom `NowScreen`'s `ColumnHeader` uses for its columns.
+ *
+ * What a glyph gave for free and this has to pay for deliberately is the
+ * gesture's *name*: `onClickLabel` carries the words the pencil's
+ * `contentDescription` did, so the section still announces "Edit NOTES" /
+ * "Done editing NOTES" to a screen reader. The row also grows to the design
+ * system's 44dp minimum touch target, which a line of `labelSmall` is well
+ * under.
  *
  * The open/shut flag starts as `null` and only becomes a real value when
- * the human taps the pencil, so until then the section follows the data:
+ * the human taps the row, so until then the section follows the data:
  * a field the item has no value for opens editable on the
  * [ItemDetailPanelMode.PROMOTE] host — filling those in is what that queue
  * is for — and rests as a ghost everywhere else. [isSet] is read off the
@@ -889,29 +983,29 @@ private fun DetailSection(
         (openOverride ?: (mode == ItemDetailPanelMode.PROMOTE && !isSet))
 
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(
+                    if (editable) {
+                        Modifier.clickable(
+                            onClickLabel = if (open) "Done editing $label" else "Edit $label",
+                        ) { openOverride = !open }
+                    } else {
+                        Modifier
+                    },
+                )
+                .heightIn(min = 44.dp),
+            contentAlignment = Alignment.CenterStart,
         ) {
-            Box(modifier = Modifier.weight(1f)) {
-                if (open) {
-                    Text(
-                        label,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    condensed()
-                }
-            }
-            if (editable) {
-                IconButton(onClick = { openOverride = !open }) {
-                    Icon(
-                        painterResource(R.drawable.ic_pencil),
-                        contentDescription = if (open) "Done editing $label" else "Edit $label",
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
+            if (open) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                condensed()
             }
         }
         if (open) editor()
