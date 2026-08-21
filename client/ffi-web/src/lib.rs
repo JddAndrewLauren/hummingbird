@@ -490,6 +490,13 @@ mod wasm_bindings {
     const BUSY_ROUTE: &str = r#"{"kind":"busy","route":null}"#;
     // #627: same shape as BUSY_PATCH_PROJECT.
     const BUSY_PATCH_ROUTE: &str = r#"{"kind":"busy","error":null}"#;
+    // #628: same three-way shape as BUSY_PROJECT_LINK_LIST above.
+    const BUSY_FOG_LIST: &str = r#"{"kind":"busy","fog":[]}"#;
+    // #628: same shape as BUSY_CREATE_PROJECT_LINK — busy is "no answer",
+    // distinct from a create this seam refused (an empty question).
+    const BUSY_CREATE_FOG: &str = r#"{"kind":"busy","id":null,"error":null}"#;
+    // #628: same shape as BUSY_PATCH_PROJECT_LINK.
+    const BUSY_PATCH_FOG: &str = r#"{"kind":"busy","error":null}"#;
     const BUSY_IS_PENDING: &str = r#"{"kind":"busy","pending":false}"#;
     // #118: an empty binding list would read as "nothing is bound", which
     // is an answer — and the wrong one. Busy says nothing at all.
@@ -917,6 +924,106 @@ mod wasm_bindings {
                 inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("PatchRouteResponse serializes"),
+                ))
+            })
+        }
+
+        /// Every open Fog segment on one project, as JSON: `{"kind":
+        /// "ok"|"busy", "fog": [Fog]}` — the dossier reading column's read
+        /// (#628, ADR-0030 decision 1). A resolved row is retained but
+        /// never appears here ([`Core::open_fog_for`]'s own doc).
+        #[wasm_bindgen(js_name = openFog)]
+        pub fn open_fog(&self, project_id: String) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => {
+                    serde_json::to_string(&host.open_fog(&project_id)).expect("FogListResponse serializes")
+                }
+                None => BUSY_FOG_LIST.to_string(),
+            }
+        }
+
+        /// Creates a Fog segment (#628). Resolves to JSON: `{"kind":
+        /// "ok"|"failed"|"busy", "id": string|null, "error": string|null}`.
+        /// The question is trimmed and an empty one refused before `Core`
+        /// is reached ([`TaskHostCore::create_fog`]). `"ok"` means
+        /// *enqueued*, not *saved* — no optimistic overlay, so `openFog()`
+        /// keeps answering the old list until a cycle completes.
+        #[wasm_bindgen(js_name = createFog)]
+        pub fn create_fog(
+            &self,
+            seed: String,
+            project_id: String,
+            question: String,
+            position: f64,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_CREATE_FOG));
+                };
+                let response = host
+                    .create_fog(&seed, &project_id, &question, position as i64, now_ms as i64)
+                    .await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("CreateFogResponse serializes"),
+                ))
+            })
+        }
+
+        /// Patches a Fog segment (#628) — rewording its question,
+        /// repositioning it, or resolving/reopening it, all through this
+        /// one entry point. Resolves to JSON: `{"kind":
+        /// "ok"|"failed"|"busy", "error": string|null}`. `current_json` is
+        /// the caller's own last-known [`hummingbird_domain::Fog`] (from
+        /// [`TaskHost::openFog`]), as JSON — the `base` a 409's rebase
+        /// diffs against. `resolved_at_touched` distinguishes "leave this
+        /// field alone" (`false`) from "set it, possibly to `null`"
+        /// (`true`, with the paired value carrying the new value or
+        /// `None`) — the same double-`Option`
+        /// [`hummingbird_domain::FogPatch`] itself carries, flattened for
+        /// the wasm boundary exactly like [`TaskHost::patchProjectLink`]'s
+        /// `removed_at_touched`.
+        #[wasm_bindgen(js_name = patchFog)]
+        #[allow(clippy::too_many_arguments)]
+        pub fn patch_fog(
+            &self,
+            seed: String,
+            current_json: String,
+            question: Option<String>,
+            position: Option<f64>,
+            resolved_at_touched: bool,
+            resolved_at: Option<f64>,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let current: hummingbird_domain::Fog = match serde_json::from_str(&current_json) {
+                    Ok(fog) => fog,
+                    Err(error) => {
+                        return Ok(JsValue::from_str(&format!(
+                            r#"{{"kind":"failed","error":"malformed fog: {error}"}}"#
+                        )))
+                    }
+                };
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_PATCH_FOG));
+                };
+                let response = host
+                    .patch_fog(
+                        &seed,
+                        &current,
+                        question,
+                        position.map(|v| v as i64),
+                        resolved_at_touched,
+                        resolved_at.map(|v| v as i64),
+                        now_ms as i64,
+                    )
+                    .await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("PatchFogResponse serializes"),
                 ))
             })
         }

@@ -7,6 +7,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   fireEvent,
+  fogDTO,
   ledgerRowDTO,
   projectDTO,
   projectLinkDTO,
@@ -34,6 +35,9 @@ function renderProjectsScreen(props: Partial<ProjectsScreenProps> & Pick<Project
       onPatchProjectLink={noop}
       onRequestRoute={noop}
       onPatchRoute={noop}
+      onRequestFog={noop}
+      onCreateFog={noop}
+      onPatchFog={noop}
       {...next}
     />
   );
@@ -182,7 +186,8 @@ describe("ProjectsScreen", () => {
     // The unbuilt regions are labelled rather than absent, so an operator
     // meets a region that is coming, not one that is broken.
     expect(screen.getByText("route · destination")).toBeTruthy();
-    expect(screen.getByText("The open questions on this Route land here.")).toBeTruthy();
+    // Fog is a real card now (#628), not the unbuilt-region placeholder.
+    expect(screen.getByText("Reading fog…")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "All projects" }));
 
@@ -354,6 +359,9 @@ describe("ProjectsScreen", () => {
           onPatchProjectLink={noop}
           onRequestRoute={noop}
           onPatchRoute={noop}
+          onRequestFog={noop}
+          onCreateFog={noop}
+          onPatchFog={noop}
         />,
       );
 
@@ -498,6 +506,160 @@ describe("ProjectsScreen", () => {
       openDossier({
         linksByProject: { "p-1": [] },
         lastProjectLinkWrite: { seed: "s-1", projectId: "p-2", kind: "failed", error: "no can do" },
+      });
+
+      expect(screen.queryByText("no can do")).toBeNull();
+    });
+  });
+
+  // #628: the fog card.
+  describe("the fog card", () => {
+    function openDossier(
+      overrides: {
+        fogByProject?: ReturnType<typeof taskState>["fogByProject"];
+        lastFogWrite?: ReturnType<typeof taskState>["lastFogWrite"];
+        onRequestFog?: ProjectsScreenProps["onRequestFog"];
+        onCreateFog?: ProjectsScreenProps["onCreateFog"];
+        onPatchFog?: ProjectsScreenProps["onPatchFog"];
+      } = {},
+    ) {
+      const task = taskState({
+        projects: [projectDTO({ id: "p-1", name: "House repairs" })],
+        ledger: [],
+        fogByProject: overrides.fogByProject ?? {},
+        lastFogWrite: overrides.lastFogWrite ?? null,
+      });
+      renderProjectsScreen({
+        task,
+        onRequestFog: overrides.onRequestFog ?? noop,
+        onCreateFog: overrides.onCreateFog ?? noop,
+        onPatchFog: overrides.onPatchFog ?? noop,
+      });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+      return task;
+    }
+
+    it("requests this project's open fog the moment the dossier opens", () => {
+      const onRequestFog = vi.fn();
+      openDossier({ onRequestFog });
+
+      expect(onRequestFog).toHaveBeenCalledWith("p-1");
+    });
+
+    it("holds rather than claiming 'no open fog' while the read has not answered", () => {
+      openDossier();
+
+      expect(screen.getByText("Reading fog…")).toBeTruthy();
+      expect(screen.queryByText("No open fog on this Route.")).toBeNull();
+    });
+
+    it("renders the empty state only for a real, empty answer", () => {
+      openDossier({ fogByProject: { "p-1": [] } });
+
+      expect(screen.getByText("No open fog on this Route.")).toBeTruthy();
+    });
+
+    it("renders every open segment, position-ordered", () => {
+      openDossier({
+        fogByProject: {
+          "p-1": [
+            fogDTO({ id: "f-2", question: "Second question", position: 2 }),
+            fogDTO({ id: "f-1", question: "First question", position: 1 }),
+          ],
+        },
+      });
+
+      const list = screen.getByRole("list");
+      const questions = list.querySelectorAll("li > span");
+      expect(Array.from(questions).map((el) => el.textContent)).toEqual(["First question", "Second question"]);
+    });
+
+    it("sends the trimmed question and next position to onCreateFog", () => {
+      const onCreateFog = vi.fn();
+      openDossier({
+        fogByProject: { "p-1": [fogDTO({ id: "f-1", position: 1 })] },
+        onCreateFog,
+      });
+
+      fireEvent.change(screen.getByLabelText("Open question"), {
+        target: { value: "  What permit does this need?  " },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Add fog" }));
+
+      expect(onCreateFog).toHaveBeenCalledWith("p-1", "What permit does this need?", 2);
+    });
+
+    it("refuses to add before the read has answered, so no position is minted blind", () => {
+      openDossier();
+
+      fireEvent.change(screen.getByLabelText("Open question"), { target: { value: "Anything?" } });
+
+      expect(screen.getByRole("button", { name: "Add fog" }).hasAttribute("disabled")).toBe(true);
+    });
+
+    it("refuses a blank question", () => {
+      openDossier({ fogByProject: { "p-1": [] } });
+
+      expect(screen.getByRole("button", { name: "Add fog" }).hasAttribute("disabled")).toBe(true);
+    });
+
+    it("rewords a segment in place and sends only the question to onPatchFog", () => {
+      const onPatchFog = vi.fn();
+      const segment = fogDTO({ id: "f-1", question: "Old question" });
+      openDossier({ fogByProject: { "p-1": [segment] }, onPatchFog });
+
+      fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+      // The edit row renders before the card's own add-fog form, so its
+      // "Open question" input is the first of the two.
+      const questionInputs = screen.getAllByLabelText("Open question");
+      fireEvent.change(questionInputs[0], { target: { value: "New question" } });
+      // Unlike the links card (in the Aside, after the properties card's own
+      // "Save"), the fog card sits in the reading column, *before* the
+      // properties card — so its edit row's "Save" is the first one on
+      // screen here, not the last (the Route card renders none: `route` is
+      // unset in this dossier, so it shows "Reading Route…" with no form
+      // button at all).
+      const saveButtons = screen.getAllByRole("button", { name: "Save" });
+      fireEvent.click(saveButtons[0]);
+
+      expect(onPatchFog).toHaveBeenCalledWith(segment, { question: "New question" });
+    });
+
+    it("swaps the positions of the two adjacent rows on a move gesture", () => {
+      const onPatchFog = vi.fn();
+      const first = fogDTO({ id: "f-1", position: 1 });
+      const second = fogDTO({ id: "f-2", position: 2 });
+      openDossier({ fogByProject: { "p-1": [first, second] }, onPatchFog });
+
+      fireEvent.click(screen.getAllByRole("button", { name: "Move down" })[0]);
+
+      expect(onPatchFog).toHaveBeenCalledWith(first, { position: 2 });
+      expect(onPatchFog).toHaveBeenCalledWith(second, { position: 1 });
+    });
+
+    it("resolves a segment with a timestamp rather than deleting it from the store", () => {
+      const onPatchFog = vi.fn();
+      const segment = fogDTO({ id: "f-1" });
+      openDossier({ fogByProject: { "p-1": [segment] }, onPatchFog });
+
+      fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
+
+      expect(onPatchFog).toHaveBeenCalledWith(segment, { resolvedAt: expect.any(Number) });
+    });
+
+    it("renders a failed fog write's own message, scoped to this project", () => {
+      openDossier({
+        fogByProject: { "p-1": [] },
+        lastFogWrite: { seed: "s-1", projectId: "p-1", kind: "failed", error: "question must be non-empty" },
+      });
+
+      expect(screen.getByText("question must be non-empty")).toBeTruthy();
+    });
+
+    it("does not paint another project's failed fog write into this dossier", () => {
+      openDossier({
+        fogByProject: { "p-1": [] },
+        lastFogWrite: { seed: "s-1", projectId: "p-2", kind: "failed", error: "no can do" },
       });
 
       expect(screen.queryByText("no can do")).toBeNull();

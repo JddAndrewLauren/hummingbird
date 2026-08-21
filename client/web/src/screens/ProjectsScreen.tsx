@@ -7,8 +7,14 @@ import { EmptyState } from "../components/feedback/EmptyState";
 import { Input } from "../components/forms/Input";
 import { Switch } from "../components/forms/Switch";
 import { Textarea } from "../components/forms/Textarea";
-import type { ProjectDTO, ProjectLinkDTO, RouteDTO } from "../store/protocol";
-import type { TaskProjectLinkResult, TaskProjectResult, TaskRouteResult, TaskState } from "../store/store";
+import type { FogDTO, ProjectDTO, ProjectLinkDTO, RouteDTO } from "../store/protocol";
+import type {
+  TaskFogResult,
+  TaskProjectLinkResult,
+  TaskProjectResult,
+  TaskRouteResult,
+  TaskState,
+} from "../store/store";
 import { Aside, Column, TwoColumn } from "./layout";
 import {
   awaitingCreate,
@@ -41,11 +47,12 @@ import {
 // `projects`.
 //
 // **The dossier is a shell.** This slice ships the frame, the name, the back
-// affordance and labelled empty regions naming what fills them; fog is
-// #628's, the action list and its inline steps #629's, archive #630's.
-// Properties (#625), links (#626) and now the Route's destination/notes
-// (#627) are real cards — each remaining placeholder still says what is
-// coming, so an operator meets an unbuilt region rather than a broken one.
+// affordance and labelled empty regions naming what fills them; the action
+// list and its inline steps are #629's, archive is #630's. Properties
+// (#625), links (#626), the Route's destination/notes (#627) and now the
+// reading column's fog (#628) are real cards — each remaining placeholder
+// still says what is coming, so an operator meets an unbuilt region rather
+// than a broken one.
 //
 // **The Route card has no optimistic overlay, so it says so.** Same
 // no-overlay contract as every other project-lane write here
@@ -88,6 +95,17 @@ export interface ProjectsScreenProps {
   /** #627: the Route card's edit gesture — `patch` carries only the fields
    * the card actually changed. */
   onPatchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => void;
+  /** #628: the fog card's read — fetches one project's open fog. Same
+   * "the caller's own effect decides when" shape as `onRequestProjectLinks`. */
+  onRequestFog: (projectId: string) => void;
+  /** #628: the fog card's add-a-question gesture. */
+  onCreateFog: (projectId: string, question: string, position: number) => void;
+  /** #628: the fog card's reword/reposition/resolve gesture — `patch`
+   * carries only the fields the card actually changed. */
+  onPatchFog: (
+    current: FogDTO,
+    patch: { question?: string; position?: number; resolvedAt?: number | null },
+  ) => void;
 }
 
 export function ProjectsScreen({
@@ -99,6 +117,9 @@ export function ProjectsScreen({
   onPatchProjectLink,
   onRequestRoute,
   onPatchRoute,
+  onRequestFog,
+  onCreateFog,
+  onPatchFog,
 }: ProjectsScreenProps) {
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -145,6 +166,11 @@ export function ProjectsScreen({
       lastRouteWrite={task.lastRouteWrite}
       onRequestRoute={onRequestRoute}
       onPatchRoute={onPatchRoute}
+      fog={task.fogByProject[open.project.id]}
+      lastFogWrite={task.lastFogWrite}
+      onRequestFog={onRequestFog}
+      onCreateFog={onCreateFog}
+      onPatchFog={onPatchFog}
       syncOutcomeSeq={task.syncOutcomeSeq}
     />
   );
@@ -312,6 +338,11 @@ function Dossier({
   lastRouteWrite,
   onRequestRoute,
   onPatchRoute,
+  fog,
+  lastFogWrite,
+  onRequestFog,
+  onCreateFog,
+  onPatchFog,
   syncOutcomeSeq,
 }: {
   row: ProjectRow;
@@ -338,6 +369,16 @@ function Dossier({
   lastRouteWrite: TaskRouteResult | null;
   onRequestRoute: (projectId: string) => void;
   onPatchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => void;
+  /** `undefined` = not read yet (`TaskState.fogByProject`'s own doc),
+   * distinct from `[]` (this project genuinely has no open fog). */
+  fog: FogDTO[] | undefined;
+  lastFogWrite: TaskFogResult | null;
+  onRequestFog: (projectId: string) => void;
+  onCreateFog: (projectId: string, question: string, position: number) => void;
+  onPatchFog: (
+    current: FogDTO,
+    patch: { question?: string; position?: number; resolvedAt?: number | null },
+  ) => void;
   syncOutcomeSeq: number;
 }) {
   const projectId = row.project.id;
@@ -354,6 +395,12 @@ function Dossier({
   // #627: same shape, for the Route.
   useEffect(() => {
     onRequestRoute(projectId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, syncOutcomeSeq]);
+
+  // #628: same shape, for the open fog.
+  useEffect(() => {
+    onRequestFog(projectId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, syncOutcomeSeq]);
 
@@ -383,7 +430,13 @@ function Dossier({
             label="actions"
             body="This project's ordered actions land here, each expanding to its own steps."
           />
-          <ComingRegion label="fog" body="The open questions on this Route land here." />
+          <FogCard
+            projectId={projectId}
+            fog={fog}
+            lastFogWrite={lastFogWrite}
+            onCreateFog={onCreateFog}
+            onPatchFog={onPatchFog}
+          />
         </Column>
         <Aside label="Project properties">
           <PropertiesCard
@@ -900,6 +953,217 @@ function LinkEditRow({
       <Input label="Label" placeholder="optional" value={labelInput} onChange={(event) => setLabelInput(event.target.value)} />
       <div style={{ display: "flex", gap: "var(--space-3)" }}>
         <Button size="sm" onClick={save} disabled={urlInput.trim() === ""}>
+          Save
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </li>
+  );
+}
+
+/** The dossier reading column's fog card (#628, ADR-0030 decision 1): lists
+ * a project's **open** fog in position order, and adds, edits, reorders and
+ * resolves it. `fog` is `undefined` while the read is in flight
+ * (`TaskState.fogByProject`'s own doc) — distinct from an empty array,
+ * which is a real answer ("this project has no open fog right now").
+ * Resolving is a stamp, never a delete (`Core::patch_fog`'s own doc): the
+ * mirror's own `open_fog_for` already filters resolved rows out, so a
+ * resolved segment simply stops appearing here — there is no client-side
+ * "hide it" logic to get wrong, and no reopen affordance either, since
+ * nothing in this slice's brief asks for one.
+ *
+ * Reordering swaps two adjacent rows' `position` in one gesture — two CAS
+ * patches, one per row — same discipline `LinksCard`'s own `moveLink`
+ * follows, and for the same reason: an interleaved edit from another
+ * device only ever collides with the two rows actually touched. */
+function FogCard({
+  projectId,
+  fog,
+  lastFogWrite,
+  onCreateFog,
+  onPatchFog,
+}: {
+  projectId: string;
+  fog: FogDTO[] | undefined;
+  lastFogWrite: TaskFogResult | null;
+  onCreateFog: (projectId: string, question: string, position: number) => void;
+  onPatchFog: (
+    current: FogDTO,
+    patch: { question?: string; position?: number; resolvedAt?: number | null },
+  ) => void;
+}) {
+  const [questionInput, setQuestionInput] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  // Gated on `projectId`, same reasoning `LinksCard`'s own failure read
+  // carries: `lastFogWrite` is one broadcast slot shared by every open
+  // dossier, so an unguarded read would paint a stranger's failure into
+  // this card.
+  const failure =
+    lastFogWrite !== null && lastFogWrite.projectId === projectId
+      ? (lastFogWrite.kind === "ok" ? null : lastFogWrite.error ?? "That fog write did not go through.")
+      : null;
+
+  const sortedFog = fog === undefined ? undefined : [...fog].sort((a, b) => a.position - b.position);
+
+  function addFog() {
+    const trimmedQuestion = questionInput.trim();
+    if (trimmedQuestion === "") {
+      return;
+    }
+    // Only reachable once the read has answered — Add is disabled while
+    // `sortedFog` is `undefined`, because "no open fog yet" and "not known
+    // yet" would otherwise both mint position 0, and against a project that
+    // does have open fog that 0 duplicates the first row's: the same
+    // collision the count-minted position below is written to avoid,
+    // arrived at from the other direction.
+    // Mint the new position past the largest live one, not from the count —
+    // `LinksCard.addLink`'s own reasoning, ported verbatim: resolving drops
+    // a row out of this read without renumbering the rest (it is a stamp,
+    // not a delete, but `open_fog_for` still stops returning it), so open
+    // positions develop gaps (0,1,2 minus the middle leaves 0,2 with length
+    // 2) and a count-minted position would duplicate a live row's — turning
+    // the next reorder swap into a value-identical no-op patch. Resolved
+    // rows cannot count toward the max (the mirror filters them out before
+    // this card ever sees them), and they need not: a collision with a
+    // resolved row's position is harmless, since only open rows are ever
+    // sorted or swapped.
+    const position = sortedFog === undefined || sortedFog.length === 0 ? 0 : sortedFog[sortedFog.length - 1].position + 1;
+    onCreateFog(projectId, trimmedQuestion, position);
+    setQuestionInput("");
+  }
+
+  function moveFog(index: number, direction: -1 | 1) {
+    if (sortedFog === undefined) {
+      return;
+    }
+    const swapIndex = index + direction;
+    if (swapIndex < 0 || swapIndex >= sortedFog.length) {
+      return;
+    }
+    const segment = sortedFog[index];
+    const other = sortedFog[swapIndex];
+    onPatchFog(segment, { position: other.position });
+    onPatchFog(other, { position: segment.position });
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      <span className="hb-meta">fog</span>
+      <Card padding="var(--space-5)" style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+        {sortedFog === undefined ? (
+          <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>Reading fog…</span>
+        ) : sortedFog.length === 0 ? (
+          <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+            No open fog on this Route.
+          </span>
+        ) : (
+          <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+            {sortedFog.map((segment, index) =>
+              editingId === segment.id ? (
+                <FogEditRow
+                  key={segment.id}
+                  fog={segment}
+                  onSave={(question) => {
+                    onPatchFog(segment, { question });
+                    setEditingId(null);
+                  }}
+                  onCancel={() => setEditingId(null)}
+                />
+              ) : (
+                <li key={segment.id} style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                  <span
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      font: "var(--type-body-sm)",
+                      color: "var(--text-primary)",
+                    }}
+                  >
+                    {segment.question}
+                  </span>
+                  <IconButton
+                    icon="chevron-down"
+                    label="Move up"
+                    size="sm"
+                    style={{ transform: "rotate(180deg)" }}
+                    disabled={index === 0}
+                    onClick={() => moveFog(index, -1)}
+                  />
+                  <IconButton
+                    icon="chevron-down"
+                    label="Move down"
+                    size="sm"
+                    disabled={index === sortedFog.length - 1}
+                    onClick={() => moveFog(index, 1)}
+                  />
+                  <Button variant="ghost" size="sm" onClick={() => setEditingId(segment.id)}>
+                    Edit
+                  </Button>
+                  <IconButton
+                    icon="check"
+                    label="Resolve"
+                    size="sm"
+                    onClick={() => onPatchFog(segment, { resolvedAt: Date.now() })}
+                  />
+                </li>
+              ),
+            )}
+          </ul>
+        )}
+
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            addFog();
+          }}
+          style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}
+        >
+          <Input
+            label="Open question"
+            placeholder="What blocks this from being an action?"
+            value={questionInput}
+            onChange={(event) => setQuestionInput(event.target.value)}
+          />
+          {failure !== null ? <Badge tone="danger">{failure}</Badge> : null}
+          <Button type="submit" size="sm" disabled={questionInput.trim() === "" || sortedFog === undefined}>
+            Add fog
+          </Button>
+        </form>
+      </Card>
+    </div>
+  );
+}
+
+/** One fog segment's inline reword form — swapped in for its display row
+ * (`FogCard`'s own `editingId`), the same "click to reveal the fields"
+ * shape `LinkEditRow` uses. */
+function FogEditRow({
+  fog,
+  onSave,
+  onCancel,
+}: {
+  fog: FogDTO;
+  onSave: (question: string) => void;
+  onCancel: () => void;
+}) {
+  const [questionInput, setQuestionInput] = useState(fog.question);
+
+  function save() {
+    const trimmedQuestion = questionInput.trim();
+    if (trimmedQuestion === "") {
+      return;
+    }
+    onSave(trimmedQuestion);
+  }
+
+  return (
+    <li style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      <Input label="Open question" value={questionInput} onChange={(event) => setQuestionInput(event.target.value)} />
+      <div style={{ display: "flex", gap: "var(--space-3)" }}>
+        <Button size="sm" onClick={save} disabled={questionInput.trim() === ""}>
           Save
         </Button>
         <Button variant="ghost" size="sm" onClick={onCancel}>

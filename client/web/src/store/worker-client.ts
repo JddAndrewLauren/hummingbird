@@ -9,6 +9,7 @@ import type {
   CalendarSelectionDTO,
   CalendarWorkerRequest,
   ConditionDTO,
+  FogDTO,
   GrillDraftTurnDTO,
   GrillVerdictName,
   ProjectDTO,
@@ -94,6 +95,7 @@ type Store = Pick<
   | "setTaskSteps"
   | "setTaskProjectLinks"
   | "setTaskRoute"
+  | "setTaskFog"
   | "setTaskPaneRead"
   | "setTaskGrillDraft"
 >;
@@ -464,6 +466,43 @@ export function attachWorkerClient(
           // row's `version` simply does not move to what this write
           // expected.
           requestRoute(worker, message.projectId);
+        }
+        return;
+      case "fog":
+        store.setTaskFog(message.projectId, message.fog);
+        return;
+      case "createFogResult":
+        store.setTaskState({
+          lastFogWrite: {
+            seed: message.seed,
+            projectId: message.projectId,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        if (message.kind === "ok") {
+          // No overlay for fog (`Core::create_fog`'s own doc) — the new
+          // segment becomes visible once the next completed cycle pulls it
+          // back, so this re-request answers the *old* list, which is the
+          // point: the card says it is waiting rather than showing a row
+          // the authority has not confirmed.
+          requestFog(worker, message.projectId);
+        }
+        return;
+      case "patchFogResult":
+        store.setTaskState({
+          lastFogWrite: {
+            seed: message.seed,
+            projectId: message.projectId,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        if (message.kind === "ok") {
+          // No overlay for fog, same reasoning as `createFogResult`: the
+          // edit becomes visible once the next completed cycle pulls it
+          // back, so this re-request answers the *old* row until then.
+          requestFog(worker, message.projectId);
         }
         return;
       case "isPendingResult":
@@ -1085,6 +1124,52 @@ export function patchRoute(
     destination: patch.destination ?? null,
     notesTouched: "notes" in patch,
     notes: patch.notes ?? null,
+    nowMs,
+  });
+}
+
+/** #628's per-project open-fog read — the dossier reading column's fetch,
+ * same `requestProjectLinks`-style per-id shape. */
+export function requestFog(worker: WorkerLike, projectId: string): void {
+  worker.postMessage({ type: "getFog", projectId });
+}
+
+/** #628's fog create. `seed` mints `Core::create_fog`'s own queue-entry id
+ * — same caller-mints contract as `createProjectLink`'s. The question is
+ * trimmed and an empty one refused at the wasm seam, not here. */
+export function createFog(
+  worker: WorkerLike,
+  seed: string,
+  projectId: string,
+  question: string,
+  position: number,
+  nowMs: number,
+): void {
+  worker.postMessage({ type: "createFog", seed, projectId, question, position, nowMs });
+}
+
+/** #628's fog patch — rewording, repositioning and resolving/reopening a
+ * segment all share this one call. `current` is the caller's own
+ * last-known copy of the row (the CAS `base` a 409 is diffed against);
+ * every field in `patch` is `undefined` to mean "leave this alone," except
+ * `resolvedAt`, which distinguishes a present-but-`null` clear from an
+ * absent "don't touch" the same way `patchProjectLink`'s `patch.removedAt`
+ * does. */
+export function patchFog(
+  worker: WorkerLike,
+  seed: string,
+  current: FogDTO,
+  patch: { question?: string; position?: number; resolvedAt?: number | null },
+  nowMs: number,
+): void {
+  worker.postMessage({
+    type: "patchFog",
+    seed,
+    current,
+    question: patch.question ?? null,
+    position: patch.position ?? null,
+    resolvedAtTouched: "resolvedAt" in patch,
+    resolvedAt: patch.resolvedAt ?? null,
     nowMs,
   });
 }

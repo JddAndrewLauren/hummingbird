@@ -227,6 +227,23 @@ impl SyncMirror {
         live(self.routes.get(project_id))
     }
 
+    /// Every **open** Fog segment on one project — the dossier reading
+    /// column's read (#628, ADR-0030 decision 1). Unlike `project_links`'
+    /// `removed_at`, a Fog row's `resolved_at` does **not** demote its
+    /// presence (`apply_tables` passes `fog` a `|_| None` demotion
+    /// function, same as `routes`) — resolving is a stamp, never a
+    /// retention event, so a resolved row stays `Presence::Live` and this
+    /// accessor filters it out itself rather than leaning on `live_slot`
+    /// for that. Position order is the caller's contract to sort, same
+    /// split every other collection read here leaves to its own `Core`
+    /// wrapper.
+    pub fn open_fog_for<'a>(&'a self, project_id: &'a str) -> impl Iterator<Item = &'a Fog> {
+        self.fog
+            .values()
+            .filter_map(live_slot)
+            .filter(move |f| f.project_id == project_id && f.resolved_at.is_none())
+    }
+
     /// Every live Link on one project, position order — the dossier
     /// aside's read (#626). Live only: a removed link is retained (flagged,
     /// per ADR-0020) but never returned here, same "live accessor filters
@@ -587,6 +604,17 @@ mod tests {
             destination: None,
             notes: None,
             updated_at: 1,
+            version: 1,
+        }
+    }
+
+    fn fog(id: &str, project_id: &str) -> Fog {
+        Fog {
+            id: id.to_string(),
+            project_id: project_id.to_string(),
+            question: format!("question {id}"),
+            position: 1,
+            resolved_at: None,
             version: 1,
         }
     }
@@ -1107,6 +1135,39 @@ mod tests {
             ..ChangesResponse::empty(2)
         });
         assert_eq!(mirror.links_for_project("p-1").count(), 0, "flagged removal, not a full sweep, demotes it");
+    }
+
+    /// #628: open Fog is scoped to its project, and a resolved row
+    /// (`resolved_at` set, never a presence demotion — unlike
+    /// `project_links`' `removed_at` above) drops out of
+    /// [`SyncMirror::open_fog_for`] while staying present in the mirror
+    /// itself.
+    #[test]
+    fn open_fog_is_scoped_to_its_project_and_resolution_is_a_stamp_not_a_demotion() {
+        let mut mirror = SyncMirror::new();
+        mirror.apply_delta(ChangesResponse {
+            version: 1,
+            fog: vec![fog("f-1", "p-1"), fog("f-2", "p-2")],
+            ..ChangesResponse::empty(1)
+        });
+        assert_eq!(
+            mirror.open_fog_for("p-1").map(|f| f.id.as_str()).collect::<Vec<_>>(),
+            vec!["f-1"]
+        );
+
+        let mut resolved = fog("f-1", "p-1");
+        resolved.resolved_at = Some(9_000);
+        resolved.version = 2;
+        mirror.apply_delta(ChangesResponse {
+            version: 2,
+            fog: vec![resolved],
+            ..ChangesResponse::empty(2)
+        });
+        assert_eq!(
+            mirror.open_fog_for("p-1").count(),
+            0,
+            "resolving stamps the row, but it must still stop showing as open"
+        );
     }
 
     /// #103 acceptance: "the cycle exposes the active-issue count, so the
