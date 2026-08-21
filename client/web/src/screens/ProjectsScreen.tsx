@@ -540,13 +540,17 @@ function PropertiesCard({
  * **The saving/saved state is explicit here**, unlike `PropertiesCard`'s own
  * silent re-sync — this slice's brief asks for it, since there is no
  * optimistic overlay to imply it visually. `saving` flips true the moment
- * Save is clicked and flips false (to `justSaved`) once the row's `version`
- * actually moves — which is also how a 409 that this write lost would show
- * up: `version` still moves (to whatever won), so this card cannot tell its
- * own write apart from a concurrent one and does not try to. A genuine
- * conflict is never surfaced here; it lands in the ordinary dead-letter
- * journal like every other CAS write (ADR-0030 decision 1) — this card adds
- * no bespoke conflict UI. */
+ * Save is clicked, and resolves one of two ways: it flips false (to
+ * `justSaved`) once the row's `version` actually moves — which is also how
+ * a 409 that this write lost would show up: `version` still moves (to
+ * whatever won), so this card cannot tell its own write apart from a
+ * concurrent one and does not try to — or, if the write never reached the
+ * queue at all (`lastRouteWrite.kind` `"failed"`/`"busy"`, e.g. a sync cycle
+ * holding the host at click time), it flips false with no `justSaved`, so
+ * `Saving…` cannot outlive the failure badge painted from that same
+ * `lastRouteWrite`. A genuine 409 conflict is never surfaced here; it lands
+ * in the ordinary dead-letter journal like every other CAS write (ADR-0030
+ * decision 1) — this card adds no bespoke conflict UI. */
 function RouteCard({
   projectId,
   route,
@@ -582,19 +586,29 @@ function RouteCard({
     }
   }
 
+  // Gated on `projectId`, same reasoning `PropertiesCard`'s own failure read
+  // carries: `lastRouteWrite` is one broadcast slot shared by every open
+  // dossier.
+  const failedHere =
+    lastRouteWrite !== null && lastRouteWrite.projectId === projectId && lastRouteWrite.kind !== "ok";
+
+  // The write never reached the queue at all — no `version` bump is ever
+  // coming to clear `saving` for us (the branch above only fires on a real
+  // version move), so a `"failed"`/`"busy"` result clears it directly. No
+  // `justSaved` here: the failure badge below is the visible resolution,
+  // not a silent "Saved".
+  if (saving && failedHere) {
+    setSaving(false);
+  }
+
   const trimmedDestination = destinationInput.trim();
   const trimmedNotes = notesInput.trim();
   const destinationChanged = trimmedDestination !== (route?.destination ?? "");
   const notesChanged = trimmedNotes !== (route?.notes ?? "");
   const dirty = destinationChanged || notesChanged;
-  // Gated on `projectId`, same reasoning `PropertiesCard`'s own failure read
-  // carries: `lastRouteWrite` is one broadcast slot shared by every open
-  // dossier.
   const failure =
-    lastRouteWrite !== null && lastRouteWrite.projectId === projectId
-      ? lastRouteWrite.kind === "ok"
-        ? null
-        : lastRouteWrite.error ?? "That route write did not go through."
+    failedHere && lastRouteWrite !== null
+      ? lastRouteWrite.error ?? "That route write did not go through."
       : null;
 
   function save() {

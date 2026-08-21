@@ -620,6 +620,43 @@ describe("ProjectsScreen", () => {
       expect(screen.getByText("Saved")).toBeTruthy();
     });
 
+    // Regression: a write that never reaches the queue (a durability
+    // failure, or the wasm host busy mid sync-cycle at click time) never
+    // produces a version bump, so the only other resolution path
+    // (`route.version !== synced.version`) never fires either. `saving`
+    // must clear on the write result itself, or "Saving…" renders forever
+    // beside the danger badge painted from the same `lastRouteWrite` —
+    // contradictory UI.
+    it.each([
+      ["failed", "no can do"],
+      ["busy", null],
+    ] as const)("clears Saving… when the write result is %s, not stuck beside the failure badge", (kind, error) => {
+      const route = routeDTO({ projectId: "p-1", version: 1 });
+      const task = taskState({
+        projects: [projectDTO({ id: "p-1", name: "House repairs" })],
+        ledger: [],
+        routeByProject: { "p-1": route },
+      });
+      const { rerenderWith } = renderProjectsScreen({ task, onPatchRoute: noop });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      fireEvent.change(screen.getByLabelText("Destination"), { target: { value: "Ship the deck" } });
+      fireEvent.click(routeSaveButton());
+
+      expect(screen.getByText("Saving…")).toBeTruthy();
+
+      rerenderWith({
+        task: {
+          ...task,
+          lastRouteWrite: { seed: "s-1", projectId: "p-1", kind, error },
+        },
+      });
+
+      expect(screen.queryByText("Saving…")).toBeNull();
+      expect(screen.queryByText("Saved")).toBeNull();
+      expect(screen.getByText(error ?? "That route write did not go through.")).toBeTruthy();
+    });
+
     it("keeps a field typed while another field's write was in flight", () => {
       // Both fields share one Save and one version, so the destination's
       // write landing moves the version while notes is half-typed. The
