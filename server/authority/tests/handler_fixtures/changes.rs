@@ -34,20 +34,28 @@ fn seed_all_nine_tables(sql: &dyn Sql) -> i64 {
     post_to(sql, "/api/blocked_by", r#"{"item_id": "a-1", "blocker_id": "a-2"}"#, 0); // v7
     put_setting(sql, "k", r#"{"expected_version": 0, "value": true}"#, 0); // v8
     seed_alert_raw(sql, "al-1", "healthchecks/v1", "sweeper"); // v9
-    seed_snapshot_raw(sql, "f1/v1", "schedule") // v10
+    seed_snapshot_raw(sql, "f1/v1", "schedule"); // v10
+    post_to(
+        sql,
+        "/api/project_links",
+        r#"{"id": "l-1", "project_id": "p-1", "url": "https://example.com", "position": 1}"#,
+        0,
+    ); // v11
+    meta_version(sql)
 }
 
 #[test]
 fn delta_pull_carries_every_synced_table() {
     let sql = RusqliteSql::new();
     let version = seed_all_nine_tables(&sql);
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
 
     let parsed: ChangesResponse = body_as(&changes(&sql, "since=0"));
-    assert_eq!(parsed.version, 10);
+    assert_eq!(parsed.version, 11);
     assert_eq!(parsed.projects.len(), 1);
     assert_eq!(parsed.routes.len(), 1);
     assert_eq!(parsed.fog.len(), 1);
+    assert_eq!(parsed.project_links.len(), 1);
     assert_eq!(parsed.items.len(), 2);
     assert_eq!(parsed.steps.len(), 1);
     assert_eq!(parsed.blocked_by.len(), 1);
@@ -75,9 +83,9 @@ fn delta_cursor_filters_every_table_independently() {
     assert!(parsed.settings.is_empty());
 
     // A fresh write moves one row above everything else.
-    patch(&sql, "a-2", r#"{"expected_version": 5, "title": "renamed"}"#, 0); // v11
-    let parsed: ChangesResponse = body_as(&changes(&sql, "since=10"));
-    assert_eq!(parsed.version, 11);
+    patch(&sql, "a-2", r#"{"expected_version": 5, "title": "renamed"}"#, 0); // v12
+    let parsed: ChangesResponse = body_as(&changes(&sql, "since=11"));
+    assert_eq!(parsed.version, 12);
     assert_eq!(parsed.items.len(), 1, "only the re-versioned item");
     assert_eq!(parsed.items[0].id, "a-2");
     assert!(parsed.alerts.is_empty(), "the alert stayed below the cursor");

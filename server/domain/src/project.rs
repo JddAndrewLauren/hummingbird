@@ -1,6 +1,8 @@
 //! The project lane of the owned schema (ADR-0009): `projects`, `routes`,
-//! `fog` — a Route is 1:1 with its project (created with it, patched only),
-//! and Fog rows are the segments not yet definable as actions.
+//! `fog`, `project_links` (ADR-0030 decision 4, #626) — a Route is 1:1 with
+//! its project (created with it, patched only), Fog rows are the segments
+//! not yet definable as actions, and a Link is one ordered URL a project's
+//! dossier keeps in its aside.
 
 use serde::{Deserialize, Serialize};
 
@@ -53,5 +55,22 @@ pub struct Fog {
     pub position: i64,
     /// ms epoch; `None` = open.
     pub resolved_at: Option<i64>,
+    pub version: i64,
+}
+
+/// One project Link: a URL and an optional label, ordered within its
+/// project (ADR-0030 decision 4, #626). References `projects`, not `items`
+/// — it is not part of the item cascade machinery
+/// (`hummingbird_authority::schema::FK_CHILDREN`). Removal is flagged, never
+/// deleted, the same [`Fog`] shape this table otherwise mirrors.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectLink {
+    pub id: String,
+    pub project_id: String,
+    pub url: String,
+    pub label: Option<String>,
+    pub position: i64,
+    /// ms epoch; `None` = live.
+    pub removed_at: Option<i64>,
     pub version: i64,
 }

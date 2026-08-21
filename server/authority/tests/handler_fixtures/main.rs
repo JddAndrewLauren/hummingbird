@@ -16,6 +16,7 @@ mod fcm;
 mod fog;
 mod grills;
 mod items;
+mod project_links;
 mod projects_routes;
 mod push_targets;
 mod rebase;

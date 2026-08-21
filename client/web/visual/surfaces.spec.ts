@@ -505,16 +505,23 @@ for (const theme of THEMES) {
       // #624. The per-screen board capture above only ever photographs the
       // GRID — `ProjectsScreen` opens the dossier on local state, so the
       // second of its two levels is unreachable without a click, and would
-      // otherwise ship unphotographed at every width and in both themes. The
-      // dossier is mostly labelled empty regions this slice deliberately does
-      // not fill (#625–#630 do), so what this proves is that the frame, the
-      // two-column skeleton and the back affordance survive the phone form —
-      // exactly where a `TwoColumn` is most likely to overflow.
+      // otherwise ship unphotographed at every width and in both themes.
+      // What this proves is that the frame, the two-column skeleton and the
+      // back affordance survive the phone form — exactly where a `TwoColumn`
+      // is most likely to overflow — and, since #626, that the aside's
+      // POPULATED links card does too: the fixture seeds real links onto
+      // "House repairs", so the row layout (ellipsised URL, the move pair,
+      // Edit, Remove, all inside the narrow `Aside`) is in every capture
+      // rather than a "Reading links…" placeholder.
       await openApp(page, theme, "board");
       await show(page, "Projects", testInfo.project.name);
       await page.getByRole("heading", { level: 3, name: "House repairs" }).click();
       await expect(page.getByRole("heading", { level: 2, name: "House repairs" })).toBeVisible();
       await expect(page.getByRole("button", { name: "All projects" })).toBeVisible();
+      // The links card must actually be populated in the shot — a regression
+      // back to the unanswered-read placeholder would otherwise photograph
+      // an empty region and still pass.
+      await expect(page.getByRole("link", { name: "Repo" })).toBeVisible();
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
         path: `visual/.captures/projects-dossier-${testInfo.project.name}-${theme}.png`,
