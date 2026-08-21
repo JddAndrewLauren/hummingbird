@@ -534,12 +534,19 @@ private fun AppRoot(
     // calendar poll would spend the operator's battery mirroring events
     // nothing is on screen to read.
     //
-    // Keyed on the connection state as well as the core, so connecting
-    // arms the loop immediately rather than at the next resume.
-    LifecycleResumeEffect(core, calendarConnection.state) {
+    // Keyed on whether the lane is ARMED, not on the connection state
+    // itself — connecting arms the loop immediately rather than at the next
+    // resume, but a tick that merely moves the device between `CONNECTED`
+    // and `CANNOT_CONFIRM` must not restart it. Keying on the whole state
+    // did exactly that: every tick that changed the state tore the effect
+    // down and relaunched it, which ticks again at once, so a device
+    // flapping between those two states would poll in a tight loop instead
+    // of every fifteen minutes.
+    val calendarArmed = calendarConnection.state != MobileCalendarState.NEVER_CONNECTED
+    LifecycleResumeEffect(core, calendarArmed) {
         val resumed = scope.launch {
             val host = core
-            if (host != null && calendarConnection.state != MobileCalendarState.NEVER_CONNECTED) {
+            if (host != null && calendarArmed) {
                 while (true) {
                     calendarConnection =
                         host.calendarOnTimer(System.currentTimeMillis()).connection
