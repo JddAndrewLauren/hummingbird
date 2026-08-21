@@ -38,7 +38,7 @@
 //! window built off the pivot, which would silently be a UTC weekend
 //! instead of the reader's own.
 //!
-//! # What did not sink: `entryUrgency`, and most of `WindowEntry`
+//! # What did not sink: `entryUrgency`
 //!
 //! `weekend.ts`'s `entryUrgency` is `computeUrgency(entry.item?.deadline,
 //! nowMs)` and nothing more — and `computeUrgency` **is** already this
@@ -52,19 +52,32 @@
 //! (`computeUrgency(entry.item?.deadline, nowMs)` against the seam) rather
 //! than a second copy here.
 //!
-//! The same reasoning trims [`WindowEntry`]'s TS shape down to nothing at
-//! all in the port: `weekendBand`/`weekendWithinBand` read only the
-//! window's own `startMs`/`endMs`/`underWay`, and `countKinds` reads only
-//! each entry's *kind*, never its `id`/`title`/`atMs`/`anchor`/
-//! `alsoScheduledOn`/`deadlineOutsideWindow`. So [`merge_counts`] below
-//! folds the merge straight down to a [`WindowCounts`] tally instead of
-//! building a per-entry list the answer never reads — the full merged
-//! window with titles (`weekendView`'s job) is the client's own to keep,
-//! exactly as `waste.rs`'s parser/answer split leaves rendering-only data
-//! out. `alsoScheduledOn` and `deadlineOutsideWindow` are exactly this: the
-//! dedupe rule they annotate *is* ported (an item both due and scheduled
-//! inside the window counts once, as due), but the residue strings
-//! themselves are never read by anything this module exposes.
+//! # What DID sink at #564: the per-day entries
+//!
+//! At #534 this module folded the merge straight down to a
+//! [`WindowCounts`] tally and left `weekend.ts`'s per-entry
+//! [`WindowEntry`] list on the web, on the grounds that no *decision* read
+//! an entry's `id`/`title`/`at_ms`/`anchor` — only its kind. That was the
+//! right call with one client. #564 gave the expanded weekend rendering a
+//! second one (Android), and ADR-0025's own tie-breaker is *sink what has
+//! a demonstrated second caller*: two hand-written merges would each have
+//! to get the dedupe rule right, and the one that got it wrong would look
+//! completely plausible.
+//!
+//! So [`merge_window`] builds the entries and [`count_kinds`] tallies
+//! **from them** — the counts can no longer disagree with the list they
+//! describe, which they could when each was computed separately. The dedupe
+//! rule (an item both due and scheduled inside the window appears once, as
+//! due — a deadline is a consequence, a do-date is a preference, and the one
+//! with consequences is what the day owes) now exists exactly once, and
+//! `also_scheduled_on`/`deadline_outside_window` — its two residues — sink
+//! with it rather than being re-derived per client.
+//!
+//! **What still does not cross is the DTOs themselves.** An entry carries
+//! [`WindowEntry::source_id`], the handle its host uses to reach back into
+//! its own event or item, not a copy of the event or the item —
+//! `inputs.rs`'s "do not re-cross whole DTOs" discipline, applied on the way
+//! out as well as the way in.
 
 use serde::{Deserialize, Serialize};
 
@@ -123,7 +136,8 @@ pub struct WeekendWindow {
 }
 
 /// The merge's decision-relevant residue: how many of each kind landed in
-/// the window. Never a per-entry list — see the module header.
+/// the window — tallied from the entries themselves ([`count_kinds`]), so
+/// the two can never disagree.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowCounts {
@@ -151,13 +165,85 @@ pub enum WeekendGap {
     UnresolvableZone,
 }
 
-/// Everything an answered pane needs to decide its band, plus the counts
-/// its (unsunk) headline reads.
+/// What one of the window's three days holds — its own civil date and the
+/// entries that landed on it, already in display order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeekendDayEntries {
+    pub date: CivilDate,
+    pub entries: Vec<WindowEntry>,
+}
+
+/// Which of the three things a merged entry is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EntryKind {
+    Event,
+    Due,
+    Scheduled,
+}
+
+impl EntryKind {
+    /// The wire spelling, and the tie-break order the sort uses — see
+    /// [`merge_window`] for why it is alphabetical rather than semantic.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EntryKind::Due => "due",
+            EntryKind::Event => "event",
+            EntryKind::Scheduled => "scheduled",
+        }
+    }
+}
+
+/// Whether an entry sits at an instant within its day or covers the day as
+/// a whole — what a renderer needs to decide between "9:30 – 10:00" and
+/// "all day".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EntryAnchor {
+    Time,
+    Day,
+}
+
+/// One thing on one day of the weekend, merged from the calendar arm and
+/// the item list. See the module header for what deliberately is **not**
+/// here: the event or the item itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowEntry {
+    /// Stable within a merge, and unique across days: an event spanning two
+    /// days produces two entries, and a shared id would make a keyed list
+    /// collapse them into one.
+    pub id: String,
+    pub kind: EntryKind,
+    pub title: String,
+    pub at_ms: i64,
+    pub anchor: EntryAnchor,
+    pub day_key: CivilDate,
+    /// The host's own handle on whatever this entry came from — the
+    /// provider event id for an [`EntryKind::Event`], the item id for a
+    /// due or scheduled one. Never the record itself (the module header).
+    pub source_id: String,
+    /// Set only on a `due` entry that is ALSO scheduled inside the window:
+    /// the dedupe suppressed a second entry, and this is what it suppressed.
+    pub also_scheduled_on: Option<String>,
+    /// Set only on a `scheduled` entry whose item is due *outside* the
+    /// window — the inverse residue, and the reason a weekend plan can
+    /// still show a deadline it does not contain.
+    pub deadline_outside_window: Option<String>,
+}
+
+/// Everything an answered pane needs to decide its band, the counts its
+/// headline reads, and (since #564) the merged entries both clients'
+/// expanded renderings draw.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WeekendFacts {
     pub window: WeekendWindow,
     pub counts: WindowCounts,
+    /// Always exactly three, in window order — Friday, Saturday, Sunday —
+    /// even when some hold nothing.
+    pub days: Vec<WeekendDayEntries>,
 }
 
 /// The whole answered fact set, or the reason there is none.
@@ -323,34 +409,65 @@ fn scheduled_to_ms(scheduled: &str, facts: &ZoneFacts) -> Option<i64> {
     facts.midnight_ms(DEVICE_ZONE, scheduled)
 }
 
-/// The merge, folded straight to counts — events overlapping the window,
-/// plus due/scheduled items inside it, with #122's own dedupe rule: an item
-/// both due and scheduled in the window counts once, as due (a deadline is
-/// a consequence, a do-date is a preference, and the one with consequences
-/// is what the day owes).
+/// The merge: events overlapping the window plus due/scheduled items
+/// inside it, grouped by day and in display order within a day.
 ///
-/// A multi-day event counts once per day it touches — `weekend.ts`'s
-/// `countKinds` walks `window.days` and sums each day's own entries, so an
-/// all-day trip spanning Saturday and Sunday reads as two, not one.
-fn merge_counts(
+/// **The dedupe rule lives here and nowhere else** — an item both due and
+/// scheduled inside the window appears once, as due (a deadline is a
+/// consequence, a do-date is a preference, and the one with consequences is
+/// what the day owes), and the suppressed do-date rides the surviving entry
+/// as [`WindowEntry::also_scheduled_on`]. The inverse — scheduled inside,
+/// due outside — keeps its deadline as
+/// [`WindowEntry::deadline_outside_window`].
+///
+/// A multi-day event belongs to **each** day it touches: it is a fact about
+/// each of them, and showing it once would leave the other day reading as
+/// free. That is why [`WindowEntry::id`] carries the day.
+///
+/// The within-day order is `at_ms`, then the kind's own wire spelling, then
+/// the id — alphabetical on the kind rather than semantic, because it is a
+/// tie-break for entries at the identical instant and any total order does,
+/// as long as it is the *same* total order on every client. `weekend.ts`'s
+/// `localeCompare` is what it was, so that is what it stays.
+fn merge_window(
     window: &WeekendWindow,
     events: &[CalendarEventFacts],
     items: &[PaneItemFacts],
     facts: &ZoneFacts,
-) -> WindowCounts {
-    let mut counts = WindowCounts::default();
+) -> Vec<WeekendDayEntries> {
+    let mut days: Vec<WeekendDayEntries> = window
+        .days
+        .iter()
+        .map(|day| WeekendDayEntries { date: day.date.clone(), entries: Vec::new() })
+        .collect();
 
     for event in events {
         if event.status == CalendarEventStatusFact::Cancelled {
             continue; // defence in depth — the sync layer already filters these.
         }
         match &event.when {
+            // The two arms are asked in their own terms and never converted
+            // into one another (ADR-0015's 2026-08-10 amendment). An
+            // all-day event's day membership is a pure string compare
+            // against the day's own civil date — no zone, no instant, and
+            // so no way for a device east or west of the calendar to land
+            // it on the wrong day.
             CalendarEventWhenFacts::AllDay { start_date, end_date } => {
-                for day in &window.days {
+                for (index, day) in window.days.iter().enumerate() {
                     if start_date.as_str() <= day.date.as_str()
                         && day.date.as_str() < end_date.as_str()
                     {
-                        counts.events += 1;
+                        days[index].entries.push(WindowEntry {
+                            id: format!("{}@{}", event.provider_event_id, day.date),
+                            kind: EntryKind::Event,
+                            title: event.title.clone(),
+                            at_ms: day.start_ms,
+                            anchor: EntryAnchor::Day,
+                            day_key: day.date.clone(),
+                            source_id: event.provider_event_id.clone(),
+                            also_scheduled_on: None,
+                            deadline_outside_window: None,
+                        });
                     }
                 }
             }
@@ -360,11 +477,21 @@ fn merge_counts(
                 if overlap_start > overlap_end {
                     continue;
                 }
-                for day in &window.days {
+                for (index, day) in window.days.iter().enumerate() {
                     let day_overlap_start = overlap_start.max(day.start_ms);
                     let day_overlap_end = overlap_end.min(day.end_ms);
                     if day_overlap_start <= day_overlap_end {
-                        counts.events += 1;
+                        days[index].entries.push(WindowEntry {
+                            id: format!("{}@{}", event.provider_event_id, day.date),
+                            kind: EntryKind::Event,
+                            title: event.title.clone(),
+                            at_ms: day_overlap_start,
+                            anchor: EntryAnchor::Time,
+                            day_key: day.date.clone(),
+                            source_id: event.provider_event_id.clone(),
+                            also_scheduled_on: None,
+                            deadline_outside_window: None,
+                        });
                     }
                 }
             }
@@ -377,15 +504,86 @@ fn merge_counts(
         let due_here = due_ms.is_some_and(|ms| in_window(ms, window));
         let scheduled_here = scheduled_ms.is_some_and(|ms| in_window(ms, window));
 
-        if due_here {
-            counts.due += 1;
-            continue; // the dedupe: never also counted as scheduled.
+        if let (true, Some(due_ms)) = (due_here, due_ms) {
+            if let Some(index) = day_index_of(window, due_ms) {
+                let day = &window.days[index];
+                days[index].entries.push(WindowEntry {
+                    id: item.id.clone(),
+                    kind: EntryKind::Due,
+                    title: item.title.clone(),
+                    at_ms: due_ms,
+                    // A day-only deadline (`YYYY-MM-DD`, ten characters)
+                    // covers the day; anything longer names a time.
+                    anchor: match item.deadline.as_deref() {
+                        Some(deadline) if deadline.len() == 10 => EntryAnchor::Day,
+                        _ => EntryAnchor::Time,
+                    },
+                    day_key: day.date.clone(),
+                    source_id: item.id.clone(),
+                    also_scheduled_on: scheduled_here
+                        .then(|| item.scheduled_date.clone())
+                        .flatten(),
+                    deadline_outside_window: None,
+                });
+            }
+            continue; // the dedupe: never also emitted as scheduled.
         }
-        if scheduled_here {
-            counts.scheduled += 1;
+
+        if let (true, Some(scheduled_ms)) = (scheduled_here, scheduled_ms) {
+            if let Some(index) = day_index_of(window, scheduled_ms) {
+                let day = &window.days[index];
+                days[index].entries.push(WindowEntry {
+                    id: item.id.clone(),
+                    kind: EntryKind::Scheduled,
+                    title: item.title.clone(),
+                    at_ms: scheduled_ms,
+                    anchor: EntryAnchor::Day,
+                    day_key: day.date.clone(),
+                    source_id: item.id.clone(),
+                    also_scheduled_on: None,
+                    deadline_outside_window: item.deadline.clone(),
+                });
+            }
         }
     }
 
+    for day in &mut days {
+        day.entries.sort_by(|a, b| {
+            a.at_ms
+                .cmp(&b.at_ms)
+                .then_with(|| a.kind.as_str().cmp(b.kind.as_str()))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+    }
+    days
+}
+
+/// Which of the window's three days `ms` falls on, or `None` if it falls on
+/// none of them. `weekend.ts` reaches its day through a `dayKeyOf(ms)` map
+/// lookup; here the day bounds are already resolved on the window, so the
+/// instant is compared against them directly rather than being re-derived
+/// into a civil date — one fewer place a zone could be assumed.
+fn day_index_of(window: &WeekendWindow, ms: i64) -> Option<usize> {
+    window
+        .days
+        .iter()
+        .position(|day| ms >= day.start_ms && ms <= day.end_ms)
+}
+
+/// The tally, taken **from the merged entries** rather than computed
+/// alongside them — `weekend.ts`'s `countKinds`, and the reason the counts
+/// and the list can no longer disagree.
+fn count_kinds(days: &[WeekendDayEntries]) -> WindowCounts {
+    let mut counts = WindowCounts::default();
+    for day in days {
+        for entry in &day.entries {
+            match entry.kind {
+                EntryKind::Event => counts.events += 1,
+                EntryKind::Due => counts.due += 1,
+                EntryKind::Scheduled => counts.scheduled += 1,
+            }
+        }
+    }
     counts
 }
 
@@ -407,8 +605,9 @@ pub fn weekend_facts(inputs: &PaneInputs, facts: &ZoneFacts) -> WeekendResolved 
     let Some(window) = weekend_window(inputs.now_ms, facts) else {
         return WeekendResolved::Gap { gap: WeekendGap::UnresolvableZone };
     };
-    let counts = merge_counts(&window, events, &inputs.items, facts);
-    WeekendResolved::Facts(WeekendFacts { window, counts })
+    let days = merge_window(&window, events, &inputs.items, facts);
+    let counts = count_kinds(&days);
+    WeekendResolved::Facts(WeekendFacts { window, counts, days })
 }
 
 /// How soon the window matters — never `distant`: the window is at most a
@@ -666,6 +865,20 @@ mod tests {
         );
     }
 
+    /// The old `merge_counts` — now `count_kinds(merge_window(..))`, kept
+    /// as a test-local shim so #534's whole counting suite below runs
+    /// **unchanged** against the sunk entries. That is the point: the
+    /// counts are derived from the list now, and every case those tests
+    /// pinned must still tally the same.
+    fn merge_counts(
+        window: &WeekendWindow,
+        events: &[CalendarEventFacts],
+        items: &[PaneItemFacts],
+        facts: &ZoneFacts,
+    ) -> WindowCounts {
+        count_kinds(&merge_window(window, events, items, facts))
+    }
+
     // --------------------------------------------------------- merge_counts
 
     #[test]
@@ -802,6 +1015,172 @@ mod tests {
         let counts =
             merge_counts(&window, &[], &[item("sun-due", Some(&day_key(2026, 8, 16)), None)], &facts);
         assert_eq!(counts.due, 1);
+    }
+
+    // --------------------------------------------------------- merge_window
+
+    // The entries themselves, which #534 left on the web and #564 sank.
+
+    /// [`all_day_event`] with an id of its own — the fixture above fixes
+    /// one, and these tests are about ids.
+    fn named_all_day(id: &str, start_date: &str, end_date: &str) -> CalendarEventFacts {
+        CalendarEventFacts {
+            provider_event_id: id.to_string(),
+            title: id.to_string(),
+            ..all_day_event(start_date, end_date)
+        }
+    }
+
+    fn entries_on(days: &[WeekendDayEntries], date: &str) -> Vec<WindowEntry> {
+        days.iter()
+            .find(|day| day.date == date)
+            .map(|day| day.entries.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_multi_day_all_day_event_lands_on_each_day_with_its_own_id() {
+        // A fact about each day: showing it once would leave the other
+        // reading as free. Distinct ids, so a keyed list cannot collapse
+        // them.
+        let now_ms = at(2026, 8, 14, 9, 0);
+        let facts = resolve(&weekend_zone_queries(now_ms));
+        let window = weekend_window(now_ms, &facts).unwrap();
+        let trip = named_all_day("trip", &day_key(2026, 8, 15), &day_key(2026, 8, 17));
+
+        let days = merge_window(&window, &[trip], &[], &facts);
+
+        assert_eq!(entries_on(&days, &day_key(2026, 8, 14)), Vec::new());
+        let saturday = entries_on(&days, &day_key(2026, 8, 15));
+        let sunday = entries_on(&days, &day_key(2026, 8, 16));
+        assert_eq!(saturday.len(), 1);
+        assert_eq!(sunday.len(), 1);
+        assert_eq!(saturday[0].id, format!("trip@{}", day_key(2026, 8, 15)));
+        assert_eq!(sunday[0].id, format!("trip@{}", day_key(2026, 8, 16)));
+        // Both reach the same event through the host's own handle.
+        assert_eq!(saturday[0].source_id, "trip");
+        assert_eq!(sunday[0].source_id, "trip");
+        assert_eq!(saturday[0].anchor, EntryAnchor::Day);
+    }
+
+    #[test]
+    fn an_item_both_due_and_scheduled_in_the_window_appears_once_as_due() {
+        // #122's own acceptance criterion, now with the residue the merge
+        // suppressed riding the entry that survived.
+        let now_ms = at(2026, 8, 14, 9, 0);
+        let facts = resolve(&weekend_zone_queries(now_ms));
+        let window = weekend_window(now_ms, &facts).unwrap();
+        let both = item(
+            "both",
+            Some(&day_key(2026, 8, 15)),
+            Some(&day_key(2026, 8, 16)),
+        );
+
+        let days = merge_window(&window, &[], &[both], &facts);
+
+        let all: Vec<&WindowEntry> = days.iter().flat_map(|day| day.entries.iter()).collect();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].kind, EntryKind::Due);
+        assert_eq!(all[0].also_scheduled_on.as_deref(), Some(day_key(2026, 8, 16).as_str()));
+        assert_eq!(all[0].deadline_outside_window, None);
+    }
+
+    #[test]
+    fn an_item_scheduled_inside_but_due_outside_keeps_its_deadline() {
+        // The inverse residue: the weekend does not contain the deadline,
+        // and saying nothing about it would make a do-date look free.
+        let now_ms = at(2026, 8, 14, 9, 0);
+        let facts = resolve(&weekend_zone_queries(now_ms));
+        let window = weekend_window(now_ms, &facts).unwrap();
+        let later = item(
+            "later",
+            Some(&day_key(2026, 8, 25)),
+            Some(&day_key(2026, 8, 15)),
+        );
+
+        let days = merge_window(&window, &[], &[later], &facts);
+
+        let saturday = entries_on(&days, &day_key(2026, 8, 15));
+        assert_eq!(saturday.len(), 1);
+        assert_eq!(saturday[0].kind, EntryKind::Scheduled);
+        assert_eq!(saturday[0].anchor, EntryAnchor::Day);
+        assert_eq!(
+            saturday[0].deadline_outside_window.as_deref(),
+            Some(day_key(2026, 8, 25).as_str())
+        );
+    }
+
+    #[test]
+    fn entries_within_a_day_are_ordered_by_instant_then_kind_then_id() {
+        let now_ms = at(2026, 8, 14, 9, 0);
+        let facts = resolve(&weekend_zone_queries(now_ms));
+        let window = weekend_window(now_ms, &facts).unwrap();
+        let saturday_midnight = window.days[1].start_ms;
+        // An all-day event and a scheduled item both anchor to Saturday's
+        // own start, so only the kind tie-break separates them; a day-only
+        // deadline resolves to the END of its day (`deadline_sort_key`),
+        // so it sorts last on instant alone.
+        let events = [named_all_day("zeta", &day_key(2026, 8, 15), &day_key(2026, 8, 16))];
+        let items = [
+            item("alpha", None, Some(&day_key(2026, 8, 15))),
+            item("beta", Some(&day_key(2026, 8, 15)), None),
+        ];
+
+        let days = merge_window(&window, &events, &items, &facts);
+
+        let saturday = entries_on(&days, &day_key(2026, 8, 15));
+        assert_eq!(saturday[0].at_ms, saturday_midnight);
+        assert_eq!(saturday[1].at_ms, saturday_midnight);
+        // "event" < "scheduled" alphabetically — a tie-break, not a
+        // semantic ranking, and the point is only that every client uses
+        // the same one.
+        let kinds: Vec<&str> = saturday.iter().map(|entry| entry.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["event", "scheduled", "due"]);
+    }
+
+    #[test]
+    fn the_counts_are_the_entries_own_tally() {
+        // The reason the merge sank at all: two separately-computed answers
+        // about the same merge could disagree, and this one cannot.
+        let now_ms = at(2026, 8, 14, 9, 0);
+        let facts = resolve(&weekend_zone_queries(now_ms));
+        let window = weekend_window(now_ms, &facts).unwrap();
+        let events = [named_all_day("trip", &day_key(2026, 8, 15), &day_key(2026, 8, 17))];
+        let items = [
+            item("due-1", Some(&day_key(2026, 8, 15)), None),
+            item("sched-1", None, Some(&day_key(2026, 8, 16))),
+        ];
+
+        let days = merge_window(&window, &events, &items, &facts);
+        let counts = count_kinds(&days);
+
+        let total: usize = days.iter().map(|day| day.entries.len()).sum();
+        assert_eq!(
+            total as i64,
+            counts.events + counts.due + counts.scheduled
+        );
+        assert_eq!(counts, WindowCounts { events: 2, due: 1, scheduled: 1 });
+    }
+
+    #[test]
+    fn an_answered_pane_carries_exactly_three_days_even_when_they_are_empty() {
+        let now_ms = at(2026, 8, 14, 9, 0);
+        let facts = resolve(&weekend_zone_queries(now_ms));
+        let window = weekend_window(now_ms, &facts).unwrap();
+
+        let days = merge_window(&window, &[], &[], &facts);
+
+        assert_eq!(days.len(), 3);
+        assert!(days.iter().all(|day| day.entries.is_empty()));
+        let dates: Vec<&str> = days.iter().map(|day| day.date.as_str()).collect();
+        assert_eq!(
+            dates,
+            vec![
+                day_key(2026, 8, 14).as_str(),
+                day_key(2026, 8, 15).as_str(),
+                day_key(2026, 8, 16).as_str()
+            ]
+        );
     }
 
     // ----------------------------------------------------------- band, live

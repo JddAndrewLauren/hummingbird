@@ -1923,9 +1923,39 @@ export interface WeekendCountsCore {
   scheduled: number;
 }
 
+/** `weekend.rs`'s `EntryKind` — the three things a merged entry is. */
+export type WeekendEntryKind = "event" | "due" | "scheduled";
+
+/** `weekend.rs`'s `EntryAnchor` — an instant within the day, or the whole
+ * day. */
+export type WeekendEntryAnchor = "time" | "day";
+
+/** `weekend.rs`'s `WindowEntry` (#564). Note what it does NOT carry: the
+ * event or the item. `sourceId` is the handle a host uses to reach back
+ * into its own DTOs — `inputs.rs`'s "do not re-cross whole DTOs" rule,
+ * applied on the way out. */
+export interface WeekendEntryCore {
+  id: string;
+  kind: WeekendEntryKind;
+  title: string;
+  atMs: number;
+  anchor: WeekendEntryAnchor;
+  dayKey: string;
+  sourceId: string;
+  alsoScheduledOn: string | null;
+  deadlineOutsideWindow: string | null;
+}
+
+export interface WeekendDayEntriesCore {
+  date: string;
+  entries: WeekendEntryCore[];
+}
+
 export interface WeekendFactsCore {
   window: WeekendWindowCore;
   counts: WeekendCountsCore;
+  /** Always exactly three, in window order. */
+  days: WeekendDayEntriesCore[];
 }
 
 export type WeekendResolvedCore =
