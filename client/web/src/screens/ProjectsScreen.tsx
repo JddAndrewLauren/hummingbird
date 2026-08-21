@@ -8,7 +8,15 @@ import { Checkbox } from "../components/forms/Checkbox";
 import { Input } from "../components/forms/Input";
 import { Switch } from "../components/forms/Switch";
 import { Textarea } from "../components/forms/Textarea";
-import type { FogDTO, ProjectDTO, ProjectLinkDTO, RouteDTO, StepDTO, TaskItemDTO } from "../store/protocol";
+import type {
+  FogDTO,
+  LedgerRowDTO,
+  ProjectDTO,
+  ProjectLinkDTO,
+  RouteDTO,
+  StepDTO,
+  TaskItemDTO,
+} from "../store/protocol";
 import type {
   TaskActionReorderResult,
   TaskFogResult,
@@ -23,6 +31,7 @@ import {
   awaitingCreate,
   countsMeta,
   githubRepoUrl,
+  liveItemCount,
   projectRoster,
   rosterSummary,
   visibleRows,
@@ -49,13 +58,12 @@ import {
 // shown from the moment the enqueue succeeds until the id turns up in
 // `projects`.
 //
-// **The dossier is a shell.** This slice ships the frame, the name and the
-// back affordance; archive (#630) is the last placeholder, still saying
-// what is coming so an operator meets an unbuilt region rather than a
-// broken one. Properties (#625), links (#626), the Route's
-// destination/notes (#627), the reading column's fog (#628) and now the
-// ordered action list with each action's inline steps (#629) are real
-// cards.
+// **The dossier has no placeholders left.** Properties (#625), links
+// (#626), the Route's destination/notes (#627), the reading column's fog
+// (#628), the ordered action list with each action's inline steps (#629)
+// and now the archive affordance (#630, `ArchiveCard`) are all real cards
+// — #630 was the last one `ComingRegion` stood in for, and that component
+// is gone with it.
 //
 // **The action list's reorder overlays; its Steps don't.** Unlike every
 // other project-lane write on this screen, reordering an Action patches
@@ -83,11 +91,14 @@ const WAITING_COPY = "creating — appears when the round trip lands";
 export interface ProjectsScreenProps {
   task: TaskState;
   onCreateProject: (name: string) => void;
-  /** #625: the dossier's properties card write — `patch` carries only the
-   * fields the card actually changed. */
+  /** #625: the dossier's properties card write, widened by #630's archive
+   * card — `patch` carries only the fields the caller actually changed.
+   * `archivedAt` drives ADR-0030 decision 5's server-side cascade onto the
+   * project's live items; this prop itself enqueues the project's own
+   * field change only. */
   onPatchProject: (
     current: ProjectDTO,
-    patch: { githubRepo?: string | null; defaultContext?: string | null },
+    patch: { githubRepo?: string | null; defaultContext?: string | null; archivedAt?: number | null },
   ) => void;
   /** #626: the links card's read — fetches one project's links. The caller
    * (this component's own effect) decides when: on open, and again on
@@ -193,6 +204,7 @@ export function ProjectsScreen({
       lastProjectWrite={task.lastProjectWrite}
       onBack={() => setOpenId(null)}
       onPatchProject={onPatchProject}
+      ledger={task.ledger}
       links={task.linksByProject[open.project.id]}
       lastProjectLinkWrite={task.lastProjectLinkWrite}
       onRequestProjectLinks={onRequestProjectLinks}
@@ -356,24 +368,12 @@ function NewProjectCard({
   );
 }
 
-/** One region of the dossier that a later slice fills. Named and labelled so
- * the operator meets an unbuilt region rather than a broken one. */
-function ComingRegion({ label, body }: { label: string; body: string }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-      <span className="hb-meta">{label}</span>
-      <Card padding="var(--space-5)">
-        <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>{body}</p>
-      </Card>
-    </div>
-  );
-}
-
 function Dossier({
   row,
   lastProjectWrite,
   onBack,
   onPatchProject,
+  ledger,
   links,
   lastProjectLinkWrite,
   onRequestProjectLinks,
@@ -404,8 +404,12 @@ function Dossier({
   onBack: () => void;
   onPatchProject: (
     current: ProjectDTO,
-    patch: { githubRepo?: string | null; defaultContext?: string | null },
+    patch: { githubRepo?: string | null; defaultContext?: string | null; archivedAt?: number | null },
   ) => void;
+  /** The Ledger (#630's `ArchiveCard`'s own read) — already app-wide state,
+   * the same "counts are derived, not read" doctrine `roster.ts` states for
+   * the grid's own counts. `null` while it has not answered yet. */
+  ledger: LedgerRowDTO[] | null;
   /** `undefined` = not read yet (`TaskState.linksByProject`'s own doc),
    * distinct from `[]` (this project genuinely has none). */
   links: ProjectLinkDTO[] | undefined;
@@ -535,7 +539,12 @@ function Dossier({
             onCreateProjectLink={onCreateProjectLink}
             onPatchProjectLink={onPatchProjectLink}
           />
-          <ComingRegion label="archive" body="Archiving this project lands here." />
+          <ArchiveCard
+            project={row.project}
+            liveCount={liveItemCount(ledger, projectId)}
+            lastProjectWrite={lastProjectWrite}
+            onPatchProject={onPatchProject}
+          />
         </Aside>
       </TwoColumn>
     </div>
@@ -1044,6 +1053,121 @@ function LinkEditRow({
         </Button>
       </div>
     </li>
+  );
+}
+
+/** The dossier aside's archive affordance (#630, ADR-0030 decision 5) — the
+ * project lane's last placeholder, replacing `ComingRegion`. Archiving
+ * cascades onto the project's live items server-side, a timestamp-matched
+ * stamp (`projects.rs`'s own doc, `cascade_archive_for_project`'s own
+ * mechanism); this card's job is naming that consequence concretely before
+ * the human commits to it, and offering the reverse gesture once archived.
+ *
+ * **Confirmation is a two-step reveal within the card, not a modal** — this
+ * codebase has no modal primitive (nothing under `components/` is one, and
+ * neither `LinksCard` nor `FogCard` uses one for their own destructive
+ * gestures), and Cancel is one click away either way. `liveCount` is
+ * `roster.ts`'s `liveItemCount`, off the Ledger this screen already holds
+ * app-wide — the same "counts are derived, not read" doctrine `countsMeta`
+ * follows, scoped to exactly the predicate the server cascade uses
+ * (`project_id = ? AND archived_at IS NULL`, `done` included), so the
+ * number named here is the number that will move. `null` renders as prose,
+ * never `0` — a count this device has no standing to claim yet.
+ *
+ * No optimistic overlay (`Core::patch_project`'s own doc): `pending` flips
+ * true on click and resolves either when the project's own `version` moves
+ * (success — the archived/unarchived state repaints from `project` itself)
+ * or when `lastProjectWrite.kind !== "ok"` (failure, which clears `pending`
+ * directly since no version bump is ever coming to do it) — `RouteCard`'s
+ * own pattern, ported verbatim including the failed/busy-clears-the-flag
+ * rule the #627/#628/#629 reviews paid for. Unarchiving carries no
+ * confirmation step of its own: ADR-0030's brief asks the dialog to name
+ * archiving's consequence, not unarchiving's, and unarchiving is the
+ * reversing gesture, not a destructive one. */
+function ArchiveCard({
+  project,
+  liveCount,
+  lastProjectWrite,
+  onPatchProject,
+}: {
+  project: ProjectDTO;
+  liveCount: number | null;
+  lastProjectWrite: TaskProjectResult | null;
+  onPatchProject: (current: ProjectDTO, patch: { archivedAt?: number | null }) => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [syncedVersion, setSyncedVersion] = useState(project.version);
+
+  if (project.version !== syncedVersion) {
+    setSyncedVersion(project.version);
+    if (pending) {
+      setPending(false);
+      setConfirming(false);
+    }
+  }
+
+  // Gated on `project.id`, same reasoning `PropertiesCard`'s own failure
+  // read carries: `lastProjectWrite` is one broadcast slot shared by every
+  // open dossier's own patch.
+  const failedHere =
+    lastProjectWrite !== null && lastProjectWrite.projectId === project.id && lastProjectWrite.kind !== "ok";
+  if (pending && failedHere) {
+    setPending(false);
+  }
+  const failure = failedHere ? writeFailureMessage(lastProjectWrite) : null;
+
+  const archived = project.archivedAt !== null;
+
+  function archive() {
+    onPatchProject(project, { archivedAt: Date.now() });
+    setPending(true);
+  }
+
+  function unarchive() {
+    onPatchProject(project, { archivedAt: null });
+    setPending(true);
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      <span className="hb-meta">archive</span>
+      <Card padding="var(--space-5)" style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+        {archived ? (
+          <>
+            <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+              Archived. Unarchiving restores exactly the items this archive took down.
+            </p>
+            <Button variant="secondary" size="sm" onClick={unarchive} disabled={pending}>
+              {pending ? "Unarchiving…" : "Unarchive"}
+            </Button>
+          </>
+        ) : confirming ? (
+          <>
+            <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+              {liveCount === null
+                ? "Archiving takes every live item in this project down with it."
+                : liveCount === 0
+                  ? "This project has no live items — archiving takes down the project alone."
+                  : `Archiving takes ${liveCount} live ${liveCount === 1 ? "item" : "items"} down with it.`}
+            </p>
+            <div style={{ display: "flex", gap: "var(--space-3)" }}>
+              <Button variant="danger" size="sm" onClick={archive} disabled={pending}>
+                {pending ? "Archiving…" : "Archive project"}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setConfirming(false)} disabled={pending}>
+                Cancel
+              </Button>
+            </div>
+          </>
+        ) : (
+          <Button variant="secondary" size="sm" onClick={() => setConfirming(true)}>
+            Archive project
+          </Button>
+        )}
+        {failure !== null ? <Badge tone="danger">{failure}</Badge> : null}
+      </Card>
+    </div>
   );
 }
 
