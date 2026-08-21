@@ -278,11 +278,22 @@ split and the "cash owed" caveat, github's last-run/last-scheduled-success
 lines with the "cron stalled"/"cadence unreadable" words, uptime's
 expected-vs-observed observation line, reachability's synced-age headline —
 dispatched from `StatusScreen`'s `expandedContent` and nowhere else
-(`PaneContentStructuralTest`). The Now surface's pair lives in
+(`PaneContentStructuralTest`). The Now surface's cards live in
 `ui/panes/NowPanesExpanded.kt`: waste (the web's kerb-colour bin figures,
-the wordier expanded headline, the holiday word) and race (series line,
+the wordier expanded headline, the holiday word), race (series line,
 countdown headline, next-session day/clock in the device's own zone, the
-circuit). **Weekend and Vacation render no card of their own**: the mobile
+circuit) and, since #675, homework — the winning `@homework` item, its
+deadline, the preparation notes written on it, and the other open ones
+listed beneath a `n more open` line. **Full parity there, collapsed row and
+expanded body**, which is unusual for this port and is the issue's own
+decision: the pane's whole reason to exist is that the notes are reachable
+without hunting for the item, and a phone is where that matters most. It is
+also the one Now pane that needs no binding and no calendar, so unlike the
+two below it there is nothing to switch on later. Read-only, exactly as the
+web's is, and **not** through a row component: the web's first cut used
+`ItemRow` and the visual gate caught it ellipsising a title to two
+characters in the 320px aside, so both clients draw a title and a meta line
+instead. **Weekend and Vacation render no card of their own**: the mobile
 seam hardcodes `calendar_connected = false`, so both are permanently
 unbound on Android and the shell's setup rendering is the honest whole
 story — the calendar-lane follow-up issue owns turning them on. One
@@ -944,6 +955,30 @@ mScreenState=ON` will not tell you which; read `state ON` off the
 
 Afterwards: revoke the ingest token, disable the test rules (there is no
 DELETE for rules, only PATCH), and dismiss the test alerts.
+
+### The homework pane's pass (2026-08-21, #675)
+
+Pixel 6 Pro **emulator**, debug build, no device token — so the mirror is
+this device's own local one and nothing reached the authority. That is
+enough for this pane, and only for this pane: it is the one standing
+question whose whole subject is items the app already holds, so an
+unsynced device answers it exactly as a synced one does.
+
+Verified, in order: the pane sorts **first** in the Now list, above Bin
+collection; with nothing captured it reads `No open homework` (answered and
+dormant, not a setup prompt — there is nothing to set up); `@homework`
+appears as a **suggestion** in the capture form's Context combobox, which is
+the vocabulary widening arriving through `captureFormMeta` rather than a
+literal typed into the Android sources; capturing one with a deadline three
+days out and notes on it turns the row into `Homework due in 3 days` with an
+amber (near) band dot, and the card into the title, the deadline and the
+notes verbatim; a second, undated one adds the `1 more open` line and lists
+it beneath. The captured items land in an `@homework` column on the board at
+the same time, which is the vocabulary reaching the frontier's chips too.
+
+Nothing was found. Recorded anyway, because operator decision `a717c13`
+makes a hardware or emulator run the evidence for a UI change and 514 green
+JVM tests are not it.
 
 ### The unified item-detail pane's pass (2026-08-20, `2c82b6b`)
 
