@@ -1,11 +1,14 @@
-import type { ProjectDTO, ProjectLinkDTO, RouteDTO } from "../store/protocol";
+import type { FogDTO, ProjectDTO, ProjectLinkDTO, RouteDTO } from "../store/protocol";
 import type { WorkerLike } from "../store/worker-client";
 import {
+  createFog,
   createProject,
   createProjectLink,
+  patchFog,
   patchProject,
   patchProjectLink,
   patchRoute,
+  requestFog,
   requestProjectLinks,
   requestRoute,
 } from "../store/worker-client";
@@ -65,6 +68,19 @@ export interface ProjectsWiring {
    * destination/notes, `patch` carrying only the fields the card actually
    * changed — same "leave this alone" contract `patchProject` carries. */
   patchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => void;
+  /** #628's per-project open-fog read — same "scoped to one open dossier,
+   * the caller's own effect decides when" shape as `requestProjectLinks`. */
+  requestFog: (projectId: string) => void;
+  /** #628's fog create: the dossier reading column's add-a-question
+   * gesture. `position` is the caller's to compute (append to the end of
+   * the list it already has) — this hook mints no ordering of its own. */
+  createFog: (projectId: string, question: string, position: number) => void;
+  /** #628's fog patch: rewording, repositioning and resolving/reopening a
+   * segment, all through this one entry point. */
+  patchFog: (
+    current: FogDTO,
+    patch: { question?: string; position?: number; resolvedAt?: number | null },
+  ) => void;
 }
 
 export function useProjectsWiring(worker: WorkerLike): ProjectsWiring {
@@ -93,6 +109,17 @@ export function useProjectsWiring(worker: WorkerLike): ProjectsWiring {
     patchRoute: (current, patch) => {
       const nowMs = Date.now();
       patchRoute(worker, mintRoutePatchSeed(current.projectId, nowMs), current, patch, nowMs);
+    },
+    requestFog: (projectId) => {
+      requestFog(worker, projectId);
+    },
+    createFog: (projectId, question, position) => {
+      const nowMs = Date.now();
+      createFog(worker, mintFogCreateSeed(), projectId, question, position, nowMs);
+    },
+    patchFog: (current, patch) => {
+      const nowMs = Date.now();
+      patchFog(worker, mintFogPatchSeed(current.id, nowMs), current, patch, nowMs);
     },
   };
 }
@@ -141,4 +168,21 @@ export function mintProjectLinkPatchSeed(linkId: string, nowMs: number): string 
  * than enqueue a second one. */
 export function mintRoutePatchSeed(projectId: string, nowMs: number): string {
   return `${projectId}:route:patch:${nowMs}`;
+}
+
+/** Mints a fresh, non-deterministic seed for a fog create (#628) — same
+ * "creates a new entity" reasoning as [`mintProjectLinkCreateSeed`]. */
+export function mintFogCreateSeed(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `fog-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/** Mints one fog patch's seed (#628). Deterministic, same
+ * [`mintProjectLinkPatchSeed`] reasoning: a patch touches the segment
+ * `fogId` itself names, so retrying the identical intent must reproduce
+ * the identical queue entry rather than enqueue a second one. */
+export function mintFogPatchSeed(fogId: string, nowMs: number): string {
+  return `${fogId}:patch:${nowMs}`;
 }

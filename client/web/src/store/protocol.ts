@@ -579,6 +579,21 @@ export interface RouteDTO {
   version: number;
 }
 
+/** One `fog` row (#628, ADR-0030 decision 1), as the web host's JSON/DTO
+ * shape — a 1:1 field mirror of `hummingbird_domain::Fog`, camelCased. The
+ * dossier reading column's read: a segment of a project's Route that
+ * cannot yet be defined as an action, carrying the open question that
+ * blocks defining it. Resolved by flagging `resolvedAt`, never deleted —
+ * `null` = open. */
+export interface FogDTO {
+  id: string;
+  projectId: string;
+  question: string;
+  position: number;
+  resolvedAt: number | null;
+  version: number;
+}
+
 /** One drained `CoreEvent` (`client/core/src/lib.rs`), as the web host's
  * JSON shape. `"credential_needed"` is the only kind `Core` produces today. */
 export interface TaskEventDTO {
@@ -946,6 +961,40 @@ export type TaskWorkerRequest =
       notes: string | null;
       nowMs: number;
     }
+  /** #628's per-project open-fog read — the dossier reading column, same
+   * "only what a view actually asked about" shape as `getProjectLinks`. */
+  | { type: "getFog"; projectId: string }
+  /** #628's fog create: one `POST /api/fog`, enqueued durably like every
+   * other mutation (ADR-0030 decision 1). `question` is trimmed and an
+   * empty one refused in `client/ffi-web/src/task_host.rs`'s `create_fog`
+   * before it can reach `Core` — the authority 400s on
+   * `question.is_empty()`. Same caller-mints-`seed` contract as
+   * `createProjectLink`: this seed's hash becomes the segment's id. */
+  | {
+      type: "createFog";
+      seed: string;
+      projectId: string;
+      question: string;
+      position: number;
+      nowMs: number;
+    }
+  /** #628's fog patch — rewording, repositioning and resolving/reopening a
+   * segment all share this one message. `current` is the caller's own
+   * last-known copy of the row (from the `fog` push) — the CAS `base` a
+   * 409 is diffed against. `resolvedAtTouched` distinguishes "leave this
+   * field alone" from "set it, possibly to `null`" — the same
+   * double-`Option` `FogPatch` itself carries, flattened for the wire
+   * exactly like `patchProjectLink`'s `removedAtTouched`. */
+  | {
+      type: "patchFog";
+      seed: string;
+      current: FogDTO;
+      question: string | null;
+      position: number | null;
+      resolvedAtTouched: boolean;
+      resolvedAt: number | null;
+      nowMs: number;
+    }
   | { type: "isPending"; itemId: string }
   | {
       type: "runSync";
@@ -1221,6 +1270,32 @@ export type TaskWorkerResponse =
    * result only reports whether the enqueue itself succeeded. */
   | {
       type: "patchRouteResult";
+      seed: string;
+      projectId: string;
+      kind: "ok" | "failed" | "busy";
+      error: string | null;
+    }
+  /** Answers `getFog` (#628) — the `projectLinks`-style per-project read,
+   * keyed by the requested `projectId`. Only **open** rows: a resolved
+   * segment is retained but never answers here (`Core::open_fog_for`'s own
+   * doc). */
+  | { type: "fog"; projectId: string; fog: FogDTO[] }
+  /** #628's fog create result, matched back by `seed`. Same
+   * broadcast-not-reply, enqueued-not-saved contract as
+   * `createProjectLinkResult`. */
+  | {
+      type: "createFogResult";
+      seed: string;
+      projectId: string;
+      kind: "ok" | "failed" | "busy";
+      id: string | null;
+      error: string | null;
+    }
+  /** #628's fog patch result (rewording, repositioning, resolving,
+   * reopening), matched back by `seed`. Same handled-not-swallowed 409
+   * contract as `patchProjectLinkResult`. */
+  | {
+      type: "patchFogResult";
       seed: string;
       projectId: string;
       kind: "ok" | "failed" | "busy";

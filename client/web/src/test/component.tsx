@@ -25,6 +25,7 @@ import { afterEach } from "vitest";
 import type {
   BindingDTO,
   BlockedFrontierEntryDTO,
+  FogDTO,
   LedgerRowDTO,
   PaneReadDTO,
   PaneSnapshotDTO,
@@ -199,6 +200,18 @@ export function routeDTO(overrides: Partial<RouteDTO> = {}): RouteDTO {
   };
 }
 
+export function fogDTO(overrides: Partial<FogDTO> = {}): FogDTO {
+  return {
+    id: "fog-1",
+    projectId: "project-1",
+    question: "What permit does this need?",
+    position: 0,
+    resolvedAt: null,
+    version: 1,
+    ...overrides,
+  };
+}
+
 export function blockedEntryDTO(
   item: TaskItemDTO,
   blockedBy: TaskItemDTO[],
@@ -232,6 +245,8 @@ export function taskState(overrides: Partial<TaskState> = {}): TaskState {
     lastProjectLinkWrite: null,
     routeByProject: {},
     lastRouteWrite: null,
+    fogByProject: {},
+    lastFogWrite: null,
     paneReads: {},
     pending: {},
     lastCapture: null,

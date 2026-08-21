@@ -140,7 +140,7 @@
 // test, and it runs in CI after the build.
 
 import { TRIPS_CALENDAR_BINDING_KEY } from "../calendar/selection";
-import type { BindingDTO, LedgerRowDTO, ProjectDTO, RecallRowDTO, TaskItemDTO } from "../store/protocol";
+import type { BindingDTO, FogDTO, LedgerRowDTO, ProjectDTO, RecallRowDTO, TaskItemDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
 import { DEMO_DATA } from "./demo-data";
 import {
@@ -817,6 +817,33 @@ export function buildDemoTaskState(): TaskState {
       },
     },
     lastRouteWrite: null,
+    // #628: the dossier reading column's fog card, populated for the
+    // project the visual gate actually opens ("House repairs") — an empty
+    // map here left the card photographing only "Reading fog…", so the
+    // row layout (question text, move pair, Edit, Resolve inside the
+    // reading column) shipped unphotographed at every width. Two open
+    // rows, position order.
+    fogByProject: {
+      "b-p1": [
+        {
+          id: "b-p1-fog-1",
+          projectId: "b-p1",
+          question: "Does the deck need a permit, or does the fence-line survey cover it?",
+          position: 0,
+          resolvedAt: null,
+          version: 1,
+        },
+        {
+          id: "b-p1-fog-2",
+          projectId: "b-p1",
+          question: "Which contractor is actually available before the weather turns?",
+          position: 1,
+          resolvedAt: null,
+          version: 1,
+        },
+      ] satisfies FogDTO[],
+    },
+    lastFogWrite: null,
     // Piece 3: every standing question's read, built by `demo-pane-reads.ts`
     // — the kit world's own `demoQuestionInputs` called the same functions
     // before #452 folded its content into this seed and #455 deleted that

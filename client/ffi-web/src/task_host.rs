@@ -22,8 +22,8 @@ use hummingbird_core::{
 };
 use hummingbird_domain::{
     core_field_type, is_valid_deadline, is_valid_github_repo, Alert, Condition, Energy,
-    EventKindEntry, FieldType, Item, Project, ProjectLink, Route, Rule, Size, Stage, Step, Tier,
-    CORE_FIELDS, EVENT_KINDS, GrillVerdict,
+    EventKindEntry, FieldType, Fog, Item, Project, ProjectLink, Route, Rule, Size, Stage, Step,
+    Tier, CORE_FIELDS, EVENT_KINDS, GrillVerdict,
 };
 
 // The real, target-specific store `Core::init` resolves to internally is a
@@ -452,6 +452,41 @@ pub struct RouteResponse {
 /// ordinary outcome, not a bespoke conflict).
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PatchRouteResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
+/// The wrapper around [`TaskHostCore::open_fog`]'s answer — the dossier
+/// reading column's read (#628, ADR-0030 decision 1). Same `"busy"`
+/// contract as [`ProjectLinkListResponse`]; `fog` carries only **open**
+/// rows, position order — a resolved one is retained but never answers
+/// here ([`Core::open_fog_for`]'s own doc).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct FogListResponse {
+    pub kind: &'static str,
+    pub fog: Vec<Fog>,
+}
+
+/// What [`TaskHostCore::create_fog`] resolves to (#628). Same three-way
+/// split as [`CreateProjectLinkResponse`]: `"ok"` carries the minted id,
+/// `"failed"` is either a question this seam refused outright or a
+/// durability failure enqueueing the create, and `"busy"` is the core
+/// answering nothing at all. An `"ok"` means *enqueued*, not *saved* —
+/// there is no optimistic overlay ([`Core::create_fog`]), so the segment
+/// appears in [`TaskHostCore::open_fog`] only after a completed cycle
+/// pulls it back.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CreateFogResponse {
+    pub kind: &'static str,
+    pub id: Option<String>,
+    pub error: Option<String>,
+}
+
+/// What [`TaskHostCore::patch_fog`] resolves to (#628) — rewording,
+/// repositioning and resolving/reopening a segment all share this one
+/// entry point. Same shape as [`PatchProjectLinkResponse`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PatchFogResponse {
     pub kind: &'static str,
     pub error: Option<String>,
 }
@@ -1369,6 +1404,84 @@ impl TaskHostCore {
         match self.core.patch_route(seed, current, destination, notes, now_ms).await {
             Ok(()) => PatchRouteResponse { kind: "ok", error: None },
             Err(error) => PatchRouteResponse {
+                kind: "failed",
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Every open Fog segment on one project, per [`Core::open_fog_for`]
+    /// (#628) — the dossier reading column's read.
+    pub fn open_fog(&self, project_id: &str) -> FogListResponse {
+        FogListResponse {
+            kind: "ok",
+            fog: self.core.open_fog_for(project_id),
+        }
+    }
+
+    /// Creates a Fog segment, per [`Core::create_fog`] (#628). The question
+    /// is trimmed and an empty one is refused **before `Core` is
+    /// reached** — the authority answers 400 on `question.is_empty()`
+    /// (`server/authority/src/handlers/fog.rs`), same discipline
+    /// [`TaskHostCore::create_project_link`] follows for `url`.
+    pub async fn create_fog(
+        &mut self,
+        seed: &str,
+        project_id: &str,
+        question: &str,
+        position: i64,
+        now_ms: i64,
+    ) -> CreateFogResponse {
+        let question = question.trim();
+        if question.is_empty() {
+            return CreateFogResponse {
+                kind: "failed",
+                id: None,
+                error: Some("question must be non-empty".to_string()),
+            };
+        }
+        match self.core.create_fog(seed, project_id, question, position, now_ms).await {
+            Ok(id) => CreateFogResponse { kind: "ok", id: Some(id), error: None },
+            Err(error) => CreateFogResponse {
+                kind: "failed",
+                id: None,
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Patches a Fog segment, per [`Core::patch_fog`] (#628) — rewording
+    /// its question, repositioning it, or resolving/reopening it, all
+    /// through this one entry point. `current` is the caller's own
+    /// last-known copy of the row (from [`TaskHostCore::open_fog`]), the
+    /// same "caller supplies `base`" contract every other CAS write here
+    /// follows. `question`/`position`/`resolved_at_touched`+`resolved_at`
+    /// mirror [`TaskHostCore::patch_project_link`]'s touched-flag shape:
+    /// `wasm_bindgen` has no `Option<Option<T>>` argument shape, so the
+    /// nullable field arrives as a touched flag plus a value.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn patch_fog(
+        &mut self,
+        seed: &str,
+        current: &Fog,
+        question: Option<String>,
+        position: Option<i64>,
+        resolved_at_touched: bool,
+        resolved_at: Option<i64>,
+        now_ms: i64,
+    ) -> PatchFogResponse {
+        if let Some(question) = &question {
+            if question.trim().is_empty() {
+                return PatchFogResponse {
+                    kind: "failed",
+                    error: Some("question must be non-empty".to_string()),
+                };
+            }
+        }
+        let resolved_at = resolved_at_touched.then_some(resolved_at);
+        match self.core.patch_fog(seed, current, question, position, resolved_at, now_ms).await {
+            Ok(()) => PatchFogResponse { kind: "ok", error: None },
+            Err(error) => PatchFogResponse {
                 kind: "failed",
                 error: Some(error.to_string()),
             },
@@ -4531,5 +4644,139 @@ mod route_tests {
 
         assert_eq!(response.kind, "ok");
         assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+    }
+}
+
+#[cfg(test)]
+mod fog_tests {
+    use super::*;
+
+    /// #628: an unread project's fog answers empty, not "busy" — same
+    /// contract [`TaskHostCore::project_links`] carries.
+    #[tokio::test]
+    async fn an_unread_projects_fog_answers_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-fog-unread");
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        assert_eq!(host.open_fog("p-1"), FogListResponse { kind: "ok", fog: Vec::new() });
+    }
+
+    /// #628: the authority 400s on an empty question, so this seam refuses
+    /// one — blank and whitespace-only alike — before `Core::create_fog` is
+    /// reached, and mints no queue entry. Same discipline
+    /// `creating_a_link_rejects_an_empty_url_before_reaching_core` carries
+    /// for a link's url.
+    #[tokio::test]
+    async fn creating_fog_rejects_an_empty_question_before_reaching_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-create-fog-empty");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        for question in ["", "   ", "\t\n"] {
+            let response = host.create_fog("seed-1", "p-1", question, 0, 1_000).await;
+            assert_eq!(response.kind, "failed", "{question:?} is refused");
+            assert!(response.id.is_none());
+            assert_eq!(
+                host.queue_depth(),
+                QueueDepthResponse { kind: "ok", depth: 0 },
+                "{question:?} minted no queue entry"
+            );
+        }
+    }
+
+    /// A good question enqueues exactly one create, and the segment is
+    /// still absent from the read, since there is no optimistic overlay —
+    /// same "ok means enqueued, not saved" contract
+    /// `creating_a_link_enqueues_it_and_overlays_nothing` carries.
+    #[tokio::test]
+    async fn creating_fog_enqueues_it_and_overlays_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-create-fog-ok");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        let response = host
+            .create_fog("seed-1", "p-1", "  What permit does this need?  ", 0, 1_000)
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert!(response.id.is_some());
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+        assert_eq!(
+            host.open_fog("p-1"),
+            FogListResponse { kind: "ok", fog: Vec::new() },
+            "no overlay: the segment appears only once a cycle pulls it back"
+        );
+    }
+
+    fn fixture_fog() -> hummingbird_domain::Fog {
+        hummingbird_domain::Fog {
+            id: "f-1".to_string(),
+            project_id: "p-1".to_string(),
+            question: "What permit does this need?".to_string(),
+            position: 0,
+            resolved_at: None,
+            version: 3,
+        }
+    }
+
+    /// Rewording and repositioning enqueue one CAS patch.
+    #[tokio::test]
+    async fn patching_fogs_question_and_position_enqueues_one_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-fog");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let fog = fixture_fog();
+
+        let response = host
+            .patch_fog(
+                "seed-1",
+                &fog,
+                Some("What permit does this actually need?".to_string()),
+                Some(1),
+                false,
+                None,
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+    }
+
+    /// `question` is checked for emptiness before `Core::patch_fog` is
+    /// reached — same discipline `patching_a_link_to_a_blank_url_never_
+    /// reaches_core` follows for a link's url.
+    #[tokio::test]
+    async fn patching_fog_to_a_blank_question_never_reaches_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-fog-bad-question");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let fog = fixture_fog();
+
+        let response = host.patch_fog("seed-1", &fog, Some("   ".to_string()), None, false, None, 2_000).await;
+
+        assert_eq!(response.kind, "failed");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 0 });
+    }
+
+    /// The resolve gesture: `resolvedAtTouched` true with a value stamps
+    /// it, and an explicit clear (touched, `None`) reopens it — same
+    /// touched-flag contract `removing_and_un_removing_a_link_each_
+    /// enqueue_one_patch` carries for a link's removal.
+    #[tokio::test]
+    async fn resolving_and_reopening_fog_each_enqueue_one_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-fog-resolve");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let fog = fixture_fog();
+
+        let response = host.patch_fog("seed-1", &fog, None, None, true, Some(9_000), 2_000).await;
+        assert_eq!(response.kind, "ok");
+
+        let response = host.patch_fog("seed-2", &fog, None, None, true, None, 3_000).await;
+        assert_eq!(response.kind, "ok");
+
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 2 });
     }
 }

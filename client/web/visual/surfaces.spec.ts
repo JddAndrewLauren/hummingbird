@@ -514,7 +514,9 @@ for (const theme of THEMES) {
       // Edit, Remove, all inside the narrow `Aside`) is in every capture
       // rather than a "Reading links…" placeholder. Since #627, the reading
       // column's POPULATED Route card does too — the fixture seeds a real
-      // destination/notes pair onto the same project.
+      // destination/notes pair onto the same project. Since #628, so does
+      // the reading column's fog card — the fixture seeds two open
+      // questions onto the same project.
       await openApp(page, theme, "board");
       await show(page, "Projects", testInfo.project.name);
       await page.getByRole("heading", { level: 3, name: "House repairs" }).click();
@@ -528,6 +530,10 @@ for (const theme of THEMES) {
       await expect(page.getByLabel("Destination")).toHaveValue(
         "The deck is rebuilt, permitted and passes inspection.",
       );
+      // Same guarantee for the fog card (#628).
+      await expect(
+        page.getByText("Does the deck need a permit, or does the fence-line survey cover it?"),
+      ).toBeVisible();
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
         path: `visual/.captures/projects-dossier-${testInfo.project.name}-${theme}.png`,

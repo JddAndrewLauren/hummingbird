@@ -63,10 +63,10 @@ pub mod task;
 
 use bindings::{Binding, BindingKey, BindingValue};
 use hummingbird_domain::{
-    resulting_stage, Alert, AlertPatch, Condition, CreateGrill, CreateItem, CreateProject,
-    CreateProjectLink, CreateRule, Energy, GrillVerdict, Item, Project, ProjectLink,
-    ProjectLinkPatch, ProjectPatch, Route, RoutePatch, Rule, RulePatch, Setting, Size, Stage,
-    Step, Tier,
+    resulting_stage, Alert, AlertPatch, Condition, CreateFog, CreateGrill, CreateItem,
+    CreateProject, CreateProjectLink, CreateRule, Energy, Fog, FogPatch, GrillVerdict, Item,
+    Project, ProjectLink, ProjectLinkPatch, ProjectPatch, Route, RoutePatch, Rule, RulePatch,
+    Setting, Size, Stage, Step, Tier,
 };
 
 use serde::{Deserialize, Serialize};
@@ -1429,6 +1429,95 @@ where
                 method: HttpMethod::Patch,
                 base,
                 base_updated_at: current.updated_at,
+                patch_fields,
+                rebase_fields: None,
+            },
+        };
+        self.cycle.enqueue(entry, now_ms).await?;
+        Ok(())
+    }
+
+    /// Every **open** Fog segment on one project, position order — the
+    /// dossier reading column's read (#628, ADR-0030 decision 1). Resolved
+    /// rows are never returned here: resolving is a stamp, not a delete
+    /// ([`SyncMirror::open_fog_for`]'s own doc), so a resolved segment
+    /// stays retained but stops being "open." An absent row genuinely means
+    /// no open fog — this is not the "not read yet" shape [`Core::route`]
+    /// carries, since Fog has no structural 1:1 with its project the way a
+    /// Route does.
+    pub fn open_fog_for(&self, project_id: &str) -> Vec<Fog> {
+        let mut fog: Vec<Fog> = self.cycle.mirror().open_fog_for(project_id).cloned().collect();
+        fog.sort_by_key(|f| f.position);
+        fog
+    }
+
+    /// Creates a Fog segment (#628): enqueues a `POST /api/fog` create,
+    /// durably, exactly [`Core::create_project_link`]'s own shape. `seed`
+    /// mints the deterministic id. Returns the minted id.
+    ///
+    /// No optimistic overlay, same reasoning as [`Core::create_project_link`]'s
+    /// own doc: the new segment becomes visible once the next completed
+    /// cycle pulls it back.
+    pub async fn create_fog(
+        &mut self,
+        seed: &str,
+        project_id: &str,
+        question: impl Into<String>,
+        position: i64,
+        now_ms: i64,
+    ) -> Result<String, SnapshotError<QS::Error>> {
+        let id = sync::write::deterministic_id(seed);
+        let create = CreateFog {
+            id: id.clone(),
+            project_id: project_id.to_string(),
+            question: question.into(),
+            position,
+        };
+        let body = serde_json::to_value(&create).expect("CreateFog always serializes");
+        let entry = QueueEntry {
+            id: id.clone(),
+            intent: MutationIntent::Create { path: sync::write::paths::fog(), body },
+        };
+        self.cycle.enqueue(entry, now_ms).await?;
+        Ok(id)
+    }
+
+    /// Patches a Fog segment (#628) — rewording its question, repositioning
+    /// it, or resolving/reopening it, all through this one entry point.
+    /// Same contract as [`Core::patch_project_link`]: every `Some` field is
+    /// touched, absolute-set; `None` means "leave this field alone."
+    /// `question`/`position` are single-`Option` (`NOT NULL`, cannot be
+    /// cleared); `resolved_at` is double-`Option` — resolving sets it,
+    /// reopening clears it with an explicit `null`, the same gesture
+    /// [`Core::patch_project_link`]'s `removed_at` carries, except this row
+    /// is never itself removed: resolving is a stamp, never a delete.
+    pub async fn patch_fog(
+        &mut self,
+        seed: &str,
+        current: &Fog,
+        question: Option<String>,
+        position: Option<i64>,
+        resolved_at: Option<Option<i64>>,
+        now_ms: i64,
+    ) -> Result<(), SnapshotError<QS::Error>> {
+        let base = serde_json::to_value(current).expect("Fog always serializes");
+        let patch = FogPatch { expected_version: current.version, question, position, resolved_at };
+
+        let mut patch_fields = serde_json::to_value(&patch).expect("FogPatch always serializes");
+        if let serde_json::Value::Object(map) = &mut patch_fields {
+            map.remove("expected_version");
+        }
+
+        let entry = QueueEntry {
+            id: sync::write::deterministic_id(seed),
+            intent: MutationIntent::Patch {
+                path: sync::write::paths::fog_item(&current.id),
+                method: HttpMethod::Patch,
+                base,
+                // `Fog` carries no `updated_at` column, same as `ProjectLink`
+                // — the rebase compares against the row's own last-seen
+                // `version` alone.
+                base_updated_at: 0,
                 patch_fields,
                 rebase_fields: None,
             },
@@ -6482,6 +6571,169 @@ mod tests {
             panic!("a route edit is a CAS patch, not a create");
         };
         assert_eq!(patch_fields, &serde_json::json!({ "destination": "Ship the deck" }));
+    }
+
+    /// Runs one full-sweep cycle seeding `fog` — `core_with_routes`'s own
+    /// shape, since a Fog row pulled from the authority must reach the
+    /// mirror the ordinary way or not at all.
+    async fn core_with_fog(fog: Vec<hummingbird_domain::Fog>) -> Core {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            fog,
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let outcome = core
+            .run(&read, &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0)
+            .await;
+        assert!(matches!(
+            outcome,
+            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
+        ));
+        core
+    }
+
+    fn fixture_fog(id: &str, project_id: &str, position: i64) -> hummingbird_domain::Fog {
+        hummingbird_domain::Fog {
+            id: id.to_string(),
+            project_id: project_id.to_string(),
+            question: format!("question {id}"),
+            position,
+            resolved_at: None,
+            version: 1,
+        }
+    }
+
+    /// #628 acceptance: "a read of a project's fog" — every open row pulled
+    /// by an ordinary sweep answers [`Core::open_fog_for`], in position
+    /// order, scoped to its own project; a resolved row is retained
+    /// (`Core::patch_fog`'s own doc) but does not answer here.
+    #[tokio::test]
+    async fn open_fog_for_reads_pulled_rows_in_position_order_scoped_to_the_project() {
+        let mut resolved = fixture_fog("f-3", "p-1", 0);
+        resolved.resolved_at = Some(9_000);
+        let core = core_with_fog(vec![
+            fixture_fog("f-2", "p-1", 2),
+            fixture_fog("f-1", "p-1", 1),
+            fixture_fog("f-other", "p-2", 0),
+            resolved,
+        ])
+        .await;
+
+        assert_eq!(
+            core.open_fog_for("p-1").iter().map(|f| f.id.as_str()).collect::<Vec<_>>(),
+            vec!["f-1", "f-2"],
+        );
+        assert_eq!(core.open_fog_for("p-unknown"), Vec::new());
+    }
+
+    /// #628 acceptance: creating a Fog segment enqueues one `POST /api/fog`
+    /// create and overlays nothing — same no-overlay contract
+    /// `create_project_enqueues_one_post_create` pins for projects.
+    #[tokio::test]
+    async fn create_fog_enqueues_one_post_create() {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+
+        let id = core.create_fog("seed-1", "p-1", "What permit does this need?", 0, 2_000).await.unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        assert_eq!(entries.len(), 1);
+        let MutationIntent::Create { path, body } = &entries[0].intent else {
+            panic!("a fog create is a POST create, not a patch");
+        };
+        assert_eq!(path, "/api/fog");
+        assert_eq!(body.get("id").and_then(|v| v.as_str()), Some(id.as_str()));
+        assert_eq!(body.get("project_id").and_then(|v| v.as_str()), Some("p-1"));
+        assert_eq!(
+            body.get("question").and_then(|v| v.as_str()),
+            Some("What permit does this need?")
+        );
+        assert_eq!(body.get("position").and_then(|v| v.as_i64()), Some(0));
+    }
+
+    /// #628 acceptance: "the core gains fog ... patch (question, position,
+    /// resolve)" — rewording and repositioning touch only those two fields,
+    /// same "leave this field alone" contract `patch_route`'s own tests pin.
+    #[tokio::test]
+    async fn patch_fog_reword_and_reposition_touch_only_those_fields() {
+        let mut core = core_with_fog(vec![fixture_fog("f-1", "p-1", 0)]).await;
+        let current = core.open_fog_for("p-1").into_iter().next().unwrap();
+
+        core.patch_fog(
+            "seed-1",
+            &current,
+            Some("What permit does this actually need?".to_string()),
+            Some(2),
+            None,
+            3_000,
+        )
+        .await
+        .unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        assert_eq!(entries.len(), 1);
+        let MutationIntent::Patch { path, method, base_updated_at, patch_fields, .. } =
+            &entries[0].intent
+        else {
+            panic!("a fog edit is a CAS patch, not a create");
+        };
+        assert_eq!(path, "/api/fog/f-1");
+        assert_eq!(*method, HttpMethod::Patch);
+        assert_eq!(*base_updated_at, 0, "Fog carries no updated_at column");
+        assert_eq!(
+            patch_fields,
+            &serde_json::json!({
+                "question": "What permit does this actually need?",
+                "position": 2,
+            }),
+        );
+        assert!(
+            patch_fields.get("resolved_at").is_none(),
+            "resolved_at is untouched, not null"
+        );
+        assert!(patch_fields.get("expected_version").is_none());
+    }
+
+    /// #628 acceptance: "resolves one when it is answered" — stamps
+    /// `resolved_at`, never deletes the row.
+    #[tokio::test]
+    async fn patch_fog_resolve_stamps_resolved_at() {
+        let mut core = core_with_fog(vec![fixture_fog("f-1", "p-1", 0)]).await;
+        let current = core.open_fog_for("p-1").into_iter().next().unwrap();
+
+        core.patch_fog("seed-1", &current, None, None, Some(Some(9_000)), 3_000)
+            .await
+            .unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        let MutationIntent::Patch { patch_fields, .. } = &entries[0].intent else {
+            panic!("a fog edit is a CAS patch, not a create");
+        };
+        assert_eq!(patch_fields, &serde_json::json!({ "resolved_at": 9_000 }));
+    }
+
+    /// The clearing half: `Some(None)` sends an explicit JSON `null` —
+    /// reopening a resolved segment, same double-`Option` contract every
+    /// other nullable patch field here carries.
+    #[tokio::test]
+    async fn patch_fog_reopen_clears_resolved_at_with_explicit_null() {
+        let mut resolved = fixture_fog("f-1", "p-1", 0);
+        resolved.resolved_at = Some(9_000);
+        let mut core = core_with_fog(vec![resolved.clone()]).await;
+
+        core.patch_fog("seed-1", &resolved, None, None, Some(None), 3_000)
+            .await
+            .unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        let MutationIntent::Patch { patch_fields, .. } = &entries[0].intent else {
+            panic!("a fog edit is a CAS patch, not a create");
+        };
+        assert_eq!(patch_fields, &serde_json::json!({ "resolved_at": null }));
     }
 
     /// #140 acceptance: "the enable/disable toggle is one CAS field,
