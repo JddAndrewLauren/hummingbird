@@ -525,6 +525,35 @@ private fun DetailBody(
         )
     }
 
+    // Everything under the axes line, behind one disclosure (operator
+    // decision 2026-08-20): the axes are what the pane is read *for* — the
+    // ranker's own inputs, and what a glance is after — while the notes, the
+    // context and the two dates are reference material. Three condensed rows
+    // at rest were most of the pane's height on the cover display.
+    //
+    // The chevron is `CaptureSheet`'s "More details" idiom — same glyph,
+    // same half-turn, same two words, disclosing very nearly the same field
+    // set, so the gesture is learned once. It is also the pane's ONLY
+    // chevron, which is what keeps it from reading as the pencil it
+    // replaced: a chevron means "there is more below", and a tap on a row
+    // means "edit this".
+    //
+    // **It rides the axes row rather than sitting on a line of its own**
+    // (operator decision, after seeing it on the device): centred under the
+    // axes it cost a 64dp band — 8dp of panel gap, a 48dp touch target
+    // around a 24dp glyph, 8dp again — which between two open editors was
+    // the most conspicuous whitespace in the pane. In the row's trailing
+    // slot it costs nothing at all, because that row is already 48dp tall.
+    // It stays anchored to the axes row when the axes editor is open, rather
+    // than following the last thing rendered: a control that moves with the
+    // content above it is not a control anyone can aim at twice.
+    //
+    // Open by default on the promoting host, for `DetailSection`'s own
+    // reason: filling these in is what the Triage queue is *for*, and fields
+    // that open editable behind a shut disclosure would be invisible work.
+    var detailsOverride by rememberSaveable(itemId) { mutableStateOf<Boolean?>(null) }
+    val detailsOpen = detailsOverride ?: (mode == ItemDetailPanelMode.PROMOTE)
+
     // The three axes the system computes with, then — behind one
     // disclosure — the words a human wrote, the context, and the two dates.
     // Each section reads condensed and swaps its shared `ui/forms` editor in
@@ -592,6 +621,15 @@ private fun DetailBody(
                 )
             }
         },
+        trailing = {
+            IconButton(onClick = { detailsOverride = !detailsOpen }) {
+                Icon(
+                    painterResource(R.drawable.ic_chevron_down),
+                    contentDescription = if (detailsOpen) "Fewer details" else "More details",
+                    modifier = Modifier.rotate(if (detailsOpen) 180f else 0f),
+                )
+            }
+        },
     ) {
         LevelSlider(
             label = "Energy",
@@ -611,37 +649,6 @@ private fun DetailBody(
             selected = draft.priority,
             onSelect = { onDraftChange(draft.copy(priority = it)) },
         )
-    }
-
-    // Everything under the axes line, behind one disclosure (operator
-    // decision 2026-08-20): the axes are what the pane is read *for* — the
-    // ranker's own inputs, and what a glance is after — while the notes, the
-    // context and the two dates are reference material. Three condensed rows
-    // at rest were most of the pane's height on the cover display.
-    //
-    // The chevron is `CaptureSheet`'s "More details" idiom exactly — same
-    // glyph, same half-turn, same two words, and disclosing very nearly the
-    // same field set, so the gesture is learned once. It is also the pane's
-    // ONLY chevron, which is what keeps it from reading as the pencil it
-    // replaced: a chevron here means "there is more below", and a tap on a
-    // row means "edit this".
-    //
-    // Open by default on the promoting host, for `DetailSection`'s own
-    // reason: filling these in is what the Triage queue is *for*, and fields
-    // that open editable behind a shut disclosure would be invisible work.
-    var detailsOverride by rememberSaveable(itemId) { mutableStateOf<Boolean?>(null) }
-    val detailsOpen = detailsOverride ?: (mode == ItemDetailPanelMode.PROMOTE)
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.Center,
-    ) {
-        IconButton(onClick = { detailsOverride = !detailsOpen }) {
-            Icon(
-                painterResource(R.drawable.ic_chevron_down),
-                contentDescription = if (detailsOpen) "Fewer details" else "More details",
-                modifier = Modifier.rotate(if (detailsOpen) 180f else 0f),
-            )
-        }
     }
 
     if (detailsOpen) {
@@ -976,6 +983,16 @@ private fun DetailSection(
     mode: ItemDetailPanelMode,
     editable: Boolean,
     condensed: @Composable () -> Unit,
+    /** A control riding this section's own row, at its trailing edge —
+     * used by exactly one caller, for the pane's disclosure chevron
+     * (operator decision 2026-08-20: the arrow sits in line with what is
+     * above it, not on a line of its own, where its touch target cost a
+     * 64dp band of whitespace).
+     *
+     * Two gestures then share one row, which is safe for the reason the
+     * header's already is: an `IconButton` consumes its own tap, so it
+     * never falls through to the row's toggle underneath. */
+    trailing: (@Composable () -> Unit)? = null,
     editor: @Composable () -> Unit,
 ) {
     var openOverride by rememberSaveable(itemId, label) { mutableStateOf<Boolean?>(null) }
@@ -983,7 +1000,7 @@ private fun DetailSection(
         (openOverride ?: (mode == ItemDetailPanelMode.PROMOTE && !isSet))
 
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Box(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .then(
@@ -996,17 +1013,20 @@ private fun DetailSection(
                     },
                 )
                 .heightIn(min = 44.dp),
-            contentAlignment = Alignment.CenterStart,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (open) {
-                Text(
-                    label,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                condensed()
+            Box(modifier = Modifier.weight(1f)) {
+                if (open) {
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    condensed()
+                }
             }
+            trailing?.invoke()
         }
         if (open) editor()
     }

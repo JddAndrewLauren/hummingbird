@@ -388,12 +388,16 @@ class ItemDetailPanelStructuralTest {
      * the pane is read for, and the three reference rows under it —
      * `NOTES`, `CONTEXT`, `DATES` — sit behind one chevron.
      *
-     * Two things make this a defect rather than a preference if they drift.
-     * The chevron must be the pane's **only** one, or it stops reading as
-     * "there is more below" and starts competing with the rows that mean
-     * "tap to edit". And it must default open on the promoting host: an
-     * unset section opens editable there (the test above), and a field that
-     * opens editable behind a shut disclosure is invisible work. */
+     * Three things make this a defect rather than a preference if they
+     * drift. The chevron must be the pane's **only** one, or it stops
+     * reading as "there is more below" and starts competing with the rows
+     * that mean "tap to edit". It must default open on the promoting host:
+     * an unset section opens editable there (the test above), and a field
+     * that opens editable behind a shut disclosure is invisible work. And
+     * it must ride the axes row's trailing slot rather than a row of its
+     * own — centred on its own line, its 48dp touch target cost a 64dp band
+     * of whitespace, which is the whole reason the pane needed compacting
+     * in the first place. */
     @Test
     fun `the reference rows sit behind the pane's one disclosure`() {
         val body = functionBody(panelSrc, "DetailBody")
@@ -401,6 +405,19 @@ class ItemDetailPanelStructuralTest {
             "exactly one chevron in the pane",
             1,
             Regex("""R\.drawable\.ic_chevron_down""").findAll(panelSrc).count(),
+        )
+        // Bounded to the axes section's own call: `trailing` is a slot any
+        // section could take, and the claim is which one has it.
+        val axesCall = body.substringAfter("""label = "SIZE · ENERGY · PRIORITY",""")
+            .substringBefore("LevelSlider(")
+        assertTrue(
+            "the chevron must ride the axes row's trailing slot, not a line of its own",
+            axesCall.contains("trailing = {") &&
+                axesCall.contains("R.drawable.ic_chevron_down"),
+        )
+        assertFalse(
+            "and nothing may put it back on a centred row of its own",
+            body.replace(Regex("""\s+"""), " ").contains("horizontalArrangement = Arrangement.Center"),
         )
         assertTrue(
             "the disclosure must default to the mode, and open on the promoting host",

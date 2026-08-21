@@ -997,14 +997,31 @@ restyle, so each is recorded with what it replaced.
 - **The reference rows sit behind one chevron.** `NOTES`, `CONTEXT` and
   `DATES` — `SIZE · ENERGY · PRIORITY` stays out, because the axes are the
   ranker's own inputs and what a glance is for, while the other three are
-  reference material. It is `CaptureSheet`'s "More details" disclosure
-  exactly: same `ic_chevron_down`, same half-turn, same two words, over
-  nearly the same field set, so the gesture is learned once. It is also the
-  pane's *only* chevron, which is what keeps the two gestures legible — a
-  chevron means "more below", a row means "edit this". Default open in
-  `PROMOTE` mode: an unset section opens editable on Triage, and a field
-  that opens editable behind a shut disclosure is invisible work. The panel
-  gap came down 12dp → 8dp in the same pass.
+  reference material. It is `CaptureSheet`'s "More details" disclosure:
+  same `ic_chevron_down`, same half-turn, same two words, over nearly the
+  same field set, so the gesture is learned once. It is also the pane's
+  *only* chevron, which is what keeps the two gestures legible — a chevron
+  means "more below", a row means "edit this". Default open in `PROMOTE`
+  mode: an unset section opens editable on Triage, and a field that opens
+  editable behind a shut disclosure is invisible work. The panel gap came
+  down 12dp → 8dp in the same pass.
+- **And the chevron rides the axes row, not a line of its own.** Centred
+  under the axes — `CaptureSheet`'s literal placement — it cost a 64dp band:
+  8dp of panel gap, a 48dp touch target around a 24dp glyph, 8dp again. The
+  device pass is what made that visible, and between two open editors on
+  Triage it was the most conspicuous whitespace left in a pane the whole
+  batch was about compacting. In `DetailSection`'s trailing slot it costs
+  **nothing**, because that row is already 48dp tall, and the act row moved
+  up 46dp. Two gestures now share that row — tap the line to edit the axes,
+  tap the chevron to disclose — which is safe for the reason the header
+  row's two already are: an `IconButton` consumes its own tap. It stays
+  anchored to the axes row even when the axes editor is open, rather than
+  following whatever was rendered last: a control that moves with the
+  content above it cannot be aimed at twice. The lesson is that **a
+  borrowed idiom brings its own costs, and they are not the same costs in a
+  new context** — the disclosure was right and the sheet's centred
+  placement was not, because a form with one disclosure at its foot is not
+  a dense pane with a row the glyph can ride.
 - **The submit row never wraps.** `Grill me`/`Resume grill` + the mode's
   submit. `ChoiceRow` stays — the act row above it genuinely cannot fit
   three buttons on a phone — but this row is now required never to *use* the
@@ -1064,11 +1081,11 @@ Read off `uiautomator dump` throughout. What it settled:
   and `Grill me` + `Promote` on Triage — equal `y` bounds, folded and
   unfolded.
 
-One thing to know rather than to fix: the chevron sits in a ~64dp band of
-its own (8dp panel gap, a 48dp `IconButton`, 8dp again), and between two
-open editors on Triage that band is the most conspicuous whitespace left in
-the pane. It is the design system's touch target around a 24dp glyph, so
-tightening it means going off-spec, hanging the chevron on the axes row's
-trailing edge, or giving the band a hairline divider so it reads as a
-separator rather than as air. Left alone deliberately; the disclosure it
-controls is what bought the height back.
+The one thing this pass reported rather than fixed — the chevron's own 64dp
+band — was fixed immediately after, on operator decision, by hanging it on
+the axes row's trailing edge (see the bullet above). The re-check, folded:
+the chevron's bounds sit inside the axes line's own vertical band, the act
+row came up 46dp, and the two gestures on that row stay independent —
+tapping the chevron leaves the axes editor alone, tapping the line leaves
+the disclosure alone, and the chevron does not move when the editor opens
+beneath it.
