@@ -160,9 +160,13 @@ pub struct PaneItemFacts {
     pub context: Option<String>,
     /// The item's notes. The one field here that no *band* reads: it
     /// crosses because [`super::homework::homework_facts`] is what both
-    /// clients' expanded bodies render, and a pane that made each client
-    /// re-fetch the winning item's notes for itself would be two lookups
-    /// that can disagree about which item won.
+    /// clients' expanded bodies render, so the fields that body shows are
+    /// decided in one place rather than in two client-side lists that can
+    /// drift apart. **That is a deliberate exception to this module's own
+    /// discipline, not an application of it** — see
+    /// [`super::homework::HomeworkItem`], and ADR-0025's closing section,
+    /// which records it as the pane family's one exception and states why
+    /// it is not a precedent.
     pub description: Option<String>,
     /// Epoch ms, `TaskItemDTO`'s own `createdAt` — read only as
     /// [`super::homework`]'s tiebreak among deadline-less items.

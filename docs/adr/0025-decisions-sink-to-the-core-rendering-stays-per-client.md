@@ -501,3 +501,36 @@ glyphs, and whole `Expanded` rendering are per-client and do not.*
 | `WastePaneExpanded.tsx`-shaped `Expanded` components for all seven (`KimiPaneExpanded`, `GithubPaneExpanded`, `UptimePaneExpanded`, `ReachabilityPaneExpanded`, `RacePaneExpanded`, `WeekendPaneExpanded`, `VacationPaneExpanded`) | whole renderings |
 | `kimi.ts`/`github.ts`/`uptime.ts`/`reachability.ts`/`race.ts`/`weekend.ts`/`vacation.ts`'s own `SOURCE`/`SNAPSHOT_KEY`/`BINDING_KEY`/`STALE_AFTER_MS`-shaped constants | same module-evaluation-order constraint as waste's own four (each question's `sources: [SOURCE]` in its `question.ts` is built at module evaluation); pinned against the core's own `*_constants_json()` by `seam.test.ts`, not sunk at runtime |
 | The weekday/month *words* everywhere they appear | per-client, from the core's own civil-date/index facts (`weekendDay.date`, `Trip.startDate`) — the core decides which day, the client names it |
+
+## The homework pane's display text crosses, and that is the exception (#675)
+
+*Amended 2026-08-21 (#675).* Every row above that touches an item's own
+words sends them the other way: `weekend.ts`'s per-entry merge keeps its
+titles, ids and anchors client-side because the decision needs only the
+counts, and `race.ts`'s `RaceView.liveAlert` keeps its `title`/`body`
+client-side because `hasLiveAlert` is the only thing the band reads. The
+rule those two share is `inputs.rs`'s: **display text does not cross the
+seam when no decision reads it.**
+
+`homework.rs`'s `HomeworkItem` breaks it. It carries `title`, `deadline`
+and `description` out to both clients, and no band, answer state or
+`daysAway` reads any of the three — the pane's `Expanded` body is what
+renders them. `description` additionally crosses *inward*, as
+`PaneItemFacts::description`, which is the one field on that struct no rule
+consults.
+
+**This is recorded as a deliberate exception rather than defended as
+consistent with the rows above**, because the argument that would make it
+consistent does not hold. `HomeworkItem::id` crosses too, so a host could
+hydrate the winner's title and notes out of the same `items` list it just
+passed in, and the two lookups could not disagree about *which* item won —
+the id is the decision. What the crossing buys is narrower than that: one
+shape, assembled once, that both clients render without either of them
+owning a second "which fields does the body show" list that can drift
+between web and Android. That is a real cost avoided and a thin one, so it
+was taken with its eyes open.
+
+**It is not a precedent.** A second pane whose subject is the operator's
+own items is a decision to take again on its own merits, exactly as
+CONTEXT.md says of a second `@homework`-shaped context. The test above is
+unchanged for every other pane: if no decision reads it, it stays home.

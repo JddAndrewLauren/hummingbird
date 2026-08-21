@@ -121,9 +121,20 @@ pub enum HomeworkGap {
 
 /// One open homework item, as a client's expanded body renders it.
 ///
-/// `description` is carried on the winner and left `None` on the others by
-/// [`homework_facts`]: the expanded body shows the winning item's notes and
-/// lists the rest by title, so crossing every other item's whole
+/// **All three display fields here cross the seam deliberately, and
+/// ADR-0025 records it as that pane family's one exception** rather than
+/// as something consistent with the rest of its table: no band, answer
+/// state or `days_away` reads `title`, `deadline` or `description` — both
+/// clients' `Expanded` bodies do. What it buys is one shape, assembled
+/// once, so web and Android cannot drift about which fields the body
+/// shows. It is explicitly *not* bought by "otherwise the clients might
+/// disagree about the winner": [`HomeworkItem::id`] crosses, so a host
+/// hydrating by id could not disagree.
+///
+/// Within that exception the trimming still applies: `description` is
+/// carried on the winner and left `None` on the others by
+/// [`homework_facts`], since the expanded body shows the winning item's
+/// notes and lists the rest by title, so crossing every other item's whole
 /// description would be data no rendering reads — `inputs.rs`'s "do not
 /// re-cross whole DTOs" discipline applied on the way back out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

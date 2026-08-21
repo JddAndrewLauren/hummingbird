@@ -86,9 +86,11 @@ internal fun NowPaneExpanded(pane: MobileRankedPane, nowMs: Long) {
 // -------------------------------------------------------------- homework
 
 /** One open homework item's line — the title, and its deadline beside it
- * when it has one. The web draws these through `ItemRow`; this surface has
- * no such component in the pane slot, so it is a title and a meta line,
- * which is what `ItemRow` reduces to with no act affordances on it.
+ * when it has one. A title and a meta line, deliberately, and the web's
+ * pane is the same shape for the same reason: it was first built on
+ * `ItemRow` and the visual gate caught that component ellipsising a title
+ * down to `P.` in the 320px aside (`HomeworkPaneExpanded.tsx`'s header).
+ * This surface has no `ItemRow` in the pane slot to be tempted by anyway.
  *
  * Read-only, exactly as the web's is: every affordance this could grow
  * already exists on the queue above and in the item pane, and #675's own
