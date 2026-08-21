@@ -45,7 +45,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(summary) => {
             println!(
-                "gmail-poll: {} event(s) matched, {} alert(s) posted, cursor -> {}",
+                "gmail-poll: {} event(s) fetched, {} alert(s) posted, cursor -> {}",
                 summary.events_fetched, summary.alerts_posted, summary.new_history_id
             );
             ExitCode::SUCCESS
@@ -100,13 +100,21 @@ fn run() -> Result<Summary, String> {
         Plan::Resync => bounded_resync(&access_token)?,
     };
 
-    // The per-message fetch/parse fold (#264 review item 4): a transient
-    // fetch failure aborts the whole run via `?`, before `post_cursor` is
-    // ever reached, so that message's id stays inside the *next* poll's
-    // `history.list` window rather than being lost the moment the cursor
-    // advances past it. A permanently unparseable message is skipped
-    // loudly (logged below) but does not abort the batch.
+    // The per-message fetch/parse fold (#264 review item 4, as redrawn by
+    // #685): a *transient* fetch failure aborts the whole run via `?`,
+    // before `post_cursor` is ever reached, so that message's id stays
+    // inside the next poll's `history.list` window rather than being lost
+    // the moment the cursor advances past it. A permanent failure —
+    // whether it surfaces as a gone message or an unparseable body — is
+    // skipped loudly (logged below) but does not abort the batch.
+    //
+    // Reading the status is this file's whole contribution to that
+    // decision, and `gmail_get_message` is where it happens — see its own
+    // doc.
     let batch = fold_messages(&message_ids, |id| gmail_get_message(&access_token, id))?;
+    for id in &batch.vanished {
+        eprintln!("gmail-poll: skipping {id}, no longer in the mailbox");
+    }
     for (id, reason) in &batch.unparseable {
         eprintln!("gmail-poll: skipping {id}, unparseable: {reason}");
     }
@@ -263,9 +271,26 @@ fn gmail_profile(access_token: &str) -> Result<String, String> {
     parse_profile(&body).map_err(|e| e.to_string())
 }
 
-fn gmail_get_message(access_token: &str, id: &str) -> Result<String, String> {
+/// `messages.get` for one id, with [`fold_messages`]'s three outcomes
+/// already sorted — the only place the HTTP status is still legible, and
+/// so the only place that sorting can happen (#685). It is the same
+/// status-reading job this file does for `history.list`'s own 404 in
+/// [`run`]: 404 is the message deleted since it was listed, 410 the same
+/// answer under Gmail's other spelling, and both are permanent, so they
+/// become `Ok(None)` — skip it, let the cursor advance past it.
+/// Everything else, including a 5xx that will very likely succeed next
+/// run, stays an `Err` and blocks the cursor.
+///
+/// The first revision stringified every error here before returning it,
+/// which is *why* the caller had no way to tell the two apart and why one
+/// deleted message could wedge the lane for six days.
+fn gmail_get_message(access_token: &str, id: &str) -> Result<Option<String>, String> {
     let url = format!("{GMAIL_API}/messages/{id}");
-    gmail_get(access_token, &url, &[("format", "full")]).map_err(|e| e.to_string())
+    match gmail_get(access_token, &url, &[("format", "full")]) {
+        Ok(json) => Ok(Some(json)),
+        Err(GmailError::Status(404 | 410)) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 // --------------------------------------------------------- authority API

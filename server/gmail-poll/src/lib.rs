@@ -55,12 +55,16 @@
 //! mapping, which needs the real HTTP status and so cannot move. AC6's
 //! cursor-loss fixture case lives here, natively, rather than being
 //! unreachable inside the untestable edge. `batch.rs`'s `fold_messages`
-//! is its sibling for the per-message fetch loop (review item 4): a
-//! transient fetch failure aborts the whole batch (`Err`, before
-//! `main.rs` ever calls `post_cursor`), while a permanently unparseable
-//! message is skipped loudly but non-fatally — two different failure
-//! modes that must not share one branch, since only the first may be
-//! allowed to block the cursor from advancing.
+//! is its sibling for the per-message fetch loop (review item 4, as
+//! redrawn by #685): a *transient* fetch failure aborts the whole batch
+//! (`Err`, before `main.rs` ever calls `post_cursor`), while a permanent
+//! one — a message Gmail no longer has, or a body that will not parse —
+//! is skipped loudly but non-fatally. What sorts them is permanence, not
+//! the layer the failure surfaces at, and drawing that line at
+//! fetch-vs-parse instead is what wedged the live poller for six days on
+//! one deleted message (#685): only a transient failure may be allowed
+//! to block the cursor from advancing, because only a transient failure
+//! stops being true.
 
 //! **`occurred_at` and the evaluation clock are both `now_as_deadline(...)`,
 //! i.e. UTC** — `event.rs` stamps a message's `occurred_at` from Gmail's own
