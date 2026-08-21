@@ -43,6 +43,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,6 +66,9 @@ import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
 import uniffi.hummingbird_ffi_mobile.NowBlockedEntryRecord
+import uniffi.hummingbird_ffi_mobile.NowBoardRecord
+import uniffi.hummingbird_ffi_mobile.NowColumnRecord
+import uniffi.hummingbird_ffi_mobile.NowItemRecord
 
 // M1-6's whole surface (#141/#504), widened to the frontier board by
 // M3/#530: the board, decided by `hummingbird-ffi-mobile::MobileTaskHost.
@@ -142,6 +146,54 @@ private fun blockedReasonLabel(titles: List<String>): String = when (titles.size
 /** Cards shown per column before the "N more" affordance — `COLUMN_CAP` in
  * `FrontierColumns.tsx`, ported verbatim. */
 private const val COLUMN_CAP = 6
+
+/** Which of a capped column's items the board draws: [COLUMN_CAP]'s own
+ * first N, plus the open pane's item wherever it ranks. The pane lives in
+ * the selected row's own slot now, so a re-rank that pushes the open item
+ * past the cap would otherwise make the pane vanish while the selection
+ * stayed set — and a selection with no pane in the list is exactly the
+ * state [selectedPaneIsEmitted] exists to keep Back out of.
+ *
+ * Rank order is the seam's ([NowColumnRecord.items] arrives in display
+ * order and this never re-orders it, ADR-0025), and the exception is a
+ * pure addition: nothing is dropped to make room, so the column shows
+ * `COLUMN_CAP + 1` rows in exactly the case where the selected item ranks
+ * past the cap. */
+internal fun cappedColumnRows(items: List<NowItemRecord>, selectedId: String?): List<NowItemRecord> {
+    val capped = items.take(COLUMN_CAP)
+    if (selectedId == null ||
+        capped.any { it.id == selectedId } ||
+        items.none { it.id == selectedId }
+    ) {
+        return capped
+    }
+    val cappedIds = capped.map { it.id }.toSet()
+    return items.filter { it.id in cappedIds || it.id == selectedId }
+}
+
+/** Whether the open pane is actually emitted into the list. The pane is no
+ * longer an unconditional entry at index 0: it is drawn only in the
+ * selected row's own slot, so it exists only while the board still carries
+ * the item (a facet can drop it) and its column is open (the collapse
+ * toggle can shut it). Back's dirty branch turns on this — a pane that is
+ * not in the list cannot be scrolled into view, and scrolling to a stale
+ * index instead is a Back press that does nothing at all.
+ *
+ * The column cap is deliberately not consulted: [cappedColumnRows] already
+ * guarantees an open column draws the selected item whatever its rank.
+ * Blocked entries are always drawn (that section has no collapse of its
+ * own, [ColumnHeader]'s null `onToggleCollapsed`). */
+internal fun selectedPaneIsEmitted(
+    board: NowBoardRecord?,
+    collapsed: Set<String>,
+    selectedId: String?,
+): Boolean {
+    if (board == null || selectedId == null) return false
+    val inOpenColumn = board.columns.any { column ->
+        !collapsed.contains(column.value ?: "") && column.items.any { it.id == selectedId }
+    }
+    return inOpenColumn || board.blocked.any { it.item.id == selectedId }
+}
 
 /** One Now-surface pane's label, from its [MobileStandingQuestion] —
  * `StatusScreen.kt`'s own `paneLabel`, this surface's twin: a rendering
@@ -234,6 +286,26 @@ fun NowScreen(
         viewModel(factory = ItemDetailViewModel.factory(context), key = "item-$id")
     }
 
+    // Where the open pane last sat in the list — **best-effort, and only a
+    // fallback.** It used to be index 0 and needed no remembering; now it is
+    // the selected row's own slot, whose index depends on which column the
+    // item ranks into and how much is expanded above it. Captured from the
+    // layout rather than recomputed from the board, so there is no second
+    // copy of the emission order to drift. Keyed on the selection, because
+    // a remembered index outlives nothing else: collapsing a column above a
+    // scrolled-away pane shifts every index below it, and the index a
+    // *previous* selection was seen at names an unrelated row for this one.
+    // Back re-reads the live layout first and reaches for this only when the
+    // pane is currently off screen (`visibleItemsInfo` holds the viewport,
+    // not the list).
+    var lastSeenPanePosition by remember(selectedId) { mutableStateOf<Int?>(null) }
+    LaunchedEffect(listState, selectedId) {
+        val key = selectedId?.let { selectedItemKey(it) } ?: return@LaunchedEffect
+        snapshotFlow {
+            listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == key }?.index
+        }.collect { index -> if (index != null) lastSeenPanePosition = index }
+    }
+
     // Collapse before leaving: with a panel open, Back is "close the item",
     // not "exit the app". While the panel is on screen its own deeper
     // BackHandler wins and the discard confirmation comes first — but the
@@ -242,9 +314,34 @@ fun NowScreen(
     // re-checked here: Back then scrolls the panel back into view (where
     // its own handler and dialog take over) rather than silently closing
     // an edit mid-flight.
+    //
+    // That branch is taken ONLY while the pane is really in the list
+    // ([selectedPaneIsEmitted]) — `RecallOverlay`'s own shape, which
+    // requires its computed panel index and falls through to closing
+    // otherwise. Since the pane became the selected row's own slot it can
+    // be gone with the selection still set (collapse the column, or pick a
+    // facet that excludes the item), and `reseedIfClean` keeps a dirty
+    // draft dirty forever, so without the guard every Back press scrolls to
+    // an index that is no longer the pane and does nothing at all: no
+    // dialog, no close, no way out.
+    //
+    // Closing there does NOT discard the typed words: the panel's
+    // ViewModel is keyed on the item and outlives the pane's slot, so
+    // re-opening the item shows the draft again, still dirty and still
+    // guarded by the panel's own confirmation. What is lost is only the
+    // guard's *placement* — the confirmation happens the next time the pane
+    // is opened rather than now, which is the trade for not trapping the
+    // reader behind a pane they cannot see.
     BackHandler(enabled = selectedId != null) {
-        if (panelViewModel?.draft?.value != null && panelViewModel.isDirty) {
-            scope.launch { listState.animateScrollToItem(0) }
+        val paneIndex = selectedId
+            ?.takeIf { selectedPaneIsEmitted(board, collapsed, it) }
+            ?.let { id ->
+                val key = selectedItemKey(id)
+                listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == key }?.index
+                    ?: lastSeenPanePosition
+            }
+        if (paneIndex != null && panelViewModel?.isDirty == true) {
+            scope.launch { listState.animateScrollToItem(paneIndex) }
         } else {
             viewModel.closeItem()
         }
@@ -384,55 +481,40 @@ fun NowScreen(
                 // scroll is the fix, not a `weight` modifier on a still-split
                 // layout, since the queue's own three states already need to
                 // sit inside *some* `LazyListScope` for `item`/`items` below.
-                // The panel is always index 0 when present; opening one (or
-                // switching cards) brings it into view rather than leaving the
-                // reader staring at the still-standing board they tapped in —
-                // `SelectedItemSection`'s own scrollIntoView (`NowScreen.tsx`).
-                // Only on a *change* of selection: `remember` starts equal to
-                // whatever an Activity recreation restored, so a fold/unfold
-                // keeps its scroll position instead of animating back to top.
-                var lastScrolledSelection by remember { mutableStateOf(selectedId) }
-                LaunchedEffect(selectedId) {
-                    if (selectedId != null && selectedId != lastScrolledSelection) {
-                        listState.animateScrollToItem(0)
-                    }
-                    lastScrolledSelection = selectedId
-                }
+                // **Nothing scrolls on a selection.** The pane opens in the
+                // slot of the row that was tapped, so it is already under
+                // the reader's finger; the `animateScrollToItem(0)` that
+                // used to run here existed only because the pane was
+                // somewhere else entirely (index 0), and it was the jump
+                // itself that made the first tap and the second tap look
+                // like different gestures.
                 LazyColumn(
                     state = listState,
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     // The last row scrolls clear of the Capture FAB.
                     contentPadding = PaddingValues(bottom = 64.dp),
                 ) {
-                    // The opened item, ABOVE the board, which keeps rendering
-                    // below — never an early return of the panel instead of the
-                    // frontier (ADR-0021 decision 7 / #404: the board vanishing
-                    // on tap was the bug). The panel lives in its own file, so
-                    // acting/editing/steps stay one implementation with the
-                    // notification door's full-screen route.
-                    selectedId?.let { id ->
-                        item(key = "selected-item") {
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.surface,
-                                ),
-                            ) {
-                                ItemDetailPanel(
-                                    itemId = id,
-                                    syncTick = syncTick,
-                                    closeLabel = "Close",
-                                    onClose = { viewModel.closeItem() },
-                                    onGrill = onGrill,
-                                    onMutated = { scope.launch { reload() } },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(12.dp),
-                                )
-                            }
-                        }
-                    }
-
+                    // The opened item, INSIDE the board, which keeps rendering
+                    // around it — never an early return of the panel instead of
+                    // the frontier (ADR-0021 decision 7 / #404: the board
+                    // vanishing on tap was the bug). The panel lives in its own
+                    // file, so acting/editing/steps stay one implementation with
+                    // the notification door's full-screen route.
+                    // The pane is NOT an entry of its own here: it is
+                    // rendered in the selected row's own slot, further
+                    // down, so tapping a card expands *that card* rather
+                    // than adding a block at the top of the board
+                    // (operator decision 2026-08-20). What it replaced was
+                    // an `item(key = "selected-item-$id")` at index 0 plus
+                    // an `animateScrollToItem(0)` on every selection
+                    // change, which read as two different gestures
+                    // depending on where the list happened to be scrolled:
+                    // the first tap yanked the board to the top and left
+                    // the tapped row far below the pane that was supposed
+                    // to be about it, while a second tap — with the list
+                    // already at 0 — dropped the new pane roughly where
+                    // the finger was and looked like the expansion it was
+                    // not.
                     when {
                         loading && currentBoard == null -> item(key = "loading") { CircularProgressIndicator() }
                         currentBoard == null ||
@@ -482,25 +564,57 @@ fun NowScreen(
 
                                 if (!isCollapsed) {
                                     val isExpanded = expanded.contains(key)
-                                    val visible = if (isExpanded) column.items else column.items.take(COLUMN_CAP)
+                                    // The cap, plus its one exception for the
+                                    // open pane — decided by
+                                    // [cappedColumnRows], which is where that
+                                    // rule is stated and tested.
+                                    val visible = if (isExpanded) {
+                                        column.items
+                                    } else {
+                                        cappedColumnRows(column.items, selectedId)
+                                    }
                                     val hidden = column.items.size - visible.size
 
-                                    items(visible, key = { "$key-${it.id}" }) { record ->
-                                        NowRow(
-                                            record = record.asRowModel(),
-                                            dark = dark,
-                                            selected = record.id == selectedId,
-                                            onOpen = { viewModel.selectItem(record.id) },
-                                            onComplete = {
-                                                scope.launch {
-                                                    viewModel.complete(
-                                                        record.id,
-                                                        nowDeadlineShaped(),
-                                                        System.currentTimeMillis(),
-                                                    )
-                                                }
-                                            },
-                                        )
+                                    for (record in visible) {
+                                        if (record.id == selectedId) {
+                                            // **In the row's own place.** The
+                                            // key is the pane's, not the
+                                            // row's, so `listState` can find
+                                            // it (the dirty-Back handler
+                                            // above) without knowing which
+                                            // column it landed in.
+                                            item(key = selectedItemKey(record.id)) {
+                                                SelectedItemCard(
+                                                    itemId = record.id,
+                                                    syncTick = syncTick,
+                                                    onClose = { viewModel.closeItem() },
+                                                    onGrill = onGrill,
+                                                    onMutated = { scope.launch { reload() } },
+                                                    onSubmitted = {
+                                                        viewModel.closeItem()
+                                                        scope.launch { reload() }
+                                                    },
+                                                )
+                                            }
+                                        } else {
+                                            item(key = "$key-${record.id}") {
+                                                NowRow(
+                                                    record = record.asRowModel(),
+                                                    dark = dark,
+                                                    selected = false,
+                                                    onOpen = { viewModel.selectItem(record.id) },
+                                                    onComplete = {
+                                                        scope.launch {
+                                                            viewModel.complete(
+                                                                record.id,
+                                                                nowDeadlineShaped(),
+                                                                System.currentTimeMillis(),
+                                                            )
+                                                        }
+                                                    },
+                                                )
+                                            }
+                                        }
                                     }
 
                                     if (hidden > 0 || (isExpanded && column.items.size > COLUMN_CAP)) {
@@ -522,22 +636,40 @@ fun NowScreen(
                                         onToggleCollapsed = null,
                                     )
                                 }
-                                items(currentBoard.blocked, key = { "blocked-${it.item.id}" }) { entry ->
-                                    BlockedRow(
-                                        entry = entry,
-                                        dark = dark,
-                                        selected = entry.item.id == selectedId,
-                                        onOpen = { viewModel.selectItem(entry.item.id) },
-                                        onComplete = {
-                                            scope.launch {
-                                                viewModel.complete(
-                                                    entry.item.id,
-                                                    nowDeadlineShaped(),
-                                                    System.currentTimeMillis(),
-                                                )
-                                            }
-                                        },
-                                    )
+                                for (entry in currentBoard.blocked) {
+                                    if (entry.item.id == selectedId) {
+                                        item(key = selectedItemKey(entry.item.id)) {
+                                            SelectedItemCard(
+                                                itemId = entry.item.id,
+                                                syncTick = syncTick,
+                                                onClose = { viewModel.closeItem() },
+                                                onGrill = onGrill,
+                                                onMutated = { scope.launch { reload() } },
+                                                onSubmitted = {
+                                                    viewModel.closeItem()
+                                                    scope.launch { reload() }
+                                                },
+                                            )
+                                        }
+                                    } else {
+                                        item(key = "blocked-${entry.item.id}") {
+                                            BlockedRow(
+                                                entry = entry,
+                                                dark = dark,
+                                                selected = false,
+                                                onOpen = { viewModel.selectItem(entry.item.id) },
+                                                onComplete = {
+                                                    scope.launch {
+                                                        viewModel.complete(
+                                                            entry.item.id,
+                                                            nowDeadlineShaped(),
+                                                            System.currentTimeMillis(),
+                                                        )
+                                                    }
+                                                },
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -777,6 +909,56 @@ internal fun FacetChipGroup(
                 )
             }
         }
+    }
+}
+
+/** The list key the open pane takes, wherever in the board it lands. One
+ * function because two things need to agree on it: the slot that emits the
+ * pane (in the selected row's own place) and the screen's dirty-Back
+ * handler, which finds the pane's index by this key so it can scroll a
+ * disposed panel back into view. */
+private fun selectedItemKey(itemId: String) = "selected-item-$itemId"
+
+/** The selected row, expanded in place: the same card shape the rows use,
+ * carrying the shared `ItemDetailPanel`.
+ *
+ * The row it replaces is not drawn as well — the pane's own header is the
+ * title, and its action row carries the row's mark-done check — so the
+ * board keeps exactly one line per item and the expansion reads as the row
+ * growing rather than as a second thing about it appearing elsewhere.
+ *
+ * [onSubmitted] is separate from [onMutated] for the reason `TriageScreen`
+ * states at its own call: a write that lands can take the item off this
+ * board (a mark-done does), and a selection left set at a vanished row has
+ * no pane — which is also how Back ends up with nothing to scroll to. So
+ * the host closes the selection on a landed submit, then reloads. */
+@Composable
+private fun SelectedItemCard(
+    itemId: String,
+    syncTick: Int,
+    onClose: () -> Unit,
+    onGrill: (String) -> Unit,
+    onMutated: () -> Unit,
+    onSubmitted: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface,
+        ),
+    ) {
+        ItemDetailPanel(
+            itemId = itemId,
+            syncTick = syncTick,
+            closeLabel = "Close",
+            onClose = onClose,
+            onGrill = onGrill,
+            onMutated = onMutated,
+            onSubmitted = onSubmitted,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+        )
     }
 }
 

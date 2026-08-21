@@ -177,16 +177,23 @@ frontier renders (`NowRow.kt`, extracted for exactly this — the
 Triage-parity slice, operator request 2026-08-20), fed by a verbatim-copy
 adapter over `TriageItemRecord` (whose `urgency` band arrives decided from
 the seam, like every other pill). One item opens at a time, expanding at
-index 0 of the queue's one `LazyColumn` — `NowScreen`'s inline-expansion
-pattern — into the seeded editor built from #529's shared `ui/forms/`
-components (`LevelSlider`/`ContextField`/`CaptureDateField`) under the Now
-panel's chrome (stage chip, `titleMedium` title, X close). The expanded
-pane is deliberately NOT `ItemDetailPanel`: `available_actions` answers
-nothing for Triage/Grilling stages, and the panel's plain save is the
-non-promoting write this surface bans. Promote-to-Ready is the only save
-destination this screen offers — there is no "save without promoting"
-method on `TriageViewModel` at all, unlike item detail's own edit mode. The row checkmark goes through the existing
-`act("complete")` path, never a triage. The Grill button is live (#539):
+index 0 of the queue's one `LazyColumn` into **`ItemDetailPanel`, in
+`ItemDetailPanelMode.PROMOTE`**. Index 0 is no longer Now's shape — Now
+expands the tapped row in its own slot ("In place, not at the top" below) —
+and this screen has not been changed to match.
+
+That pane used to be a second, Triage-only editor (`TriageEditorPanel` over
+its own `TriageDraft`), because `available_actions` answers nothing for the
+Triage and Grilling stages and the panel's plain save is the non-promoting
+write this surface bans. Both reasons are answered on the record instead
+now: `can_mark_done` rides beside `available_actions` and gates the check
+(core `ItemDetail` → `ItemDetailRecord`), and the *mode* is what makes
+promote the pane's only submit — so #360 holds with one implementation
+rather than two. Promote-to-Ready is still the only save destination this
+screen offers; the row checkmark still goes through the existing
+`act("complete")` path, never a triage. What remains
+`TriageViewModel`'s is the board and the selection: the draft, the promote
+and their refusals live in `ItemDetailViewModel` with the panel. The Grill button is live (#539):
 gated on the row's own `canGrill` fact from the seam, it navigates to the
 standalone `GrillTakeoverScreen`/`GrillTakeoverViewModel` rather than opening
 an interview inline, so neither `TriageScreen.kt` nor `TriageViewModel.kt`
@@ -326,13 +333,17 @@ Five slices bringing the surfaces in line with the design kit
   "N of M shown" comes decided across the seam
   (`NowBoardRecord.shown_count`/`total_count` — Kotlin never holds the
   pre-facet list, ADR-0025).
-- **Inline expansion.** Tapping a Now card opens `ItemDetailPanel` — the
-  whole former `ItemDetailScreen` body, extracted so the route (still the
-  notification and Recall door, ADR-0027) and Now render one
-  implementation — as item 0 of Now's one `LazyColumn`, above the board,
-  which keeps rendering below (ADR-0021 decision 7). Selection is
-  `NowViewModel.selectedItemId`, Triage's one-open-at-a-time shape.
-  `NowItemDoorTest` pins the door end to end.
+- **Inline expansion, in the card's own place.** Tapping a Now card opens
+  `ItemDetailPanel` — the whole former `ItemDetailScreen` body, extracted so
+  the route (still the notification and Recall door, ADR-0027) and Now
+  render one implementation, and since the unification the Recall overlay
+  and Triage render it too, four hosts in all — **in the tapped row's own
+  slot**, so the card grows and the rest of the board stays where it is
+  (ADR-0021 decision 7's requirement is that a selection never
+  early-returns the frontier, which this keeps more literally than the
+  index-0 block it replaced — see "In place, not at the top" below).
+  Selection is `NowViewModel.selectedItemId`, Triage's one-open-at-a-time
+  shape. `NowItemDoorTest` pins the door end to end.
 - **The capture FAB and sheet.** The design kit's extended FAB (the one
   sanctioned large ember fill) opens `CaptureSheet`, over the same
   `CaptureViewModel` and `ui/forms/` components as `CaptureActivity` (still
@@ -365,9 +376,12 @@ Operator feedback on the iteration, applied as six slices on top of it:
   one-labelled-row-per-facet layout. (Round 4 kept the one line and dropped
   the scroll — the chips shrink to fit instead. See below.)
 - **Panel chrome.** `ItemDetailPanel`'s header is the web `ItemPanel`'s:
-  `HB-<seq>` mono meta line over a `titleMedium` title, the × close
-  IconButton top-right (Cancel while editing, dirty path still confirms),
-  StageBadge leading the meta row, 12dp gaps.
+  `HB-<seq>` mono meta line under a `titleMedium` title, the × close
+  IconButton top-right, StageBadge below, 8dp gaps. (The unification
+  reshaped this again: the title is now the draft's, the whole header row
+  closes the pane, and every leaving gesture routes through the one
+  dirty-draft confirmation. The polish pass then took the pencils out —
+  see below.)
 - **Width parity.** `ui/ContentMax.kt` caps the bar-tab screens' content
   at the web's `--content-max` (880dp), centred — the unfolded display
   stops stretching rows across its whole width.
@@ -487,8 +501,8 @@ Operator batch 2026-08-20, three areas on one branch.
   text box below the header used to say the same words the header said, so
   the panel claimed the title twice and editing one changed the other. The
   header now reads the *draft's* title — an edit has to show where it was
-  made — and `ic_pencil` swaps an inline field in for it; the title sits
-  above the stage badge. The header row is the wide door out, through the
+  made — and tapping the title itself swaps an inline field in for it; the
+  title sits above the stage badge. The header row is the wide door out, through the
   same confirmation the × routes through, and clickable only while not
   editing so a tap into the field is not a tap on the way out. Editing ends
   on IME Done or when the pane closes, deliberately **not** on focus loss:
@@ -930,3 +944,392 @@ mScreenState=ON` will not tell you which; read `state ON` off the
 
 Afterwards: revoke the ingest token, disable the test rules (there is no
 DELETE for rules, only PATCH), and dismiss the test alerts.
+
+### The unified item-detail pane's pass (2026-08-20, `2c82b6b`)
+
+Pixel 10 Pro Fold **emulator**, inner display (the attached hardware was
+locked and only the operator can unlock it; `docs/SURFACES.md` accepts
+either). Three of the four hosts exercised: Now's inline expansion, Triage's
+`PROMOTE` pane, and the Recall overlay's expansion. The notification route
+was **not** exercised — reaching it needs a real `item-threshold/v1` push,
+and it takes the panel's default mode with no arguments of its own, so what
+was verified on Now is what it renders; check 27 above still owns that door.
+
+**It caught a crash 480 green JVM tests could not.** Reopening a pane left
+mid-title-edit threw `FocusRequester is not initialized`: `editingTitle` is
+restored per item, so it composes `true` while the record is still loading,
+and the inline field that carries the `focusRequester` only exists once
+there is a draft. The effect and the field now read one condition. The
+lesson is the general one: **an effect that requests focus must key on the
+target being composed, not on the flag that will eventually compose it** —
+and a `rememberSaveable` keyed per item makes "the flag is true before the
+content exists" reachable on the very first frame.
+
+Exercised and settled — with one claim that was **wrong**, corrected below:
+title-edit mode was recorded here as not leaking across selections (open the
+title edit on one row, close, open another, and the accessibility tree shows
+no `EditText`). It did leak; the operator hit it, and it reproduces every
+time. See "The title-edit trap" below for what the check must actually be. A
+dirty draft raises the one
+`DiscardConfirmation` from Back, and Discard resets the draft to its seed
+while leaving the pane open; a promote closes the pane and drops the
+captured count (12 → 11); the pane's own mark-done check does the same
+(11 → 10) without a second gesture. Read off `uiautomator dump` throughout,
+per round 5's lesson — and note the pane's check is a full 48dp target only
+when it is not clipped by the viewport edge, so measure it scrolled into
+view or a clipped 15px node reads as a layout defect it is not.
+
+## In place, not at the top (2026-08-20)
+
+Operator report: Now's selection "acts differently" from Triage's, and
+inconsistently with itself — "the first selection opens a new pane up top,
+but a second selection opens it as I want it to".
+
+Both screens were in fact identical, and the diagnosis is worth more than
+that symmetry: each rendered the pane as `item(key = "selected-item-$id")`
+at **index 0** of its one `LazyColumn` and then ran
+`animateScrollToItem(0)` on every change of selection. So the first tap
+yanked the board to the top and left the tapped card far below a pane that
+was supposed to be about it, while a second tap — with the list already at
+0 — dropped the new pane roughly where the finger already was and looked
+exactly like the in-place expansion it was not. One mechanism, two
+appearances, decided by nothing but where the list happened to be scrolled.
+Triage reads as "in place" for the same accidental reason, which is why it
+was cited as the model: measured on the device, tapping its fourth row puts
+the pane at the top of the viewport, not at the row.
+
+Now expands the row itself: inside the columns loop, the selected record
+renders `SelectedItemCard` in **its own slot** instead of `NowRow`, and
+nothing scrolls. Consequences worth knowing:
+
+- The row is not drawn as well as the pane — the pane's header is the title
+  and its action row carries the row's mark-done check — so the board keeps
+  one line per item and no item appears twice.
+- The selected item is rendered even when `COLUMN_CAP` would hide it,
+  because the pane now lives in that row's slot: a re-rank that pushed the
+  open item past the cap would otherwise make the pane vanish with the
+  selection still set. Collapsing its column still hides it, which is a
+  deliberate gesture and reads as one.
+- The dirty-draft Back handler needed a new target. It exists because
+  scrolling the panel out of the viewport DISPOSES it, unregistering its own
+  BackHandler, so the screen re-checks dirtiness and scrolls the panel back
+  rather than losing an edit. Index 0 was that target for free; the pane's
+  index now depends on which column the item ranks into, so the screen
+  remembers it from `listState.layoutInfo` while the pane is on screen —
+  which it always is at the moment it opens, since it replaces the row that
+  was just tapped. Reading the layout rather than recomputing the emission
+  order keeps there from being a second copy of that order to drift.
+
+**Two escape hatches the index-0 pane did not need.** Because the pane is
+now a slot that can stop existing while the selection stays set, two paths
+had to be closed. Back's dirty-draft branch — the one that scrolls a
+disposed panel back into view rather than losing an edit — now runs only
+when the pane is genuinely in the list (`selectedPaneIsEmitted`: the board
+still carries the item and its column is open), and otherwise falls through
+to closing, `RecallOverlay`'s own shape. Without that guard, collapsing the
+open item's column with a dirty draft left every Back press scrolling to an
+index that was no longer the pane: no dialog, no close, no way out, and
+`reseedIfClean` keeps the draft dirty forever. Closing there does not
+discard the words — the panel's ViewModel is keyed on the item and outlives
+the slot, so reopening shows the draft still dirty and still guarded; what
+moves is only when the question gets asked. And `SelectedItemCard` now
+passes `onSubmitted`, for the reason `TriageScreen` already had it: the
+pane's own mark-done takes the item off the board, so the selection must
+close with it instead of dangling at a vanished row.
+
+The column cap's exception lives in `cappedColumnRows` now — a pure
+function, unit-tested, rather than inline list logic no test could reach.
+
+What remains open is deliberate: nothing prunes the selection when a
+*sync-driven* reload drops the item (another device completes it, a rule
+re-stages it). The guard above makes that survivable — one dead Back press,
+no lost work — and the fix needs a decision about dirty drafts rather than a
+patch, so it is #660.
+
+Triage still renders its pane at index 0. It is *not* what it was cited as
+being, and making it match is a one-line change of the same shape — left
+undone deliberately rather than assumed.
+
+## The title-edit trap, and what `rememberSaveable(input)` does not do
+
+Operator report, 2026-08-20: tapping an item's title opened its inline field
+with **no way out that did not commit a title**, and every item selected
+afterwards opened in edit mode too. Both halves reproduce on hardware every
+time, and one of them had been recorded above as verified — which is the more
+useful half of this note.
+
+**The mechanism.** Both inline hosts rendered the pane as
+`item(key = "selected-item")` — a *constant* LazyColumn key. Selecting
+another item disposes the panel and recomposes it at the same slot, and
+LazyColumn's `SaveableStateHolder` saves that slot's state on the way out and
+offers it back on the way in. (Those keys name the item now — the second
+half of the fix, below.) `rememberSaveable(itemId)` does not stop this:
+its `inputs` decide only whether `init()` is *eligible* to run, and the
+registry is consulted **first**, under a key derived from the position in the
+composition tree. A restored value therefore wins over `init()` even though
+the input changed. Item A's `true` becomes item B's open field.
+
+Four states in the pane were written this way, and two of the leaks were
+watched happen with `uiautomator dump`: the title's edit mode, and the
+details disclosure (open the disclosure on one item, select another, its
+pane is already disclosed). The comments claiming `(itemId)` was the fix had
+been in the file since the unification, and the pass above tested the right
+behaviour on the wrong path — evidently without the save/restore cycle a
+real selection change performs. **A leak that needs a dispose to appear
+cannot be checked without disposing**: close the pane, or select another
+item, and dump.
+
+The fix has two shapes, and which one a piece of state gets is the whole
+decision:
+
+- **State worth keeping per item** — the details disclosure, each section's
+  open/shut, the microtask grain — names the item in its **registry key**,
+  `key = "details-open-$itemId"`, the same shape the two `viewModel(...)`
+  calls already used. Recreation survival is kept: rotating twice with the
+  disclosure open brings it back open, on the right item.
+- **A transient mode** — title-edit — is a plain `remember(itemId)`, with no
+  registry entry at all. A per-item key would have fixed the cross-item half
+  and left the other: item A's own restored `true` is still item A's trap
+  when it is next opened. Nothing is lost by shutting it, because what was
+  typed lives in the ViewModel's draft and shows on the title line either
+  way. It also removes the reachable path to the
+  `FocusRequester is not initialized` crash above at its source, rather than
+  guarding it (the guard stays — a reload can still empty the draft under an
+  open field).
+
+**And the way out.** Back now escalates one layer per press: the IME takes
+the first (keyboard down), then the title field shuts, then a dirty draft
+raises the discard question, then the host closes the item. Leaving the
+field commits nothing and reverts nothing — the draft holds the text, and
+`Discard` is still the only thing that throws work away; it now shuts the
+field too, since the draft it was editing has gone. The trap was reachable
+precisely because the title *is* the edit affordance and it sits where a tap
+to close the pane lands, so the gesture is easy to make by accident.
+
+**And the hosts' own half.** `NowScreen` and `TriageScreen` now key the slot
+per item (`item(key = "selected-item-$id")`). The constant key had a comment
+defending it — "per-item state inside the panel is keyed on the item id, so
+re-keying would churn the saved-state registry for no gain" — which was
+wrong on both clauses: the panel's keying did not do what it claimed, and
+churn is exactly what a selection change should cause. Keeping both halves is
+deliberate: the panel's registry keys make *this* state safe, and the hosts'
+slot keys make whatever is added to the pane next safe by default.
+
+The general lesson, worth more than the fix: **`rememberSaveable`'s `inputs`
+are not an identity — the key is.** Any saveable state under a container
+whose slot key is constant is shared state until its registry key says
+otherwise, and `ItemDetailPanelStructuralTest` now sweeps every
+`rememberSaveable` in the file rather than pinning them one at a time,
+because the next one added is the same bug again.
+
+## The item pane's polish pass
+
+Operator batch 2026-08-20, three requests on `ItemDetailPanel` — the pane
+all four hosts render. Each one is a decision about an affordance, not a
+restyle, so each is recorded with what it replaced.
+
+- **No pencils.** Five shipped — one per detail section plus the title's —
+  and every one is now the tapped thing itself: the condensed line opens its
+  editor, the title opens its inline field. The behaviour is unchanged; the
+  glyph is gone, and `ic_pencil.xml` went with it (nothing else referenced
+  it). Two reasons beyond taste. Each pencil was a 48dp `IconButton` whose
+  only content was 18dp of icon, so four of them cost most of the pane's
+  height before any content; and the pencil was *also* the way back out of a
+  section, which made a pencil mean "done". The rows are
+  `NowScreen.ColumnHeader`'s idiom — `heightIn(min = 44.dp)` plus
+  `clickable` — so they are the design system's 44dp row and its minimum
+  touch target at once, gaining a hit target while losing height.
+  What a glyph gives for free and a bare row must pay for deliberately is
+  the gesture's **name**: `onClickLabel` carries the words the pencil's
+  `contentDescription` did ("Edit NOTES" / "Done editing NOTES", "Edit
+  title"), so nothing is lost from the accessibility tree.
+  `ItemDetailPanelStructuralTest` pins the absence of the glyph, the absence
+  of the drawable, and the presence of both labels.
+- **The reference rows sit behind one chevron.** `NOTES`, `CONTEXT` and
+  `DATES` — `SIZE · ENERGY · PRIORITY` stays out, because the axes are the
+  ranker's own inputs and what a glance is for, while the other three are
+  reference material. It is `CaptureSheet`'s "More details" disclosure:
+  same `ic_chevron_down`, same half-turn, same two words, over nearly the
+  same field set, so the gesture is learned once. It is also the pane's
+  *only* chevron, which is what keeps the two gestures legible — a chevron
+  means "more below", a row means "edit this". Default open in `PROMOTE`
+  mode: an unset section opens editable on Triage, and a field that opens
+  editable behind a shut disclosure is invisible work. The panel gap came
+  down 12dp → 8dp in the same pass.
+- **And the chevron rides the axes row, not a line of its own.** Centred
+  under the axes — `CaptureSheet`'s literal placement — it cost a 64dp band:
+  8dp of panel gap, a 48dp touch target around a 24dp glyph, 8dp again. The
+  device pass is what made that visible, and between two open editors on
+  Triage it was the most conspicuous whitespace left in a pane the whole
+  batch was about compacting. In `DetailSection`'s trailing slot it costs
+  **nothing**, because that row is already 48dp tall, and the act row moved
+  up 46dp. Two gestures now share that row — tap the line to edit the axes,
+  tap the chevron to disclose — which is safe for the reason the header
+  row's two already are: an `IconButton` consumes its own tap. It stays
+  anchored to the axes row even when the axes editor is open, rather than
+  following whatever was rendered last: a control that moves with the
+  content above it cannot be aimed at twice. The lesson is that **a
+  borrowed idiom brings its own costs, and they are not the same costs in a
+  new context** — the disclosure was right and the sheet's centred
+  placement was not, because a form with one disclosure at its foot is not
+  a dense pane with a row the glyph can ride.
+- **The submit row never wraps.** `Grill me`/`Resume grill` + the mode's
+  submit. `ChoiceRow` stays — the act row above it genuinely cannot fit
+  three buttons on a phone — but this row is now required never to *use* the
+  wrapping, and the word is what buys that: `Promote to ready` became
+  `Promote`, the same domain term (CONTEXT.md's Promotion) three chars
+  shorter than the space it needed. The Grill label is the core's, shared
+  verbatim with the web, and was not ours to shorten. (Superseded the same
+  day by **one action row** — see below — which absorbed this row, the
+  microtask button and the check. The submit's shortened word is what made
+  that fit at all.)
+
+`ItemDetailSubmitRowTest` is the module's **fourth** layout-measuring test,
+and it contributed a lesson the other three had not: **measure the width the
+component is actually given, not the width of the display.** Its first draft
+used `ChoiceRowWrappingTest`'s bare 320dp qualifier, where the old
+`Promote to ready` row fits with 21dp to spare — so the control test failed,
+saying in effect "the thing you just fixed was not broken". The pane never
+gets 320dp: the notification route pays `.padding(24.dp)`, which is 272dp on
+a 320dp phone, and at 272dp the old pair (299dp) does wrap while the new one
+(244dp) does not. The fix was real; the first measurement was aimed at the
+wrong subject. That is the same species of error as #581's falsified premise
+— the right check on the wrong subject — and it is worth assuming the
+subject is wrong whenever a control test refuses to fail.
+
+Two smaller notes from the same test. The pair asserted is the **widest that
+can occur**, not the common one: the Grill label lengthens to `Resume grill`
+when a draft exists, and `Grill me` + `Promote to ready` fits 272dp perfectly
+well, so a pane measured only in its resting state would have called the old
+label safe. And sharing a line is asserted as *equal tops* rather than
+against a height constant — a wrapped `ChoiceRow` puts the second control a
+full button lower, and nothing else moves either of them.
+
+### The pane has one action row (2026-08-20)
+
+Operator decision, off the device pass above: the grill, the microtask
+affordance, the submit and the mark-done check were spread across **three
+vertical slices** — a `ChoiceRow` of grill + submit, the microtask section's
+own button row, and a row holding nothing but the check — and they now share
+the pane's last line.
+
+**Labels are what buys that line, and there is not enough of it for four.**
+The numbers are measured in `ItemDetailSubmitRowTest` at the 272dp the
+narrowest host gives the pane, and they leave no room to negotiate:
+`Resume grill` 131dp, `Rewrite 3 steps` 149dp, `Promote` 105dp, the check
+48dp — 457dp with the gaps. Cutting the words to `Grill` + `Steps` + `Save`
+still needs 316dp; the check's 48dp is what tips even that over, which is
+worth knowing, because without it those three fit 272dp with room to spare
+(260dp) and a test that omitted the check called the shortened labels safe. So the
+two agent affordances are icon-only — Lucide `messages-square` and
+`list-checks`, hand-ported like every other glyph (ADR-0026) — and only the
+submit keeps a printed word: 48 + 48 + 105 + 48 = 249dp.
+
+Those filled-button figures were **9dp too high when first written here**
+(`Promote` as 114dp, the row as 258dp), and the error is worth naming
+because it is the same species as everything else in this section: the
+probe that measured them rendered each filled button with a one-character
+prefix on its label so the three variants could be told apart in one pass,
+and the prefix went into the width. The outlined figures were measured
+unprefixed and stand. No conclusion moves — 457dp and 316dp are both still
+far past 272dp — which is exactly why a wrong number can sit unnoticed in a
+correct argument. `ItemDetailSubmitRowTest` measures the real ones.
+
+Neither label is *lost*, only unprinted: each rides its icon's
+`contentDescription`, and both are still the core's own strings —
+`itemGrillButtonLabel` shared verbatim with the web, and the microtask
+affordance's applied count. A `uiautomator dump` on the device reads
+`Resume grill` and `Break into steps` back at equal `y` bounds, which is the
+only evidence that an icon-only control still says what it does.
+
+Two structural notes. The `weight(1f)` between the two groups — not an
+`Arrangement` — is what holds the submit and the check at the right edge, so
+they do not slide as the grill becomes ineligible or the affordance
+disappears; a control that moves when its neighbours vanish cannot be aimed
+at twice. And the microtask run's narration stays *above* the row rather than
+below it, since a stream of prose appended after the controls would push them
+down the pane as it arrived.
+
+**The check is the row's shock absorber, and it is capped so it cannot be
+spent.** A plain `Row` measures its non-weighted children in composition
+order against whatever width is left, and the mark-done check is composed
+last — so a submit label that grows takes the check's width, and a *write
+control* vanishes with no sign it was there (the failure class `NowScreen`
+already names for its facet chips). Measured uncapped at 272dp: the check
+holds its full 40dp to 1.6x font scale, degrades from 1.7x, and reaches
+**zero at 2.5x**. So the submit is now the only elastic control —
+`widthIn(max = 128.dp)` (272 less three nominal 48dp targets) with a
+single-line ellipsis — which holds all four controls on one line and
+hittable to 3.0x. The row's *height* grows there; that is correct, not a
+wrap. `ItemDetailSubmitRowTest` measures both the capped row and the
+uncapped control that proves 2.5x is what took the check.
+
+One numbers note for anyone re-deriving the cap: an `IconButton`'s merged
+node measures **40dp** here, while 48dp is Material's nominal minimum. The
+cap is derived from the nominal, deliberately, so it errs toward leaving the
+targets room.
+
+**The pane no longer prints `HB-<seq>`.** The meta line is the project name
+(its id when the name has not synced) and `ITEM DETAIL` when there is
+neither — never blank. Operator decision 2026-08-20: CLAUDE.md's repo-wide
+rule is that an item is named to the operator by its title, never by that
+ref. `seq` still crosses the seam; only its display is gone.
+
+**The decision was taken on a wrong premise, and the premise is worth
+recording.** It was put to the operator as "this is the only client surface
+printing the ref, and the comment defending it cites a web file that no
+longer exists". Both halves were false: `client/web/src/components/domain/
+ItemPanel.tsx` renders `` `HB-${item.seq}` `` in a `.hb-meta` span with an
+`item detail` fallback, exactly the line this one was ported from. The
+grep that "proved" the web clean had been run from inside
+`client/android/app/src/main/kotlin/...`, where `client/web/src` does not
+resolve — and a path that does not exist returns no matches rather than an
+error, so an absent directory and an absent string look identical.
+
+So the two clients now differ, the rule is still contradicted by the web,
+and which way that resolves is #661. **Check the shell's working directory
+before believing an empty grep** — this is the second time this session that
+a green-looking check turned out to have been aimed at the wrong subject.
+
+Evidence: Pixel 10 Pro Fold, real device, unfolded — one line reading
+`[grill] [steps] ........ (Save) ✓`, four clickable nodes at equal bounds,
+the two affordances' accessible names intact.
+
+### The item pane's polish pass, on device (2026-08-20)
+
+Pixel 10 Pro Fold emulator, **both** panels — which is the point, since the
+handoff that opened this work flagged the 443dp cover display as the width
+nobody had checked. `cmd device_state state 0` folds it; `state 2` unfolds.
+Two hosts, which covers both modes: Now's inline expansion (`SAVE`) and
+Triage's pane (`PROMOTE`). The notification route is still unexercised for
+`README` check 27's reason — it needs a real `item-threshold/v1` push — and
+it takes the panel's default mode with no arguments of its own.
+
+Read off `uiautomator dump` throughout. What it settled:
+
+- **No pencil node exists** on any surface of the pane, and the pane's
+  clickable nodes are the ones intended: the header row (close), the title
+  inside it (edit, a *separate* node — the gesture split is real and not
+  just a claim about Compose's hit-testing), one per condensed section, and
+  the chevron.
+- **Every tap-to-edit row measures 48dp**, not the 44dp minimum asked for:
+  the condensed content is taller than the floor, so the floor never binds.
+  A row is a bigger target than the pencil it replaced, since the pencil was
+  48dp of *icon* inside a wider row that did nothing.
+- **Tapping a condensed line opens its editor** and the label replaces the
+  line; tapping the label shuts it. Exercised on the axes section (Now) and
+  on `NOTES` (both).
+- **The disclosure defaults per mode, as designed**: shut on Now, open on
+  Triage, where all four sections then stand open and editable.
+- **The submit row is one line on both panels**, `Grill me` + `Save` on Now
+  and `Grill me` + `Promote` on Triage — equal `y` bounds, folded and
+  unfolded. (That row is now the leading half of the one action row below.)
+
+The one thing this pass reported rather than fixed — the chevron's own 64dp
+band — was fixed immediately after, on operator decision, by hanging it on
+the axes row's trailing edge (see the bullet above). The re-check, folded:
+the chevron's bounds sit inside the axes line's own vertical band, the act
+row came up 46dp, and the two gestures on that row stay independent —
+tapping the chevron leaves the axes editor alone, tapping the line leaves
+the disclosure alone, and the chevron does not move when the editor opens
+beneath it.

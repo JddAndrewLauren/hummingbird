@@ -82,6 +82,19 @@ pub struct ItemDetail {
     /// re-derived this from `stage` alone would offer Complete on a
     /// cancelled item.
     pub available_actions: Vec<ItemAction>,
+    /// Whether this item may be marked Done in one click —
+    /// [`crate::decisions::can_mark_done`] verbatim.
+    ///
+    /// **It rides separately from [`ItemDetail::available_actions`] for the
+    /// same reason it does on `TriageItemRecord` (ffi-mobile):**
+    /// `available_actions` answers `&[]` for Triage and Grilling ("neither
+    /// is action yet"), so a surface that derived the checkmark from that
+    /// vocabulary would never offer it on the two stages whose detail pane
+    /// most needs it. `can_mark_done` is the wider, deliberately-separate
+    /// rule. The one consequence: a client rendering both must filter
+    /// `Complete` out of `available_actions` so the affordance is not drawn
+    /// twice.
+    pub can_mark_done: bool,
     /// #539's applied result: which microtask gesture (`Break`/`Rewrite`)
     /// this item's own steps make legal, decided by
     /// [`crate::decisions::skills::microtask_affordance`]. `None` for a

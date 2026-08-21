@@ -53,6 +53,13 @@ class CaptureFieldSetStructuralTest {
                 "client/android/app/src/main/kotlin/net/twinion/hummingbird/CaptureSheet.kt",
             "CaptureViewModel.kt" to
                 "client/android/app/src/main/kotlin/net/twinion/hummingbird/CaptureViewModel.kt",
+            // The item-detail pane, since the panel unification: its
+            // sections render the same `ui/forms` field set over the same
+            // `captureFormMeta`, so the two bans below cover it too. It was
+            // exempt while it carried `SIZE_VOCABULARY`/`ENERGY_VOCABULARY`
+            // of its own — that exemption is what deleting them bought.
+            "ItemDetailPanel.kt" to
+                "client/android/app/src/main/kotlin/net/twinion/hummingbird/ItemDetailPanel.kt",
         ).associate { (name, path) -> name to repoFile(path) }
 
         val forms = formsFiles.associate { file -> "ui/forms/${file.name}" to file.readText() }

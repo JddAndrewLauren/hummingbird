@@ -1,30 +1,20 @@
 package net.twinion.hummingbird
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -35,34 +25,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
-import net.twinion.hummingbird.ui.ChoiceRow
-import net.twinion.hummingbird.ui.LevelGlyphFamily
-import net.twinion.hummingbird.ui.StageBadge
 import net.twinion.hummingbird.ui.contentMaxWidth
-import net.twinion.hummingbird.ui.forms.CaptureDateField
-import net.twinion.hummingbird.ui.forms.ContextField
-import net.twinion.hummingbird.ui.forms.LevelSlider
-import net.twinion.hummingbird.ui.forms.PriorityRow
 import net.twinion.hummingbird.ui.theme.LocalHbDark
-import net.twinion.hummingbird.ui.theme.Moss600
-import net.twinion.hummingbird.ui.theme.StatusDoneFgDark
-import uniffi.hummingbird_ffi_mobile.CaptureFormMeta
-import uniffi.hummingbird_ffi_mobile.MetaProblems
-import uniffi.hummingbird_ffi_mobile.TriageItemRecord
-import uniffi.hummingbird_ffi_mobile.itemGrillButtonLabel
 
 // The Triage screen (#531, reshaped by the Triage-parity slice): one queue
 // holding both captured and Grilling items in the core's own order, headed
@@ -70,13 +41,17 @@ import uniffi.hummingbird_ffi_mobile.itemGrillButtonLabel
 // the SAME compact card the Now screen's frontier uses (`NowRow.kt` — the
 // operator request: same pills, same expansion shape). The selected item
 // expands at index 0 of the one LazyColumn, above the queue, exactly the
-// Now screen's inline-expansion pattern — except the expanded pane is the
-// seeded triage editor, not `ItemDetailPanel`: `available_actions` answers
-// nothing for Triage/Grilling stages, the panel's plain save is the
-// non-promoting write this surface bans (#360), and the web's own capture
-// expansion is the triage form. Promote-to-Ready stays the only
-// destination, and the row checkmark still goes through the existing `act`
-// path — never a triage.
+// Now screen's inline-expansion pattern — and the expanded pane IS
+// `ItemDetailPanel`, in `ItemDetailPanelMode.PROMOTE`.
+//
+// That mode is what keeps #360: promote-to-Ready is the only submit the
+// pane offers here, so the panel's plain `save` — the non-promoting write
+// this surface bans — is unreachable from Triage. The two facts that used
+// to argue for a separate editor are both answered on the record itself:
+// `available_actions` is empty for the Triage and Grilling stages, but
+// `can_mark_done` rides beside it and gates the check, and the shared
+// `ui/forms` field set is what both surfaces now render. The row checkmark
+// still goes through `act` — never a triage.
 //
 // **The Grill button is live (#539).** It navigates to the standalone
 // takeover (`GrillTakeoverScreen.kt`) rather than opening an interview
@@ -96,14 +71,16 @@ fun TriageScreen(
     val state by viewModel.state.collectAsState()
     val statusLine by viewModel.statusLine.collectAsState()
     val selectedId by viewModel.selectedId.collectAsState()
-    val draft by viewModel.draft.collectAsState()
-    // Every size/energy/context word this screen's editor offers comes from
-    // this door, never a Kotlin literal — the same vocabulary #529's
-    // capture form already reads (`captureFormMeta`'s own doc: one source,
-    // shared).
-    val formMeta: CaptureFormMeta = viewModel.formMeta
     val dark = LocalHbDark.current
     val listState = rememberLazyListState()
+
+    // The opened pane's own ViewModel, by the panel's own key — the SAME
+    // instance `ItemDetailPanel` resolves, looked up here because the Back
+    // guard below needs its dirtiness while the pane may not be composed at
+    // all (`NowScreen`'s own lookup, verbatim).
+    val panelViewModel: ItemDetailViewModel? = selectedId?.let { id ->
+        viewModel(factory = ItemDetailViewModel.factory(context), key = "item-$id")
+    }
 
     suspend fun reload() {
         viewModel.load(nowDeadlineShaped())
@@ -127,36 +104,25 @@ fun TriageScreen(
         if (syncTick > 0) reload()
     }
 
-    // Saveable: an Activity recreation mid-question must not silently
-    // answer it (`ItemDetailPanel`'s own flag, same reason).
-    var confirmingDiscard by rememberSaveable { mutableStateOf(false) }
-
     // System Back with typed edits open: the words a person wrote are never
     // thrown away silently — the house rule `ItemDetailPanel`'s header
-    // states, and this editor had no guard at all. Leaving really is the end
-    // of the draft here: a bar-tab pop carries no `saveState` for this
-    // entry, so the ViewModel holding it retires with the entry.
+    // states.
     //
-    // Registered at the screen, not inside the editor's LazyColumn item: an
+    // Registered at the screen, not inside the pane's LazyColumn item: an
     // item scrolled out of the viewport is DISPOSED, taking any handler it
-    // registered with it (`NowScreen`'s own guard exists for exactly that).
-    // Only while there is something to lose — an idle Back is never fought,
-    // and still pops the entry the way it always did.
-    BackHandler(enabled = draft != null && viewModel.isDirty) {
-        confirmingDiscard = true
-    }
-
-    if (confirmingDiscard) {
-        DiscardConfirmation(
-            onKeep = { confirmingDiscard = false },
-            // Discarding closes the editor and stays on Triage — the Back
-            // that asked the question is spent on the answer, exactly what
-            // the panel's own discard does.
-            onDiscard = {
-                confirmingDiscard = false
-                viewModel.discardDraft()
-            },
-        )
+    // registered with it. So while the pane is on screen its own deeper
+    // handler wins and the discard confirmation comes first; scrolled away,
+    // this one scrolls it back into view where that handler and its dialog
+    // take over, rather than silently closing an edit mid-flight
+    // (`NowScreen`'s guard, same shape and same reason). An idle Back
+    // closes the pane, and with nothing open it pops the entry the way it
+    // always did.
+    BackHandler(enabled = selectedId != null) {
+        if (panelViewModel?.isDirty == true) {
+            scope.launch { listState.animateScrollToItem(0) }
+        } else {
+            viewModel.closeSelection()
+        }
     }
 
     Scaffold { padding ->
@@ -224,60 +190,49 @@ fun TriageScreen(
                     val current = state
                     val board = (current as? TriageState.Loaded)?.board
 
+                    // **The key names the item.** It was constant once, on
+                    // the reasoning that the panel keys its own state on the
+                    // item id — which was wrong twice over, and shipped the
+                    // trap `README`'s "The title-edit trap" records: a
+                    // constant slot key means the panel is disposed and
+                    // recomposed at the SAME slot on a selection change, and
+                    // LazyColumn's `SaveableStateHolder` hands the next item
+                    // whatever the last one saved there. Naming the item is
+                    // the churn we want: item B's pane starts as item B's.
                     selectedId?.let { id ->
-                        val item = board?.items?.find { it.id == id }
-                        val openDraft = draft
-                        if (item != null && openDraft != null) {
-                            item(key = "selected-item") {
+                        if (board?.items?.any { it.id == id } == true) {
+                            item(key = "selected-item-$id") {
                                 Card(
                                     modifier = Modifier.fillMaxWidth(),
                                     colors = CardDefaults.cardColors(
                                         containerColor = MaterialTheme.colorScheme.surface,
                                     ),
                                 ) {
-                                    TriageEditorPanel(
-                                        item = item,
-                                        dark = dark,
-                                        draft = openDraft,
-                                        formMeta = formMeta,
-                                        onDraftChange = viewModel::updateDraft,
-                                        // The × is the same leaving gesture
-                                        // Back is, so it asks the same
-                                        // question: closing on a dirty draft
-                                        // routes through the confirmation
-                                        // rather than dropping typed words.
-                                        onClose = {
-                                            if (viewModel.isDirty) {
-                                                confirmingDiscard = true
-                                            } else {
-                                                viewModel.select(id)
-                                            }
+                                    ItemDetailPanel(
+                                        itemId = id,
+                                        syncTick = syncTick,
+                                        closeLabel = "Close",
+                                        // The panel routes every leaving
+                                        // gesture — its ×, its header tap,
+                                        // Back — through its own dirty-draft
+                                        // confirmation, so this only ever
+                                        // fires on a draft with nothing to
+                                        // lose.
+                                        onClose = { viewModel.closeSelection() },
+                                        onGrill = onGrill,
+                                        onMutated = { scope.launch { reload() } },
+                                        // A promote (or a mark-done) takes
+                                        // the item out of this queue, so the
+                                        // selection must close with it or it
+                                        // dangles at a vanished row.
+                                        onSubmitted = {
+                                            viewModel.closeSelection()
+                                            scope.launch { reload() }
                                         },
-                                        onPromote = {
-                                            scope.launch {
-                                                viewModel.promote(
-                                                    item.id,
-                                                    nowDeadlineShaped(),
-                                                    System.currentTimeMillis(),
-                                                )
-                                            }
-                                        },
-                                        onGrill = { onGrill(item.id) },
-                                        // The collapsed rows' own lambda,
-                                        // verbatim: one act path for the
-                                        // item whether its pane is open or
-                                        // shut.
-                                        onComplete = {
-                                            scope.launch {
-                                                viewModel.complete(
-                                                    item.id,
-                                                    nowDeadlineShaped(),
-                                                    System.currentTimeMillis(),
-                                                )
-                                            }
-                                        },
-                                        canSave = viewModel.canSave,
-                                        metaProblems = viewModel.metaProblems,
+                                        mode = ItemDetailPanelMode.PROMOTE,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(12.dp),
                                     )
                                 }
                             }
@@ -302,16 +257,17 @@ fun TriageScreen(
                                 selected = item.id == selectedId,
                                 // Re-tapping the row whose pane is already
                                 // open is `select(sameId)`, which the
-                                // ViewModel treats as a toggle shut — and
-                                // it dropped a dirty draft without asking,
-                                // the one leaving gesture that skipped the
-                                // confirmation the X, Back and the header
-                                // tap all route through. A tap on a
-                                // *different* row keeps today's replace
-                                // semantics.
+                                // ViewModel treats as a toggle shut — the
+                                // one leaving gesture that does not pass
+                                // through the panel, so it asks the panel
+                                // whether there is anything to lose and
+                                // scrolls its dialog into view if there is.
+                                // A tap on a *different* row keeps today's
+                                // replace semantics: that row's draft stays
+                                // in its own ViewModel.
                                 onOpen = {
-                                    if (item.id == selectedId && viewModel.isDirty) {
-                                        confirmingDiscard = true
+                                    if (item.id == selectedId && panelViewModel?.isDirty == true) {
+                                        scope.launch { listState.animateScrollToItem(0) }
                                     } else {
                                         viewModel.select(item.id)
                                     }
@@ -328,207 +284,6 @@ fun TriageScreen(
                             )
                         }
                     }
-                }
-            }
-        }
-    }
-}
-
-/** The opened capture's editor, in the Now panel's chrome — a header (the
- * title, a pencil that swaps an inline field in for it, an X close, and the
- * stage chip under them) over the seeded field set, then the Grill/Promote
- * choice row and the mark-done check. The fields and their rules are
- * #529's shared form components, unchanged from the inline-expansion form
- * this panel replaces; only the placement moved (to index 0 of the queue's
- * LazyColumn, `NowScreen`'s inline-expansion pattern).
- *
- * **The header title is the display and the edit both** (operator batch
- * 2026-08-20). There used to be a "Title" text box below the header saying
- * the same words the header said, so the panel opened claiming the title
- * twice and a person editing one watched the other change. Now the header
- * reads [TriageDraft.title] — the draft, not the record, so an edit shows
- * where it was made — and the pencil is the only door to editing it.
- *
- * The header row itself is the wide door out: tapping it closes the pane
- * through the same [onClose] the X does, which is the same dirty-draft
- * confirmation Back routes through. Two things make that safe rather than
- * a trap. The row is only clickable while *not* editing, so a tap into the
- * title field is not a tap on the way out; and `IconButton` consumes its
- * own gesture, so neither the pencil nor the X ever falls through to the
- * row underneath. Editing ends on the field's IME Done or when the pane
- * closes — deliberately not on focus loss, which fires once with
- * `isFocused = false` before the field is ever focused and would need a
- * flag to tell the two apart.
- *
- * `editingTitle` resets when this item scrolls out of the LazyColumn and is
- * disposed. That is acceptable and the draft is why: it lives in
- * [TriageViewModel], so what a person typed survives; only the affordance's
- * open/shut state does not. */
-@Composable
-private fun TriageEditorPanel(
-    item: TriageItemRecord,
-    dark: Boolean,
-    draft: TriageDraft,
-    formMeta: CaptureFormMeta,
-    onDraftChange: (TriageDraft) -> Unit,
-    onClose: () -> Unit,
-    onPromote: () -> Unit,
-    onGrill: () -> Unit,
-    /** The same lambda the collapsed rows' check calls — one act path, not
-     * a second one for the opened pane. */
-    onComplete: () -> Unit,
-    canSave: Boolean,
-    metaProblems: MetaProblems?,
-) {
-    var editingTitle by rememberSaveable { mutableStateOf(false) }
-    val titleFocus = remember { FocusRequester() }
-    // Keyed on the flag, so the field is focused the moment the pencil
-    // flips it and never again — not `LaunchedEffect(Unit)`, which #634
-    // found re-firing on Activity recreation and undoing state.
-    LaunchedEffect(editingTitle) {
-        if (editingTitle) {
-            titleFocus.requestFocus()
-        }
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .then(if (editingTitle) Modifier else Modifier.clickable(onClick = onClose)),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (editingTitle) {
-                OutlinedTextField(
-                    value = draft.title,
-                    onValueChange = { onDraftChange(draft.copy(title = it)) },
-                    modifier = Modifier
-                        .weight(1f)
-                        .focusRequester(titleFocus),
-                    singleLine = true,
-                    isError = !canSave && draft.title.isEmpty(),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { editingTitle = false }),
-                )
-            } else {
-                // The draft's title, not the record's: an edit has to show
-                // where it was made.
-                Text(
-                    draft.title,
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                IconButton(onClick = { editingTitle = true }) {
-                    Icon(
-                        painterResource(R.drawable.ic_pencil),
-                        contentDescription = "Edit title",
-                        modifier = Modifier.size(18.dp),
-                    )
-                }
-            }
-            // The visible door out; the header tap is the wide one.
-            IconButton(onClick = onClose) {
-                Icon(
-                    painterResource(R.drawable.ic_x),
-                    contentDescription = "Close",
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-        }
-        StageBadge(stage = item.stage, dark = dark)
-
-        OutlinedTextField(
-            value = draft.description,
-            onValueChange = { onDraftChange(draft.copy(description = it)) },
-            label = { Text("Notes") },
-            modifier = Modifier.fillMaxWidth(),
-        )
-        LevelSlider(
-            label = "Energy",
-            glyphFamily = LevelGlyphFamily.ENERGY,
-            options = formMeta.energies,
-            selected = draft.energy.ifEmpty { null },
-            onSelect = { onDraftChange(draft.copy(energy = it.orEmpty())) },
-        )
-        LevelSlider(
-            label = "Size",
-            glyphFamily = LevelGlyphFamily.SIZE,
-            options = formMeta.sizes,
-            selected = draft.size.ifEmpty { null },
-            onSelect = { onDraftChange(draft.copy(size = it.orEmpty())) },
-        )
-        // #565's review: `TriageDraft.priority` seeds from the row
-        // and `toEdit` sends it, so without this control the field
-        // was carried through every promote as state nothing could
-        // reach. The same shared component the capture box renders,
-        // for the same reason `LevelSlider` is shared.
-        PriorityRow(
-            selected = draft.priority,
-            onSelect = { onDraftChange(draft.copy(priority = it)) },
-        )
-        ContextField(
-            value = draft.context,
-            onValueChange = { onDraftChange(draft.copy(context = it)) },
-            suggestions = formMeta.suggestedContexts,
-        )
-        CaptureDateField(
-            label = "Deadline",
-            value = draft.deadline,
-            error = metaProblems?.deadline,
-            onValueChange = { onDraftChange(draft.copy(deadline = it)) },
-        )
-        CaptureDateField(
-            label = "Scheduled date",
-            value = draft.scheduledDate,
-            error = metaProblems?.scheduledDate,
-            onValueChange = { onDraftChange(draft.copy(scheduledDate = it)) },
-        )
-
-        // #576: these two fit today and were never sighted failing,
-        // but they are the same shape as the three rows that did —
-        // and `Resume grill` is wider than `Grill me`, so the
-        // margin is not the one it looks like.
-        ChoiceRow {
-            // Live (#539): navigates to the standalone takeover.
-            // `item.canGrill` is the seam's own decided fact — both
-            // Triage and Grilling rows on this board offer it.
-            if (item.canGrill) {
-                OutlinedButton(onClick = onGrill) {
-                    Text(itemGrillButtonLabel(item.hasGrillDraft))
-                }
-            }
-            // Promoting to Ready is the only destination this
-            // screen offers — the web triage panel's own
-            // "Promote to ready", nothing beside it.
-            Button(onClick = onPromote, enabled = canSave) {
-                Text("Promote to ready")
-            }
-        }
-
-        // Bottom-right, on a line of its own rather than sharing the
-        // ChoiceRow's: that row wraps at narrow widths (#576), so anything
-        // beside it moves when the buttons do.
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-        ) {
-            if (item.canMarkDone) {
-                IconButton(onClick = onComplete) {
-                    Icon(
-                        painterResource(R.drawable.ic_check),
-                        contentDescription = "Mark \"${item.title}\" done",
-                        modifier = Modifier.size(18.dp),
-                        // `NowRow`'s own mark-done green, the same token
-                        // pair and the same documented exception to "icons
-                        // never carry colour independently of their label"
-                        // (`NowRow.kt`'s note on it).
-                        tint = if (dark) StatusDoneFgDark else Moss600,
-                    )
                 }
             }
         }

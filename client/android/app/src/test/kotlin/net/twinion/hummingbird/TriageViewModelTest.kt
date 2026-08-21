@@ -8,48 +8,24 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
-import uniffi.hummingbird_ffi_mobile.CaptureFormMeta
-import uniffi.hummingbird_ffi_mobile.FieldPatch
-import uniffi.hummingbird_ffi_mobile.ItemEdit
-import uniffi.hummingbird_ffi_mobile.MetaProblems
 import uniffi.hummingbird_ffi_mobile.TriageBoardRecord
 import uniffi.hummingbird_ffi_mobile.MobileUrgencyBand
 import uniffi.hummingbird_ffi_mobile.TriageItemRecord
 
-// `TriageViewModel`'s load/select/promote/complete control flow, with fakes
-// only — the same house pattern `ItemDetailViewModelTest` uses. Two things
-// here are worth more than the rest: only one row is ever open, and
-// promoting to Ready is the only save path this screen offers (there is no
-// `saveEdits`/"save without promoting" method to test the *absence* of).
+// `TriageViewModel`'s load/select/complete control flow, with fakes only —
+// the same house pattern `ItemDetailViewModelTest` uses. What this ViewModel
+// owns since the panel unification is the board and the selection: the
+// draft, the promote and their refusals moved to `ItemDetailViewModel`,
+// where that file's own tests now hold them. Only one row is ever open, and
+// a mark-done closes it.
 class TriageViewModelTest {
 
     private fun vm(
         fetch: suspend (String) -> TriageBoardRecord = { _ -> triageBoardFixture() },
-        triage: suspend (String, Boolean, ItemEdit, Long) -> Unit = { _, _, _, _ -> },
         complete: suspend (String, Long) -> Unit = { _, _ -> },
     ) = TriageViewModel(
         fetchFn = fetch,
-        triageFn = triage,
         completeFn = complete,
-        // Stand-ins for the core rules: no native library exists in a
-        // plain JVM process — `CaptureSubmitRefusalTest` proves production
-        // wires the real ones.
-        hasContentFn = { it.isNotEmpty() },
-        metaProblemsFn = { deadline, scheduledDate ->
-            MetaProblems(
-                deadline = "Use YYYY-MM-DD or YYYY-MM-DDTHH:MM"
-                    .takeIf { deadline.isNotEmpty() && !deadline.startsWith("2026-") },
-                scheduledDate = "Use YYYY-MM-DD"
-                    .takeIf { scheduledDate.isNotEmpty() && !scheduledDate.startsWith("2026-") },
-            )
-        },
-        formMetaFn = {
-            CaptureFormMeta(
-                sizes = emptyList(),
-                energies = emptyList(),
-                suggestedContexts = listOf("@computer", "@errands"),
-            )
-        },
     )
 
     @Test
@@ -64,14 +40,13 @@ class TriageViewModelTest {
     }
 
     @Test
-    fun `selecting a row opens exactly it, seeded from the record`() = runBlocking {
+    fun `selecting a row opens exactly it`() = runBlocking {
         val model = vm(fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1", title = "buy milk"))) })
         model.load("2026-08-15T12:00")
 
         model.select("i-1")
 
         assertEquals("i-1", model.selectedId.value)
-        assertEquals("buy milk", model.draft.value?.title)
     }
 
     @Test
@@ -83,12 +58,11 @@ class TriageViewModelTest {
         model.select("i-1")
 
         assertNull(model.selectedId.value)
-        assertNull(model.draft.value)
     }
 
-    /** Only one row is ever open — opening a second replaces the first's
-     * draft entirely, the same "selection, not accumulation" contract the
-     * web screen's `selectedId` carries. */
+    /** Only one row is ever open — opening a second replaces the first,
+     * the same "selection, not accumulation" contract the web screen's
+     * `selectedId` carries. */
     @Test
     fun `opening a different row replaces whichever was open`() = runBlocking {
         val model = vm(
@@ -102,83 +76,33 @@ class TriageViewModelTest {
         model.select("i-2")
 
         assertEquals("i-2", model.selectedId.value)
-        assertEquals("second", model.draft.value?.title)
     }
 
-    /** Promoting is the only destination: it sends `promoteToReady = true`,
-     * carries whatever the draft touched, and closes the row on success. */
+    /** A selection is only ever a row this ViewModel is holding — the
+     * panel is rendered off the board, so an id that is not on it would
+     * open a pane with nothing behind it. */
     @Test
-    fun `promoting sends promoteToReady true with the touched edits`() = runBlocking {
-        var sentPromote: Boolean? = null
-        var sentEdit: ItemEdit? = null
-        val model = vm(
-            fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1", title = "buy milk"))) },
-            triage = { _, promote, edit, _ -> sentPromote = promote; sentEdit = edit },
-        )
+    fun `an id that is not on the board cannot be selected`() = runBlocking {
+        val model = vm(fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) })
         model.load("2026-08-15T12:00")
-        model.select("i-1")
-        model.updateDraft(model.draft.value!!.copy(title = "buy oat milk"))
 
-        model.promote("i-1", "2026-08-15T12:00", 2_000)
+        model.select("i-nowhere")
 
-        assertEquals(true, sentPromote)
-        assertEquals("buy oat milk", sentEdit?.title)
-        assertNull("the row closes on success", model.selectedId.value)
-        assertNull(model.draft.value)
+        assertNull(model.selectedId.value)
     }
 
-    /** Only touched fields ride on the patch — the same field-by-field
-     * discipline `ItemDetailViewModelTest` pins for `edit_item`. */
+    /** What a promote (or a mark-done from the opened pane) needs: the item
+     * leaves this queue, so the selection must go with it or it dangles at
+     * a vanished row. */
     @Test
-    fun `promoting patches only the fields that changed`() = runBlocking {
-        var sentEdit: ItemEdit? = null
-        val model = vm(
-            fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) },
-            triage = { _, _, edit, _ -> sentEdit = edit },
-        )
+    fun `closing the selection shuts whichever row is open`() = runBlocking {
+        val model = vm(fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) })
         model.load("2026-08-15T12:00")
         model.select("i-1")
 
-        model.promote("i-1", "2026-08-15T12:00", 2_000)
+        model.closeSelection()
 
-        assertEquals(FieldPatch.Untouched, sentEdit?.description)
-        assertEquals(FieldPatch.Untouched, sentEdit?.deadline)
-    }
-
-    @Test
-    fun `a blank title refuses to promote instead of silently dropping it`() = runBlocking {
-        var sent: ItemEdit? = null
-        val model = vm(
-            fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) },
-            triage = { _, _, edit, _ -> sent = edit },
-        )
-        model.load("2026-08-15T12:00")
-        model.select("i-1")
-        model.updateDraft(model.draft.value!!.copy(title = ""))
-
-        assertFalse(model.canSave)
-        model.promote("i-1", "2026-08-15T12:00", 2_000)
-
-        assertNull("nothing may reach the queue", sent)
-        assertEquals("i-1", model.selectedId.value)
-        assertTrue(model.statusLine.value?.contains("can't be promoted") == true)
-    }
-
-    @Test
-    fun `a failed promote keeps the row open and the draft where it can be retried`() = runBlocking {
-        val model = vm(
-            fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) },
-            triage = { _, _, _, _ -> throw RuntimeException("offline") },
-        )
-        model.load("2026-08-15T12:00")
-        model.select("i-1")
-        model.updateDraft(model.draft.value!!.copy(title = "renamed"))
-
-        model.promote("i-1", "2026-08-15T12:00", 2_000)
-
-        assertEquals("i-1", model.selectedId.value)
-        assertEquals("renamed", model.draft.value?.title)
-        assertTrue(model.statusLine.value?.contains("Couldn't promote") == true)
+        assertNull(model.selectedId.value)
     }
 
     /** The checkmark: `Core::act`'s `complete`, never a triage — and it
@@ -198,14 +122,13 @@ class TriageViewModelTest {
 
         assertEquals("i-1", completed)
         assertNull(model.selectedId.value)
-        assertNull(model.draft.value)
     }
 
     /** The failure half of that contract: a failed act leaves the row on
-     * the board, so its editor (and draft) stays open where the status line
-     * can be read against it and the act retried. */
+     * the board, so its pane stays open where the status line can be read
+     * against it and the act retried. */
     @Test
-    fun `a failed complete keeps the open row and its draft, and says so`() = runBlocking {
+    fun `a failed complete keeps the open row, and says so`() = runBlocking {
         val model = vm(
             fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) },
             complete = { _, _ -> throw RuntimeException("offline") },
@@ -216,7 +139,6 @@ class TriageViewModelTest {
         model.complete("i-1", "2026-08-15T12:00", 2_000)
 
         assertEquals("i-1", model.selectedId.value)
-        assertEquals("item i-1", model.draft.value?.title)
         assertTrue(model.statusLine.value?.contains("Couldn't complete") == true)
     }
 
@@ -237,92 +159,6 @@ class TriageViewModelTest {
         }
 
         assertNull("cancellation must never be worded as a failure", model.statusLine.value)
-    }
-
-    @Test
-    fun `a freshly seeded draft is not dirty`() = runBlocking {
-        // A4's condition: an unchanged draft is never fought over — Back
-        // out of a row merely opened must still leave the way it always
-        // did.
-        val model = vm(fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) })
-        model.load("2026-08-15T12:00")
-
-        model.select("i-1")
-
-        assertFalse("opening a row is not an edit", model.isDirty)
-    }
-
-    @Test
-    fun `a typed edit makes the draft dirty`() = runBlocking {
-        val model = vm(fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1", title = "buy milk"))) })
-        model.load("2026-08-15T12:00")
-        model.select("i-1")
-
-        model.updateDraft(model.draft.value!!.copy(title = "buy oat milk"))
-
-        assertTrue("typed words are what the Back guard exists for", model.isDirty)
-    }
-
-    @Test
-    fun `typing back to the seeded value is not dirty`() = runBlocking {
-        val model = vm(fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1", title = "buy milk"))) })
-        model.load("2026-08-15T12:00")
-        model.select("i-1")
-        val seeded = model.draft.value!!
-
-        model.updateDraft(seeded.copy(title = "typed"))
-        model.updateDraft(seeded)
-
-        assertFalse("there is nothing left to lose — do not ask", model.isDirty)
-    }
-
-    @Test
-    fun `with no row open there is nothing to be dirty about`() = runBlocking {
-        val model = vm(fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) })
-        model.load("2026-08-15T12:00")
-
-        assertFalse(model.isDirty)
-    }
-
-    @Test
-    fun `discarding throws the draft away and closes the editor`() = runBlocking {
-        val model = vm(fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1"))) })
-        model.load("2026-08-15T12:00")
-        model.select("i-1")
-        model.updateDraft(model.draft.value!!.copy(title = "half-typed"))
-
-        model.discardDraft()
-
-        assertNull("the editor closes", model.selectedId.value)
-        assertNull("and its draft goes with it", model.draft.value)
-        assertFalse(model.isDirty)
-    }
-
-    @Test
-    fun `reopening the row after a discard seeds from the record again`() = runBlocking {
-        // The discarded words are gone, not stashed — the confirmation said
-        // so.
-        val model = vm(fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1", title = "buy milk"))) })
-        model.load("2026-08-15T12:00")
-        model.select("i-1")
-        model.updateDraft(model.draft.value!!.copy(title = "half-typed"))
-        model.discardDraft()
-
-        model.select("i-1")
-
-        assertEquals("buy milk", model.draft.value?.title)
-    }
-
-    @Test
-    fun `a reload while a row is open leaves its draft alone`() = runBlocking {
-        val model = vm(fetch = { triageBoardFixture(items = listOf(triageItemFixture("i-1", title = "buy milk"))) })
-        model.load("2026-08-15T12:00")
-        model.select("i-1")
-        model.updateDraft(model.draft.value!!.copy(title = "half-typed"))
-
-        model.load("2026-08-15T12:00")
-
-        assertEquals("half-typed", model.draft.value?.title)
     }
 }
 

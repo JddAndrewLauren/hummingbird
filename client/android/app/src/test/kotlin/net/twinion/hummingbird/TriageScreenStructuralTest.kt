@@ -8,6 +8,13 @@ import org.junit.Test
 // The M3/#531 counterpart of `RulesScreenStructuralTest`: the gates this
 // slice's own acceptance criteria most need, since nothing else catches a
 // re-derived count or a smuggled-in Grill interview at review time.
+//
+// Since the panel unification this file gates what remains *this screen's*:
+// the counts, the queue rows, the selection, and the two guards that live
+// above the LazyColumn. Everything the opened pane shows and does is
+// `ItemDetailPanelStructuralTest`'s — including the header, the field set
+// and the mark-done check, which used to be pinned here against a second
+// editor implementation.
 class TriageScreenStructuralTest {
 
     private fun repoFile(relative: String): String {
@@ -69,23 +76,32 @@ class TriageScreenStructuralTest {
         }
     }
 
+    /** #360 after the panel unification: the pane Triage opens is
+     * `ItemDetailPanel`, whose ViewModel also carries a plain `save`. The
+     * *mode* is what keeps that unreachable from here, so the mode is what
+     * this file pins; the literal `triageItem(itemId, true,` behind it is
+     * pinned by `ItemDetailPanelStructuralTest`, at the factory that writes
+     * it. */
     @Test
     fun `promoting to Ready is the only save destination offered`() {
         assertTrue(
-            "TriageViewModel.kt must expose promote",
-            viewModelSrc.contains("fun promote("),
+            "the opened pane must be rendered in the promoting mode",
+            screenSrc.contains("mode = ItemDetailPanelMode.PROMOTE"),
         )
-        // No second save path: the AC is explicit that promotion is the
-        // *only* destination, so there must be no sibling "save without
-        // promoting" method to offer it from.
-        assertFalse(
-            "TriageViewModel.kt must not offer a non-promoting save",
-            viewModelSrc.contains("saveEdits"),
-        )
-        assertTrue(
-            "triageItem must always be called with a real promoteToReady",
-            viewModelSrc.contains("triageFn(itemId, true,"),
-        )
+        for ((name, src) in both) {
+            assertFalse(
+                "$name must not render the panel's saving mode",
+                src.contains("ItemDetailPanelMode.SAVE"),
+            )
+            assertFalse(
+                "$name must not reach the panel ViewModel's non-promoting save",
+                src.contains(".save("),
+            )
+            assertFalse(
+                "$name must not offer a non-promoting save of its own",
+                src.contains("saveEdits"),
+            )
+        }
     }
 
     @Test
@@ -97,7 +113,7 @@ class TriageScreenStructuralTest {
     }
 
     @Test
-    fun `only one row's draft may be open at a time`() {
+    fun `only one row may be open at a time`() {
         assertTrue(
             "TriageViewModel.kt must track exactly one selected row",
             viewModelSrc.contains("_selectedId"),
@@ -145,26 +161,6 @@ class TriageScreenStructuralTest {
     }
 
     @Test
-    fun `the editor reuses the shared form components, not a hand-rolled copy`() {
-        assertTrue(screenSrc.contains("LevelSlider("))
-        assertTrue(screenSrc.contains("ContextField("))
-        assertTrue(screenSrc.contains("CaptureDateField("))
-        // #565's review: `TriageDraft.priority` seeds from the row and
-        // `toEdit` sends it, so a missing control made it unreachable
-        // state rather than an omitted field.
-        assertTrue(
-            "the editor must offer the priority control its draft already carries",
-            screenSrc.contains("PriorityRow("),
-        )
-        // Every vocabulary word rendered comes from the seam's own door —
-        // never a Kotlin literal list of size/energy words.
-        assertTrue(
-            "the editor must read the seam's own form vocabulary",
-            screenSrc.contains("formMeta.energies") && screenSrc.contains("formMeta.sizes"),
-        )
-    }
-
-    @Test
     fun `the rows render through the shared NowRow, never a second card implementation`() {
         // The Triage-parity slice: the queue's collapsed rows are the SAME
         // compact card the Now screen renders (`NowRow.kt`), fed by the
@@ -190,132 +186,105 @@ class TriageScreenStructuralTest {
 
     @Test
     fun `the opened capture expands at index 0 of the one LazyColumn, the Now pattern`() {
-        // Same inline-expansion shape as NowScreen: the editor is an item
-        // INSIDE the queue's LazyColumn (key "selected-item"), above the
-        // rows, which keep rendering below — and the expanded pane is the
-        // seeded triage editor, never ItemDetailPanel, whose plain save is
-        // the non-promoting write this surface bans (#360).
+        // Same inline-expansion shape as NowScreen: the pane is an item
+        // INSIDE the queue's LazyColumn, above the rows, which keep
+        // rendering below — and the pane IS `ItemDetailPanel`. The separate
+        // seeded editor is gone: one panel, one draft, one patch rule, with
+        // #360 kept by the mode above instead of by a second
+        // implementation.
+        //
+        // The slot key **names the item**, and a constant one is a defect,
+        // not a style: it makes the panel's disposal-and-recompose land on
+        // the same `SaveableStateHolder` slot, which handed item B the state
+        // item A saved there (`README`'s "The title-edit trap").
         assertTrue(
-            "the opened capture must be the LazyColumn's selected-item entry",
+            "the opened capture must be the LazyColumn's per-item selected-item entry",
+            screenSrc.contains("item(key = \"selected-item-\$id\")"),
+        )
+        assertFalse(
+            "and the key must not go back to a constant — that is the leak",
             screenSrc.contains("item(key = \"selected-item\")"),
         )
         val lazyColumn = screenSrc.indexOf("LazyColumn(")
-        val editor = screenSrc.indexOf("item(key = \"selected-item\")")
+        val pane = screenSrc.indexOf("item(key = \"selected-item-")
         val rows = screenSrc.indexOf("NowRow(")
         assertTrue("TriageScreen must keep one LazyColumn", lazyColumn >= 0)
-        assertTrue("the editor item must sit inside the LazyColumn", editor > lazyColumn)
-        assertTrue("the queue's rows must render after the editor item", rows > editor)
-        assertFalse(
-            "the expanded pane is the triage editor, never ItemDetailPanel",
+        assertTrue("the pane item must sit inside the LazyColumn", pane > lazyColumn)
+        assertTrue("the queue's rows must render after the pane item", rows > pane)
+        assertTrue(
+            "the expanded pane must be the shared ItemDetailPanel",
             screenSrc.contains("ItemDetailPanel("),
+        )
+        assertFalse(
+            "the retired second editor must not come back",
+            screenSrc.contains("TriageEditorPanel"),
+        )
+        // The whole point of the unification: no field widget of this
+        // screen's own. Every editor the pane shows is the panel's, which
+        // is `ui/forms`'.
+        assertFalse(
+            "TriageScreen must hold no text field of its own",
+            screenSrc.contains("OutlinedTextField("),
         )
     }
 
     @Test
     fun `Back with a dirty draft is guarded, by the app's one discard dialog, from the screen`() {
         // A4: human-authored content is never silently thrown away
-        // (`ItemDetailPanel`'s header states the house rule) and this
-        // editor had no guard at all — a bar-tab pop keeps no `saveState`,
-        // so leaving really was the end of the words.
+        // (`ItemDetailPanel`'s header states the house rule).
         //
         // Two placements are load-bearing. The handler is registered at the
-        // SCREEN, not inside the editor's LazyColumn item: an item scrolled
+        // SCREEN, not inside the pane's LazyColumn item: an item scrolled
         // out of the viewport is disposed, taking its handler with it (the
-        // defect `NowScreen`'s own guard exists for). And the dialog is
-        // `ItemDetailPanel`'s, not a second one — the house is dialog-wary
-        // and that file's header claims to hold the only one.
+        // defect `NowScreen`'s own guard exists for). And the dirtiness it
+        // reads comes from the panel's own ViewModel, resolved by the
+        // panel's own key — a lookup under any other key is a DIFFERENT
+        // instance, which would report a clean draft while the pane holds a
+        // dirty one.
+        // Whitespace-collapsed, and the WHOLE guard rather than any line
+        // of it: `panelViewModel?.isDirty` appears twice in this file (the
+        // re-tap guard below is the other), so an assertion that only
+        // looked for that spelling stayed green with this handler gutted —
+        // green for the wrong one of two indistinguishable reasons.
+        val flat = screenSrc.replace(Regex("""\s+"""), " ")
         assertTrue(
-            "the screen must guard Back while the open draft differs from its record",
-            Regex("""BackHandler\(enabled = draft != null && viewModel\.isDirty\)""")
-                .containsMatchIn(screenSrc),
+            "the screen must guard Back whenever a pane is open, and route a dirty " +
+                "draft to the panel's own dialog rather than closing the pane",
+            flat.contains(
+                "BackHandler(enabled = selectedId != null) { " +
+                    "if (panelViewModel?.isDirty == true) { " +
+                    "scope.launch { listState.animateScrollToItem(0) } " +
+                    "} else { viewModel.closeSelection() } }",
+            ),
         )
         val handler = screenSrc.indexOf("BackHandler(")
         val lazyColumn = screenSrc.indexOf("LazyColumn(")
         assertTrue("the guard must be registered above the LazyColumn, never inside an item", handler in 0 until lazyColumn)
         assertTrue(
-            "the confirmation must be the shared DiscardConfirmation",
-            screenSrc.contains("DiscardConfirmation("),
+            "the guard must ask the panel's own ViewModel, under the panel's own key",
+            screenSrc.contains(
+                "ItemDetailViewModel.factory(context), key = \"item-" + "\$" + "id\"",
+            ),
         )
+        // The confirmation is the panel's — this screen holds no dialog of
+        // its own, and the house is dialog-wary (`ItemDetailPanel`'s header
+        // claims to hold the only one).
         assertFalse(
-            "no second dialog on this screen",
-            screenSrc.contains("AlertDialog("),
-        )
-        assertTrue(
-            "discarding must go through the ViewModel, never a local state reset",
-            screenSrc.contains("viewModel.discardDraft()"),
-        )
-        assertTrue(
-            "the question survives an Activity recreation rather than being silently answered",
-            Regex("""confirmingDiscard by rememberSaveable""").containsMatchIn(screenSrc),
+            "no dialog on this screen: the panel owns the one discard confirmation",
+            screenSrc.contains("AlertDialog(") || screenSrc.contains("DiscardConfirmation("),
         )
     }
 
-    /** The header title is the display and the edit both (operator batch
-     * 2026-08-20). The standalone "Title" box said the same words the
-     * header said, so the panel claimed the title twice and editing one
-     * changed the other — this pins both halves: the box must not come
-     * back, and the pencil that replaced it must be there. */
-    @Test
-    fun `the title is edited in the header, never in a second box below it`() {
-        assertFalse(
-            "the standalone Title box must not come back — the header title is the edit",
-            screenSrc.contains("""label = { Text("Title") }"""),
-        )
-        assertTrue(
-            "the header must carry the pencil that opens the inline title edit",
-            screenSrc.contains("R.drawable.ic_pencil"),
-        )
-        // The header shows the DRAFT's title, not the record's: an edit
-        // that does not show where it was made reads as having been lost.
-        // The `Text(` call form, not a bare `draft.title` — the inline edit
-        // field binds the same expression, so a bare check would pass with
-        // the header still reading `item.title`.
-        assertTrue(
-            "the header title must read the draft, not the record",
-            Regex("""Text\(\s*draft\.title,""").containsMatchIn(screenSrc),
-        )
-        // The whole header row is the wide door out, through the same
-        // confirmation the X routes through — and only while not editing,
-        // so a tap into the title field is not a tap on the way out.
-        assertTrue(
-            "the header row must close the pane on a tap, unless the title is being edited",
-            screenSrc.contains("if (editingTitle) Modifier else Modifier.clickable(onClick = onClose)"),
-        )
-    }
-
-    /** The opened pane's mark-done, the collapsed rows' own affordance:
-     * `NowRow`'s green check on the seam's decided `canMarkDone`, never a
-     * Material `Checkbox` (operator decision 2026-08-20) and never a
-     * hand-rolled stage test. */
-    @Test
-    fun `the opened pane offers the same mark-done check the collapsed rows do`() {
-        assertTrue(
-            "the check must be gated on the seam's own decided fact",
-            screenSrc.contains("item.canMarkDone"),
-        )
-        assertTrue(
-            "the check must be NowRow's own glyph",
-            screenSrc.contains("R.drawable.ic_check"),
-        )
-        assertTrue(
-            "the check must carry NowRow's own mark-done green token pair",
-            screenSrc.contains("if (dark) StatusDoneFgDark else Moss600"),
-        )
-        assertFalse(
-            "the mark-done is an IconButton, not a Material Checkbox",
-            screenSrc.contains("Checkbox("),
-        )
-    }
-
-    /** Every leaving gesture asks the same question. `select(sameId)` nulls
-     * the draft (`TriageViewModel.select`), so re-tapping the open row was
-     * the one exit that dropped typed words without asking — the X, Back
-     * and the header tap all route through `DiscardConfirmation`. */
+    /** Every leaving gesture asks the same question. Re-tapping the open
+     * row is `select(sameId)`, a toggle shut — and the one exit that does
+     * not pass through the panel, so it is the one this screen must guard
+     * itself. The X, the header tap and Back inside the pane all route
+     * through the panel's own `DiscardConfirmation`. */
     @Test
     fun `re-tapping the open row on a dirty draft asks before dropping it`() {
         assertTrue(
             "the queue's rows must guard a re-tap of the already-open row",
-            screenSrc.contains("if (item.id == selectedId && viewModel.isDirty)"),
+            screenSrc.contains("if (item.id == selectedId && panelViewModel?.isDirty == true)"),
         )
     }
 

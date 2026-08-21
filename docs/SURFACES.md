@@ -547,7 +547,9 @@ kind is named so nobody mistakes it for a visual gate:
   `NowScreenStructuralTest`, `AlertsScreenStructuralTest`,
   `StatusScreenStructuralTest`, `SettingsScreenStructuralTest`,
   `RulesScreenStructuralTest`, `TriageScreenStructuralTest`,
-  `RecallScreenStructuralTest`, `CaptureSubmitRefusalTest`,
+  `ItemDetailPanelStructuralTest` (the pane all four item-detail hosts
+  render, unified 2026-08-20), `RecallScreenStructuralTest`,
+  `CaptureSubmitRefusalTest`,
   `CaptureFieldSetStructuralTest`, `ScreenStateRetentionTest`,
   `GrillTakeoverStructuralTest` (#595), and the component-scoped
   `StageBadgeTest`/`LevelGlyphsTest`/`GlyphRenderTest` (#557/#558, which mix

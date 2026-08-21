@@ -101,9 +101,13 @@ class StageBadgeTest {
             // The compact card (Now's columns AND Triage's queue rows since
             // the Triage-parity slice) carries the one stage chip.
             "NowRow.kt" to 1,
+            // The one item-detail pane, under its header — every host of it
+            // (Now, the route, Recall, Triage) gets the chip from here.
             "ItemDetailPanel.kt" to 1,
-            // TriageScreen's own site is the opened editor's panel header.
-            "TriageScreen.kt" to 1,
+            // Zero, deliberately: Triage's opened pane IS `ItemDetailPanel`
+            // since the unification, so a `StageBadge(` appearing here again
+            // means a second editor has grown back.
+            "TriageScreen.kt" to 0,
             "LedgerScreen.kt" to 1,
         )
         for ((file, expected) in sites) {

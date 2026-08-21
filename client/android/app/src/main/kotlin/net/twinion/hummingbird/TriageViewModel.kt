@@ -10,15 +10,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import net.twinion.hummingbird.core.CoreHolder
-import uniffi.hummingbird_ffi_mobile.CaptureFormMeta
-import uniffi.hummingbird_ffi_mobile.FieldPatch
-import uniffi.hummingbird_ffi_mobile.ItemEdit
-import uniffi.hummingbird_ffi_mobile.MetaProblems
 import uniffi.hummingbird_ffi_mobile.TriageBoardRecord
 import uniffi.hummingbird_ffi_mobile.TriageItemRecord
-import uniffi.hummingbird_ffi_mobile.canSubmitCapture
-import uniffi.hummingbird_ffi_mobile.captureFormMeta
-import uniffi.hummingbird_ffi_mobile.captureMetaProblems
 
 /** What the Triage screen is showing — a single state, unlike
  * [ItemDetailState]'s three: there is no deep-link race here (nothing
@@ -30,100 +23,25 @@ sealed interface TriageState {
     data class Loaded(val board: TriageBoardRecord) : TriageState
 }
 
-/** One row's in-progress edit — every editable field the seeded editor
- * shows, seeded from the [TriageItemRecord] it opened on. The same
- * strings-throughout shape [ItemDraft] uses, and [toEdit] makes the
- * identical three-way Untouched/Clear/Set decision that class's own doc
- * explains; the two are not merged into one type because a triage row and
- * item detail seed from different records ([TriageItemRecord] vs.
- * [uniffi.hummingbird_ffi_mobile.ItemDetailRecord]) and edit different
- * seam calls.
- *
- * `projectId` is absent for the same reason [ItemDraft]'s is: not editable
- * from this screen, and a field with nothing to set it from would be a
- * silent no-op.
- */
-data class TriageDraft(
-    val title: String,
-    val description: String,
-    val context: String,
-    val deadline: String,
-    val scheduledDate: String,
-    val size: String,
-    val energy: String,
-    val priority: String,
-) {
-    companion object {
-        fun of(item: TriageItemRecord) = TriageDraft(
-            title = item.title,
-            description = item.description.orEmpty(),
-            context = item.context.orEmpty(),
-            deadline = item.deadline.orEmpty(),
-            scheduledDate = item.scheduledDate.orEmpty(),
-            size = item.size.orEmpty(),
-            energy = item.energy.orEmpty(),
-            priority = item.priority.toString(),
-        )
-    }
-
-    /** The draft as a seam patch, against the row it started from. See
-     * [ItemDraft.toEdit]'s own doc for the full reasoning — this is the
-     * same rule, seeded from a [TriageItemRecord] instead of an
-     * [uniffi.hummingbird_ffi_mobile.ItemDetailRecord]. */
-    fun toEdit(from: TriageItemRecord, hasContent: (String) -> Boolean): ItemEdit = ItemEdit(
-        title = title.takeIf { hasContent(it) && it != from.title },
-        priority = priority.toLongOrNull()?.takeIf { it != from.priority },
-        description = patch(description, from.description, hasContent),
-        size = patch(size, from.size, hasContent),
-        energy = patch(energy, from.energy, hasContent),
-        context = patch(context, from.context, hasContent),
-        projectId = FieldPatch.Untouched,
-        deadline = patch(deadline, from.deadline, hasContent),
-        scheduledDate = patch(scheduledDate, from.scheduledDate, hasContent),
-    )
-
-    private fun patch(
-        drafted: String,
-        original: String?,
-        hasContent: (String) -> Boolean,
-    ): FieldPatch {
-        val value = drafted.takeIf(hasContent)
-        return when {
-            value == original -> FieldPatch.Untouched
-            value == null -> FieldPatch.Clear
-            else -> FieldPatch.Set(value)
-        }
-    }
-}
-
-// The Triage screen's whole read and its one-row-open editor (#531): one
-// queue holding both captured and Grilling items in the core's own order
-// (`MobileTaskHost::triageBoard`), promote-to-Ready as the only mutation
-// destination this screen offers, and the checkmark's mark-done gesture
+// The Triage screen's board and its selection (#531): one queue holding
+// both captured and Grilling items in the core's own order
+// (`MobileTaskHost::triageBoard`), and the checkmark's mark-done gesture
 // riding on `Core::act` — never a triage.
 //
-// **The selected row and its draft live here, never in a `remember {}`.**
+// **The draft is not here.** It used to be: this ViewModel owned a
+// `TriageDraft` and a `promote` beside it, duplicating
+// `ItemDetailViewModel`'s. The opened row now renders `ItemDetailPanel` in
+// `ItemDetailPanelMode.PROMOTE`, which brings that ViewModel with it — one
+// draft type, one patch rule, one promote. What stays here is what a board
+// owns: the rows, the status line, and which one is open.
+//
+// **The selected row lives here, never in a `remember {}`.**
 // `ItemDetailViewModel`'s own recorded defect (the fold/unfold one)
-// applies verbatim: a composition-scoped draft is lost on Activity
-// recreation, and a draft is human-authored content.
+// applies: composition-scoped state is lost on Activity recreation.
 class TriageViewModel(
     private val fetchFn: suspend (now: String) -> TriageBoardRecord,
-    private val triageFn: suspend (itemId: String, promoteToReady: Boolean, edit: ItemEdit, nowMs: Long) -> Unit,
     private val completeFn: suspend (itemId: String, nowMs: Long) -> Unit,
-    /** The core's blank rule, injected the same way [ItemDetailViewModel]'s
-     * is: no native library exists in a plain JVM test process. */
-    private val hasContentFn: (String) -> Boolean,
-    /** The core's date-field rule, injected for the same reason. */
-    private val metaProblemsFn: (deadline: String, scheduledDate: String) -> MetaProblems,
-    /** The shared form components' vocabulary door, injected the same way
-     * `CaptureViewModel.formMetaFn` is: every size/energy word this
-     * screen's editor offers must come from here, never a Kotlin literal. */
-    private val formMetaFn: () -> CaptureFormMeta,
 ) : ViewModel() {
-
-    /** Read once, on first use — the vocabulary does not change mid-session,
-     * the same laziness `CaptureViewModel.formMeta` uses. */
-    val formMeta: CaptureFormMeta by lazy { formMetaFn() }
 
     private val _state = MutableStateFlow<TriageState>(TriageState.Loading)
     val state: StateFlow<TriageState> = _state.asStateFlow()
@@ -136,42 +54,11 @@ class TriageViewModel(
     private val _selectedId = MutableStateFlow<String?>(null)
     val selectedId: StateFlow<String?> = _selectedId.asStateFlow()
 
-    private val _draft = MutableStateFlow<TriageDraft?>(null)
-    val draft: StateFlow<TriageDraft?> = _draft.asStateFlow()
-
-    val metaProblems: MetaProblems?
-        get() = _draft.value?.let { metaProblemsFn(it.deadline, it.scheduledDate) }
-
-    /** Whether the open row's draft can be saved (promoted or edited) at
-     * all — [ItemDetailViewModel.canSave]'s own reasoning, applied to
-     * whichever row is open. */
-    val canSave: Boolean
-        get() {
-            val draft = _draft.value ?: return false
-            if (!hasContentFn(draft.title)) return false
-            val problems = metaProblemsFn(draft.deadline, draft.scheduledDate)
-            return problems.deadline == null && problems.scheduledDate == null
-        }
-
-    /** Whether the open row's draft still matches the record it was seeded
-     * from — [ItemDetailViewModel.isDirty]'s own shape and its own purpose:
-     * it is the whole condition of `TriageScreen`'s Back guard, so that an
-     * *unchanged* draft is never fought over and a changed one is never
-     * thrown away without asking. */
-    val isDirty: Boolean
-        get() {
-            val draft = _draft.value ?: return false
-            val id = _selectedId.value ?: return false
-            val item = currentItems().find { it.id == id } ?: return false
-            return draft != TriageDraft.of(item)
-        }
-
-    /** Throws the open draft away and closes the editor — the discard
-     * confirmation's own arm, and the only path that ends a draft without
-     * either promoting it or the human closing the row themselves. */
-    fun discardDraft() {
+    /** Shuts whichever row is open — what a promote or a mark-done from
+     * the opened pane needs: the item leaves the queue, so a selection
+     * still pointing at it would dangle at a vanished row. */
+    fun closeSelection() {
         _selectedId.value = null
-        _draft.value = null
     }
 
     private fun currentItems(): List<TriageItemRecord> =
@@ -181,9 +68,9 @@ class TriageViewModel(
      * above the `NavHost` (`syncTick`, `MainActivity`'s own doc) — the same
      * "no screen-local sync" shape `NowScreen` uses, since a Triage row is
      * exactly as live as a frontier row and the two already share one
-     * cycle. A reload never disturbs an open draft — the same "the
-     * 60-second cadence must not erase what the human is typing" rule
-     * [ItemDetailViewModel.load]'s own doc states. */
+     * cycle. The opened pane's own draft is untouched by this: it lives in
+     * [ItemDetailViewModel], which reloads on its own terms and leaves a
+     * dirty draft alone (that class's [ItemDetailViewModel.load] doc). */
     suspend fun load(now: String) {
         try {
             _state.value = TriageState.Loaded(fetchFn(now))
@@ -194,56 +81,31 @@ class TriageViewModel(
     }
 
     /** Toggles a row open or closed. Only ever one row open at a time —
-     * opening a different row replaces whatever was open, discarding its
-     * unsent draft, the same "selection, not accumulation" contract the
-     * web `TriageScreen`'s own `selectedId` state carries. */
+     * opening a different row replaces whatever was open, the same
+     * "selection, not accumulation" contract the web `TriageScreen`'s own
+     * `selectedId` state carries. What the closed row had typed is not
+     * lost: its draft belongs to that item's own [ItemDetailViewModel],
+     * keyed `"item-$id"` and held by this screen's back-stack entry, so
+     * re-opening the row shows it again. */
     fun select(itemId: String) {
         if (_selectedId.value == itemId) {
             _selectedId.value = null
-            _draft.value = null
             return
         }
-        val item = currentItems().find { it.id == itemId } ?: return
+        // Membership still gates it: a selection is only ever a row on the
+        // board this ViewModel is holding.
+        currentItems().find { it.id == itemId } ?: return
         _selectedId.value = itemId
-        _draft.value = TriageDraft.of(item)
         _statusLine.value = null
-    }
-
-    fun updateDraft(draft: TriageDraft) {
-        _draft.value = draft
-    }
-
-    /** Promotes the open row to Ready, carrying whatever else the draft
-     * touched — one CAS `PATCH`, per `Core::triage`'s own doc. Promotion is
-     * the only destination this screen offers (the AC this method exists
-     * to satisfy): there is no "save without promoting" affordance here,
-     * unlike item detail's own edit mode. */
-    suspend fun promote(itemId: String, now: String, nowMs: Long) {
-        val item = currentItems().find { it.id == itemId } ?: return
-        val draft = _draft.value ?: return
-        if (!canSave) {
-            _statusLine.value = "This can't be promoted yet — an item needs a title, " +
-                "and a date must be the shape shown."
-            return
-        }
-        try {
-            triageFn(itemId, true, draft.toEdit(item, hasContentFn), nowMs)
-            _selectedId.value = null
-            _draft.value = null
-        } catch (error: Exception) {
-            _statusLine.value = "Couldn't promote — ${error.message}"
-            return
-        }
-        load(now)
     }
 
     /** The row checkmark: `Core::act`'s `complete`, never a triage — a
      * capture that turned out already finished skips the editor entirely,
      * the same amendment `TriageRow.tsx`'s own doc records. The open row
-     * and its draft close on success — and only on success: a failed act
-     * leaves the row on the board, so its editor stays where [statusLine]
-     * can be read against it and the act retried. Cancellation rethrows
-     * rather than being worded as a failure. */
+     * closes on success — and only on success: a failed act leaves the row
+     * on the board, so its pane stays where [statusLine] can be read
+     * against it and the act retried. Cancellation rethrows rather than
+     * being worded as a failure. */
     suspend fun complete(itemId: String, now: String, nowMs: Long) {
         val failure = try {
             completeFn(itemId, nowMs)
@@ -255,7 +117,6 @@ class TriageViewModel(
         }
         if (failure == null && _selectedId.value == itemId) {
             _selectedId.value = null
-            _draft.value = null
         }
         load(now)
         failure?.let { _statusLine.value = it }
@@ -265,16 +126,9 @@ class TriageViewModel(
         fun create(context: Context): TriageViewModel =
             TriageViewModel(
                 fetchFn = { now -> CoreHolder.get(context.applicationContext).triageBoard(now) },
-                triageFn = { itemId, promoteToReady, edit, nowMs ->
-                    CoreHolder.get(context.applicationContext)
-                        .triageItem(itemId, promoteToReady, edit, nowMs)
-                },
                 completeFn = { itemId, nowMs ->
                     CoreHolder.get(context.applicationContext).act(itemId, "complete", nowMs)
                 },
-                hasContentFn = ::canSubmitCapture,
-                metaProblemsFn = ::captureMetaProblems,
-                formMetaFn = ::captureFormMeta,
             )
 
         fun factory(context: Context): ViewModelProvider.Factory = viewModelFactory {
