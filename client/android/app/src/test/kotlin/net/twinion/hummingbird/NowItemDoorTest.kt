@@ -53,18 +53,57 @@ class NowItemDoorTest {
     }
 
     @Test
-    fun `the panel stands above the board, which keeps rendering below it`() {
+    fun `the selected card expands in place, and the board keeps rendering around it`() {
         // ADR-0021 decision 7's mechanism, pinned structurally: the panel
-        // is an item INSIDE the one LazyColumn, before the board's own
-        // branches -- so the frontier can never be early-returned away by
-        // a selection. Comments are stripped, so these are code positions.
+        // is an item INSIDE the one LazyColumn and the frontier is never
+        // early-returned away by a selection. What changed on 2026-08-20 is
+        // WHERE inside: the pane took the selected row's own slot, so the
+        // card the operator tapped expands rather than a block appearing at
+        // the top of the board. Comments are stripped, so these are code
+        // positions.
         val src = source("NowScreen.kt")
         val lazyColumn = src.indexOf("LazyColumn(")
-        val panel = src.indexOf("ItemDetailPanel(")
+        val boardBranches = src.indexOf("loading && currentBoard == null")
+        val paneEmit = src.indexOf("item(key = selectedItemKey(")
         val paneSection = src.indexOf("nowPaneSection(", lazyColumn)
         assertTrue("NowScreen must keep its one LazyColumn", lazyColumn >= 0)
-        assertTrue("the panel item must sit inside the LazyColumn, above the board's branches", panel > lazyColumn)
-        assertTrue("the board (ending in the pane section) must render after the panel", paneSection > panel)
+        assertTrue("the board's own branches must sit inside it", boardBranches > lazyColumn)
+        assertTrue(
+            "the pane must be emitted among the board's rows, not as a block before them",
+            paneEmit > boardBranches,
+        )
+        assertTrue("the now-surface panes must still close the list", paneSection > paneEmit)
+        assertFalse(
+            "and nothing may scroll the list on a selection — the pane opens where the " +
+                "finger already is, and the jump is what made the first tap and the " +
+                "second look like different gestures",
+            src.contains("animateScrollToItem(0)"),
+        )
+
+        // The row-or-pane branch, bounded to the columns loop: every item
+        // draws exactly one of the two, so the board keeps one line per
+        // item and no item is drawn twice.
+        val columnsLoop = src.substring(
+            src.indexOf("for (column in currentBoard.columns)"),
+            src.indexOf("if (currentBoard.blocked.isNotEmpty())"),
+        )
+        assertTrue(
+            "the selected record must render as the pane in its own slot",
+            columnsLoop.replace(Regex("""\s+"""), " ").contains(
+                "if (record.id == selectedId) { item(key = selectedItemKey(record.id)) { SelectedItemCard(",
+            ),
+        )
+        assertTrue(
+            "and every other record as its row",
+            columnsLoop.replace(Regex("""\s+"""), " ").contains(
+                "} else { item(key = " + "\"\$key-\${record.id}\"" + ") { NowRow(",
+            ),
+        )
+        assertTrue(
+            "the selected item must be rendered even when the column cap would hide it — " +
+                "a re-rank must not make the open pane vanish",
+            columnsLoop.contains("it.id in cappedIds || it.id == selectedId"),
+        )
     }
 
     @Test

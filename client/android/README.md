@@ -177,8 +177,10 @@ frontier renders (`NowRow.kt`, extracted for exactly this — the
 Triage-parity slice, operator request 2026-08-20), fed by a verbatim-copy
 adapter over `TriageItemRecord` (whose `urgency` band arrives decided from
 the seam, like every other pill). One item opens at a time, expanding at
-index 0 of the queue's one `LazyColumn` — `NowScreen`'s inline-expansion
-pattern — into **`ItemDetailPanel`, in `ItemDetailPanelMode.PROMOTE`**.
+index 0 of the queue's one `LazyColumn` into **`ItemDetailPanel`, in
+`ItemDetailPanelMode.PROMOTE`**. Index 0 is no longer Now's shape — Now
+expands the tapped row in its own slot ("In place, not at the top" below) —
+and this screen has not been changed to match.
 
 That pane used to be a second, Triage-only editor (`TriageEditorPanel` over
 its own `TriageDraft`), because `available_actions` answers nothing for the
@@ -331,14 +333,17 @@ Five slices bringing the surfaces in line with the design kit
   "N of M shown" comes decided across the seam
   (`NowBoardRecord.shown_count`/`total_count` — Kotlin never holds the
   pre-facet list, ADR-0025).
-- **Inline expansion.** Tapping a Now card opens `ItemDetailPanel` — the
-  whole former `ItemDetailScreen` body, extracted so the route (still the
-  notification and Recall door, ADR-0027) and Now render one
-  implementation, and since the unification the Recall overlay and Triage
-  render it too, four hosts in all — as item 0 of Now's one `LazyColumn`, above the board,
-  which keeps rendering below (ADR-0021 decision 7). Selection is
-  `NowViewModel.selectedItemId`, Triage's one-open-at-a-time shape.
-  `NowItemDoorTest` pins the door end to end.
+- **Inline expansion, in the card's own place.** Tapping a Now card opens
+  `ItemDetailPanel` — the whole former `ItemDetailScreen` body, extracted so
+  the route (still the notification and Recall door, ADR-0027) and Now
+  render one implementation, and since the unification the Recall overlay
+  and Triage render it too, four hosts in all — **in the tapped row's own
+  slot**, so the card grows and the rest of the board stays where it is
+  (ADR-0021 decision 7's requirement is that a selection never
+  early-returns the frontier, which this keeps more literally than the
+  index-0 block it replaced — see "In place, not at the top" below).
+  Selection is `NowViewModel.selectedItemId`, Triage's one-open-at-a-time
+  shape. `NowItemDoorTest` pins the door end to end.
 - **The capture FAB and sheet.** The design kit's extended FAB (the one
   sanctioned large ember fill) opens `CaptureSheet`, over the same
   `CaptureViewModel` and `ui/forms/` components as `CaptureActivity` (still
@@ -973,6 +978,51 @@ captured count (12 → 11); the pane's own mark-done check does the same
 per round 5's lesson — and note the pane's check is a full 48dp target only
 when it is not clipped by the viewport edge, so measure it scrolled into
 view or a clipped 15px node reads as a layout defect it is not.
+
+## In place, not at the top (2026-08-20)
+
+Operator report: Now's selection "acts differently" from Triage's, and
+inconsistently with itself — "the first selection opens a new pane up top,
+but a second selection opens it as I want it to".
+
+Both screens were in fact identical, and the diagnosis is worth more than
+that symmetry: each rendered the pane as `item(key = "selected-item-$id")`
+at **index 0** of its one `LazyColumn` and then ran
+`animateScrollToItem(0)` on every change of selection. So the first tap
+yanked the board to the top and left the tapped card far below a pane that
+was supposed to be about it, while a second tap — with the list already at
+0 — dropped the new pane roughly where the finger already was and looked
+exactly like the in-place expansion it was not. One mechanism, two
+appearances, decided by nothing but where the list happened to be scrolled.
+Triage reads as "in place" for the same accidental reason, which is why it
+was cited as the model: measured on the device, tapping its fourth row puts
+the pane at the top of the viewport, not at the row.
+
+Now expands the row itself: inside the columns loop, the selected record
+renders `SelectedItemCard` in **its own slot** instead of `NowRow`, and
+nothing scrolls. Consequences worth knowing:
+
+- The row is not drawn as well as the pane — the pane's header is the title
+  and its action row carries the row's mark-done check — so the board keeps
+  one line per item and no item appears twice.
+- The selected item is rendered even when `COLUMN_CAP` would hide it,
+  because the pane now lives in that row's slot: a re-rank that pushed the
+  open item past the cap would otherwise make the pane vanish with the
+  selection still set. Collapsing its column still hides it, which is a
+  deliberate gesture and reads as one.
+- The dirty-draft Back handler needed a new target. It exists because
+  scrolling the panel out of the viewport DISPOSES it, unregistering its own
+  BackHandler, so the screen re-checks dirtiness and scrolls the panel back
+  rather than losing an edit. Index 0 was that target for free; the pane's
+  index now depends on which column the item ranks into, so the screen
+  remembers it from `listState.layoutInfo` while the pane is on screen —
+  which it always is at the moment it opens, since it replaces the row that
+  was just tapped. Reading the layout rather than recomputing the emission
+  order keeps there from being a second copy of that order to drift.
+
+Triage still renders its pane at index 0. It is *not* what it was cited as
+being, and making it match is a one-line change of the same shape — left
+undone deliberately rather than assumed.
 
 ## The title-edit trap, and what `rememberSaveable(input)` does not do
 
