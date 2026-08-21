@@ -215,14 +215,6 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     patchProjectLink: handlePatchProjectLink,
     requestRoute: handleRequestRoute,
     patchRoute: handlePatchRoute,
-    requestFog: handleRequestFog,
-    createFog: handleCreateFog,
-    patchFog: handlePatchFog,
-    requestActions: handleRequestActions,
-    reorderAction: handleReorderAction,
-    requestSteps: handleRequestActionSteps,
-    createStep: handleCreateStep,
-    patchStep: handlePatchStep,
   } = useProjectsWiring(worker);
   // #245: every source the registered standing questions need, refreshed on
   // the same per-cycle signal as the bindings they depend on.
@@ -632,14 +624,18 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               onPatchProjectLink={handlePatchProjectLink}
               onRequestRoute={handleRequestRoute}
               onPatchRoute={handlePatchRoute}
-              onRequestFog={handleRequestFog}
-              onCreateFog={handleCreateFog}
-              onPatchFog={handlePatchFog}
-              onRequestActions={handleRequestActions}
-              onReorderAction={handleReorderAction}
-              onRequestActionSteps={handleRequestActionSteps}
-              onCreateStep={handleCreateStep}
-              onPatchStep={handlePatchStep}
+              // The dossier's centre column is Now's board filtered to the
+              // open project, so it takes the same selection, act, triage and
+              // microtask doors Now does — one set of wiring for one board.
+              // No `grill`: this surface renders no "Grill me" button, so no
+              // takeover is reachable from it.
+              nowMs={syncNowMs}
+              selectedItemId={selectedItemId}
+              onOpenItem={handleOpenItem}
+              onCloseItemDetail={handleCloseItemDetail}
+              onAct={handleAct}
+              onTriage={handleTriage}
+              microtask={microtaskWiring}
             />
           )}
           {screen === "alerts" && <AlertsScreen />}

@@ -9,7 +9,6 @@ import type {
   CalendarListEntryDTO,
   CalendarReadDTO,
   DeadLetterEntryDTO,
-  FogDTO,
   GrillDraftTurnDTO,
   KindRegistryDTO,
   LedgerRowDTO,
@@ -196,41 +195,6 @@ export interface TaskRouteResult {
   error: string | null;
 }
 
-/** The result of the most recent Fog create or patch request this view
- * issued (#628, ADR-0030 decision 1). Same "one broadcast slot" shape as
- * [`TaskProjectLinkResult`] — shared across every open dossier, not scoped
- * to one project's fog. */
-export interface TaskFogResult {
-  seed: string;
-  projectId: string;
-  kind: "ok" | "failed" | "busy";
-  error: string | null;
-}
-
-/** The result of the most recent Action reorder request this view issued
- * (#629, ADR-0030 decision 1). Same "one broadcast slot" shape as
- * [`TaskFogResult`] — shared across every open dossier, not scoped to one
- * Action. A 409 lands here as an ordinary `"ok"` (the write was enqueued;
- * the conflict itself is discovered later at drain time and surfaces
- * through the ordinary dead-letter journal), same handled-not-swallowed
- * contract every other CAS write here carries. */
-export interface TaskActionReorderResult {
-  seed: string;
-  projectId: string;
-  itemId: string;
-  kind: "ok" | "failed" | "busy";
-  error: string | null;
-}
-
-/** The result of the most recent Step create or patch request this view
- * issued (#629). Same "one broadcast slot" shape as [`TaskFogResult`]. */
-export interface TaskStepResult {
-  seed: string;
-  itemId: string;
-  kind: "ok" | "failed" | "busy";
-  error: string | null;
-}
-
 /** Issue #105/S7's task read-model slice: the owned-schema counterpart to
  * [`CalendarState`], fed by `worker/task-worker.ts`'s broadcasts. */
 export interface TaskState {
@@ -282,29 +246,6 @@ export interface TaskState {
   /** The result of the most recent Route patch request this view issued
    * (#627) — `null` until the first one resolves. */
   lastRouteWrite: TaskRouteResult | null;
-  /** The dossier reading column's open Fog, keyed by project id (#628) —
-   * only ever grows entries a view actually asked about via `getFog`, the
-   * same `linksByProject` shape. A missing entry means "not read yet";
-   * resolved rows are retained but never appear here
-   * (`Core::open_fog_for`'s own doc). */
-  fogByProject: Record<string, FogDTO[]>;
-  /** The result of the most recent Fog create/patch request this view
-   * issued (#628) — `null` until the first one resolves. */
-  lastFogWrite: TaskFogResult | null;
-  /** The dossier's ordered action list, keyed by project id (#629) — only
-   * ever grows entries a view actually asked about via `getActions`, the
-   * same `fogByProject` shape. A missing entry means "not read yet"; an
-   * Action is an ordinary item, so rows here are `TaskItemDTO`, `pending`
-   * flag included. */
-  actionsByProject: Record<string, TaskItemDTO[]>;
-  /** The result of the most recent Action reorder request this view issued
-   * (#629) — `null` until the first one resolves. */
-  lastActionReorder: TaskActionReorderResult | null;
-  /** The result of the most recent Step create/patch request this view
-   * issued (#629) — `null` until the first one resolves. Steps read
-   * through the existing `stepsByItem`/`getSteps` door (issue #96); this
-   * is only the write half's broadcast slot. */
-  lastStepWrite: TaskStepResult | null;
   /** The complete retained roster — every item the mirror has ever known,
    * archived rows included and labelled (`getLedger`). `null` until the
    * first `ledger` answer arrives, for `bindings`'s own reason: an empty
@@ -484,11 +425,6 @@ const initialTaskState: TaskState = {
   lastProjectLinkWrite: null,
   routeByProject: {},
   lastRouteWrite: null,
-  fogByProject: {},
-  lastFogWrite: null,
-  actionsByProject: {},
-  lastActionReorder: null,
-  lastStepWrite: null,
   ledger: null,
   search: null,
   done: null,
@@ -581,16 +517,6 @@ export function createCoreStore() {
     setTaskState({ routeByProject: { ...state.task.routeByProject, [projectId]: route } });
   }
 
-  // Same idea for `fogByProject` (the dossier's reading column, #628).
-  function setTaskFog(projectId: string, fog: FogDTO[]): void {
-    setTaskState({ fogByProject: { ...state.task.fogByProject, [projectId]: fog } });
-  }
-
-  // Same idea for `actionsByProject` (the dossier's ordered action list, #629).
-  function setTaskActions(projectId: string, actions: TaskItemDTO[]): void {
-    setTaskState({ actionsByProject: { ...state.task.actionsByProject, [projectId]: actions } });
-  }
-
   // And for `paneReads` (#245), keyed by source rather than item id.
   function setTaskPaneRead(source: string, read: PaneReadDTO): void {
     setTaskState({ paneReads: { ...state.task.paneReads, [source]: read } });
@@ -622,8 +548,6 @@ export function createCoreStore() {
     setTaskSteps,
     setTaskProjectLinks,
     setTaskRoute,
-    setTaskFog,
-    setTaskActions,
     setTaskPaneRead,
     setTaskGrillDraft,
     subscribe,
