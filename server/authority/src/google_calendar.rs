@@ -58,6 +58,15 @@ fn percent_encode(input: &str) -> String {
 /// exchange. See [`calendar_refresh_grant_body`] for why it is sent.
 pub const CALENDAR_SCOPE: &str = "https://www.googleapis.com/auth/calendar.readonly";
 
+/// The write lane's scope (ADR-0031): read plus create/edit/delete of
+/// **events**, on a third dedicated credential of its own.
+///
+/// Deliberately not `.../auth/calendar`, which would additionally grant
+/// creating calendars and changing who they are shared with — powers no
+/// verb of the OpenClaw calendar skill has any use for, and ones whose
+/// abuse is not confined to the operator's own data.
+pub const CALENDAR_WRITE_SCOPE: &str = "https://www.googleapis.com/auth/calendar.events";
+
 /// The `refresh_token` grant's `POST oauth2.googleapis.com/token` body.
 ///
 /// **`scope` is sent, and Google honours it (#581).** This module used to
@@ -82,12 +91,35 @@ pub fn calendar_refresh_grant_body(
     client_secret: &str,
     refresh_token: &str,
 ) -> String {
+    refresh_grant_body(CALENDAR_SCOPE, client_id, client_secret, refresh_token)
+}
+
+/// The write lane's grant body (ADR-0031): [`calendar_refresh_grant_body`]
+/// with [`CALENDAR_WRITE_SCOPE`], and the same mis-provisioning argument
+/// with one more credential to confuse — the vault holds three
+/// near-identical Google OAuth clients and this lane's own makes a
+/// **fourth** once the operator mints it, so an exchange that names its
+/// scope is what makes pasting the wrong refresh token here fail closed.
+pub fn calendar_write_refresh_grant_body(
+    client_id: &str,
+    client_secret: &str,
+    refresh_token: &str,
+) -> String {
+    refresh_grant_body(CALENDAR_WRITE_SCOPE, client_id, client_secret, refresh_token)
+}
+
+fn refresh_grant_body(
+    scope: &str,
+    client_id: &str,
+    client_secret: &str,
+    refresh_token: &str,
+) -> String {
     format!(
         "grant_type=refresh_token&client_id={}&client_secret={}&refresh_token={}&scope={}",
         percent_encode(client_id),
         percent_encode(client_secret),
         percent_encode(refresh_token),
-        percent_encode(CALENDAR_SCOPE),
+        percent_encode(scope),
     )
 }
 
@@ -135,6 +167,33 @@ pub fn calendar_secrets_unset() -> (u16, String) {
         503,
         "calendar_unconfigured",
         "The Google calendar credential is not configured on this server.",
+    )
+}
+
+/// `GOOGLE_CALENDAR_WRITE_CLIENT_ID`/`_SECRET`/`_REFRESH_TOKEN` unset
+/// (ADR-0031). Same 503 and same `calendar_unconfigured` code as the
+/// readonly lane — a caller distinguishes the two lanes by which route it
+/// called, not by the error code — but its own prose, because the two lanes
+/// are provisioned independently and one can be live while the other is
+/// not.
+pub fn calendar_write_secrets_unset() -> (u16, String) {
+    failure(
+        503,
+        "calendar_unconfigured",
+        "The Google calendar write credential is not configured on this server.",
+    )
+}
+
+/// The write lane's `invalid_grant` (ADR-0031). Its whole value is naming
+/// the secret to re-mint, so it must name the **write** one: sending the
+/// operator to `GOOGLE_CALENDAR_REFRESH_TOKEN` would have them rotate a
+/// healthy credential and leave the dead one in place.
+pub fn calendar_write_invalid_grant() -> (u16, String) {
+    failure(
+        502,
+        "calendar_invalid_grant",
+        "Google rejected the calendar write refresh token (invalid_grant) — re-mint \
+         GOOGLE_CALENDAR_WRITE_REFRESH_TOKEN.",
     )
 }
 
@@ -222,6 +281,39 @@ mod tests {
         assert!(!body.contains("tasks"), "no Tasks scope may ever be requested here: {body}");
     }
 
+    /// The twin of the test above, on the lane where a mis-provisioned
+    /// secret would be strictly worse: this credential can *write*. The
+    /// events scope is asserted whole — a truncation to `calendar` would
+    /// grant calendar creation and ACL edits, and a substring check for
+    /// "calendar" would not notice.
+    #[test]
+    fn write_grant_body_asks_for_calendar_events_only() {
+        let body = calendar_write_refresh_grant_body("id", "secret", "token");
+        assert!(
+            body.contains("&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.events"),
+            "the write exchange must ask for calendar.events: {body}",
+        );
+        assert!(!body.contains("gmail"), "no Gmail scope may ever be requested here: {body}");
+        assert!(!body.contains("tasks"), "no Tasks scope may ever be requested here: {body}");
+        assert!(
+            !body.contains("calendar.readonly"),
+            "the write lane is not the readonly lane: {body}",
+        );
+    }
+
+    /// The two lanes must not collapse onto one credential or one scope —
+    /// the whole of ADR-0031's blast-radius argument is that the readonly
+    /// credential every browser can reach is a different secret from the
+    /// write one only the agent can.
+    #[test]
+    fn the_two_lanes_ask_for_different_scopes() {
+        assert_ne!(CALENDAR_SCOPE, CALENDAR_WRITE_SCOPE);
+        assert_ne!(
+            calendar_refresh_grant_body("id", "secret", "token"),
+            calendar_write_refresh_grant_body("id", "secret", "token"),
+        );
+    }
+
     fn token(expires_at_ms: i64) -> AccessToken {
         AccessToken { token: "ya29.abc".into(), expires_at_ms }
     }
@@ -267,6 +359,32 @@ mod tests {
         assert_eq!(status, 503);
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed["error"], "calendar_unconfigured");
+    }
+
+    /// The write lane's own provisioning failures: the same codes (a caller
+    /// tells the lanes apart by the route it called), different prose, and
+    /// each naming its own secret — an operator sent to the wrong
+    /// `_REFRESH_TOKEN` rotates a healthy credential.
+    #[test]
+    fn the_write_lane_names_its_own_secrets() {
+        let (status, body) = calendar_write_secrets_unset();
+        assert_eq!(status, 503);
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["error"], "calendar_unconfigured");
+        assert_eq!(
+            parsed["message"],
+            "The Google calendar write credential is not configured on this server."
+        );
+
+        let (status, body) = calendar_write_invalid_grant();
+        assert_eq!(status, 502);
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["error"], "calendar_invalid_grant");
+        let message = parsed["message"].as_str().unwrap();
+        assert!(
+            message.contains("GOOGLE_CALENDAR_WRITE_REFRESH_TOKEN"),
+            "the write lane must name the write secret: {message}",
+        );
     }
 
     #[test]
@@ -319,6 +437,8 @@ mod tests {
             calendar_invalid_grant().0,
             calendar_upstream_status(500).0,
             calendar_upstream_status(401).0,
+            calendar_write_secrets_unset().0,
+            calendar_write_invalid_grant().0,
         ];
         for status in statuses {
             assert_ne!(status, 401, "no calendar-token failure may answer 401");

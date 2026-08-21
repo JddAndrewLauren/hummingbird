@@ -1,6 +1,14 @@
 # ADR-0028: The web host mints its Google token at the authority
 
 **Status:** accepted · 2026-08-19
+**amended 2026-08-20 by [ADR-0031](0031-calendar-write-is-gated-on-a-token-id-not-a-scope.md):**
+this route gained a write-scoped sibling, `POST
+/api/google/calendar_write_token`, over a third dedicated Google credential
+and its own cache — reachable only by named token ids, not by `device` scope
+alone. **Nothing here changes:** this route's credential, its cache, its
+contract and its `calendar.readonly` scope are untouched, and the route
+table below is still complete for this route. The sibling's own table, and
+why the readonly credential was not simply widened, are in ADR-0031.
 **Context:** #577, the hourly-popup elimination plan. Narrows
 [ADR-0005](0005-context-polling-lives-in-the-client-core.md) (device polling
 remains the display path; only the web host's *source* of the calendar
@@ -51,6 +59,9 @@ pushed value.
 | 200 | `{"access_token":"ya29.…","expires_at_ms":…}`, `cache-control: no-store` |
 | 401 / 403 | empty — bad device token / wrong scope |
 | 503 / 502 | secrets unset / transport, `invalid_grant`, upstream |
+
+*This table is complete for this route, and there is now a second one in the
+same family — see the Status header.*
 
 `expires_at_ms` is absolute and already carries 60s of slack, so it drops
 straight into `TokenResult.expiresAtMs` and `msUntilRotation` with no client

@@ -377,6 +377,42 @@ request 503 POST /api/google/calendar_token '' "$DEVICE"
 # A known path with the wrong method is a 405, not a 404.
 request 405 GET /api/google/calendar_token '' "$DEVICE"
 
+# --------------------------------------------- the calendar-write token mint
+
+# `POST /api/google/calendar_write_token` (ADR-0031): the same mint over a
+# write-scoped credential, narrowed to one token **id** rather than to a
+# scope — the first route in the repo to do that, and the reason it gets
+# wire coverage of its own. `$DEVICE` (id `t-device`) stands in for every
+# browser: it authenticates fine, it is device-scoped, and it must still be
+# refused. Reasoning about the const proves nothing here; only a second real
+# token does.
+request 201 POST /api/admin/tokens \
+  '{"id":"openclaw-agent","name":"smoke openclaw agent","scope":"device"}' "$ADMIN_SECRET"
+AGENT=$(jq -r '.token' <<<"$BODY")
+case "$AGENT" in hb_*) ;; *) fail "agent token shape: $BODY";; esac
+
+request 401 POST /api/google/calendar_write_token
+[ -z "$BODY" ] || fail "calendar_write_token 401 leaked a body: $BODY"
+request 403 POST /api/google/calendar_write_token '' "$INGEST"
+[ -z "$BODY" ] || fail "calendar_write_token 403 (scope) leaked a body: $BODY"
+# The whole security claim: another device token is 403, empty-bodied, and
+# never 401 — a 401 would make that client discard a working credential.
+request 403 POST /api/google/calendar_write_token '' "$DEVICE"
+[ -z "$BODY" ] || fail "calendar_write_token 403 (holder) leaked a body: $BODY"
+# …and that same token still reaches the readonly mint, so what narrowed is
+# the route and not the token.
+request 503 POST /api/google/calendar_token '' "$DEVICE"
+# The allowed holder passes the verdict and fails closed on the unset write
+# secrets — `wrangler dev` sets none of GOOGLE_CALENDAR_WRITE_*.
+request 503 POST /api/google/calendar_write_token '' "$AGENT"
+[ "$(jq -r '.error' <<<"$BODY")" = "calendar_unconfigured" ] ||
+  fail "calendar_write_token unconfigured code: $BODY"
+[ "$(jq -r '.message' <<<"$BODY")" = \
+  "The Google calendar write credential is not configured on this server." ] ||
+  fail "calendar_write_token unconfigured prose: $BODY"
+# A known path with the wrong method is a 405, not a 404.
+request 405 GET /api/google/calendar_write_token '' "$AGENT"
+
 # ------------------------------------------------------ sweep = delta
 
 SWEEP=$(curl -s -H "Authorization: Bearer $DEVICE" "$BASE/api/sweep")

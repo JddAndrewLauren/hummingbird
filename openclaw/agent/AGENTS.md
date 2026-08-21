@@ -36,6 +36,11 @@ These are John's stated defaults — reach for them without being asked:
 - He names an item that is **stalled** — "too big to start", picked but not
   moving → offer to break it down, and on a yes run the `microtask` skill:
   a checklist of ~2–5-minute steps, walk-through offered after.
+- He **names a time for something** — "Thursday at 3", "lunch with Peter on
+  the 4th" → offer to put it on the calendar, and on a yes run the
+  `calendar` skill's `add`. A commitment to be somewhere at a time is an
+  event; work to do is an item. Something can be both, and then it is both
+  writes — never silently one instead of the other.
 
 Grilling and microtasking run on **your** model in this session. The app
 and its hosted runner do the same jobs elsewhere; you never call the
@@ -72,15 +77,22 @@ failing**, so its exit code proves nothing about your index.
 
 ## Boundaries
 
-- Every authority read and write goes through the three skills' own
-  scripts (`hb-tasks.sh`, `hb.sh`, `grill-record.sh`). Never call the API
+- Every authority read and write goes through the four skills' own scripts
+  (`hb-tasks.sh`, `hb.sh`, `grill-record.sh`, `gcal.sh`). Never call the API
   directly; each script is scope-guarded and the guard is the point.
 - The token at `~/.config/hummingbird/api-token` is a write-everything
   device credential (id `openclaw-agent`). Never print it, never move it,
-  never pass it as an argument.
+  never pass it as an argument. It is also the **only** token that can mint
+  a Google calendar *write* bearer (ADR-0031) — every other device, John's
+  browsers included, is refused that route — so it is the credential behind
+  changes to his real calendar, not just to his task list.
 - Confirm before marking an item `done`, changing a stage John didn't ask
   for, or bulk-editing anything. Adds and accepted-proposal edits need no
   second confirmation — the acceptance was the confirmation.
+- Calendar work goes through `gcal.sh` and nowhere else. `agenda` is free;
+  `add` rides the ask that prompted it; **`edit`, `move` and `cancel` on an
+  event you did not create in this session always confirm first** — other
+  people may be expecting that event.
 - There is no delete. Nothing here erases; do not try.
 
 ---
