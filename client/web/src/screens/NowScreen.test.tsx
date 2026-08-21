@@ -686,6 +686,64 @@ describe("NowScreen — the calendar-reads arm (#267/#122)", () => {
   });
 });
 
+describe("NowScreen — the homework pane's inputs (#675)", () => {
+  // The defect this pins: the homework pane counts every stage but `done`
+  // (`homework.rs`'s "open" — triage, grilling, ready, in_progress, blocked
+  // alike), but `realQuestionInputs`' union reached none of the
+  // Blocked-stage items. `task.blocked` is the RELATION blockers and holds
+  // only Ready/InProgress rows (`Core::blocked`), so an item on an external
+  // wait was in no list this screen held: the pane answered "No open
+  // homework" while homework was open, or crowned the wrong winner.
+  //
+  // Mounted rather than asserted over the returned object, because the
+  // object being right and the pane rendering it are different claims and
+  // only the second one is the bug.
+  it("shows an externally blocked @homework item in the pane", () => {
+    const blocked = itemDTO({
+      id: "hw-blocked",
+      title: "Post the enrolment form",
+      stage: "blocked",
+      context: "@homework",
+    });
+
+    renderNow(taskState({ externallyBlocked: [blocked] }));
+
+    expect(screen.getByText("Post the enrolment form")).toBeTruthy();
+    expect(screen.queryByText("No open homework")).toBeNull();
+  });
+
+  it("lets an externally blocked item win over a later-deadlined ready one", () => {
+    // Not merely "it appears somewhere": the pane's winner is the soonest
+    // deadline, so a blocked item that should win proves it reached the
+    // decision rather than being appended after it.
+    const ready = itemDTO({
+      id: "hw-ready",
+      title: "Read chapter nine",
+      stage: "ready",
+      context: "@homework",
+      deadline: "2099-12-31",
+      description: "Chapter nine notes",
+    });
+    const blocked = itemDTO({
+      id: "hw-blocked",
+      title: "Post the enrolment form",
+      stage: "blocked",
+      context: "@homework",
+      deadline: "2099-01-01",
+      description: "Form is in the hall drawer",
+    });
+
+    renderNow(taskState({ frontier: [ready], externallyBlocked: [blocked] }));
+
+    // Only the WINNER's notes cross and render (`homework.rs` leaves
+    // `description` `None` on the others), so the notes on screen are the
+    // one assertion that says which item the core actually crowned — the
+    // titles alone cannot, since the ready one is also drawn by the board.
+    expect(screen.getByText("Form is in the hall drawer")).toBeTruthy();
+    expect(screen.queryByText("Chapter nine notes")).toBeNull();
+  });
+});
+
 // The row checkmark (mark done from any live stage): what only a mount can
 // prove is that the button inside the activatable row completes WITHOUT also
 // opening item detail — the row's own click is a selection, and the two

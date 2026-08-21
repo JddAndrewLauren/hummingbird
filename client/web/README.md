@@ -166,8 +166,10 @@ like any other world.
   function), `triage-form.ts`, `bindings.ts`. Three sub-trees keep
   the same split at more depth: `questions/` is ADR-0015's pane shell — read
   `questions/contract.ts` first, it is what a standing question owes the
-  shell — with one pane directory per question (`waste-pane/`,
-  `weekend-pane/`, `vacation-pane/`, `race-pane/`, each with its own header);
+  shell — with one pane directory per question (`homework-pane/`,
+  `waste-pane/`, `weekend-pane/`, `vacation-pane/`, `race-pane/`, each with
+  its own header; `homework-pane/` is #675's, the first question keyed on
+  the operator's own items rather than an outside source);
   `rules/` is #140's rule editor over the exported kind registry; and
   `projects/` is #624's Projects grid — `roster.ts` holds the whole of what
   the screen decides (the card order and counts, what the Show-archived

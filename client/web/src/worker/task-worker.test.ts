@@ -34,6 +34,7 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     search: vi.fn().mockReturnValue('{"kind":"ok","rows":[],"total":0}'),
     done: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     blocked: vi.fn().mockReturnValue('{"kind":"ok","entries":[]}'),
+    externallyBlocked: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     steps: vi.fn().mockReturnValue('{"kind":"ok","steps":[]}'),
     createProject: vi.fn().mockResolvedValue('{"kind":"ok","id":"project-1","error":null}'),
     patchProject: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
@@ -43,13 +44,6 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     patchProjectLink: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     route: vi.fn().mockReturnValue('{"kind":"ok","route":null}'),
     patchRoute: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
-    openFog: vi.fn().mockReturnValue('{"kind":"ok","fog":[]}'),
-    createFog: vi.fn().mockResolvedValue('{"kind":"ok","id":"fog-1","error":null}'),
-    patchFog: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
-    projectActions: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
-    patchActionPosition: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
-    createStep: vi.fn().mockResolvedValue('{"kind":"ok","id":"step-1","error":null}'),
-    patchStep: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     isPending: vi.fn().mockReturnValue('{"kind":"ok","pending":false}'),
     takeEvents: vi.fn().mockReturnValue("[]"),
     runSync: vi.fn().mockResolvedValue(
@@ -797,6 +791,22 @@ describe("handleTaskRequest", () => {
       blocked: vi.fn().mockReturnValue('{"kind":"busy","entries":[]}'),
     });
     expect(await run({ type: "getBlocked" }, host)).toEqual([]);
+  });
+
+  it("getExternallyBlocked maps every raw item to its camelCase DTO", async () => {
+    const host = fakeHost({
+      externallyBlocked: vi.fn().mockReturnValue(JSON.stringify({ kind: "ok", items: [rawItem] })),
+    });
+    const posted = await run({ type: "getExternallyBlocked" }, host);
+
+    expect(posted).toEqual([{ type: "externallyBlocked", items: [dtoItem] }]);
+  });
+
+  it('getExternallyBlocked posts nothing when the host answers "busy"', async () => {
+    const host = fakeHost({
+      externallyBlocked: vi.fn().mockReturnValue('{"kind":"busy","items":[]}'),
+    });
+    expect(await run({ type: "getExternallyBlocked" }, host)).toEqual([]);
   });
 
   it("getSteps maps every raw step to its camelCase DTO, alongside the requested item id", async () => {

@@ -123,7 +123,7 @@ export function resolveFallbackPending(
 /** Mirrors the stage `hummingbird_core::decisions::applied_stage` (the same
  * closed action-to-stage vocabulary `hummingbird_core::ItemAction::stage`
  * already states once) resolves for `action` — restated here only for the
- * UI's own optimistic display (`NowScreen.tsx`'s `RealFrontier`).
+ * UI's own optimistic display (`FrontierBoard.tsx`).
  *
  * Why this exists at all: `"block"` and `"cancel"` both move an item out of
  * every query the store can currently re-fetch (`getFrontier`/`getBlocked`

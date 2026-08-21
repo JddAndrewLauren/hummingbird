@@ -8,6 +8,8 @@ import net.twinion.hummingbird.R
 import uniffi.hummingbird_ffi_mobile.MobilePaneAnswerState
 import uniffi.hummingbird_ffi_mobile.MobilePaneBand
 import uniffi.hummingbird_ffi_mobile.MobilePaneFacts
+import uniffi.hummingbird_ffi_mobile.MobileHomeworkFacts
+import uniffi.hummingbird_ffi_mobile.MobileHomeworkResolved
 import uniffi.hummingbird_ffi_mobile.MobilePaneFreshness
 import uniffi.hummingbird_ffi_mobile.MobileProbeBody
 import uniffi.hummingbird_ffi_mobile.MobileProbeExpected
@@ -53,6 +55,7 @@ import uniffi.hummingbird_ffi_mobile.MobileWorkflowResolved
 
 /** The collapsed row's whole sentence for one ranked pane. */
 internal fun paneHeadline(pane: MobileRankedPane, nowMs: Long): String = when (val facts = pane.facts) {
+    is MobilePaneFacts.Homework -> homeworkHeadline(facts.resolved)
     is MobilePaneFacts.Waste -> wasteHeadline(pane, facts.setup, facts.resolved)
     is MobilePaneFacts.Weekend -> weekendHeadline(pane, facts.resolved)
     is MobilePaneFacts.Vacation -> vacationHeadline(pane, facts.resolved)
@@ -68,6 +71,7 @@ internal fun paneHeadline(pane: MobileRankedPane, nowMs: Long): String = when (v
 /** The collapsed row's marks for one ranked pane — unbounded here; the
  * shell applies [MAX_GLYPHS]. */
 internal fun paneGlyphs(pane: MobileRankedPane, nowMs: Long): List<PaneGlyph> = when (val facts = pane.facts) {
+    is MobilePaneFacts.Homework -> homeworkGlyphs(facts.resolved)
     is MobilePaneFacts.Waste -> wasteGlyphs(pane, facts.setup, facts.resolved)
     is MobilePaneFacts.Weekend -> weekendGlyphs(pane, facts.resolved)
     is MobilePaneFacts.Vacation -> emptyList()
@@ -199,6 +203,65 @@ private fun wasteGlyphs(
                 val colours = bin(stream)
                 PaneGlyph.Dot(colours.fill, colours.edge, colours.label)
             }
+    }
+}
+
+// -------------------------------------------------------------- homework
+
+private fun homeworkHeadline(resolved: MobileHomeworkResolved): String = when (resolved) {
+    // The device could not say what day it is here. Never "Not set up":
+    // nobody binds this question (`homework.rs`'s own doc), so there is
+    // nothing to route anyone to.
+    is MobileHomeworkResolved.Gap -> "Can't read this device's time zone"
+    is MobileHomeworkResolved.Facts -> homeworkCollapsedHeadline(resolved.facts)
+}
+
+/** `homeworkHeadline` in `homework.ts`, ported word for word — the forms
+ * are #675's own decision table, and the two clients must read the same
+ * answer in the same words. */
+internal fun homeworkCollapsedHeadline(facts: MobileHomeworkFacts): String {
+    if (facts.winner == null) return "No open homework"
+    // No deadline on it: saying "Homework" and stopping is the honest
+    // version — a fabricated "someday" would invent a date nobody set.
+    val away = facts.daysAway ?: return "Homework"
+    // An if-chain rather than a `when { … else -> }`: `PaneShellStructuralTest`
+    // bans a wildcard arm anywhere in this file, and the ban is worth more
+    // than the two lines this would save.
+    if (away < 0L) return "Homework ${homeworkDays(-away)} overdue"
+    if (away == 0L) return "Homework due today"
+    if (away == 1L) return "Homework due tomorrow"
+    return "Homework due in ${homeworkDays(away)}"
+}
+
+private fun homeworkDays(count: Long): String = if (count == 1L) "1 day" else "$count days"
+
+private fun homeworkGlyphs(resolved: MobileHomeworkResolved): List<PaneGlyph> = when (resolved) {
+    is MobileHomeworkResolved.Gap ->
+        listOf(PaneGlyph.Icon(R.drawable.ic_cloud_fog, "time zone unreadable"))
+    is MobileHomeworkResolved.Facts -> {
+        val facts = resolved.facts
+        if (facts.winner == null) {
+            listOf(PaneGlyph.Icon(R.drawable.ic_circle_check, "nothing open"))
+        } else {
+            buildList {
+                val days = facts.daysAway
+                add(
+                    if (days != null && days <= 0L) {
+                        PaneGlyph.Icon(R.drawable.ic_flag, "due")
+                    } else {
+                        PaneGlyph.Icon(R.drawable.ic_scroll_text, "homework")
+                    },
+                )
+                if (facts.others.isNotEmpty()) {
+                    add(
+                        PaneGlyph.Icon(
+                            R.drawable.ic_list_checks,
+                            "${facts.others.size} more open",
+                        ),
+                    )
+                }
+            }
+        }
     }
 }
 

@@ -2,6 +2,8 @@ package net.twinion.hummingbird.ui.panes
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import uniffi.hummingbird_ffi_mobile.MobileHomeworkFacts
+import uniffi.hummingbird_ffi_mobile.MobileHomeworkItem
 import uniffi.hummingbird_ffi_mobile.MobilePaneBand
 import uniffi.hummingbird_ffi_mobile.MobileProbeBody
 import uniffi.hummingbird_ffi_mobile.MobileProbeExpected
@@ -10,8 +12,9 @@ import uniffi.hummingbird_ffi_mobile.MobileTripPhase
 import uniffi.hummingbird_ffi_mobile.MobileWeekendCounts
 
 // The ported headline words, pinned against their sources: each fixture
-// here is the web renderer's own test vocabulary (`waste.ts`, `kimi.ts`,
-// `uptime.ts`, `weekend.ts`, `vacation.ts`, `race.ts`), and `relativeAge`'s
+// here is the web renderer's own test vocabulary (`homework.ts`,
+// `waste.ts`, `kimi.ts`, `uptime.ts`, `weekend.ts`, `vacation.ts`,
+// `race.ts`), and `relativeAge`'s
 // fixtures are `hummingbird-core::decisions::settings`'s Rust test values
 // verbatim — the wording is per-client by ADR-0025, so the PIN is what
 // stops the two clients' sentences drifting apart silently.
@@ -27,6 +30,40 @@ class PaneAnswersTest {
         assertEquals("23h ago", relativeAge(23 * 60 * 60_000))
         assertEquals("1d ago", relativeAge(24 * 60 * 60_000))
     }
+
+    @Test
+    fun `homework says the deadline in the reader's terms, one form per band`() {
+        // `homework.ts`'s `homeworkHeadline` fixtures verbatim (#675) — the
+        // two clients must read the same answer in the same words.
+        assertEquals("Homework 2 days overdue", homeworkCollapsedHeadline(homework(-2)))
+        assertEquals("Homework 1 day overdue", homeworkCollapsedHeadline(homework(-1)))
+        assertEquals("Homework due today", homeworkCollapsedHeadline(homework(0)))
+        assertEquals("Homework due tomorrow", homeworkCollapsedHeadline(homework(1)))
+        assertEquals("Homework due in 3 days", homeworkCollapsedHeadline(homework(3)))
+        // Open, but with no date on it — never a fabricated "someday".
+        assertEquals("Homework", homeworkCollapsedHeadline(homework(null)))
+    }
+
+    @Test
+    fun `homework reports an empty list as a fact, not as an absence`() {
+        assertEquals(
+            "No open homework",
+            homeworkCollapsedHeadline(
+                MobileHomeworkFacts(winner = null, others = emptyList(), daysAway = null),
+            ),
+        )
+    }
+
+    private fun homework(daysAway: Long?) = MobileHomeworkFacts(
+        winner = MobileHomeworkItem(
+            id = "hw",
+            title = "Prep for Thursday",
+            deadline = null,
+            description = null,
+        ),
+        others = emptyList(),
+        daysAway = daysAway,
+    )
 
     @Test
     fun `waste reads today, tonight, then the weekday — and a holiday names its day even tomorrow`() {

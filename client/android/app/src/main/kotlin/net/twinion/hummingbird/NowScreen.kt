@@ -202,6 +202,7 @@ internal fun selectedPaneIsEmitted(
  * own test); named individually rather than behind a wildcard so a real
  * ninth question still trips this `when`. */
 private fun nowPaneLabel(pane: MobileRankedPane): String = when (pane.standingQuestion) {
+    MobileStandingQuestion.HOMEWORK -> "What's my homework"
     MobileStandingQuestion.WASTE -> "Bin collection"
     MobileStandingQuestion.WEEKEND -> "This weekend"
     MobileStandingQuestion.VACATION -> "Next trip"

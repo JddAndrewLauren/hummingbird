@@ -6,8 +6,8 @@
 // pieces exist.
 import { describe, expect, it, vi } from "vitest";
 import {
+  blockedEntryDTO,
   fireEvent,
-  fogDTO,
   itemDTO,
   ledgerRowDTO,
   projectDTO,
@@ -15,18 +15,39 @@ import {
   render,
   routeDTO,
   screen,
-  stepDTO,
   taskState,
   within,
 } from "../test/component";
 import { ProjectsScreen, type ProjectsScreenProps } from "./ProjectsScreen";
 
 const noop = () => {};
+/** The board's clock. Fixed, so nothing on this screen reads a wall clock. */
+const NOW_MS = Date.parse("2026-03-04T10:00:00Z");
 /** `onPatchProject` returns its minted seed (batch review, projects-dossier
  * #668) — `ArchiveCard` needs it to recognise its own write. Tests that do
  * not care what the seed is (most of this file) pass this default rather
  * than `noop`, which cannot satisfy the `=> string` return type. */
 const noopPatchProject = (): string => "unused-seed";
+
+/** A fresh in-memory `storage` per render, for the board's own view
+ * preferences. Not optional: the screen falls back to the ambient
+ * `localStorage`, so an axis switched in one test would be read by every
+ * later one — `NowScreen.test.tsx`'s `memoryStorage` carries the full
+ * argument, including why this repo's local vitest has no `localStorage` at
+ * all while CI does. */
+function memoryStorage(seed: Record<string, string> = {}) {
+  const entries = { ...seed };
+  return {
+    entries,
+    getItem: (key: string) => entries[key] ?? null,
+    setItem: (key: string, value: string) => {
+      entries[key] = value;
+    },
+    removeItem: (key: string) => {
+      delete entries[key];
+    },
+  };
+}
 
 /** #626 added three more required props (the links card's read/write doors)
  * — every call site here cares only about the
@@ -43,14 +64,12 @@ function renderProjectsScreen(props: Partial<ProjectsScreenProps> & Pick<Project
       onPatchProjectLink={noop}
       onRequestRoute={noop}
       onPatchRoute={noop}
-      onRequestFog={noop}
-      onCreateFog={noop}
-      onPatchFog={noop}
-      onRequestActions={noop}
-      onReorderAction={noop}
-      onRequestActionSteps={noop}
-      onCreateStep={noop}
-      onPatchStep={noop}
+      nowMs={NOW_MS}
+      selectedItemId={null}
+      onOpenItem={noop}
+      onCloseItemDetail={noop}
+      onAct={noop}
+      storage={memoryStorage()}
       {...next}
     />
   );
@@ -196,11 +215,10 @@ describe("ProjectsScreen", () => {
     fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
 
     expect(screen.getByRole("heading", { level: 2, name: "House repairs" })).toBeTruthy();
-    // The unbuilt regions are labelled rather than absent, so an operator
-    // meets a region that is coming, not one that is broken.
     expect(screen.getByText("route · destination")).toBeTruthy();
-    // Fog is a real card now (#628), not the unbuilt-region placeholder.
-    expect(screen.getByText("Reading fog…")).toBeTruthy();
+    // The centre column is the board, so an empty project says so in the
+    // board's own words rather than Now's global "Nothing to start".
+    expect(screen.getByText("Nothing startable in this project")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "All projects" }));
 
@@ -532,14 +550,12 @@ describe("ProjectsScreen", () => {
           onPatchProjectLink={noop}
           onRequestRoute={noop}
           onPatchRoute={noop}
-          onRequestFog={noop}
-          onCreateFog={noop}
-          onPatchFog={noop}
-          onRequestActions={noop}
-          onReorderAction={noop}
-          onRequestActionSteps={noop}
-          onCreateStep={noop}
-          onPatchStep={noop}
+          nowMs={NOW_MS}
+          selectedItemId={null}
+          onOpenItem={noop}
+          onCloseItemDetail={noop}
+          onAct={noop}
+          storage={memoryStorage()}
         />,
       );
 
@@ -691,410 +707,206 @@ describe("ProjectsScreen", () => {
   });
 
   // #628: the fog card.
-  describe("the fog card", () => {
-    function openDossier(
-      overrides: {
-        fogByProject?: ReturnType<typeof taskState>["fogByProject"];
-        lastFogWrite?: ReturnType<typeof taskState>["lastFogWrite"];
-        onRequestFog?: ProjectsScreenProps["onRequestFog"];
-        onCreateFog?: ProjectsScreenProps["onCreateFog"];
-        onPatchFog?: ProjectsScreenProps["onPatchFog"];
-      } = {},
+  // The dossier's centre column: Now's board, filtered to the open project.
+  // These are membership and chrome tests — the board's own behaviour
+  // (optimistic fallback, the capture editor, collapse, facets) is
+  // `NowScreen.test.tsx`'s, over the same component, and is deliberately not
+  // re-asserted here.
+  describe("the project board", () => {
+    const inProject = itemDTO({
+      id: "i-in",
+      seq: 11,
+      title: "Replace the fence panels",
+      projectId: "p-1",
+      context: "@errands",
+    });
+    const otherProject = itemDTO({
+      id: "i-out",
+      seq: 12,
+      title: "Rake the leaves",
+      projectId: "p-2",
+      context: "@garden",
+    });
+    const unassigned = itemDTO({
+      id: "i-none",
+      seq: 13,
+      title: "Book the dentist",
+      projectId: null,
+      context: "@phone",
+    });
+
+    function openBoard(
+      task: ReturnType<typeof taskState>,
+      overrides: Partial<ProjectsScreenProps> = {},
     ) {
-      const task = taskState({
-        projects: [projectDTO({ id: "p-1", name: "House repairs" })],
-        ledger: [],
-        fogByProject: overrides.fogByProject ?? {},
-        lastFogWrite: overrides.lastFogWrite ?? null,
-      });
-      renderProjectsScreen({
-        task,
-        onRequestFog: overrides.onRequestFog ?? noop,
-        onCreateFog: overrides.onCreateFog ?? noop,
-        onPatchFog: overrides.onPatchFog ?? noop,
-      });
+      const rendered = renderProjectsScreen({ task, ...overrides });
       fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
-      return task;
+      return rendered;
     }
 
-    it("requests this project's open fog the moment the dossier opens", () => {
-      const onRequestFog = vi.fn();
-      openDossier({ onRequestFog });
+    function twoProjects(overrides: Partial<ReturnType<typeof taskState>> = {}) {
+      return taskState({
+        projects: [
+          projectDTO({ id: "p-1", name: "House repairs" }),
+          projectDTO({ id: "p-2", name: "Autumn garden clear-up" }),
+        ],
+        ledger: [],
+        ...overrides,
+      });
+    }
 
-      expect(onRequestFog).toHaveBeenCalledWith("p-1");
+    it("shows this project's frontier items and no other project's", () => {
+      openBoard(twoProjects({ frontier: [inProject, otherProject, unassigned] }));
+
+      expect(screen.getByText("Replace the fence panels")).toBeTruthy();
+      expect(screen.queryByText("Rake the leaves")).toBeNull();
+      // Membership is `projectId` equality, so an item carrying no project
+      // is not in this one either — "unassigned" is not "everywhere".
+      expect(screen.queryByText("Book the dentist")).toBeNull();
     });
 
-    it("holds rather than claiming 'no open fog' while the read has not answered", () => {
-      openDossier();
+    it("includes an action assigned to the project but never positioned", () => {
+      // The whole reason `project_pos` is not part of the predicate: the
+      // action list this board replaced required it, so an item assigned by
+      // triage and never dragged into order was invisible on this screen.
+      openBoard(
+        twoProjects({
+          frontier: [itemDTO({ ...inProject, projectPos: null })],
+        }),
+      );
 
-      expect(screen.getByText("Reading fog…")).toBeTruthy();
-      expect(screen.queryByText("No open fog on this Route.")).toBeNull();
+      expect(screen.getByText("Replace the fence panels")).toBeTruthy();
     });
 
-    it("renders the empty state only for a real, empty answer", () => {
-      openDossier({ fogByProject: { "p-1": [] } });
-
-      expect(screen.getByText("No open fog on this Route.")).toBeTruthy();
-    });
-
-    it("renders every open segment, position-ordered", () => {
-      openDossier({
-        fogByProject: {
-          "p-1": [
-            fogDTO({ id: "f-2", question: "Second question", position: 2 }),
-            fogDTO({ id: "f-1", question: "First question", position: 1 }),
+    it("shows the project's own captures, and not another project's", () => {
+      openBoard(
+        twoProjects({
+          triageInbox: [
+            itemDTO({
+              id: "c-in",
+              seq: 21,
+              title: "Sweeper: gutter quote",
+              stage: "triage",
+              projectId: "p-1",
+            }),
+            itemDTO({
+              id: "c-out",
+              seq: 22,
+              title: "Sweeper: bulb order",
+              stage: "triage",
+              projectId: "p-2",
+            }),
           ],
-        },
+          grillingItems: [
+            itemDTO({
+              id: "g-in",
+              seq: 23,
+              title: "Still foggy: the deck permit",
+              stage: "grilling",
+              projectId: "p-1",
+            }),
+          ],
+        }),
+      );
+
+      expect(screen.getByText("Sweeper: gutter quote")).toBeTruthy();
+      expect(screen.getByText("Still foggy: the deck permit")).toBeTruthy();
+      expect(screen.queryByText("Sweeper: bulb order")).toBeNull();
+    });
+
+    it("filters the Blocked section to this project", () => {
+      openBoard(
+        twoProjects({
+          blocked: [
+            blockedEntryDTO(
+              itemDTO({ id: "b-in", seq: 31, title: "Fit the new gate", projectId: "p-1" }),
+              [itemDTO({ id: "b-dep", seq: 32, title: "Await the survey" })],
+            ),
+            blockedEntryDTO(
+              itemDTO({ id: "b-out", seq: 33, title: "Turn the compost", projectId: "p-2" }),
+              [itemDTO({ id: "b-dep2", seq: 34, title: "Await the delivery" })],
+            ),
+          ],
+        }),
+      );
+
+      expect(screen.getByText("Fit the new gate")).toBeTruthy();
+      expect(screen.queryByText("Turn the compost")).toBeNull();
+      // The section's own count is the filtered one, not the store's.
+      expect(screen.getByText("1 action")).toBeTruthy();
+    });
+
+    it("offers every axis but Project, which would be one column here", () => {
+      openBoard(twoProjects({ frontier: [inProject] }));
+
+      expect(screen.getByRole("button", { name: "Context", pressed: true })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Size" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Energy" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Project" })).toBeNull();
+    });
+
+    it("writes the axis under this screen's own keys, never Now's", () => {
+      const storage = memoryStorage();
+      openBoard(twoProjects({ frontier: [inProject] }), { storage });
+
+      fireEvent.click(screen.getByRole("button", { name: "Size" }));
+
+      expect(storage.entries["hb.projects.frontier-axis"]).toBe("size");
+      expect("hb.now.frontier-axis" in storage.entries).toBe(false);
+    });
+
+    it("expands a selected in-project item above the columns", () => {
+      const onCloseItemDetail = vi.fn();
+      openBoard(twoProjects({ frontier: [inProject, otherProject] }), {
+        selectedItemId: "i-in",
+        onCloseItemDetail,
       });
 
-      const list = screen.getByRole("list");
-      const questions = list.querySelectorAll("li > span");
-      expect(Array.from(questions).map((el) => el.textContent)).toEqual(["First question", "Second question"]);
+      // The panel, not merely the card: its Close control is what only the
+      // expanded slot renders.
+      fireEvent.click(screen.getByRole("button", { name: "Close item detail" }));
+      expect(onCloseItemDetail).toHaveBeenCalled();
     });
 
-    it("sends the trimmed question and next position to onCreateFog", () => {
-      const onCreateFog = vi.fn();
-      openDossier({
-        fogByProject: { "p-1": [fogDTO({ id: "f-1", position: 1 })] },
-        onCreateFog,
+    it("renders no slot for a selection outside this project", () => {
+      // Selection is app-global and deliberately not cleared on navigation:
+      // an item selected on Now simply is not found here.
+      openBoard(twoProjects({ frontier: [inProject, otherProject] }), {
+        selectedItemId: "i-out",
       });
 
-      fireEvent.change(screen.getByLabelText("Open question"), {
-        target: { value: "  What permit does this need?  " },
-      });
-      fireEvent.click(screen.getByRole("button", { name: "Add fog" }));
-
-      expect(onCreateFog).toHaveBeenCalledWith("p-1", "What permit does this need?", 2);
+      expect(screen.queryByRole("button", { name: "Close item detail" })).toBeNull();
+      expect(screen.getByText("Replace the fence panels")).toBeTruthy();
     });
 
-    it("refuses to add before the read has answered, so no position is minted blind", () => {
-      openDossier();
+    it("offers no Grill me on this surface", () => {
+      // No `grill` prop is threaded here (`App.tsx`), so the takeover is
+      // unreachable from a project rather than merely unused.
+      openBoard(twoProjects({ frontier: [inProject] }), { selectedItemId: "i-in" });
 
-      fireEvent.change(screen.getByLabelText("Open question"), { target: { value: "Anything?" } });
-
-      expect(screen.getByRole("button", { name: "Add fog" }).hasAttribute("disabled")).toBe(true);
+      expect(screen.queryByRole("button", { name: /Grill me|Resume grill/ })).toBeNull();
     });
 
-    it("refuses a blank question", () => {
-      openDossier({ fogByProject: { "p-1": [] } });
+    it("keeps the aside's four record cards, and neither deleted card", () => {
+      openBoard(twoProjects({ frontier: [inProject] }));
 
-      expect(screen.getByRole("button", { name: "Add fog" }).hasAttribute("disabled")).toBe(true);
-    });
-
-    it("rewords a segment in place and sends only the question to onPatchFog", () => {
-      const onPatchFog = vi.fn();
-      const segment = fogDTO({ id: "f-1", question: "Old question" });
-      openDossier({ fogByProject: { "p-1": [segment] }, onPatchFog });
-
-      fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-      // The edit row renders before the card's own add-fog form, so its
-      // "Open question" input is the first of the two.
-      const questionInputs = screen.getAllByLabelText("Open question");
-      fireEvent.change(questionInputs[0], { target: { value: "New question" } });
-      // Unlike the links card (in the Aside, after the properties card's own
-      // "Save"), the fog card sits in the reading column, *before* the
-      // properties card — so its edit row's "Save" is the first one on
-      // screen here, not the last (the Route card renders none: `route` is
-      // unset in this dossier, so it shows "Reading Route…" with no form
-      // button at all).
-      const saveButtons = screen.getAllByRole("button", { name: "Save" });
-      fireEvent.click(saveButtons[0]);
-
-      expect(onPatchFog).toHaveBeenCalledWith(segment, { question: "New question" });
-    });
-
-    it("swaps the positions of the two adjacent rows on a move gesture", () => {
-      const onPatchFog = vi.fn();
-      const first = fogDTO({ id: "f-1", position: 1 });
-      const second = fogDTO({ id: "f-2", position: 2 });
-      openDossier({ fogByProject: { "p-1": [first, second] }, onPatchFog });
-
-      fireEvent.click(screen.getAllByRole("button", { name: "Move down" })[0]);
-
-      expect(onPatchFog).toHaveBeenCalledWith(first, { position: 2 });
-      expect(onPatchFog).toHaveBeenCalledWith(second, { position: 1 });
-    });
-
-    it("resolves a segment with a timestamp rather than deleting it from the store", () => {
-      const onPatchFog = vi.fn();
-      const segment = fogDTO({ id: "f-1" });
-      openDossier({ fogByProject: { "p-1": [segment] }, onPatchFog });
-
-      fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
-
-      expect(onPatchFog).toHaveBeenCalledWith(segment, { resolvedAt: expect.any(Number) });
-    });
-
-    it("renders a failed fog write's own message, scoped to this project", () => {
-      openDossier({
-        fogByProject: { "p-1": [] },
-        lastFogWrite: { seed: "s-1", projectId: "p-1", kind: "failed", error: "question must be non-empty" },
-      });
-
-      expect(screen.getByText("question must be non-empty")).toBeTruthy();
-    });
-
-    it("does not paint another project's failed fog write into this dossier", () => {
-      openDossier({
-        fogByProject: { "p-1": [] },
-        lastFogWrite: { seed: "s-1", projectId: "p-2", kind: "failed", error: "no can do" },
-      });
-
-      expect(screen.queryByText("no can do")).toBeNull();
+      const aside = screen.getByRole("complementary", { name: "Project properties" });
+      expect(within(aside).getByLabelText("GitHub repo")).toBeTruthy();
+      // In this order — Route on top, because it is the card a reader
+      // consults while looking at the board beside it. Read off the DOM
+      // rather than asserted card by card, so a re-ordering is a failure
+      // and not four still-passing existence checks.
+      expect(
+        within(aside)
+          .getAllByText(/^(route · destination|properties|links|archive)$/)
+          .map((node) => node.textContent),
+      ).toEqual(["route · destination", "properties", "links", "archive"]);
+      // Both deleted cards, gone rather than merely unwired.
+      expect(screen.queryByText(/fog/i)).toBeNull();
+      expect(screen.queryByText("actions")).toBeNull();
     });
   });
 
-  // #629: the action list, and each action's inline steps.
-  describe("the action list", () => {
-    function openDossier(
-      overrides: {
-        actionsByProject?: ReturnType<typeof taskState>["actionsByProject"];
-        lastActionReorder?: ReturnType<typeof taskState>["lastActionReorder"];
-        stepsByItem?: ReturnType<typeof taskState>["stepsByItem"];
-        lastStepWrite?: ReturnType<typeof taskState>["lastStepWrite"];
-        onRequestActions?: ProjectsScreenProps["onRequestActions"];
-        onReorderAction?: ProjectsScreenProps["onReorderAction"];
-        onRequestActionSteps?: ProjectsScreenProps["onRequestActionSteps"];
-        onCreateStep?: ProjectsScreenProps["onCreateStep"];
-        onPatchStep?: ProjectsScreenProps["onPatchStep"];
-      } = {},
-    ) {
-      const task = taskState({
-        projects: [projectDTO({ id: "p-1", name: "House repairs" })],
-        ledger: [],
-        actionsByProject: overrides.actionsByProject ?? {},
-        lastActionReorder: overrides.lastActionReorder ?? null,
-        stepsByItem: overrides.stepsByItem ?? {},
-        lastStepWrite: overrides.lastStepWrite ?? null,
-      });
-      renderProjectsScreen({
-        task,
-        onRequestActions: overrides.onRequestActions ?? noop,
-        onReorderAction: overrides.onReorderAction ?? noop,
-        onRequestActionSteps: overrides.onRequestActionSteps ?? noop,
-        onCreateStep: overrides.onCreateStep ?? noop,
-        onPatchStep: overrides.onPatchStep ?? noop,
-      });
-      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
-      return task;
-    }
-
-    it("requests this project's actions the moment the dossier opens", () => {
-      const onRequestActions = vi.fn();
-      openDossier({ onRequestActions });
-
-      expect(onRequestActions).toHaveBeenCalledWith("p-1");
-    });
-
-    it("holds rather than claiming 'no actions' while the read has not answered", () => {
-      openDossier();
-
-      expect(screen.getByText("Reading actions…")).toBeTruthy();
-      expect(screen.queryByText("No actions on this Route yet.")).toBeNull();
-    });
-
-    it("renders the empty state only for a real, empty answer — a project with no actions", () => {
-      openDossier({ actionsByProject: { "p-1": [] } });
-
-      expect(screen.getByText("No actions on this Route yet.")).toBeTruthy();
-    });
-
-    it("renders every action, project-position ordered", () => {
-      openDossier({
-        actionsByProject: {
-          "p-1": [
-            itemDTO({ id: "a-2", title: "Second action", projectPos: 2 }),
-            itemDTO({ id: "a-1", title: "First action", projectPos: 1 }),
-          ],
-        },
-      });
-
-      const buttons = screen.getAllByRole("button", { name: /action$/ });
-      expect(buttons.map((el) => el.textContent)).toEqual(["First action", "Second action"]);
-    });
-
-    it("swaps the positions of the two adjacent rows on a move gesture, and stops at the ends", () => {
-      const onReorderAction = vi.fn();
-      const first = itemDTO({ id: "a-1", title: "First action", projectPos: 1 });
-      const second = itemDTO({ id: "a-2", title: "Second action", projectPos: 2 });
-      openDossier({ actionsByProject: { "p-1": [first, second] }, onReorderAction });
-
-      const moveUpButtons = screen.getAllByRole("button", { name: "Move up" });
-      const moveDownButtons = screen.getAllByRole("button", { name: "Move down" });
-      // The first row cannot move up; the last cannot move down.
-      expect(moveUpButtons[0].hasAttribute("disabled")).toBe(true);
-      expect(moveDownButtons[1].hasAttribute("disabled")).toBe(true);
-
-      fireEvent.click(moveDownButtons[0]);
-
-      expect(onReorderAction).toHaveBeenCalledWith("p-1", first, 2);
-      expect(onReorderAction).toHaveBeenCalledWith("p-1", second, 1);
-    });
-
-    it("renders a failed reorder's own message, scoped to this project", () => {
-      openDossier({
-        actionsByProject: { "p-1": [itemDTO({ id: "a-1" })] },
-        lastActionReorder: {
-          seed: "s-1",
-          projectId: "p-1",
-          itemId: "a-1",
-          kind: "failed",
-          error: "version conflict",
-        },
-      });
-
-      expect(screen.getByText("version conflict")).toBeTruthy();
-    });
-
-    it("does not paint another project's failed reorder into this dossier", () => {
-      openDossier({
-        actionsByProject: { "p-1": [itemDTO({ id: "a-1" })] },
-        lastActionReorder: {
-          seed: "s-1",
-          projectId: "p-2",
-          itemId: "a-9",
-          kind: "failed",
-          error: "no can do",
-        },
-      });
-
-      expect(screen.queryByText("no can do")).toBeNull();
-    });
-
-    it("expands an action's checklist inline beneath its row on selection", () => {
-      openDossier({
-        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
-        stepsByItem: { "a-1": [stepDTO({ id: "s-1", itemId: "a-1", body: "put on music" })] },
-      });
-
-      expect(screen.queryByText("put on music")).toBeNull();
-
-      fireEvent.click(screen.getByRole("button", { name: "An action" }));
-
-      expect(screen.getByText("put on music")).toBeTruthy();
-    });
-
-    it("requests the expanded action's steps the moment it is selected", () => {
-      const onRequestActionSteps = vi.fn();
-      openDossier({
-        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
-        onRequestActionSteps,
-      });
-
-      fireEvent.click(screen.getByRole("button", { name: "An action" }));
-
-      expect(onRequestActionSteps).toHaveBeenCalledWith("a-1");
-    });
-
-    it("holds rather than claiming 'no steps' while the checklist read has not answered", () => {
-      openDossier({ actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] } });
-      fireEvent.click(screen.getByRole("button", { name: "An action" }));
-
-      expect(screen.getByText("Reading steps…")).toBeTruthy();
-    });
-
-    it("renders the empty state only for a real, empty answer — an action with no steps", () => {
-      openDossier({
-        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
-        stepsByItem: { "a-1": [] },
-      });
-      fireEvent.click(screen.getByRole("button", { name: "An action" }));
-
-      expect(screen.getByText("No steps on this action yet.")).toBeTruthy();
-    });
-
-    it("ticks a step by sending only done to onPatchStep", () => {
-      const onPatchStep = vi.fn();
-      const step = stepDTO({ id: "s-1", itemId: "a-1", body: "put on music", done: false });
-      openDossier({
-        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
-        stepsByItem: { "a-1": [step] },
-        onPatchStep,
-      });
-      fireEvent.click(screen.getByRole("button", { name: "An action" }));
-
-      fireEvent.click(screen.getByRole("checkbox"));
-
-      expect(onPatchStep).toHaveBeenCalledWith(step, { done: true });
-    });
-
-    it("sends the trimmed body and next position to onCreateStep", () => {
-      const onCreateStep = vi.fn();
-      openDossier({
-        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
-        stepsByItem: { "a-1": [stepDTO({ id: "s-1", itemId: "a-1", position: 1 })] },
-        onCreateStep,
-      });
-      fireEvent.click(screen.getByRole("button", { name: "An action" }));
-
-      fireEvent.change(screen.getByLabelText("New step"), {
-        target: { value: "  buy a washer  " },
-      });
-      fireEvent.click(screen.getByRole("button", { name: "Add step" }));
-
-      expect(onCreateStep).toHaveBeenCalledWith("a-1", "buy a washer", 2);
-    });
-
-    it("rewords a step in place and sends only the body to onPatchStep", () => {
-      const onPatchStep = vi.fn();
-      const step = stepDTO({ id: "s-1", itemId: "a-1", body: "Old body" });
-      openDossier({
-        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
-        stepsByItem: { "a-1": [step] },
-        onPatchStep,
-      });
-      fireEvent.click(screen.getByRole("button", { name: "An action" }));
-
-      fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-      fireEvent.change(screen.getByLabelText("Step"), { target: { value: "New body" } });
-      // The action list sits in the reading Column, before the aside's own
-      // properties card — whose "Save" is always on screen too (disabled
-      // when its own fields are untouched) — so this row's "Save" is the
-      // first of the two, same disambiguation `FogCard`'s own reword test
-      // uses.
-      fireEvent.click(screen.getAllByRole("button", { name: "Save" })[0]);
-
-      expect(onPatchStep).toHaveBeenCalledWith(step, { body: "New body" });
-    });
-
-    it("swaps the positions of two adjacent steps on a move gesture", () => {
-      const onPatchStep = vi.fn();
-      const first = stepDTO({ id: "s-1", itemId: "a-1", body: "First step", position: 1 });
-      const second = stepDTO({ id: "s-2", itemId: "a-1", body: "Second step", position: 2 });
-      openDossier({
-        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
-        stepsByItem: { "a-1": [first, second] },
-        onPatchStep,
-      });
-      fireEvent.click(screen.getByRole("button", { name: "An action" }));
-
-      // Two "Move down" controls exist once expanded: the action row's own
-      // (disabled — this dossier has only the one action) and the first
-      // step's. `within` the steps list scopes past the action row's.
-      const stepsList = screen.getAllByRole("list")[1];
-      fireEvent.click(within(stepsList).getAllByRole("button", { name: "Move down" })[0]);
-
-      expect(onPatchStep).toHaveBeenCalledWith(first, { position: 2 });
-      expect(onPatchStep).toHaveBeenCalledWith(second, { position: 1 });
-    });
-
-    it("flags a step's deletion with a timestamp rather than erasing it (ADR-0020)", () => {
-      const onPatchStep = vi.fn();
-      const step = stepDTO({ id: "s-1", itemId: "a-1", body: "put on music" });
-      openDossier({
-        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
-        stepsByItem: { "a-1": [step] },
-        onPatchStep,
-      });
-      fireEvent.click(screen.getByRole("button", { name: "An action" }));
-
-      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-
-      expect(onPatchStep).toHaveBeenCalledWith(step, { deletedAt: expect.any(Number) });
-    });
-  });
-
-  // #627: the Route card.
   describe("the route card", () => {
     function openDossier(
       overrides: {

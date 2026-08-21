@@ -654,6 +654,18 @@ mod wasm_bindings {
             }
         }
 
+        /// Items on an external wait (`Stage::Blocked`), as JSON: same
+        /// shape as [`TaskHost::frontier`]. Pane inputs only — no screen
+        /// lists these (#675).
+        #[wasm_bindgen(js_name = externallyBlocked)]
+        pub fn externally_blocked(&self) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => serde_json::to_string(&host.externally_blocked())
+                    .expect("ItemListResponse serializes"),
+                None => BUSY_ITEM_LIST.to_string(),
+            }
+        }
+
         /// Relation-blocked items with the reason visible, as JSON:
         /// `{"kind": "ok"|"busy", "entries": [{"item": Item & {"pending": bool}, "blocked_by": [Item & {"pending": bool}]}]}`.
         pub fn blocked(&self) -> String {
@@ -955,6 +967,13 @@ mod wasm_bindings {
         /// "ok"|"busy", "fog": [Fog]}` — the dossier reading column's read
         /// (#628, ADR-0030 decision 1). A resolved row is retained but
         /// never appears here ([`Core::open_fog_for`]'s own doc).
+        ///
+        /// **No web caller since 2026-08-21**: the project dossier's centre
+        /// column became the frontier board, and the fog card, ordered
+        /// action list and inline Steps checklist that called into here went
+        /// with it (ADR-0030's Consequences amendment). The seam is kept —
+        /// the records are still shared-owned and still written by
+        /// `/to-actions` — but nothing in `client/web` reaches it today.
         #[wasm_bindgen(js_name = openFog)]
         pub fn open_fog(&self, project_id: String) -> String {
             match self.inner.host.borrow().as_ref() {
@@ -971,6 +990,13 @@ mod wasm_bindings {
         /// is reached ([`TaskHostCore::create_fog`]). `"ok"` means
         /// *enqueued*, not *saved* — no optimistic overlay, so `openFog()`
         /// keeps answering the old list until a cycle completes.
+        ///
+        /// **No web caller since 2026-08-21**: the project dossier's centre
+        /// column became the frontier board, and the fog card, ordered
+        /// action list and inline Steps checklist that called into here went
+        /// with it (ADR-0030's Consequences amendment). The seam is kept —
+        /// the records are still shared-owned and still written by
+        /// `/to-actions` — but nothing in `client/web` reaches it today.
         #[wasm_bindgen(js_name = createFog)]
         pub fn create_fog(
             &self,
@@ -1008,6 +1034,13 @@ mod wasm_bindings {
         /// [`hummingbird_domain::FogPatch`] itself carries, flattened for
         /// the wasm boundary exactly like [`TaskHost::patchProjectLink`]'s
         /// `removed_at_touched`.
+        ///
+        /// **No web caller since 2026-08-21**: the project dossier's centre
+        /// column became the frontier board, and the fog card, ordered
+        /// action list and inline Steps checklist that called into here went
+        /// with it (ADR-0030's Consequences amendment). The seam is kept —
+        /// the records are still shared-owned and still written by
+        /// `/to-actions` — but nothing in `client/web` reaches it today.
         #[wasm_bindgen(js_name = patchFog)]
         #[allow(clippy::too_many_arguments)]
         pub fn patch_fog(
@@ -1055,6 +1088,13 @@ mod wasm_bindings {
         /// "items": [Item & {"pending": bool}]}` — the dossier's ordered
         /// action list (#629). Same shape as [`TaskHost::frontier`]: an
         /// Action is an ordinary item, so it carries the same pending flag.
+        ///
+        /// **No web caller since 2026-08-21**: the project dossier's centre
+        /// column became the frontier board, and the fog card, ordered
+        /// action list and inline Steps checklist that called into here went
+        /// with it (ADR-0030's Consequences amendment). The seam is kept —
+        /// the records are still shared-owned and still written by
+        /// `/to-actions` — but nothing in `client/web` reaches it today.
         #[wasm_bindgen(js_name = projectActions)]
         pub fn project_actions(&self, project_id: String) -> String {
             match self.inner.host.borrow().as_ref() {
@@ -1073,6 +1113,13 @@ mod wasm_bindings {
         /// (ADR-0030 decision 1: `project_pos` is shared-owned with
         /// `/to-actions`), handled by the same rebase-and-retry machinery
         /// and dead-letter journal every other CAS write here uses.
+        ///
+        /// **No web caller since 2026-08-21**: the project dossier's centre
+        /// column became the frontier board, and the fog card, ordered
+        /// action list and inline Steps checklist that called into here went
+        /// with it (ADR-0030's Consequences amendment). The seam is kept —
+        /// the records are still shared-owned and still written by
+        /// `/to-actions` — but nothing in `client/web` reaches it today.
         #[wasm_bindgen(js_name = patchActionPosition)]
         pub fn patch_action_position(
             &self,
@@ -1111,6 +1158,13 @@ mod wasm_bindings {
         /// ([`TaskHostCore::create_step`]). `"ok"` means *enqueued*, not
         /// *saved* — no optimistic overlay, so `steps()` keeps answering
         /// the old checklist until a cycle completes.
+        ///
+        /// **No web caller since 2026-08-21**: the project dossier's centre
+        /// column became the frontier board, and the fog card, ordered
+        /// action list and inline Steps checklist that called into here went
+        /// with it (ADR-0030's Consequences amendment). The seam is kept —
+        /// the records are still shared-owned and still written by
+        /// `/to-actions` — but nothing in `client/web` reaches it today.
         #[wasm_bindgen(js_name = createStep)]
         pub fn create_step(
             &self,
@@ -1145,6 +1199,13 @@ mod wasm_bindings {
         /// same double-`Option` [`hummingbird_domain::StepPatch::deleted_at`]
         /// itself carries, flattened for the wasm boundary exactly like
         /// [`TaskHost::patchFog`]'s `resolved_at_touched`.
+        ///
+        /// **No web caller since 2026-08-21**: the project dossier's centre
+        /// column became the frontier board, and the fog card, ordered
+        /// action list and inline Steps checklist that called into here went
+        /// with it (ADR-0030's Consequences amendment). The seam is kept —
+        /// the records are still shared-owned and still written by
+        /// `/to-actions` — but nothing in `client/web` reaches it today.
         #[wasm_bindgen(js_name = patchStep)]
         #[allow(clippy::too_many_arguments)]
         pub fn patch_step(

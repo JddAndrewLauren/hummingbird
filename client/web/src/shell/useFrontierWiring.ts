@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import type { CoreStatus } from "../store/store";
 import {
   requestBlocked,
+  requestExternallyBlocked,
   requestFrontier,
   requestGrillingItems,
   requestProjects,
@@ -38,6 +39,11 @@ export function useFrontierWiring(
     // half, sourced from the mirror the same as the frontier — same
     // "refresh once ready, then per-cycle" shape.
     requestGrillingItems(worker);
+    // #675: items on an external wait, for the standing questions' inputs
+    // rather than for any list this screen draws — same "refresh once
+    // ready, then per-cycle" shape, since a sync cycle is exactly when an
+    // item can have been blocked or unblocked on another device.
+    requestExternallyBlocked(worker);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, syncOutcomeSeq]);
 }

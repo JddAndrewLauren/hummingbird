@@ -10,7 +10,10 @@ withdrawn. Inherits [ADR-0020](0020-no-delete-rows-are-flagged-not-erased.md)
 for the new table's flagged deletes and
 [ADR-0008](0008-the-authority-is-an-app-owned-server.md)'s CAS discipline
 for the ownership change. Nothing here touches ranking, the frontier, or
-[ADR-0021](0021-the-frontier-in-columns.md)'s axes.
+[ADR-0021](0021-the-frontier-in-columns.md)'s axes. *(That last clause held
+for this ADR's own slices and no longer describes the surface: the dossier's
+centre column is now that frontier board, minus the degenerate Project axis
+— see the Consequences amendment below, and ADR-0021's decision 1.)*
 
 ## The problem
 
@@ -142,3 +145,19 @@ writer on rows a skill has been treating as its own.
   newly created project appears on the next completed sync cycle, which is
   why creating a project inline from triage round-trips before the picker
   updates.
+
+*Amended 2026-08-21: **the web client withdrew two of its readers.** The
+dossier's centre column became [ADR-0021](0021-the-frontier-in-columns.md)'s
+frontier board filtered to the open project (see that ADR's own amendment to
+its decision 1), replacing the ordered action list and the fog card the
+#628/#629 slices put there. Nothing in this ADR is reversed: fog and
+`project_pos` remain shared-owned, versioned and client-writable at the
+authority, `/to-actions` still writes both, `Core`'s `open_fog_for`/
+`create_fog`/`patch_fog`/`actions_for`/`patch_action_position` and the step
+writes are untouched for the other clients — what went is the web's fog and
+action-list *rendering*, and with it that surface's own reads. The project
+lane's client write door on the web is now the aside's four record cards:
+Route, properties, links, archive. Membership on the new centre column is
+`project_id` **alone**, which is a widening, not a narrowing: the list it
+replaced required `project_pos`, so an action assigned to a project and never
+positioned was invisible on the very page that was supposed to hold it.*

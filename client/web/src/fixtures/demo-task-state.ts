@@ -12,7 +12,8 @@
 // before either was an axis.
 //
 // *Amended 2026-08-20 (#456): `NowScreen` deleted its `demo` prop and the
-// branch above with it — it renders `RealFrontier` unconditionally now, on
+// branch above with it — it renders the board (`FrontierBoard.tsx`, which
+// that component was later extracted into) unconditionally now, on
 // every world. The board world above is unaffected: it is still what this
 // module seeds and still the only populated render of Now's centre column
 // the visual gate photographs.*
@@ -21,8 +22,10 @@
 // invented. What *is* taken from production is the SHAPE — measured once from
 // `GET /api/changes?since=0` on 2026-08-13, when the authority held 37 items:
 //
-//   board cards      29  (12 frontier + 17 captured) — before departure 3 below
-//                        adds one fictional Grilling item, never measured
+//   board cards      29  (12 frontier + 17 captured) — before departure 3
+//                        below adds one fictional Grilling item and
+//                        departure 5 two fictional `@homework` ones, none of
+//                        them ever measured
 //   by context       no context 12 · @computer 8 · @errands 4 · @phone 3 · @home 2
 //   by size          no size 13 · deep 8 · quick 4 · normal 4
 //   by energy        no energy 17 · high 5 · medium 4 · low 3
@@ -41,7 +44,7 @@
 // here, for the same faithfulness reason; departure 4 ended that — see it for
 // why the Projects grid outranked the axis.)
 //
-// Four deliberate departures, all so the gate keeps covering states production
+// Five deliberate departures, all so the gate keeps covering states production
 // happens not to be in today:
 //
 //   1. Production holds ONE deadline, so a faithful mirror would paint every
@@ -75,6 +78,17 @@
 //      one, not the single column production would give. That trade was
 //      taken deliberately — an unphotographed screen is a worse gap than an
 //      over-populated axis.
+//   5. Production holds no `@homework` item, so the homework standing
+//      question (#675) — the first pane keyed on the operator's OWN items
+//      rather than an outside source — would photograph as its dormant "No
+//      open homework" empty state everywhere and its real body would never
+//      be seen. Two items are seeded: one carrying a deadline and the
+//      preparation notes the pane exists to surface, one carrying neither,
+//      so the winner, its notes, the "1 more open" line and the list beneath
+//      it all render. The cost is one context column production does not
+//      have (`@homework`, 2 cards) — the smallest column on the board, and
+//      the axis finding above (biggest column is the no-value one, two
+//      columns over `COLUMN_CAP`) is untouched by it.
 //
 // **#452 grows this seed to the whole of `TaskState`, not just the frontier
 // and the inbox**, so every screen that reads the store — not only Now —
@@ -104,7 +118,7 @@
 //      this fixture builds, not a subset of them — plus `ARCHIVED_ONLY_SEEDS`
 //      standing in for the six archived rows the count above found — again
 //      the shape at a smaller n (three), not the real six. That is
-//      12 + 17 + 1 + 6 + 3 = 39 Ledger rows in total. One live row carries
+//      14 + 17 + 1 + 6 + 3 = 41 Ledger rows in total. One live row carries
 //      `deadLettered: true` and one carries `hasLiveAlert: true`
 //      (`DEAD_LETTERED_ITEM_ID`/`LIVE_ALERT_ITEM_ID`), so both of the
 //      Ledger's badges render.
@@ -140,7 +154,7 @@
 // test, and it runs in CI after the build.
 
 import { TRIPS_CALENDAR_BINDING_KEY } from "../calendar/selection";
-import type { BindingDTO, FogDTO, LedgerRowDTO, ProjectDTO, RecallRowDTO, TaskItemDTO } from "../store/protocol";
+import type { BindingDTO, LedgerRowDTO, ProjectDTO, RecallRowDTO, TaskItemDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
 import { DEMO_DATA } from "./demo-data";
 import {
@@ -263,8 +277,17 @@ function project(seed: (typeof PROJECT_SEEDS)[number], loadedAt: number): Projec
   };
 }
 
-/** The startable twelve. Contexts here plus the captures' below sum to
- * production's own spread exactly — see the header's table. */
+/** The startable fourteen — production's measured twelve, plus departure 5's
+ * two `@homework` items. Contexts here plus the captures' below sum to
+ * production's own spread exactly on every value production actually held;
+ * `@homework` is the one column this fixture adds. See the header's table.
+ *
+ * Three of them carry "House repairs" (`b-p1`), and one "Autumn garden
+ * clear-up" (`b-p2`): the project dossier's centre column is this same
+ * frontier filtered to the open project, so a project with one card would
+ * photograph a board too thin to read the columns off. Changing a
+ * `projectId` here therefore moves what BOTH the `project` axis on Now and
+ * the dossier's own board show. */
 const FRONTIER_SEEDS: Seed[] = [
   {
     id: "b-f1",
@@ -300,6 +323,7 @@ const FRONTIER_SEEDS: Seed[] = [
   },
   {
     id: "b-f4",
+    projectId: "b-p1",
     title: "Draft the loft insulation quote request",
     stage: "ready",
     agoMs: 2 * DAY,
@@ -341,6 +365,7 @@ const FRONTIER_SEEDS: Seed[] = [
   },
   {
     id: "b-f8",
+    projectId: "b-p1",
     title: "Clear the gutters before the storms",
     stage: "ready",
     agoMs: 8 * DAY,
@@ -381,6 +406,28 @@ const FRONTIER_SEEDS: Seed[] = [
     size: "normal",
     energy: "medium",
     description: "Started before the holiday and abandoned about a third of the way down.",
+  },
+  // Departure 5: the homework pane's two items. Five days out on purpose —
+  // any deadline inside three days would add a FOURTH non-calm urgency band
+  // to the board and break departure 1's own "one item per band" assertion,
+  // and this pane's tighter bands are covered by its unit suites on both
+  // clients rather than here.
+  {
+    id: "b-f13",
+    title: "Prep for Thursday's session",
+    stage: "ready",
+    agoMs: 2 * DAY,
+    context: "@homework",
+    deadlineInMs: 5 * DAY,
+    description:
+      "Read chapter 4 and the two handouts. Bring the printed timeline — the last one was left behind.",
+  },
+  {
+    id: "b-f14",
+    title: "Dig out last term's notes",
+    stage: "ready",
+    agoMs: 6 * DAY,
+    context: "@homework",
   },
 ];
 
@@ -746,13 +793,19 @@ export function buildDemoTaskState(): TaskState {
     // about the relation rather than a gap in the fixture. `projects` was
     // empty for the same reason and no longer is: see departure 4.
     blocked: [],
-    // #629: item detail's checklist read, reused by the dossier's action
-    // checklist. `b-f1` ("Fit the new tap washer", the same row
-    // `actionsByProject` below repositions onto "House repairs") carries
-    // two steps, one already ticked — the "expanded action" visual case.
-    // `b-p1-action-2` carries none at all — the "action with no steps"
-    // case — so both empty-checklist and populated-checklist rows ship
-    // photographed rather than only the happy path.
+    // #675's pane-input list. Empty for the same kind of reason: the demo
+    // board seeds no item on an external wait, and this list feeds no
+    // rendering of its own — a seeded row would show up nowhere.
+    externallyBlocked: [],
+    // Item detail's checklist read (issue #96), reused by the dossier's
+    // action checklist (#629). `b-f1` ("Fit the new tap washer", the same
+    // row `actionsByProject` below repositions onto "House repairs")
+    // carries two steps, one already ticked, so the panel's populated
+    // checklist ships photographed wherever that item is opened — on Now,
+    // and on "House repairs"' own board, whose slot renders the same
+    // `ItemPanel`. `b-p1-action-2` carries none at all — the "action with
+    // no steps" case — so both empty-checklist and populated-checklist
+    // rows ship photographed rather than only the happy path.
     stepsByItem: {
       "b-f1": [
         {
@@ -774,7 +827,6 @@ export function buildDemoTaskState(): TaskState {
           version: 1,
         },
       ],
-      "b-p1-action-2": [],
     },
     // Split exactly as the real answer splits it (#624): an archived project
     // is absent in the mirror and arrives on the `archivedProjects` half, so
@@ -855,72 +907,6 @@ export function buildDemoTaskState(): TaskState {
       },
     },
     lastRouteWrite: null,
-    // #628: the dossier reading column's fog card, populated for the
-    // project the visual gate actually opens ("House repairs") — an empty
-    // map here left the card photographing only "Reading fog…", so the
-    // row layout (question text, move pair, Edit, Resolve inside the
-    // reading column) shipped unphotographed at every width. Two open
-    // rows, position order.
-    fogByProject: {
-      "b-p1": [
-        {
-          id: "b-p1-fog-1",
-          projectId: "b-p1",
-          question: "Does the deck need a permit, or does the fence-line survey cover it?",
-          position: 0,
-          resolvedAt: null,
-          version: 1,
-        },
-        {
-          id: "b-p1-fog-2",
-          projectId: "b-p1",
-          question: "Which contractor is actually available before the weather turns?",
-          position: 1,
-          resolvedAt: null,
-          version: 1,
-        },
-      ] satisfies FogDTO[],
-    },
-    lastFogWrite: null,
-    // #629: the dossier's ordered action list, populated for "House
-    // repairs" ("b-p1") — two actions, route order — and explicitly
-    // EMPTY (not absent) for "Autumn garden clear-up" ("b-p2"): the "this
-    // project has no actions yet" visual case, distinct from the
-    // not-read-yet placeholder an absent key would show instead.
-    // `b-p1-action-2` is a fixture-only row (no matching `frontier` seed —
-    // its checklist has never needed one of its own) so the card can show
-    // a second, unexpanded action alongside the one carrying steps.
-    actionsByProject: {
-      "b-p1": [
-        { ...frontier[0], projectPos: 0 },
-        {
-          id: "b-p1-action-2",
-          seq: 900,
-          title: "Order the replacement fence panels",
-          description: null,
-          stage: "ready",
-          size: "normal",
-          energy: null,
-          context: "@computer",
-          priority: 0,
-          projectId: "b-p1",
-          projectPos: 1,
-          deadline: null,
-          scheduledDate: null,
-          source: null,
-          sourceKey: null,
-          sourceUrl: null,
-          archivedAt: null,
-          createdAt: loadedAt - 3 * DAY,
-          updatedAt: loadedAt - 3 * DAY,
-          version: 1,
-          pending: false,
-        },
-      ],
-      "b-p2": [],
-    },
-    lastActionReorder: null,
-    lastStepWrite: null,
     // Piece 3: every standing question's read, built by `demo-pane-reads.ts`
     // — the kit world's own `demoQuestionInputs` called the same functions
     // before #452 folded its content into this seed and #455 deleted that

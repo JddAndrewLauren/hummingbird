@@ -9,7 +9,6 @@ import type {
   CalendarSelectionDTO,
   CalendarWorkerRequest,
   ConditionDTO,
-  FogDTO,
   GrillDraftTurnDTO,
   GrillVerdictName,
   ProjectDTO,
@@ -19,7 +18,6 @@ import type {
   StepDTO,
   SyncCadenceRequest,
   TaskActionName,
-  TaskItemDTO,
   TaskStageName,
   TaskWorkerRequest,
   TierName,
@@ -96,8 +94,6 @@ type Store = Pick<
   | "setTaskSteps"
   | "setTaskProjectLinks"
   | "setTaskRoute"
-  | "setTaskFog"
-  | "setTaskActions"
   | "setTaskPaneRead"
   | "setTaskGrillDraft"
 >;
@@ -193,6 +189,11 @@ export function attachWorkerClient(
           // "Completing offline shows Done immediately").
           requestFrontier(worker);
           requestBlocked(worker);
+          // `ItemAction::Block` is the one act that moves an item INTO the
+          // external-wait list, and Start/Complete/Cancel on an already
+          // blocked item move it out — either way the standing questions'
+          // inputs are stale until this re-reads (#675).
+          requestExternallyBlocked(worker);
           // The row checkmark completes from ANY live stage — Triage rows
           // included — so an act can now remove an item from the triage
           // inbox, the same immediate re-read `triageResult` does.
@@ -356,6 +357,9 @@ export function attachWorkerClient(
       case "grillingItems":
         store.setTaskState({ grillingItems: message.items });
         return;
+      case "externallyBlocked":
+        store.setTaskState({ externallyBlocked: message.items });
+        return;
       case "ledger":
         store.setTaskState({ ledger: message.rows });
         return;
@@ -468,95 +472,6 @@ export function attachWorkerClient(
           // row's `version` simply does not move to what this write
           // expected.
           requestRoute(worker, message.projectId);
-        }
-        return;
-      case "fog":
-        store.setTaskFog(message.projectId, message.fog);
-        return;
-      case "createFogResult":
-        store.setTaskState({
-          lastFogWrite: {
-            seed: message.seed,
-            projectId: message.projectId,
-            kind: message.kind,
-            error: message.error,
-          },
-        });
-        if (message.kind === "ok") {
-          // No overlay for fog (`Core::create_fog`'s own doc) — the new
-          // segment becomes visible once the next completed cycle pulls it
-          // back, so this re-request answers the *old* list, which is the
-          // point: the card says it is waiting rather than showing a row
-          // the authority has not confirmed.
-          requestFog(worker, message.projectId);
-        }
-        return;
-      case "patchFogResult":
-        store.setTaskState({
-          lastFogWrite: {
-            seed: message.seed,
-            projectId: message.projectId,
-            kind: message.kind,
-            error: message.error,
-          },
-        });
-        if (message.kind === "ok") {
-          // No overlay for fog, same reasoning as `createFogResult`: the
-          // edit becomes visible once the next completed cycle pulls it
-          // back, so this re-request answers the *old* row until then.
-          requestFog(worker, message.projectId);
-        }
-        return;
-      case "actions":
-        store.setTaskActions(message.projectId, message.actions);
-        return;
-      case "reorderActionResult":
-        store.setTaskState({
-          lastActionReorder: {
-            seed: message.seed,
-            projectId: message.projectId,
-            itemId: message.itemId,
-            kind: message.kind,
-            error: message.error,
-          },
-        });
-        if (message.kind === "ok") {
-          // Overlaid immediately core-side (`Core::patch_action_position`'s
-          // own doc), unlike every other project-lane write above — this
-          // re-request still follows, so the dossier's list settles onto
-          // whatever the mirror actually confirms rather than trusting its
-          // own optimistic guess forever.
-          requestActions(worker, message.projectId);
-        }
-        return;
-      case "createStepResult":
-        store.setTaskState({
-          lastStepWrite: {
-            seed: message.seed,
-            itemId: message.itemId,
-            kind: message.kind,
-            error: message.error,
-          },
-        });
-        if (message.kind === "ok") {
-          // No overlay for steps (`Core::create_step`'s own doc) — the new
-          // Step becomes visible once the next completed cycle pulls it
-          // back, so this re-request answers the *old* checklist until then.
-          requestSteps(worker, message.itemId);
-        }
-        return;
-      case "patchStepResult":
-        store.setTaskState({
-          lastStepWrite: {
-            seed: message.seed,
-            itemId: message.itemId,
-            kind: message.kind,
-            error: message.error,
-          },
-        });
-        if (message.kind === "ok") {
-          // No overlay for steps, same reasoning as `createStepResult`.
-          requestSteps(worker, message.itemId);
         }
         return;
       case "isPendingResult":
@@ -1046,6 +961,14 @@ export function requestBlocked(worker: WorkerLike): void {
   worker.postMessage({ type: "getBlocked" });
 }
 
+/** Items on an external wait (`Stage::Blocked`) — the last arm of the live
+ * partition, read for the standing questions' inputs and nothing else
+ * (#675). Deliberately not `requestBlocked`'s widening: the two are
+ * different facts and CONTEXT.md keeps them apart. */
+export function requestExternallyBlocked(worker: WorkerLike): void {
+  worker.postMessage({ type: "getExternallyBlocked" });
+}
+
 /** One item's Steps — item detail (issue #96, S10). */
 export function requestSteps(worker: WorkerLike, itemId: string): void {
   worker.postMessage({ type: "getSteps", itemId });
@@ -1178,113 +1101,6 @@ export function patchRoute(
     destination: patch.destination ?? null,
     notesTouched: "notes" in patch,
     notes: patch.notes ?? null,
-    nowMs,
-  });
-}
-
-/** #628's per-project open-fog read — the dossier reading column's fetch,
- * same `requestProjectLinks`-style per-id shape. */
-export function requestFog(worker: WorkerLike, projectId: string): void {
-  worker.postMessage({ type: "getFog", projectId });
-}
-
-/** #628's fog create. `seed` mints `Core::create_fog`'s own queue-entry id
- * — same caller-mints contract as `createProjectLink`'s. The question is
- * trimmed and an empty one refused at the wasm seam, not here. */
-export function createFog(
-  worker: WorkerLike,
-  seed: string,
-  projectId: string,
-  question: string,
-  position: number,
-  nowMs: number,
-): void {
-  worker.postMessage({ type: "createFog", seed, projectId, question, position, nowMs });
-}
-
-/** #628's fog patch — rewording, repositioning and resolving/reopening a
- * segment all share this one call. `current` is the caller's own
- * last-known copy of the row (the CAS `base` a 409 is diffed against);
- * every field in `patch` is `undefined` to mean "leave this alone," except
- * `resolvedAt`, which distinguishes a present-but-`null` clear from an
- * absent "don't touch" the same way `patchProjectLink`'s `patch.removedAt`
- * does. */
-export function patchFog(
-  worker: WorkerLike,
-  seed: string,
-  current: FogDTO,
-  patch: { question?: string; position?: number; resolvedAt?: number | null },
-  nowMs: number,
-): void {
-  worker.postMessage({
-    type: "patchFog",
-    seed,
-    current,
-    question: patch.question ?? null,
-    position: patch.position ?? null,
-    resolvedAtTouched: "resolvedAt" in patch,
-    resolvedAt: patch.resolvedAt ?? null,
-    nowMs,
-  });
-}
-
-/** #629's per-project Action read — the dossier's ordered action list,
- * same `requestFog`-style per-id fetch. */
-export function requestActions(worker: WorkerLike, projectId: string): void {
-  worker.postMessage({ type: "getActions", projectId });
-}
-
-/** #629's reorder control — moves one Action's `projectPos`. `current` is
- * the caller's own last-known copy of the row (the CAS `base` a 409 is
- * diffed against). */
-export function reorderAction(
-  worker: WorkerLike,
-  seed: string,
-  projectId: string,
-  current: TaskItemDTO,
-  position: number,
-  nowMs: number,
-): void {
-  worker.postMessage({ type: "reorderAction", seed, projectId, current, position, nowMs });
-}
-
-/** #629's step create. `seed` mints `Core::create_step`'s own queue-entry
- * id — same caller-mints contract as `createFog`'s. The body is trimmed
- * and an empty one refused at the wasm seam, not here. */
-export function createStep(
-  worker: WorkerLike,
-  seed: string,
-  itemId: string,
-  body: string,
-  position: number,
-  nowMs: number,
-): void {
-  worker.postMessage({ type: "createStep", seed, itemId, body, position, nowMs });
-}
-
-/** #629's step patch — ticking, rewording, repositioning, or
- * flagging/clearing a Step's deletion, all share this one call. `current`
- * is the caller's own last-known copy of the row (the CAS `base` a 409 is
- * diffed against); every field in `patch` is `undefined` to mean "leave
- * this alone," except `deletedAt`, which distinguishes a present-but-`null`
- * clear from an absent "don't touch" the same way `patchFog`'s
- * `patch.resolvedAt` does. */
-export function patchStep(
-  worker: WorkerLike,
-  seed: string,
-  current: StepDTO,
-  patch: { body?: string; done?: boolean; position?: number; deletedAt?: number | null },
-  nowMs: number,
-): void {
-  worker.postMessage({
-    type: "patchStep",
-    seed,
-    current,
-    body: patch.body ?? null,
-    done: patch.done ?? null,
-    position: patch.position ?? null,
-    deletedAtTouched: "deletedAt" in patch,
-    deletedAt: patch.deletedAt ?? null,
     nowMs,
   });
 }

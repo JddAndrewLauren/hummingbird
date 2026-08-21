@@ -205,6 +205,10 @@ export interface DecisionsModule {
   race_facts_json(series: string, inputsJson: string): string;
   race_answer_json(subjectKey: string, inputsJson: string): string;
   race_constants_json(): string;
+  homework_zone_queries_json(inputsJson: string): string;
+  homework_facts_json(inputsJson: string, zoneFactsJson: string): string;
+  homework_answer_json(inputsJson: string, zoneFactsJson: string): string;
+  homework_constants_json(): string;
   weekend_zone_queries_json(nowMs: number): string;
   weekend_window_json(nowMs: number, zoneFactsJson: string): string;
   weekend_facts_json(inputsJson: string, zoneFactsJson: string): string;
@@ -1898,6 +1902,76 @@ export interface RaceConstants {
 
 export function raceConstantsFromCore(): RaceConstants {
   return JSON.parse(required().race_constants_json()) as RaceConstants;
+}
+
+// -- homework (#675) --------------------------------------------------------
+
+/** One open homework item — `homework.rs`'s `HomeworkItem`. `description`
+ * is carried on the winner alone (see that module's own doc); on an entry
+ * in `others` it is always `null`. */
+export interface HomeworkItemCore {
+  id: string;
+  title: string;
+  deadline: string | null;
+  description: string | null;
+}
+
+export interface HomeworkFactsCore {
+  winner: HomeworkItemCore | null;
+  others: HomeworkItemCore[];
+  /** Whole civil days from the device's today to the winner's deadline —
+   * negative when overdue, `0` today, `null` when there is no winner or the
+   * winner carries no deadline. **The number each client writes its own
+   * sentence from**: ADR-0025 crosses facts, never sentences, and the
+   * arithmetic behind this one cannot be redone client-side without the
+   * zone bridge anyway. */
+  daysAway: number | null;
+}
+
+export type HomeworkGap = "unresolvableZone";
+
+export type HomeworkResolvedCore =
+  | ({ kind: "facts" } & HomeworkFactsCore)
+  | { kind: "gap"; gap: HomeworkGap };
+
+/** `hummingbird_core::decisions::panes::homework::homework_zone_queries`.
+ *
+ * Takes the whole inputs rather than `nowMs` (which is what
+ * `weekendZoneQueriesFromCore` takes): this pane names its midnight queries
+ * from the open items' own deadlines, so there is nothing to over-ask and
+ * nothing a caller could compute from the clock alone. */
+export function homeworkZoneQueriesFromCore(inputs: PaneInputsSource): ZoneQuery[] {
+  return JSON.parse(required().homework_zone_queries_json(paneInputsPayload(inputs))) as ZoneQuery[];
+}
+
+/** `hummingbird_core::decisions::panes::homework::homework_facts`. */
+export function homeworkFactsFromCore(
+  inputs: PaneInputsSource,
+  facts: ZoneFacts,
+): HomeworkResolvedCore {
+  return JSON.parse(
+    required().homework_facts_json(paneInputsPayload(inputs), JSON.stringify(facts)),
+  ) as HomeworkResolvedCore;
+}
+
+/** `hummingbird_core::decisions::panes::homework::homework_answer`. */
+export function homeworkAnswerFromCore(
+  inputs: PaneInputsSource,
+  facts: ZoneFacts,
+): PaneAnswerCore {
+  return JSON.parse(
+    required().homework_answer_json(paneInputsPayload(inputs), JSON.stringify(facts)),
+  ) as PaneAnswerCore;
+}
+
+export interface HomeworkConstants {
+  context: string;
+  subjectKey: string;
+  nearWithinDays: number;
+}
+
+export function homeworkConstantsFromCore(): HomeworkConstants {
+  return JSON.parse(required().homework_constants_json()) as HomeworkConstants;
 }
 
 // -- weekend (#122) ---------------------------------------------------------

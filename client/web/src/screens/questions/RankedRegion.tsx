@@ -47,7 +47,7 @@ import { samePaneIdentity } from "./sort";
 // captured sample exists to prevent.
 //
 // The setState-during-render below is this repo's sanctioned idiom for
-// "adjust state when a prop changes" (`NowScreen`'s `RealFrontier`,
+// "adjust state when a prop changes" (`FrontierBoard`,
 // `SettingsScreen`'s `BindingRow`), comparison-guarded and never a ref:
 // `react-hooks/refs` forbids reading a ref during render and
 // `react-hooks/set-state-in-effect` forbids the effect version.

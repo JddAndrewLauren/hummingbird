@@ -25,34 +25,40 @@ const tally = (values: Array<string | null>) =>
   }, {});
 
 describe("buildDemoTaskState — production's shape, none of its content", () => {
-  it("puts 30 cards on the board: 12 startable, 17 captured, 1 grilling", () => {
-    expect(state.frontier).toHaveLength(12);
+  it("puts 32 cards on the board: 14 startable, 17 captured, 1 grilling", () => {
+    // 14, not production's measured 12: departure 5 seeds two `@homework`
+    // items so the homework pane (#675) photographs its real body rather
+    // than its dormant empty state.
+    expect(state.frontier).toHaveLength(14);
     expect(state.triageInbox).toHaveLength(17);
     expect(state.grillingItems).toHaveLength(1);
-    expect(board).toHaveLength(30);
+    expect(board).toHaveLength(32);
   });
 
   it("mirrors the context spread, so the no-context column really is the biggest", () => {
-    // The seeded Grilling item carries no context, same as most of production.
+    // The seeded Grilling item carries no context, same as most of
+    // production. `@homework` is departure 5's own column, and production
+    // has none — every other value is the measured spread verbatim.
     expect(tally(board.map((i) => i.context))).toEqual({
       "(none)": 13,
       "@computer": 8,
       "@errands": 4,
       "@phone": 3,
       "@home": 2,
+      "@homework": 2,
     });
   });
 
   it("mirrors the size and energy spread, both dominated by unset", () => {
     // The seeded Grilling item is `size: "deep"`, `energy` unset.
     expect(tally(board.map((i) => i.size))).toEqual({
-      "(none)": 13,
+      "(none)": 15,
       deep: 9,
       quick: 4,
       normal: 4,
     });
     expect(tally(board.map((i) => i.energy))).toEqual({
-      "(none)": 18,
+      "(none)": 20,
       high: 5,
       medium: 4,
       low: 3,
@@ -61,7 +67,7 @@ describe("buildDemoTaskState — production's shape, none of its content", () =>
 
   it("mirrors the capture sources — most typed, seven swept from mail", () => {
     expect(tally(board.map((i) => i.source))).toEqual({
-      "(none)": 22,
+      "(none)": 24,
       "gmail/v1": 7,
       "google-tasks/v1": 1,
     });
@@ -90,7 +96,7 @@ describe("buildDemoTaskState — production's shape, none of its content", () =>
     expect(state.archivedProjects?.every((p) => p.archivedAt !== null)).toBe(true);
     expect(tally(board.map((i) => i.projectId))).toEqual({
       "(none)": 25,
-      "b-p1": 2,
+      "b-p1": 4,
       "b-p2": 3,
     });
   });
@@ -107,7 +113,7 @@ describe("buildDemoTaskState — production's shape, none of its content", () =>
   });
 });
 
-describe("buildDemoTaskState — the three deliberate departures from production", () => {
+describe("buildDemoTaskState — the deliberate departures from production", () => {
   it("carries one deadline per urgency band, which production's single deadline cannot", () => {
     const nowMs = Date.now();
     const bands = board
@@ -132,6 +138,17 @@ describe("buildDemoTaskState — the three deliberate departures from production
     // alert to its un-named fallback — the fixture would still "work" and
     // would stop demonstrating the sentence it exists to demonstrate.
     expect(state.triageInbox.some((i) => i.id === failure?.itemId)).toBe(true);
+  });
+
+  it("seeds two @homework items, so the homework pane photographs a real body", () => {
+    // Departure 5. One with a deadline AND notes — the notes are the whole
+    // reason the pane exists — and one with neither, so the "1 more open"
+    // line and the list beneath the winner both render. A single item would
+    // photograph a pane that looks like it can only ever show one.
+    const homework = board.filter((i) => i.context === "@homework");
+    expect(homework).toHaveLength(2);
+    expect(homework.filter((i) => i.deadline !== null)).toHaveLength(1);
+    expect(homework.find((i) => i.deadline !== null)?.description).toBeTruthy();
   });
 
   it("seeds one Grilling-stage item, so #357's queue and its badge both render", () => {
