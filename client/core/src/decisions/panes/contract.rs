@@ -70,6 +70,7 @@ impl Surface {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StandingQuestion {
+    Homework,
     Waste,
     Weekend,
     Vacation,
@@ -83,6 +84,7 @@ pub enum StandingQuestion {
 impl StandingQuestion {
     pub fn as_str(self) -> &'static str {
         match self {
+            StandingQuestion::Homework => "homework",
             StandingQuestion::Waste => "waste",
             StandingQuestion::Weekend => "weekend",
             StandingQuestion::Vacation => "vacation",
@@ -99,8 +101,13 @@ impl StandingQuestion {
 /// order the wiring unions its sources in. Declaration order, not
 /// alphabetical, so a question's place does not move when another is
 /// renamed. The four infra questions (ADR-0017, #311) are declared after
-/// Now's four.
-pub const QUESTION_ORDER: [StandingQuestion; 8] = [
+/// Now's own.
+///
+/// `Homework` is declared **first** (#675, the operator's call): it is the
+/// only question about work the reader personally owes, so when two panes
+/// tie on band and `within_band` it is the one that should be read first.
+pub const QUESTION_ORDER: [StandingQuestion; 9] = [
+    StandingQuestion::Homework,
     StandingQuestion::Waste,
     StandingQuestion::Weekend,
     StandingQuestion::Vacation,
@@ -178,7 +185,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&QUESTION_ORDER).unwrap(),
-            r#"["waste","weekend","vacation","race","kimi","github","uptime","reachability"]"#,
+            r#"["homework","waste","weekend","vacation","race","kimi","github","uptime","reachability"]"#,
         );
     }
 

@@ -1457,7 +1457,7 @@ pub fn sync_status_summary_json(input_json: &str) -> String {
 // values, never a rendered sentence; each pane's own TS module composes its
 // words from these.
 
-use hummingbird_core::decisions::panes::{kimi, github, uptime, reachability, race, vacation, weekend, zone};
+use hummingbird_core::decisions::panes::{kimi, github, homework, uptime, reachability, race, vacation, weekend, zone};
 
 /// `hummingbird_core::decisions::panes::zone::DEVICE_ZONE` — the sentinel
 /// `zone-bridge.ts`'s `resolveZone` special-cases to mean "the reader's own
@@ -1887,6 +1887,54 @@ pub fn vacation_constants_json() -> String {
         "staleAfterMs": vacation::STALE_AFTER_MS,
         "imminentWithinDays": vacation::IMMINENT_WITHIN_DAYS,
         "nearWithinDays": vacation::NEAR_WITHIN_DAYS,
+    })
+    .to_string()
+}
+
+// -- homework (#675) --------------------------------------------------------
+//
+// Three exports rather than two: the zone queries cross on their own door
+// because this pane names them from the *items* (`homework.rs`'s own
+// header), so a caller cannot compute them from `nowMs` alone the way
+// `weekend_zone_queries_json` lets it.
+
+#[wasm_bindgen]
+pub fn homework_zone_queries_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => queries_json(homework::homework_zone_queries(&inputs)),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn homework_facts_json(inputs_json: &str, zone_facts_json: &str) -> String {
+    match (parse_inputs(inputs_json), parse_zone_facts(zone_facts_json)) {
+        (Ok(inputs), Ok(facts)) => {
+            serde_json::to_string(&homework::homework_facts(&inputs, &facts)).unwrap()
+        }
+        (Err(error), _) | (_, Err(error)) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn homework_answer_json(inputs_json: &str, zone_facts_json: &str) -> String {
+    match (parse_inputs(inputs_json), parse_zone_facts(zone_facts_json)) {
+        (Ok(inputs), Ok(facts)) => {
+            serde_json::to_string(&homework::homework_answer(&inputs, &facts)).unwrap()
+        }
+        (Err(error), _) | (_, Err(error)) => error_json(error),
+    }
+}
+
+/// The literals this pane is defined by — the context it matches, its
+/// sentinel subject, and the `near` cutoff — so no client retypes any of
+/// them (`race_constants_json`'s own precedent).
+#[wasm_bindgen]
+pub fn homework_constants_json() -> String {
+    serde_json::json!({
+        "context": homework::HOMEWORK_CONTEXT,
+        "subjectKey": homework::SUBJECT_KEY,
+        "nearWithinDays": homework::NEAR_WITHIN_DAYS,
     })
     .to_string()
 }

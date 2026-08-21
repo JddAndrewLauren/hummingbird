@@ -111,6 +111,7 @@ export type Surface = "now" | "status";
  * "every question, in a declared order" a fact the type system checks, not a
  * list someone has to remember to update. */
 export type StandingQuestion =
+  | "homework"
   | "waste"
   | "weekend"
   | "vacation"
@@ -125,8 +126,15 @@ export type StandingQuestion =
  * alphabetical, so a question's place does not move when another is
  * renamed. The four infra questions (ADR-0017, #311) are declared after
  * Now's four so neither surface's existing order moves when the other
- * surface's questions are filtered in or out. */
+ * surface's questions are filtered in or out.
+ *
+ * `homework` is declared **first** (#675): it is the only question about
+ * work the reader personally owes, so when two panes tie on band and
+ * `withinBand` it is the one that should be read first. Pinned against
+ * `hummingbird_core::decisions::panes::contract::QUESTION_ORDER` by
+ * `seam.test.ts`, which is what stops the two lists drifting. */
 export const QUESTION_ORDER: readonly StandingQuestion[] = [
+  "homework",
   "waste",
   "weekend",
   "vacation",

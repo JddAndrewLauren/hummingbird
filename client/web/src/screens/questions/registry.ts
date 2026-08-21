@@ -1,4 +1,5 @@
 import { githubQuestion } from "../github-pane/question";
+import { homeworkQuestion } from "../homework-pane/question";
 import { kimiQuestion } from "../kimi-pane/question";
 import { raceQuestion } from "../race-pane/question";
 import { reachabilityQuestion } from "../reachability-pane/question";
@@ -28,6 +29,7 @@ import { orderPanes } from "./sort";
 // `TASK_REQUEST_TYPES` uses, and for the same reason.
 
 export const QUESTIONS: Record<StandingQuestion, QuestionDef> = {
+  homework: homeworkQuestion,
   waste: wasteQuestion,
   weekend: weekendQuestion,
   vacation: vacationQuestion,

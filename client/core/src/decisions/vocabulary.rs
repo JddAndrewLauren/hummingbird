@@ -71,7 +71,20 @@ fn capitalize(word: &str) -> String {
 /// `@waiting` is deliberately absent: CONTEXT.md is flat that "External
 /// wait is the only meaning of the Blocked state", so a context by that
 /// name was the Blocked stage wearing a hard filter's clothes.
-pub const CONTEXTS: [&str; 5] = ["@home", "@computer", "@phone", "@errands", "@garden"];
+///
+/// `@homework` (#675) is the recorded exception to that same test. It is a
+/// topic, not a place, and it is suggested anyway because a standing
+/// question keys on it ([`super::panes::homework::HOMEWORK_CONTEXT`], the
+/// single literal this array's last entry must equal — its own test pins
+/// the pair). CONTEXT.md's **Context** entry carries the amendment that
+/// makes that widening explicit rather than silent; read it before adding
+/// a second one.
+///
+/// Appended rather than inserted: `frontier-facets.ts` reads this array
+/// for its chip *order*, so a new entry anywhere but the end moves chips
+/// that have nothing to do with it.
+pub const CONTEXTS: [&str; 6] =
+    ["@home", "@computer", "@phone", "@errands", "@garden", "@homework"];
 
 /// The frontier's *facet* axis names — [`super::frontier::Facet`]'s own
 /// wire spelling, in the order the filter panel offers them. Not the
@@ -120,7 +133,22 @@ mod tests {
 
     #[test]
     fn suggests_the_places_this_systems_owner_works() {
-        assert_eq!(CONTEXTS, ["@home", "@computer", "@phone", "@errands", "@garden"]);
+        assert_eq!(
+            CONTEXTS,
+            ["@home", "@computer", "@phone", "@errands", "@garden", "@homework"],
+        );
+    }
+
+    #[test]
+    fn the_homework_context_is_spelled_once_and_shared_with_the_pane_that_keys_on_it() {
+        // Two copies of `"@homework"` — one suggested by the forms, one
+        // matched by the pane — would be a pane that quietly stops finding
+        // the items the form told the operator to file. This is the pin
+        // that makes them the same literal.
+        assert_eq!(
+            CONTEXTS[CONTEXTS.len() - 1],
+            crate::decisions::panes::homework::HOMEWORK_CONTEXT,
+        );
     }
 
     #[test]

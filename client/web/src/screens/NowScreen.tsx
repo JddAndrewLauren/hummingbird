@@ -108,11 +108,25 @@ export interface NowScreenProps {
  * `RankedRegion` through a genuinely mounted consumer, proving delivery
  * rather than merely inspecting the store snapshot (#267's review point).
  *
- * `items` (#122) is `task.frontier` and `task.blocked`'s items unioned —
- * exactly `RealFrontier`'s own `allItems`, computed a second time here
- * because that helper is scoped to `RealFrontier`'s render and this
- * function has to stay callable standalone by both `NowScreen` and its own
- * tests. */
+ * `items` (#122, widened at #675) is every live item this device knows
+ * about: `task.frontier`, `task.blocked`'s items, `task.triageInbox` and
+ * `task.grillingItems`. The first two are `RealFrontier`'s own `allItems`,
+ * computed a second time here because that helper is scoped to
+ * `RealFrontier`'s render and this function has to stay callable
+ * standalone by both `NowScreen` and its own tests.
+ *
+ * The last two arrived with the homework pane, whose subject is the
+ * operator's items and whose reading of "open" includes everything not yet
+ * triaged — a captured piece of homework is still homework. `TaskState`
+ * already carries all four lists, so this is a wider union of what the
+ * screen holds rather than a new core query or a new worker request.
+ *
+ * **The weekend pane was pinned against this widening first**
+ * (`weekend.rs`'s `MERGED_STAGES`, its own commit): it merges items onto
+ * calendar days and would otherwise have started showing Triage items the
+ * moment this line changed. A question added later that reads `items` owes
+ * the same explicit filter — the list here is "every live item", never
+ * "the items your pane should consider". */
 export function realQuestionInputs(
   task: TaskState,
   calendarReads: Record<string, CalendarReadDTO | undefined>,
@@ -128,7 +142,12 @@ export function realQuestionInputs(
     paneReads: task.paneReads,
     calendarReads,
     calendarConnected,
-    items: [...task.frontier, ...task.blocked.map((entry) => entry.item)],
+    items: [
+      ...task.frontier,
+      ...task.blocked.map((entry) => entry.item),
+      ...task.triageInbox,
+      ...task.grillingItems,
+    ],
   };
 }
 
