@@ -56,8 +56,8 @@ import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
 /** One pane's label, from its [MobileStandingQuestion] and its subject —
  * a rendering choice, never a decision: which words name "the GitHub pane"
  * is per-client on the same footing `contract.rs`'s header gives every
- * headline. The four `Waste`/`Weekend`/`Vacation`/`Race` arms cannot reach
- * a Status-surface list (`rank_panes(Status, ..)` never emits them,
+ * headline. The five `Homework`/`Waste`/`Weekend`/`Vacation`/`Race` arms
+ * cannot reach a Status-surface list (`rank_panes(Status, ..)` never emits them,
  * `panes::mod`'s own test); named individually rather than behind a
  * wildcard so a real ninth question still trips this `when`. */
 private fun paneLabel(pane: MobileRankedPane): String = when (pane.standingQuestion) {
@@ -65,6 +65,7 @@ private fun paneLabel(pane: MobileRankedPane): String = when (pane.standingQuest
     MobileStandingQuestion.GITHUB -> "GitHub workflow — ${pane.subjectKey}"
     MobileStandingQuestion.UPTIME -> "Uptime — ${pane.subjectKey}"
     MobileStandingQuestion.REACHABILITY -> "Device reachability"
+    MobileStandingQuestion.HOMEWORK,
     MobileStandingQuestion.WASTE,
     MobileStandingQuestion.WEEKEND,
     MobileStandingQuestion.VACATION,

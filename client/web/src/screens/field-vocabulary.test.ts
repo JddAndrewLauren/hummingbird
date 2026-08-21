@@ -96,7 +96,21 @@ describe("field-vocabulary — the size and energy option lists", () => {
 
 describe("field-vocabulary — the context suggestions", () => {
   it("suggests the places this system's owner works", () => {
-    expect([...CONTEXTS]).toEqual(["@home", "@computer", "@phone", "@errands", "@garden"]);
+    expect([...CONTEXTS]).toEqual([
+      "@home",
+      "@computer",
+      "@phone",
+      "@errands",
+      "@garden",
+      "@homework",
+    ]);
+  });
+
+  it("suggests `@homework` last, so no existing chip's order moves", () => {
+    // `frontier-facets.ts` reads `CONTEXTS` for its chip order. #675's entry
+    // is appended for that reason alone — and it is a topic rather than a
+    // place, the exception CONTEXT.md's Context entry now records.
+    expect(CONTEXTS[CONTEXTS.length - 1]).toBe("@homework");
   });
 
   it("does not suggest `@waiting`, which was the Blocked stage in disguise", () => {

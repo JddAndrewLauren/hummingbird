@@ -1057,6 +1057,26 @@ impl TaskHostCore {
         }
     }
 
+    /// Items on an **external wait**, per [`Core::externally_blocked`] —
+    /// CONTEXT.md's only meaning for `Stage::Blocked`, and a different
+    /// fact from [`TaskHostCore::blocked`]'s relation blockers. Same
+    /// per-item `pending` stamp as [`TaskHostCore::frontier`].
+    ///
+    /// No screen lists these; it exists so the standing-question pane
+    /// inputs can be the *whole* live partition of the mirror (#675 —
+    /// `NowScreen.tsx`'s `realQuestionInputs`).
+    pub fn externally_blocked(&self) -> ItemListResponse {
+        ItemListResponse {
+            kind: "ok",
+            items: self
+                .core
+                .externally_blocked()
+                .into_iter()
+                .map(|item| self.with_pending(item))
+                .collect(),
+        }
+    }
+
     /// Relation-blocked items with the reason visible, per [`Core::blocked`].
     /// Same per-item `pending` stamp as [`TaskHostCore::frontier`], on both
     /// the blocked item and the blockers it is paired with.

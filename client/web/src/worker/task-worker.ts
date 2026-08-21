@@ -173,6 +173,10 @@ export interface TaskHostLike {
    * `frontier`. */
   done(): string;
   blocked(): string;
+  /** Items on an external wait (`Stage::Blocked`); same
+   * `RawItemListResponse` shape as `frontier`. Pane inputs only — no
+   * screen lists these (#675). */
+  externallyBlocked(): string;
   steps(itemId: string): string;
   projects(): string;
   /** #624's project create. Mirrors `TaskHost::createProject`, resolved to
@@ -1229,6 +1233,14 @@ export async function handleTaskRequest(
         return;
       }
       post({ type: "blocked", entries: mapBlockedEntries(raw.entries) });
+      return;
+    }
+    case "getExternallyBlocked": {
+      const raw = JSON.parse(host.externallyBlocked()) as RawItemListResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "externallyBlocked", items: raw.items.map(mapItem) });
       return;
     }
     case "getSteps": {

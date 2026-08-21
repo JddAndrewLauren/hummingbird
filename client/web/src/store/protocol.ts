@@ -852,6 +852,15 @@ export type TaskWorkerRequest =
   | { type: "getDone" }
   /** Relation-blocked items with the reason visible — S10 (issue #108). */
   | { type: "getBlocked" }
+  /** Items on an **external wait** — CONTEXT.md's only meaning for the
+   * Blocked stage, and a different fact from `getBlocked`'s relation
+   * blockers, which only ever considers Ready/InProgress items. No screen
+   * lists these: it exists so `NowScreen.tsx`'s `realQuestionInputs` can
+   * hand the standing questions the *whole* live partition of the mirror
+   * (#675 — the homework pane counts every stage but Done, and without
+   * this an externally blocked `@homework` item reached no query here and
+   * silently vanished from the pane). */
+  | { type: "getExternallyBlocked" }
   /** One item's Steps — item detail (issue #96, S10). */
   | { type: "getSteps"; itemId: string }
   /** Resolves the frontier's "grouped by project" display to real names
@@ -1138,6 +1147,9 @@ export type TaskWorkerResponse =
   /** Answers `getGrillingItems` (#357). Same drop-on-busy contract as
    * `frontier`. */
   | { type: "grillingItems"; items: TaskItemDTO[] }
+  /** Answers `getExternallyBlocked` (#675). Same drop-on-busy contract as
+   * `frontier`. */
+  | { type: "externallyBlocked"; items: TaskItemDTO[] }
   /** Answers `getLedger`. Never posted for a `"busy"` read — an empty
    * ledger renders as "nothing has ever been tracked", a claim a core that
    * has not loaded may not make (same contract as `paneRead`). Not replayed

@@ -46,6 +46,7 @@ class PaneShellStructuralTest {
     @Test
     fun `the headline dispatcher is exhaustive over every question's facts arm, with no else`() {
         for (arm in listOf(
+            "MobilePaneFacts.Homework",
             "MobilePaneFacts.Waste",
             "MobilePaneFacts.Weekend",
             "MobilePaneFacts.Vacation",

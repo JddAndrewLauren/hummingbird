@@ -77,6 +77,12 @@ export const CONTEXTS = [
   "@phone",
   "@errands",
   "@garden",
+  // #675: a topic rather than a place, suggested anyway because the
+  // homework standing question keys on it. `homework.rs`'s
+  // `HOMEWORK_CONTEXT` is the canonical literal (and `vocabulary.rs` pins
+  // the two together on the Rust side); CONTEXT.md's Context entry carries
+  // the amendment that admits the widening.
+  "@homework",
 ] as const;
 
 /** What a capture form should *offer* for context: the suggested `CONTEXTS`

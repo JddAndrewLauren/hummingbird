@@ -12,6 +12,8 @@ import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 import uniffi.hummingbird_ffi_mobile.MobilePaneAnswer
 import uniffi.hummingbird_ffi_mobile.MobileKimiGap
 import uniffi.hummingbird_ffi_mobile.MobileKimiResolved
+import uniffi.hummingbird_ffi_mobile.MobileHomeworkFacts
+import uniffi.hummingbird_ffi_mobile.MobileHomeworkResolved
 import uniffi.hummingbird_ffi_mobile.MobilePaneFacts
 import uniffi.hummingbird_ffi_mobile.MobileProbeGap
 import uniffi.hummingbird_ffi_mobile.MobileProbeResolved
@@ -92,6 +94,12 @@ class NowViewModelTest {
      * a question with a foreign arm. Exhaustive, no `else`: a ninth
      * question breaks this fixture loudly. */
     private fun paneFacts(question: MobileStandingQuestion): MobilePaneFacts = when (question) {
+        MobileStandingQuestion.HOMEWORK ->
+            MobilePaneFacts.Homework(
+                resolved = MobileHomeworkResolved.Facts(
+                    facts = MobileHomeworkFacts(winner = null, others = emptyList(), daysAway = null),
+                ),
+            )
         MobileStandingQuestion.WASTE ->
             MobilePaneFacts.Waste(
                 setup = MobileWasteSetup.UNSET,

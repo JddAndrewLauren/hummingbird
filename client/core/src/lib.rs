@@ -1054,6 +1054,32 @@ where
             .collect()
     }
 
+    /// The live items on an **external wait** — CONTEXT.md's only meaning
+    /// for [`Stage::Blocked`]: the world is making the work wait, a
+    /// callback or a part in the mail.
+    ///
+    /// Deliberately **not** [`Core::blocked`], which is about a relation to
+    /// another item and only ever considers `Ready`/`InProgress` — the two
+    /// are different facts and the glossary keeps them apart. Together with
+    /// [`Core::frontier`], [`Core::triage_inbox`] and
+    /// [`Core::grilling_items`] this completes the live, not-`Done`
+    /// partition of the mirror, which is what a caller assembling "every
+    /// live item" needs.
+    ///
+    /// Added at #675: the homework pane reads "open" as everything not
+    /// `Done`, blocked included (`decisions::panes::homework`), and until
+    /// this query existed no host could hand it such an item — an
+    /// externally blocked piece of homework silently disappeared from the
+    /// pane. There is no *screen* listing these yet; this is a pane-input
+    /// reader first.
+    pub fn externally_blocked(&self) -> Vec<Item> {
+        self.overlaid_items()
+            .into_values()
+            .filter(|item| item.archived_at.is_none())
+            .filter(|item| item.stage == Stage::Blocked)
+            .collect()
+    }
+
     /// Items already grilled once and still foggy: CONTEXT.md's "triage
     /// process" is the pair of pre-action stages, Triage and Grilling,
     /// together, and this is the second half — [`Core::triage_inbox`]
@@ -4946,6 +4972,33 @@ mod tests {
 
         assert!(core.frontier().is_empty());
         assert!(core.blocked().is_empty());
+        assert_eq!(
+            core.externally_blocked().iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec!["a-1"],
+            "the query that does own this fact must return it — otherwise the item \
+             is readable from no query at all (#675)"
+        );
+    }
+
+    #[tokio::test]
+    async fn externally_blocked_is_only_the_blocked_stage_and_never_an_archived_one() {
+        let core = seeded_core(
+            vec![
+                fixture_item("a-1", Stage::Blocked),
+                fixture_item("a-2", Stage::Ready),
+                fixture_item("a-3", Stage::Triage),
+                fixture_item("a-4", Stage::Grilling),
+                fixture_item("a-5", Stage::Done),
+            ],
+            vec![],
+        )
+        .await;
+
+        assert_eq!(
+            core.externally_blocked().iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec!["a-1"],
+            "exactly the Blocked-stage arm of the live partition, and no other stage"
+        );
     }
 
     /// Acceptance criterion: "Absent items never appear." An archived

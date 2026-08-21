@@ -24,7 +24,7 @@ describe("demoTaskState", () => {
     // header for why that is a bundling requirement — so this asserts the
     // shape it returns, never object identity.
     expect(state).not.toBeNull();
-    expect(state?.frontier).toHaveLength(12);
+    expect(state?.frontier).toHaveLength(14);
     expect(state?.triageInbox).toHaveLength(17);
     expect(state?.lastTriage?.kind).toBe("failed");
   });

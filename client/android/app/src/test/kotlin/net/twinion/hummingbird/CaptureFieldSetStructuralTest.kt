@@ -78,6 +78,7 @@ class CaptureFieldSetStructuralTest {
         "\"quick\"", "\"normal\"", "\"deep\"",
         "\"low\"", "\"medium\"", "\"high\"",
         "\"@home\"", "\"@computer\"", "\"@phone\"", "\"@errands\"", "\"@garden\"",
+        "\"@homework\"",
     )
 
     @Test

@@ -140,6 +140,43 @@ runtime. Races emits one per series named in its binding. In the snapshot
 lane a subject is exactly one `context_snapshots` row; in the calendar lane
 there is no row and the subject is the question itself.
 
+*Amended 2026-08-21 (#675): a standing question may key on the operator's
+own **items** rather than on an outside source.* Every question this ADR
+was written against reads a thing the operator does not own — a municipal
+feed, a calendar, a race schedule, a CI run, the device itself — and the
+weekend pane's items are merged onto days a *calendar* defined, so the
+calendar is still its subject. `Homework` is the first whose subject is the
+item list itself: it asks "what is the next piece of homework, and what did
+I write down about it", and every part of its answer comes from
+`QuestionInputs.items`. Three consequences this contract now carries:
+
+1. **A question may have no source and no binding at all.** `Homework`
+   declares an empty `sources`, no `calendarRequests` and no binding key —
+   it keys on a **hardcoded context literal**
+   (`panes::homework::HOMEWORK_CONTEXT`, `@homework`, which
+   `decisions::vocabulary::CONTEXTS` pins itself against so the pane and
+   the capture forms cannot disagree about the spelling).
+2. **`unbound` is then unreachable for it, and that is correct.** Nobody
+   binds this question, so there is no setup prompt to route anyone to; an
+   empty item list is `answered` + `dormant` ("No open homework"), on
+   exactly the `none_in_horizon` reasoning in the table above — a question
+   that answered *nothing* is not a question that *failed*. Its only gap is
+   the zone bridge's own.
+3. **`QuestionInputs.items` is "every live item", never "the items your
+   pane should consider".** A question reading it owes its own explicit
+   filter. The weekend pane was given one (`panes::weekend`'s
+   `MERGED_STAGES`) in a separate, behaviour-preserving commit *before*
+   this pane widened the union from `frontier ∪ blocked` to every live
+   item — without it, a captured-but-untriaged item would have started
+   appearing on a weekend day because a different pane needed wider inputs.
+
+`@homework` also fails CONTEXT.md's own test for a Context — *where or with
+what* the work can be done — the test `@waiting` was deleted from the
+suggested list for failing. That objection was raised during grilling and
+**overruled by the operator**; CONTEXT.md's Context entry carries the
+matching amendment, so the widening is on the record on both sides rather
+than only here.
+
 ## Answer state
 
 The first sort axis, and a closed three-arm vocabulary:

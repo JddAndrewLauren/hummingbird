@@ -101,7 +101,7 @@ describe("requiredCalendarRequests", () => {
 });
 
 describe("rankPanes", () => {
-  it("still emits a pane for every question, none of them answered, when nothing is set up", () => {
+  it("still emits a pane for every question, none of them falsely answered, when nothing is set up", () => {
     // The setup prompt is how a question is discovered at all — a registry
     // that dropped an unconfigured question would hide it from the person
     // who has to set it up. Not every question reads `unbound` from
@@ -110,9 +110,21 @@ describe("rankPanes", () => {
     // `bound-but-unacquired` — both are gaps, and the shared assertion here
     // is the one thing every registered question owes: never `answered`
     // with nothing behind it.
+    //
+    // `homework` (#675) is the exception the rule was always going to meet:
+    // nobody binds it and nothing polls it, so an empty mirror is not a gap
+    // — it is the real answer, "No open homework", and it is `answered` and
+    // `dormant`. Excluded by name rather than by weakening the assertion,
+    // so a *second* question that starts answering emptily still fails here.
     const panes = rankPanes(emptyInputs(), "now");
     expect(panes.length).toBeGreaterThan(0);
-    expect(panes.every((pane) => pane.answer.answerState !== "answered")).toBe(true);
+    const bindable = panes.filter((pane) => pane.question !== "homework");
+    expect(bindable.length).toBeGreaterThan(0);
+    expect(bindable.every((pane) => pane.answer.answerState !== "answered")).toBe(true);
+
+    const homework = panes.find((pane) => pane.question === "homework");
+    expect(homework?.answer.answerState).toBe("answered");
+    expect(homework?.answer.band).toBe("dormant");
   });
 
   it("keys each pane by question and subject, never by position", () => {

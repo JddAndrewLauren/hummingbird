@@ -1,5 +1,5 @@
 //! The standing-question panes' decision half (#533/M4, ADR-0025) — the
-//! pane shell contract, the cross-pane sort, the zone bridge, and all eight
+//! pane shell contract, the cross-pane sort, the zone bridge, and all nine
 //! real panes.
 //!
 //! # Why this family exists
@@ -45,6 +45,7 @@
 
 pub mod contract;
 pub mod github;
+pub mod homework;
 pub mod inputs;
 pub mod kimi;
 pub mod race;
@@ -68,9 +69,13 @@ pub use zone::{ZoneFact, ZoneFacts, ZoneQuery};
 /// renders into. Grew from one row (waste alone, #533's probe) to all
 /// eight at #534, which sank the remaining seven: the status four
 /// (kimi/github/uptime/reachability) and the now three
-/// (race/weekend/vacation). The web reads the same list to know which
-/// questions it may stop answering itself.
-pub const SUNK: [(StandingQuestion, Surface); 8] = [
+/// (race/weekend/vacation). #675 added a ninth — [`homework`], the first
+/// question **born** here rather than sunk from the web, and the first
+/// keyed on the operator's own items rather than an outside source. The
+/// web reads the same list to know which questions it may stop answering
+/// itself.
+pub const SUNK: [(StandingQuestion, Surface); 9] = [
+    (StandingQuestion::Homework, Surface::Now),
     (StandingQuestion::Waste, Surface::Now),
     (StandingQuestion::Weekend, Surface::Now),
     (StandingQuestion::Vacation, Surface::Now),
@@ -94,6 +99,7 @@ pub fn zone_queries(surface: Surface, inputs: &PaneInputs) -> Vec<ZoneQuery> {
             continue;
         }
         let asked = match question {
+            StandingQuestion::Homework => homework::homework_zone_queries(inputs),
             StandingQuestion::Waste => waste::waste_zone_queries(inputs),
             StandingQuestion::Weekend => weekend::weekend_zone_queries(inputs.now_ms),
             StandingQuestion::Vacation => vacation::vacation_zone_queries(inputs),
@@ -131,6 +137,9 @@ pub fn rank_panes(
         // it would be a question nobody could ever discover (ADR-0017's own
         // rule).
         let answered: Vec<(String, PaneAnswerCore)> = match question {
+            StandingQuestion::Homework => {
+                vec![(homework::SUBJECT_KEY.to_string(), homework::homework_answer(inputs, facts))]
+            }
             StandingQuestion::Waste => {
                 vec![(waste::SNAPSHOT_KEY.to_string(), waste::waste_answer(inputs, facts))]
             }
@@ -212,6 +221,13 @@ mod tests {
         // of bindings) plus vacation's "today" query — more than waste
         // alone asked before #534, and never zero.
         assert!(now.len() > 2, "expected more than waste's own 2 queries, got {}", now.len());
+        // Homework's own "what day is it here" query (#675) is one of them,
+        // and it is deduplicated against the identical one weekend and
+        // vacation ask — the whole point of keying by `ZoneQuery::key`.
+        let today =
+            ZoneQuery::CivilDate { zone: zone::DEVICE_ZONE.to_string(), at_ms: inputs.now_ms }
+                .key();
+        assert_eq!(now.iter().filter(|query| query.key() == today).count(), 1);
         // None of the Status four (kimi/github/uptime/reachability) is
         // civil-date reasoning, so Status still asks for nothing at all —
         // unchanged by #534 sinking them.
@@ -247,11 +263,15 @@ mod tests {
             facts
         };
         let ranked = rank_panes(Surface::Now, &inputs, &facts);
-        // Waste (bound and answered), plus weekend/vacation/race, each
-        // unbound in this fixture (no calendar connected, no race-series
-        // binding) — still ranked, per ADR-0017's "a pane nobody has bound
-        // yet must still be discoverable" rule.
-        assert_eq!(ranked.len(), 4);
+        // Waste (bound and answered) and homework (answered, and dormant on
+        // an empty mirror — #675: nobody binds it), plus weekend/vacation/
+        // race, each unbound in this fixture (no calendar connected, no
+        // race-series binding) — all still ranked, per ADR-0017's "a pane
+        // nobody has bound yet must still be discoverable" rule.
+        assert_eq!(ranked.len(), 5);
+        let homework = ranked.iter().find(|pane| pane.question == "homework").unwrap();
+        assert_eq!(homework.answer.answer_state, AnswerState::Answered);
+        assert_eq!(homework.answer.band, Band::Dormant);
         let waste = ranked.iter().find(|pane| pane.question == "waste").unwrap();
         assert_eq!(waste.pane_key, "waste:collection");
         assert_eq!(waste.answer.answer_state, AnswerState::Answered);
@@ -267,10 +287,19 @@ mod tests {
         let mut inputs = bound_inputs();
         inputs.bindings = Some(Vec::new());
         let ranked = rank_panes(Surface::Now, &inputs, &ZoneFacts::default());
-        // Every Now question is unbound in this fixture (waste's page
-        // cleared, no calendar, no race series) — all four still rank.
-        assert_eq!(ranked.len(), 4);
-        assert!(ranked.iter().all(|pane| pane.answer.answer_state == AnswerState::Unbound));
+        // Every Now question is unanswerable in this fixture (waste's page
+        // cleared, no calendar, no race series, and no resolved device
+        // zone) — all five still rank.
+        assert_eq!(ranked.len(), 5);
+        // Homework has no binding to be unset, so its unanswerable state is
+        // the bridge's own gap rather than `unbound`: there is no setup
+        // prompt to route anyone to (`homework.rs`'s `homework_answer`).
+        let homework = ranked.iter().find(|pane| pane.question == "homework").unwrap();
+        assert_eq!(homework.answer.answer_state, AnswerState::BoundButUnacquired);
+        assert!(ranked
+            .iter()
+            .filter(|pane| pane.question != "homework")
+            .all(|pane| pane.answer.answer_state == AnswerState::Unbound));
     }
 
     #[test]

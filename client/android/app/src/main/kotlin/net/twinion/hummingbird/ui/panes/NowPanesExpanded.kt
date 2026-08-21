@@ -28,6 +28,9 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 import net.twinion.hummingbird.R
 import uniffi.hummingbird_ffi_mobile.MobilePaneAnswerState
+import uniffi.hummingbird_ffi_mobile.MobileHomeworkFacts
+import uniffi.hummingbird_ffi_mobile.MobileHomeworkItem
+import uniffi.hummingbird_ffi_mobile.MobileHomeworkResolved
 import uniffi.hummingbird_ffi_mobile.MobilePaneFacts
 import uniffi.hummingbird_ffi_mobile.MobileRaceFacts
 import uniffi.hummingbird_ffi_mobile.MobileRaceGap
@@ -38,7 +41,8 @@ import uniffi.hummingbird_ffi_mobile.MobileWasteResolved
 import uniffi.hummingbird_ffi_mobile.MobileWasteStream
 
 // The Now surface's expanded renderings (the pane-content slice, second
-// half) — waste and race, each web `*PaneExpanded.tsx` ported: the bins do
+// half) — homework (#675), waste and race, each web `*PaneExpanded.tsx`
+// ported: the bins do
 // the talking on waste (real kerb colours, three words, a date), and the
 // race card is the prototype's series tile under real rules. Weekend and
 // Vacation deliberately have NO card here: `calendar_connected` is
@@ -64,6 +68,7 @@ import uniffi.hummingbird_ffi_mobile.MobileWasteStream
 @Composable
 internal fun NowPaneExpanded(pane: MobileRankedPane, nowMs: Long) {
     when (val facts = pane.facts) {
+        is MobilePaneFacts.Homework -> HomeworkPaneExpanded(facts.resolved)
         is MobilePaneFacts.Waste -> WastePaneExpanded(pane, facts.resolved)
         is MobilePaneFacts.Race -> RacePaneExpanded(pane, facts.resolved, nowMs)
         // Permanently unbound on Android (no mobile calendar lane): the
@@ -75,6 +80,90 @@ internal fun NowPaneExpanded(pane: MobileRankedPane, nowMs: Long) {
         is MobilePaneFacts.Uptime,
         is MobilePaneFacts.Reachability ->
             error("a Status-surface question reached the Now expanded slot: ${pane.standingQuestion}")
+    }
+}
+
+// -------------------------------------------------------------- homework
+
+/** One open homework item's line — the title, and its deadline beside it
+ * when it has one. A title and a meta line, deliberately, and the web's
+ * pane is the same shape for the same reason: it was first built on
+ * `ItemRow` and the visual gate caught that component ellipsising a title
+ * down to `P.` in the 320px aside (`HomeworkPaneExpanded.tsx`'s header).
+ * This surface has no `ItemRow` in the pane slot to be tempted by anyway.
+ *
+ * Read-only, exactly as the web's is: every affordance this could grow
+ * already exists on the queue above and in the item pane, and #675's own
+ * decision table is flat that the body is a read. */
+@Composable
+private fun HomeworkItemLine(item: MobileHomeworkItem, emphasis: Boolean) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            item.title,
+            style = if (emphasis) {
+                MaterialTheme.typography.titleMedium
+            } else {
+                MaterialTheme.typography.bodyMedium
+            },
+        )
+        val deadline = item.deadline
+        if (deadline != null) {
+            Text(
+                deadline,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomeworkFactsBody(facts: MobileHomeworkFacts) {
+    val winner = facts.winner
+    if (winner == null) {
+        // An empty homework list is good news, reported as a fact — the
+        // brand's own rule about empty states.
+        Text(
+            "Capture one with the @homework context and it shows up here.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        HomeworkItemLine(winner, emphasis = true)
+        // The whole point of the pane: the preparation notes, in the
+        // reader's own words, without going to find the item.
+        val notes = winner.description
+        if (notes != null) {
+            Text(
+                notes,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (facts.others.isNotEmpty()) {
+            Text(
+                if (facts.others.size == 1) "1 more open" else "${facts.others.size} more open",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            for (item in facts.others) {
+                HomeworkItemLine(item, emphasis = false)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeworkPaneExpanded(resolved: MobileHomeworkResolved) {
+    when (resolved) {
+        is MobileHomeworkResolved.Gap -> Text(
+            "Without this device's time zone there is no way to say which day a deadline falls on.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        is MobileHomeworkResolved.Facts -> HomeworkFactsBody(resolved.facts)
     }
 }
 

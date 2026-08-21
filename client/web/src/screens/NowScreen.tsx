@@ -86,11 +86,29 @@ export interface NowScreenProps {
  * `RankedRegion` through a genuinely mounted consumer, proving delivery
  * rather than merely inspecting the store snapshot (#267's review point).
  *
- * `items` (#122) is `task.frontier` and `task.blocked`'s items unioned —
- * exactly `FrontierBoard`'s own `allItems`, computed a second time here
- * because that helper is scoped to that component's render and this
- * function has to stay callable standalone by both `NowScreen` and its own
- * tests. */
+ * `items` (#122, widened at #675) is every live item this device knows
+ * about: `task.frontier`, `task.blocked`'s items, `task.triageInbox`,
+ * `task.grillingItems` and `task.externallyBlocked`. The first two are
+ * `FrontierBoard`'s own `allItems`, computed a second time here because
+ * that helper is scoped to that component's render and this function has to
+ * stay callable standalone by both `NowScreen` and its own tests.
+ *
+ * The last three arrived with the homework pane, whose subject is the
+ * operator's items and whose reading of "open" is everything not Done — a
+ * captured piece of homework is still homework, and so is one waiting on a
+ * callback. The first two of the three were already in `TaskState`;
+ * `externallyBlocked` was not, and needed a query of its own
+ * (`Core::externally_blocked`, `getExternallyBlocked`) because
+ * `task.blocked` is the *relation* blockers and holds only Ready/InProgress
+ * items — so a `Stage::Blocked` item was reachable from no list this screen
+ * held and disappeared from the pane, taking the right answer with it.
+ *
+ * **The weekend pane was pinned against this widening first**
+ * (`weekend.rs`'s `MERGED_STAGES`, its own commit): it merges items onto
+ * calendar days and would otherwise have started showing Triage items the
+ * moment this line changed. A question added later that reads `items` owes
+ * the same explicit filter — the list here is "every live item", never
+ * "the items your pane should consider". */
 export function realQuestionInputs(
   task: TaskState,
   calendarReads: Record<string, CalendarReadDTO | undefined>,
@@ -106,7 +124,13 @@ export function realQuestionInputs(
     paneReads: task.paneReads,
     calendarReads,
     calendarConnected,
-    items: [...task.frontier, ...task.blocked.map((entry) => entry.item)],
+    items: [
+      ...task.frontier,
+      ...task.blocked.map((entry) => entry.item),
+      ...task.triageInbox,
+      ...task.grillingItems,
+      ...task.externallyBlocked,
+    ],
   };
 }
 
