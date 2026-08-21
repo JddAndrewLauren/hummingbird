@@ -78,7 +78,8 @@ use calendar_token::{
 
 use hummingbird_core::bindings::{Binding, BindingKey, BindingValue};
 use hummingbird_core::calendar::{
-    outcome_name, CalendarHorizon, CalendarHostCore, CalendarSelection, CALENDAR_POLL_INTERVAL_MS,
+    outcome_name, CalendarEventsResponse, CalendarHorizon, CalendarHostCore, CalendarSelection,
+    EventRecord, EventStatus, EventWhen, CALENDAR_POLL_INTERVAL_MS,
 };
 use hummingbird_core::decisions::{
     available_actions, can_grill, can_mark_done, frontier, panes, queue, roster, rules, urgency,
@@ -87,9 +88,11 @@ use hummingbird_core::decisions::panes::contract::{
     AnswerState, Band, PaneAnswerCore, StandingQuestion, Surface,
 };
 use hummingbird_core::decisions::panes::inputs::{
-    BindingFact, BindingValueFact, FreshnessFact, PaneInputs, PaneItemFacts, PaneReadFacts,
-    SyncFacts,
+    BindingFact, BindingValueFact, CalendarEventFacts, CalendarEventStatusFact,
+    CalendarEventWhenFacts, CalendarReadFacts, FreshnessFact, PaneInputs, PaneItemFacts,
+    PaneReadFacts, SyncFacts,
 };
+use hummingbird_core::freshness::Freshness;
 use hummingbird_core::decisions::panes::zone::{ZoneFact, ZoneFacts, ZoneQuery};
 use hummingbird_core::decisions::panes::{
     github, kimi, race, reachability, uptime, vacation, waste, weekend,
@@ -3015,13 +3018,24 @@ fn pane_item_facts(
         .collect()
 }
 
+/// The calendar arm of [`mobile_pane_inputs`] — what this device has
+/// mirrored for each question's own window, and whether it has ever
+/// connected a calendar at all. Empty and `false` for phase one
+/// ([`MobileTaskHost::pane_zone_queries`]), which runs *before* any zone is
+/// resolved and so cannot name a window to read.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct CalendarArm {
+    reads: HashMap<String, CalendarReadFacts>,
+    connected: bool,
+}
+
 /// Builds [`PaneInputs`] for every sunk pane on both surfaces — see this
-/// section's header for what each field is for and why the calendar arm
-/// alone stays at its default.
+/// section's header for what each field is for.
 fn mobile_pane_inputs(
     core: &Core<FsSnapshotStore, FsSnapshotStore>,
     now_ms: i64,
     sync: MobileSyncFacts,
+    calendar: CalendarArm,
 ) -> PaneInputs {
     let mut pane_reads = HashMap::new();
     pane_reads.insert(kimi::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(kimi::SOURCE, now_ms)));
@@ -3039,8 +3053,8 @@ fn mobile_pane_inputs(
         // that state for a host where one is possible).
         bindings: Some(bindings),
         pane_reads,
-        calendar_reads: HashMap::new(),
-        calendar_connected: false,
+        calendar_reads: calendar.reads,
+        calendar_connected: calendar.connected,
         items,
         sync: to_sync_facts(sync),
     }
@@ -3250,6 +3264,60 @@ struct CalendarHalf {
     expires_at_ms: Option<i64>,
     /// The last mint's failure code, or `None` if it succeeded.
     last_error: Option<&'static str>,
+}
+
+/// One mirrored event, as a pane rule reads it — `inputs.rs`'s trimmed
+/// shape, not the whole [`EventRecord`]. `recurrence_id`, `organizer`,
+/// `provider_updated_at_ms` and `html_link` stay behind: no sunk pane reads
+/// any of them, and `inputs.rs`'s own discipline is that a field crosses
+/// only once some rule reads it.
+fn to_calendar_event_facts(event: &EventRecord) -> CalendarEventFacts {
+    CalendarEventFacts {
+        provider_event_id: event.provider_event_id.clone(),
+        calendar_id: event.calendar_id.clone(),
+        title: event.title.clone(),
+        when: match &event.when {
+            EventWhen::AllDay { start_date, end_date } => CalendarEventWhenFacts::AllDay {
+                start_date: start_date.clone(),
+                end_date: end_date.clone(),
+            },
+            EventWhen::Timed { start_ms, end_ms } => CalendarEventWhenFacts::Timed {
+                start_ms: *start_ms,
+                end_ms: *end_ms,
+            },
+        },
+        location: event.location.clone(),
+        status: match event.status {
+            EventStatus::Confirmed => CalendarEventStatusFact::Confirmed,
+            EventStatus::Tentative => CalendarEventStatusFact::Tentative,
+            EventStatus::Cancelled => CalendarEventStatusFact::Cancelled,
+        },
+    }
+}
+
+/// A calendar-arm answer, mapped to what the panes read.
+///
+/// **Anything that is not a real `"read"` becomes
+/// [`CalendarReadFacts::NotRead`]** — including the wasm-only `"busy"`
+/// kind, which this host cannot produce. That is not a flattening of two
+/// facts into one: `not_read` already means "this device has nothing to say
+/// about that window", and a host that could not answer has exactly that
+/// much to say. The distinction the panes actually gate on — never
+/// connected vs connected-but-nothing-landed — is `calendar_connected`, a
+/// separate field.
+fn to_calendar_read_facts(response: CalendarEventsResponse) -> CalendarReadFacts {
+    if response.kind != "read" {
+        return CalendarReadFacts::NotRead;
+    }
+    CalendarReadFacts::Read {
+        events: response.events.iter().map(to_calendar_event_facts).collect(),
+        freshness: match response.freshness {
+            None | Some(Freshness::Unknown) => FreshnessFact::Unknown,
+            Some(Freshness::Age { age_ms, declared_cadence_ms }) => {
+                FreshnessFact::Age { age_ms, declared_cadence_ms }
+            }
+        },
+    }
 }
 
 impl CalendarHalf {
@@ -4369,7 +4437,16 @@ impl MobileTaskHost {
     /// it unchanged.
     pub async fn pane_zone_queries(&self, surface: MobileSurface, now_ms: i64) -> Vec<MobileZoneQuery> {
         let inner = self.inner.lock().await;
-        let inputs = mobile_pane_inputs(&inner.core, now_ms, MobileSyncFacts::default());
+        // Phase one reads no calendar arm — it runs before any zone is
+        // resolved, and every calendar window this lane needs is a function
+        // of the reader's own zone. `weekend`/`vacation` ask for their zone
+        // facts here and read their events in phase two.
+        let inputs = mobile_pane_inputs(
+            &inner.core,
+            now_ms,
+            MobileSyncFacts::default(),
+            CalendarArm::default(),
+        );
         panes::zone_queries(map_surface(surface), &inputs)
             .iter()
             .map(to_mobile_zone_query)
@@ -4391,9 +4468,13 @@ impl MobileTaskHost {
         zone_facts: Vec<MobileZoneFact>,
         sync: MobileSyncFacts,
     ) -> Vec<MobileRankedPane> {
-        let inner = self.inner.lock().await;
-        let inputs = mobile_pane_inputs(&inner.core, now_ms, sync);
         let zone = to_zone_facts(zone_facts);
+        // The calendar lock is taken and released BEFORE `inner`'s, never
+        // while holding it — see [`CalendarHalf`] for the whole of this
+        // crate's lock discipline.
+        let calendar = self.calendar_arm(now_ms, &zone).await;
+        let inner = self.inner.lock().await;
+        let inputs = mobile_pane_inputs(&inner.core, now_ms, sync, calendar);
         panes::rank_panes(map_surface(surface), &inputs, &zone)
             .into_iter()
             .map(|record| {
@@ -4575,6 +4656,42 @@ impl MobileTaskHost {
     /// that order is the whole lock discipline here.
     async fn device_token(&self) -> Option<String> {
         self.inner.lock().await.api_key.clone()
+    }
+
+    /// Phase two's calendar arm (#621): each calendar-reading question's own
+    /// window, read off this device's mirror.
+    ///
+    /// **The windows are computed core-side, never here.**
+    /// `weekend_calendar_interval` and `vacation_calendar_interval` are the
+    /// same functions the web's `calendarRequests` will resolve to — a
+    /// Kotlin or ffi-side copy of "Friday 17:00 through Sunday" or "seven
+    /// days back, seven hundred and thirty ahead" is exactly the drift
+    /// ADR-0025 exists to prevent. A question whose zone could not be
+    /// resolved contributes **no entry at all**, which the panes already
+    /// read as "not requested yet" — never an empty `Read`, which would
+    /// claim this device had looked and found nothing.
+    async fn calendar_arm(&self, now_ms: i64, zone: &ZoneFacts) -> CalendarArm {
+        let calendar = self.calendar.lock().await;
+        let mut reads = HashMap::new();
+        let intervals = [
+            (weekend::CALENDAR_REQUEST_KEY, weekend::weekend_calendar_interval(now_ms, zone)),
+            (vacation::CALENDAR_REQUEST_KEY, vacation::vacation_calendar_interval(now_ms, zone)),
+        ];
+        for (key, interval) in intervals {
+            let Some(interval) = interval else { continue };
+            let response = calendar
+                .host
+                .events_in_interval(
+                    interval.start_ms,
+                    interval.end_ms,
+                    interval.start_date,
+                    interval.end_date,
+                    now_ms,
+                )
+                .await;
+            reads.insert(key.to_string(), to_calendar_read_facts(response));
+        }
+        CalendarArm { reads, connected: calendar.opted_in }
     }
 }
 
@@ -5590,6 +5707,63 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    /// #621's whole point: the weekend and vacation panes gate on
+    /// `calendar_connected` **first**, so before #564 they were
+    /// permanently "not set up" on the phone whatever the mirror held.
+    /// This is the wiring, at the seam that used to hardcode `false`.
+    #[tokio::test]
+    async fn connecting_a_calendar_moves_the_weekend_pane_off_not_set_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+
+        fn weekend_state(panes: &[MobileRankedPane]) -> MobilePaneAnswerState {
+            panes
+                .iter()
+                .find(|pane| pane.standing_question == MobileStandingQuestion::Weekend)
+                .expect("the weekend pane ranks on Now")
+                .answer
+                .answer_state
+        }
+
+        let before = host
+            .rank_panes(MobileSurface::Now, 1_000, Vec::new(), MobileSyncFacts::default())
+            .await;
+        // `Unbound` is the "go set this up" reading — the only state
+        // `!calendar_connected` produces.
+        assert_eq!(weekend_state(&before), MobilePaneAnswerState::Unbound);
+
+        host.init_calendar(true, Vec::new()).await;
+
+        let after = host
+            .rank_panes(MobileSurface::Now, 1_000, Vec::new(), MobileSyncFacts::default())
+            .await;
+        // Connected, but this device has never actually polled — a
+        // different fact, and the one that stops a connected phone reading
+        // as un-set-up.
+        assert_eq!(
+            weekend_state(&after),
+            MobilePaneAnswerState::BoundButUnacquired
+        );
+    }
+
+    /// Phase one must stay calendar-free: it runs before any zone is
+    /// resolved, so there is no window to read, and asking anyway would be
+    /// a disk read per tick for an answer nothing uses.
+    #[tokio::test]
+    async fn the_zone_query_phase_reads_no_calendar_arm() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+        host.init_calendar(true, Vec::new()).await;
+
+        // The queries a connected device asks are the same ones a
+        // never-connected one does — the calendar arm contributes none.
+        let connected = host.pane_zone_queries(MobileSurface::Now, 1_000).await;
+        host.disconnect_calendar().await;
+        let disconnected = host.pane_zone_queries(MobileSurface::Now, 1_000).await;
+
+        assert_eq!(connected, disconnected);
     }
 
     #[tokio::test]

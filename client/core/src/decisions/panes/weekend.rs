@@ -72,7 +72,7 @@ use super::inputs::{
     CalendarEventFacts, CalendarEventStatusFact, CalendarEventWhenFacts, CalendarReadFacts,
     PaneInputs, PaneItemFacts,
 };
-use super::contract::{AnswerState, Band, PaneAnswerCore};
+use super::contract::{AnswerState, Band, CalendarInterval, PaneAnswerCore};
 use super::zone::{add_civil_days, weekday_index, CivilDate, ZoneFacts, ZoneQuery, DEVICE_ZONE};
 
 use hummingbird_domain::deadline_sort_key;
@@ -258,6 +258,30 @@ pub fn weekend_window(now_ms: i64, facts: &ZoneFacts) -> Option<WeekendWindow> {
     let under_way = now_ms >= start_ms && now_ms <= end_ms;
 
     Some(WeekendWindow { start_ms, end_ms, days, under_way })
+}
+
+/// The calendar-arm interval this question needs (#267), off its own
+/// resolved window — `weekend-pane/question.ts`'s `calendarRequests`,
+/// sunk by #564 because Android needs the identical window and a second
+/// copy of these bounds is exactly the drift ADR-0025 forbids.
+///
+/// The lower civil bound is **Friday's own day key**, not `start_ms`'s
+/// (Friday 17:00): an all-day event covering Friday is a fact about the
+/// whole day, and asking from 17:00 would ask about Saturday onwards —
+/// the same reason [`in_window`] uses `days[0].start_ms` below. The upper
+/// civil bound is exclusive, so it is the day after Sunday; `end_ms` is
+/// Sunday 23:59:59.999 and one millisecond later is Monday local midnight.
+///
+/// `None` when [`DEVICE_ZONE`] could not be resolved — never a window
+/// built off a UTC pivot (the module header).
+pub fn weekend_calendar_interval(now_ms: i64, facts: &ZoneFacts) -> Option<CalendarInterval> {
+    let window = weekend_window(now_ms, facts)?;
+    Some(CalendarInterval {
+        start_ms: window.start_ms,
+        end_ms: window.end_ms,
+        start_date: window.days[0].date.clone(),
+        end_date: add_civil_days(&window.days[2].date, 1)?,
+    })
 }
 
 /// Day-membership test for an item's due/do-date — deliberately NOT
@@ -610,6 +634,36 @@ mod tests {
     #[test]
     fn an_unresolvable_device_zone_is_a_gap_never_a_utc_fallback() {
         assert_eq!(weekend_window(at(2026, 8, 10, 9, 0), &ZoneFacts::default()), None);
+    }
+
+    // ---------------------------------------------- weekend_calendar_interval
+
+    #[test]
+    fn the_calendar_interval_covers_the_whole_of_friday_and_ends_the_day_after_sunday() {
+        // Friday 2026-08-14 at 09:00 device time.
+        let now_ms = at(2026, 8, 14, 9, 0);
+        let facts = resolve(&weekend_zone_queries(now_ms));
+        let window = weekend_window(now_ms, &facts).expect("a resolvable window");
+
+        let interval = weekend_calendar_interval(now_ms, &facts).expect("an interval");
+
+        // The instants are the window's own, unmodified.
+        assert_eq!(interval.start_ms, window.start_ms);
+        assert_eq!(interval.end_ms, window.end_ms);
+        // The civil arm starts at Friday's whole day, NOT at 17:00's day —
+        // an all-day event covering Friday is a fact about the whole day,
+        // and asking from 17:00 would ask about Saturday onwards.
+        assert_eq!(interval.start_date, day_key(2026, 8, 14));
+        // ...and ends exclusively on the day after Sunday.
+        assert_eq!(interval.end_date, day_key(2026, 8, 17));
+    }
+
+    #[test]
+    fn an_unresolvable_device_zone_has_no_calendar_interval() {
+        assert_eq!(
+            weekend_calendar_interval(at(2026, 8, 14, 9, 0), &ZoneFacts::default()),
+            None
+        );
     }
 
     // --------------------------------------------------------- merge_counts
