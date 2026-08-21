@@ -37,14 +37,19 @@
 # `server/github-status/tests/contract.rs::polled_every_ms_is_one_day` pins
 # the constant's own side.
 #
-# **The credential.** `GITHUB_STATUS_INGEST_TOKEN` is an `ingest`-scope
+# **The credential.** `GH_STATUS_INGEST_TOKEN` is an `ingest`-scope
 # token bound to `github-hummingbird/v1`, minted from the operator's
 # terminal against `ADMIN_SECRET` — on `city-waste`'s own blast-radius
 # reasoning, this token reaches one route for one source and its worst-case
 # abuse is a wrong reading on this very pane. **No other credential is
 # needed**: reading this repo's own run history is covered by the automatic,
 # per-run `GITHUB_TOKEN` GitHub Actions already provides, scoped down to
-# read-only via `permissions:` below.
+# read-only via `permissions:` below. The `GH_` prefix is not cosmetic:
+# GitHub reserves `GITHUB_` for its own secrets and answers 422 to any
+# attempt to create one, so the obvious `GITHUB_STATUS_INGEST_TOKEN` this
+# shipped with was unprovisionable — and an unresolvable `secrets.*`
+# expands to the empty string, so the lane failed as "not set" daily rather
+# than as anything naming the real cause (#314).
 name: github-status
 
 on:
@@ -90,7 +95,7 @@ jobs:
         working-directory: server
         env:
           HB_BASE_URL: https://hb.twinion.net
-          HB_INGEST_TOKEN: ${{ secrets.GITHUB_STATUS_INGEST_TOKEN }}
+          HB_INGEST_TOKEN: ${{ secrets.GH_STATUS_INGEST_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: cargo run -q -p hummingbird-github-status
