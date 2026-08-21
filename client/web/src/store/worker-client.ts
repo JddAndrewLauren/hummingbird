@@ -19,6 +19,7 @@ import type {
   StepDTO,
   SyncCadenceRequest,
   TaskActionName,
+  TaskItemDTO,
   TaskStageName,
   TaskWorkerRequest,
   TierName,
@@ -96,6 +97,7 @@ type Store = Pick<
   | "setTaskProjectLinks"
   | "setTaskRoute"
   | "setTaskFog"
+  | "setTaskActions"
   | "setTaskPaneRead"
   | "setTaskGrillDraft"
 >;
@@ -503,6 +505,58 @@ export function attachWorkerClient(
           // edit becomes visible once the next completed cycle pulls it
           // back, so this re-request answers the *old* row until then.
           requestFog(worker, message.projectId);
+        }
+        return;
+      case "actions":
+        store.setTaskActions(message.projectId, message.actions);
+        return;
+      case "reorderActionResult":
+        store.setTaskState({
+          lastActionReorder: {
+            seed: message.seed,
+            projectId: message.projectId,
+            itemId: message.itemId,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        if (message.kind === "ok") {
+          // Overlaid immediately core-side (`Core::patch_action_position`'s
+          // own doc), unlike every other project-lane write above — this
+          // re-request still follows, so the dossier's list settles onto
+          // whatever the mirror actually confirms rather than trusting its
+          // own optimistic guess forever.
+          requestActions(worker, message.projectId);
+        }
+        return;
+      case "createStepResult":
+        store.setTaskState({
+          lastStepWrite: {
+            seed: message.seed,
+            itemId: message.itemId,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        if (message.kind === "ok") {
+          // No overlay for steps (`Core::create_step`'s own doc) — the new
+          // Step becomes visible once the next completed cycle pulls it
+          // back, so this re-request answers the *old* checklist until then.
+          requestSteps(worker, message.itemId);
+        }
+        return;
+      case "patchStepResult":
+        store.setTaskState({
+          lastStepWrite: {
+            seed: message.seed,
+            itemId: message.itemId,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        if (message.kind === "ok") {
+          // No overlay for steps, same reasoning as `createStepResult`.
+          requestSteps(worker, message.itemId);
         }
         return;
       case "isPendingResult":
@@ -1170,6 +1224,67 @@ export function patchFog(
     position: patch.position ?? null,
     resolvedAtTouched: "resolvedAt" in patch,
     resolvedAt: patch.resolvedAt ?? null,
+    nowMs,
+  });
+}
+
+/** #629's per-project Action read — the dossier's ordered action list,
+ * same `requestFog`-style per-id fetch. */
+export function requestActions(worker: WorkerLike, projectId: string): void {
+  worker.postMessage({ type: "getActions", projectId });
+}
+
+/** #629's reorder control — moves one Action's `projectPos`. `current` is
+ * the caller's own last-known copy of the row (the CAS `base` a 409 is
+ * diffed against). */
+export function reorderAction(
+  worker: WorkerLike,
+  seed: string,
+  projectId: string,
+  current: TaskItemDTO,
+  position: number,
+  nowMs: number,
+): void {
+  worker.postMessage({ type: "reorderAction", seed, projectId, current, position, nowMs });
+}
+
+/** #629's step create. `seed` mints `Core::create_step`'s own queue-entry
+ * id — same caller-mints contract as `createFog`'s. The body is trimmed
+ * and an empty one refused at the wasm seam, not here. */
+export function createStep(
+  worker: WorkerLike,
+  seed: string,
+  itemId: string,
+  body: string,
+  position: number,
+  nowMs: number,
+): void {
+  worker.postMessage({ type: "createStep", seed, itemId, body, position, nowMs });
+}
+
+/** #629's step patch — ticking, rewording, repositioning, or
+ * flagging/clearing a Step's deletion, all share this one call. `current`
+ * is the caller's own last-known copy of the row (the CAS `base` a 409 is
+ * diffed against); every field in `patch` is `undefined` to mean "leave
+ * this alone," except `deletedAt`, which distinguishes a present-but-`null`
+ * clear from an absent "don't touch" the same way `patchFog`'s
+ * `patch.resolvedAt` does. */
+export function patchStep(
+  worker: WorkerLike,
+  seed: string,
+  current: StepDTO,
+  patch: { body?: string; done?: boolean; position?: number; deletedAt?: number | null },
+  nowMs: number,
+): void {
+  worker.postMessage({
+    type: "patchStep",
+    seed,
+    current,
+    body: patch.body ?? null,
+    done: patch.done ?? null,
+    position: patch.position ?? null,
+    deletedAtTouched: "deletedAt" in patch,
+    deletedAt: patch.deletedAt ?? null,
     nowMs,
   });
 }

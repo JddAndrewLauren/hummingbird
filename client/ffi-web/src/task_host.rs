@@ -491,6 +491,41 @@ pub struct PatchFogResponse {
     pub error: Option<String>,
 }
 
+/// What [`TaskHostCore::patch_action_position`] resolves to (#629) — the
+/// dossier's reorder control. Same shape as [`PatchProjectResponse`]:
+/// `"failed"` is a durability failure enqueueing the write; a 409 is
+/// handled, not swallowed, through the ordinary CAS path (ADR-0030
+/// decision 1 — `project_pos` is shared-owned with `/to-actions`, so this
+/// is an ordinary outcome, not a bespoke conflict).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PatchActionPositionResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
+/// What [`TaskHostCore::create_step`] resolves to (#629). Same three-way
+/// split as [`CreateFogResponse`]: `"ok"` carries the minted id, `"failed"`
+/// is either a body this seam refused outright or a durability failure
+/// enqueueing the create, and `"busy"` is the core answering nothing at
+/// all. An `"ok"` means *enqueued*, not *saved* — there is no optimistic
+/// overlay ([`Core::create_step`]), so the Step appears in
+/// [`TaskHostCore::steps`] only after a completed cycle pulls it back.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CreateStepResponse {
+    pub kind: &'static str,
+    pub id: Option<String>,
+    pub error: Option<String>,
+}
+
+/// What [`TaskHostCore::patch_step`] resolves to (#629) — ticking,
+/// rewording, repositioning, or flagging/clearing a Step's deletion all
+/// share this one entry point. Same shape as [`PatchFogResponse`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PatchStepResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
 /// One Ledger row (`Core::ledger`): the item's fields flat at the top level
 /// exactly like [`FrontierItemDTO`] (same `#[serde(flatten)]` reasoning),
 /// plus the row's derivable facts — `pending` stamped through the same
@@ -1482,6 +1517,121 @@ impl TaskHostCore {
         match self.core.patch_fog(seed, current, question, position, resolved_at, now_ms).await {
             Ok(()) => PatchFogResponse { kind: "ok", error: None },
             Err(error) => PatchFogResponse {
+                kind: "failed",
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Every live Action on a project, per [`Core::actions_for`] (#629) —
+    /// the dossier's ordered action list. An Action is an ordinary item, so
+    /// this carries the same pending-flag-stamped shape every other item
+    /// list here does ([`TaskHostCore::with_pending`]), unlike
+    /// [`TaskHostCore::project_links`]/[`TaskHostCore::open_fog`], whose
+    /// rows carry no such flag.
+    pub fn project_actions(&self, project_id: &str) -> ItemListResponse {
+        ItemListResponse {
+            kind: "ok",
+            items: self
+                .core
+                .actions_for(project_id)
+                .into_iter()
+                .map(|item| self.with_pending(item))
+                .collect(),
+        }
+    }
+
+    /// Moves one Action's `project_pos`, per [`Core::patch_action_position`]
+    /// (#629) — the dossier's reorder control. `current` is the caller's
+    /// own last-known copy of the row (from
+    /// [`TaskHostCore::project_actions`]), the same "caller supplies
+    /// `base`" contract every other CAS write here follows. A 409 here is
+    /// an ordinary outcome (ADR-0030 decision 1: `project_pos` is
+    /// shared-owned with `/to-actions`), handled by the same
+    /// rebase-and-retry machinery and dead-letter journal every other CAS
+    /// write here uses.
+    pub async fn patch_action_position(
+        &mut self,
+        seed: &str,
+        current: &Item,
+        position: i64,
+        now_ms: i64,
+    ) -> PatchActionPositionResponse {
+        match self.core.patch_action_position(seed, current, position, now_ms).await {
+            Ok(()) => PatchActionPositionResponse { kind: "ok", error: None },
+            Err(error) => PatchActionPositionResponse {
+                kind: "failed",
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Creates a Step on an item's checklist, per [`Core::create_step`]
+    /// (#629). The body is trimmed and an empty one is refused **before
+    /// `Core` is reached** — the authority answers 400 on
+    /// `body.is_empty()` (`server/authority/src/handlers/steps.rs`), same
+    /// discipline [`TaskHostCore::create_fog`] follows for `question`.
+    pub async fn create_step(
+        &mut self,
+        seed: &str,
+        item_id: &str,
+        body: &str,
+        position: i64,
+        now_ms: i64,
+    ) -> CreateStepResponse {
+        let body = body.trim();
+        if body.is_empty() {
+            return CreateStepResponse {
+                kind: "failed",
+                id: None,
+                error: Some("body must be non-empty".to_string()),
+            };
+        }
+        match self.core.create_step(seed, item_id, body, position, now_ms).await {
+            Ok(id) => CreateStepResponse { kind: "ok", id: Some(id), error: None },
+            Err(error) => CreateStepResponse {
+                kind: "failed",
+                id: None,
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Patches a Step, per [`Core::patch_step`] (#629) — ticking, rewording,
+    /// repositioning, or flagging/clearing its deletion (ADR-0020), all
+    /// through this one entry point. `current` is the caller's own
+    /// last-known copy of the row (from [`TaskHostCore::steps`]), the same
+    /// "caller supplies `base`" contract every other CAS write here
+    /// follows. `deleted_at_touched` distinguishes "leave this field
+    /// alone" (`false`) from "set it, possibly to `null`" (`true`, with
+    /// the paired value carrying the new value or `None`) — the same
+    /// double-`Option` [`hummingbird_domain::StepPatch::deleted_at`]
+    /// itself carries, flattened for the wasm boundary exactly like
+    /// [`TaskHostCore::patch_fog`]'s `resolved_at_touched`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn patch_step(
+        &mut self,
+        seed: &str,
+        current: &Step,
+        body: Option<String>,
+        done: Option<bool>,
+        position: Option<i64>,
+        deleted_at_touched: bool,
+        deleted_at: Option<i64>,
+        now_ms: i64,
+    ) -> PatchStepResponse {
+        if let Some(body) = &body {
+            if body.trim().is_empty() {
+                return PatchStepResponse {
+                    kind: "failed",
+                    error: Some("body must be non-empty".to_string()),
+                };
+            }
+        }
+        let deleted_at = deleted_at_touched.then_some(deleted_at);
+        match self.core.patch_step(seed, current, body, done, position, deleted_at, now_ms).await {
+            Ok(()) => PatchStepResponse { kind: "ok", error: None },
+            Err(error) => PatchStepResponse {
                 kind: "failed",
                 error: Some(error.to_string()),
             },

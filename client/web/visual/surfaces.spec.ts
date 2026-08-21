@@ -516,7 +516,10 @@ for (const theme of THEMES) {
       // column's POPULATED Route card does too — the fixture seeds a real
       // destination/notes pair onto the same project. Since #628, so does
       // the reading column's fog card — the fixture seeds two open
-      // questions onto the same project.
+      // questions onto the same project. Since #629, so does the action
+      // list — two actions, route order, one carrying steps and one
+      // carrying none, so both an expanded action's populated checklist
+      // and its empty-checklist sibling ship photographed.
       await openApp(page, theme, "board");
       await show(page, "Projects", testInfo.project.name);
       await page.getByRole("heading", { level: 3, name: "House repairs" }).click();
@@ -534,9 +537,52 @@ for (const theme of THEMES) {
       await expect(
         page.getByText("Does the deck need a permit, or does the fence-line survey cover it?"),
       ).toBeVisible();
+      // Same guarantee for the action list (#629): both actions render,
+      // route order.
+      await expect(page.getByRole("button", { name: "Fit the new tap washer" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Order the replacement fence panels" })).toBeVisible();
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
         path: `visual/.captures/projects-dossier-${testInfo.project.name}-${theme}.png`,
+        fullPage: false,
+      });
+
+      // #629: selecting an action expands its steps checklist inline
+      // beneath the row, never into the aside — the "expanded action" and
+      // "action with no steps" visual cases. A second capture rather than
+      // overwriting the first, so both the closed and the open state stay
+      // reviewable.
+      await page.getByRole("button", { name: "Fit the new tap washer" }).click();
+      await expect(page.getByText("Turn off the stopcock")).toBeVisible();
+      await expect(page.getByText("Buy a washer that matches the old one")).toBeVisible();
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({
+        path: `visual/.captures/projects-dossier-action-expanded-${testInfo.project.name}-${theme}.png`,
+        fullPage: false,
+      });
+
+      await page.getByRole("button", { name: "Fit the new tap washer" }).click();
+      await page.getByRole("button", { name: "Order the replacement fence panels" }).click();
+      await expect(page.getByText("No steps on this action yet.")).toBeVisible();
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({
+        path: `visual/.captures/projects-dossier-action-no-steps-${testInfo.project.name}-${theme}.png`,
+        fullPage: false,
+      });
+    });
+
+    test("projects: a dossier with no actions", async ({ page }, testInfo) => {
+      // #629: "Autumn garden clear-up" is the fixture's project with no
+      // actions at all — the empty state must say so rather than looking
+      // like an unanswered read forever.
+      await openApp(page, theme, "board");
+      await show(page, "Projects", testInfo.project.name);
+      await page.getByRole("heading", { level: 3, name: "Autumn garden clear-up" }).click();
+      await expect(page.getByRole("heading", { level: 2, name: "Autumn garden clear-up" })).toBeVisible();
+      await expect(page.getByText("No actions on this Route yet.")).toBeVisible();
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({
+        path: `visual/.captures/projects-dossier-no-actions-${testInfo.project.name}-${theme}.png`,
         fullPage: false,
       });
     });
