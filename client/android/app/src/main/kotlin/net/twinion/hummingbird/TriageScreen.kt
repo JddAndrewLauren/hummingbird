@@ -190,13 +190,18 @@ fun TriageScreen(
                     val current = state
                     val board = (current as? TriageState.Loaded)?.board
 
-                    // The constant key is deliberate: per-item state inside
-                    // the panel is keyed on the item id itself
-                    // (`rememberSaveable(itemId)`), so re-keying this item
-                    // would churn the saved-state registry for no gain.
+                    // **The key names the item.** It was constant once, on
+                    // the reasoning that the panel keys its own state on the
+                    // item id — which was wrong twice over, and shipped the
+                    // trap `README`'s "The title-edit trap" records: a
+                    // constant slot key means the panel is disposed and
+                    // recomposed at the SAME slot on a selection change, and
+                    // LazyColumn's `SaveableStateHolder` hands the next item
+                    // whatever the last one saved there. Naming the item is
+                    // the churn we want: item B's pane starts as item B's.
                     selectedId?.let { id ->
                         if (board?.items?.any { it.id == id } == true) {
-                            item(key = "selected-item") {
+                            item(key = "selected-item-$id") {
                                 Card(
                                     modifier = Modifier.fillMaxWidth(),
                                     colors = CardDefaults.cardColors(

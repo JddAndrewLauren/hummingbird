@@ -54,10 +54,10 @@ import org.robolectric.annotation.GraphicsMode
  * graphics puts real Minikin measurement behind the render, which is what
  * makes the numbers above real. Do not drop it to make something else pass.
  *
- * The per-site half is `the four sites reach for ChoiceRow, not a bare Row`
+ * The per-site half is `every ChoiceRow site reaches for it, not a bare Row`
  * below: measuring the shared component proves the component wraps, and
  * that source pin — the same "parse the real source" discipline
- * `NowScreenStructuralTest` uses — is what proves the four sites use it.
+ * `NowScreenStructuralTest` uses — is what proves each site uses it.
  *
  * `sdk = [35]` is this module's own `minSdk`, and the stock `Application`
  * keeps `HummingbirdApp`'s WorkManager lane out of a layout measurement.
@@ -144,7 +144,7 @@ class ChoiceRowWrappingTest {
     }
 
     @Test
-    fun `the four sites reach for ChoiceRow, not a bare Row`() {
+    fun `every ChoiceRow site reaches for it, not a bare Row`() {
         // The **call** form with a count, never `contains("ChoiceRow")`:
         // the import line alone satisfies a bare name check, so a site
         // reverted to a plain `Row` with its import left behind would keep
@@ -152,21 +152,22 @@ class ChoiceRowWrappingTest {
         // between the component measured above and the screens that need
         // it.
         val sites = mapOf(
-            // Sites 1 and 2: the item's own action row (`Cancel` was
-            // vertical), and the `Grill me` + submit pair beneath it — the
-            // latter arrived from the Triage editor when the pane unified.
-            // Site 2 keeps `ChoiceRow` but is required never to *use* its
-            // wrapping: `ItemDetailSubmitRowTest` measures that its two
-            // controls share a line at 320dp, which is what the shortened
-            // submit word bought.
-            "ItemDetailPanel.kt" to 2,
-            // Sites 3 and 4: the interview's answer chips, and the `Keep`
+            // Site 1: the item's own action row, where `Cancel` was the
+            // label that went vertical. One, not two: the `Grill me` +
+            // submit pair beneath it used to be a second `ChoiceRow`, and
+            // is now a fixed `Row` — the pane's one action line, holding
+            // the grill, the microtask affordance, the submit and the
+            // mark-done check, which `ItemDetailSubmitRowTest` measures
+            // never wraps at the narrowest width any host gives it. A
+            // second `ChoiceRow {` here is that row admitting it cannot
+            // fit, which is the defect that test exists to catch.
+            "ItemDetailPanel.kt" to 1,
+            // Sites 2 and 3: the interview's answer chips, and the `Keep`
             // that escapes the discard prompt.
             "GrillTakeoverScreen.kt" to 2,
             // Zero, deliberately: Triage's opened pane IS `ItemDetailPanel`
-            // since the unification, so its `Grill me` + `Promote` row is
-            // site 2 above. A `ChoiceRow {` here again means a second
-            // editor has grown back.
+            // since the unification, so its own act row is site 1 above. A
+            // `ChoiceRow {` here again means a second editor has grown back.
             "TriageScreen.kt" to 0,
         )
         for ((file, expected) in sites) {

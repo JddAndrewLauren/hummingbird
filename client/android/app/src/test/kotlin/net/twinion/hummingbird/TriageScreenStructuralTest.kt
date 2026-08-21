@@ -187,17 +187,26 @@ class TriageScreenStructuralTest {
     @Test
     fun `the opened capture expands at index 0 of the one LazyColumn, the Now pattern`() {
         // Same inline-expansion shape as NowScreen: the pane is an item
-        // INSIDE the queue's LazyColumn (key "selected-item"), above the
-        // rows, which keep rendering below — and the pane IS
-        // `ItemDetailPanel`. The separate seeded editor is gone: one panel,
-        // one draft, one patch rule, with #360 kept by the mode above
-        // instead of by a second implementation.
+        // INSIDE the queue's LazyColumn, above the rows, which keep
+        // rendering below — and the pane IS `ItemDetailPanel`. The separate
+        // seeded editor is gone: one panel, one draft, one patch rule, with
+        // #360 kept by the mode above instead of by a second
+        // implementation.
+        //
+        // The slot key **names the item**, and a constant one is a defect,
+        // not a style: it makes the panel's disposal-and-recompose land on
+        // the same `SaveableStateHolder` slot, which handed item B the state
+        // item A saved there (`README`'s "The title-edit trap").
         assertTrue(
-            "the opened capture must be the LazyColumn's selected-item entry",
+            "the opened capture must be the LazyColumn's per-item selected-item entry",
+            screenSrc.contains("item(key = \"selected-item-\$id\")"),
+        )
+        assertFalse(
+            "and the key must not go back to a constant — that is the leak",
             screenSrc.contains("item(key = \"selected-item\")"),
         )
         val lazyColumn = screenSrc.indexOf("LazyColumn(")
-        val pane = screenSrc.indexOf("item(key = \"selected-item\")")
+        val pane = screenSrc.indexOf("item(key = \"selected-item-")
         val rows = screenSrc.indexOf("NowRow(")
         assertTrue("TriageScreen must keep one LazyColumn", lazyColumn >= 0)
         assertTrue("the pane item must sit inside the LazyColumn", pane > lazyColumn)

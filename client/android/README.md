@@ -960,9 +960,12 @@ target being composed, not on the flag that will eventually compose it** —
 and a `rememberSaveable` keyed per item makes "the flag is true before the
 content exists" reachable on the very first frame.
 
-Exercised and settled: title-edit mode does **not** leak across selections
-(the fixed bug — open the title edit on one row, close, open another, and
-the accessibility tree shows no `EditText`); a dirty draft raises the one
+Exercised and settled — with one claim that was **wrong**, corrected below:
+title-edit mode was recorded here as not leaking across selections (open the
+title edit on one row, close, open another, and the accessibility tree shows
+no `EditText`). It did leak; the operator hit it, and it reproduces every
+time. See "The title-edit trap" below for what the check must actually be. A
+dirty draft raises the one
 `DiscardConfirmation` from Back, and Discard resets the draft to its seed
 while leaving the pane open; a promote closes the pane and drops the
 captured count (12 → 11); the pane's own mark-done check does the same
@@ -970,6 +973,78 @@ captured count (12 → 11); the pane's own mark-done check does the same
 per round 5's lesson — and note the pane's check is a full 48dp target only
 when it is not clipped by the viewport edge, so measure it scrolled into
 view or a clipped 15px node reads as a layout defect it is not.
+
+## The title-edit trap, and what `rememberSaveable(input)` does not do
+
+Operator report, 2026-08-20: tapping an item's title opened its inline field
+with **no way out that did not commit a title**, and every item selected
+afterwards opened in edit mode too. Both halves reproduce on hardware every
+time, and one of them had been recorded above as verified — which is the more
+useful half of this note.
+
+**The mechanism.** Both inline hosts rendered the pane as
+`item(key = "selected-item")` — a *constant* LazyColumn key. Selecting
+another item disposes the panel and recomposes it at the same slot, and
+LazyColumn's `SaveableStateHolder` saves that slot's state on the way out and
+offers it back on the way in. (Those keys name the item now — the second
+half of the fix, below.) `rememberSaveable(itemId)` does not stop this:
+its `inputs` decide only whether `init()` is *eligible* to run, and the
+registry is consulted **first**, under a key derived from the position in the
+composition tree. A restored value therefore wins over `init()` even though
+the input changed. Item A's `true` becomes item B's open field.
+
+Four states in the pane were written this way, and two of the leaks were
+watched happen with `uiautomator dump`: the title's edit mode, and the
+details disclosure (open the disclosure on one item, select another, its
+pane is already disclosed). The comments claiming `(itemId)` was the fix had
+been in the file since the unification, and the pass above tested the right
+behaviour on the wrong path — evidently without the save/restore cycle a
+real selection change performs. **A leak that needs a dispose to appear
+cannot be checked without disposing**: close the pane, or select another
+item, and dump.
+
+The fix has two shapes, and which one a piece of state gets is the whole
+decision:
+
+- **State worth keeping per item** — the details disclosure, each section's
+  open/shut, the microtask grain — names the item in its **registry key**,
+  `key = "details-open-$itemId"`, the same shape the two `viewModel(...)`
+  calls already used. Recreation survival is kept: rotating twice with the
+  disclosure open brings it back open, on the right item.
+- **A transient mode** — title-edit — is a plain `remember(itemId)`, with no
+  registry entry at all. A per-item key would have fixed the cross-item half
+  and left the other: item A's own restored `true` is still item A's trap
+  when it is next opened. Nothing is lost by shutting it, because what was
+  typed lives in the ViewModel's draft and shows on the title line either
+  way. It also removes the reachable path to the
+  `FocusRequester is not initialized` crash above at its source, rather than
+  guarding it (the guard stays — a reload can still empty the draft under an
+  open field).
+
+**And the way out.** Back now escalates one layer per press: the IME takes
+the first (keyboard down), then the title field shuts, then a dirty draft
+raises the discard question, then the host closes the item. Leaving the
+field commits nothing and reverts nothing — the draft holds the text, and
+`Discard` is still the only thing that throws work away; it now shuts the
+field too, since the draft it was editing has gone. The trap was reachable
+precisely because the title *is* the edit affordance and it sits where a tap
+to close the pane lands, so the gesture is easy to make by accident.
+
+**And the hosts' own half.** `NowScreen` and `TriageScreen` now key the slot
+per item (`item(key = "selected-item-$id")`). The constant key had a comment
+defending it — "per-item state inside the panel is keyed on the item id, so
+re-keying would churn the saved-state registry for no gain" — which was
+wrong on both clauses: the panel's keying did not do what it claimed, and
+churn is exactly what a selection change should cause. Keeping both halves is
+deliberate: the panel's registry keys make *this* state safe, and the hosts'
+slot keys make whatever is added to the pane next safe by default.
+
+The general lesson, worth more than the fix: **`rememberSaveable`'s `inputs`
+are not an identity — the key is.** Any saveable state under a container
+whose slot key is constant is shared state until its registry key says
+otherwise, and `ItemDetailPanelStructuralTest` now sweeps every
+`rememberSaveable` in the file rather than pinning them one at a time,
+because the next one added is the same bug again.
 
 ## The item pane's polish pass
 
@@ -1028,7 +1103,10 @@ restyle, so each is recorded with what it replaced.
   wrapping, and the word is what buys that: `Promote to ready` became
   `Promote`, the same domain term (CONTEXT.md's Promotion) three chars
   shorter than the space it needed. The Grill label is the core's, shared
-  verbatim with the web, and was not ours to shorten.
+  verbatim with the web, and was not ours to shorten. (Superseded the same
+  day by **one action row** — see below — which absorbed this row, the
+  microtask button and the check. The submit's shortened word is what made
+  that fit at all.)
 
 `ItemDetailSubmitRowTest` is the module's **fourth** layout-measuring test,
 and it contributed a lesson the other three had not: **measure the width the
@@ -1050,6 +1128,45 @@ well, so a pane measured only in its resting state would have called the old
 label safe. And sharing a line is asserted as *equal tops* rather than
 against a height constant — a wrapped `ChoiceRow` puts the second control a
 full button lower, and nothing else moves either of them.
+
+### The pane has one action row (2026-08-20)
+
+Operator decision, off the device pass above: the grill, the microtask
+affordance, the submit and the mark-done check were spread across **three
+vertical slices** — a `ChoiceRow` of grill + submit, the microtask section's
+own button row, and a row holding nothing but the check — and they now share
+the pane's last line.
+
+**Labels are what buys that line, and there is not enough of it for four.**
+The numbers are measured in `ItemDetailSubmitRowTest` at the 272dp the
+narrowest host gives the pane, and they leave no room to negotiate:
+`Resume grill` 131dp, `Rewrite 3 steps` 149dp, `Promote` 114dp, the check
+48dp — 466dp with the gaps. Cutting the words to `Grill` + `Steps` + `Save`
+still needs 325dp; the check's 48dp is what tips even that over, which is
+worth knowing, because without it those three fit 272dp with 3dp to spare
+and a test that omitted the check called the shortened labels safe. So the
+two agent affordances are icon-only — Lucide `messages-square` and
+`list-checks`, hand-ported like every other glyph (ADR-0026) — and only the
+submit keeps a printed word: 48 + 48 + 114 + 48 = 258dp.
+
+Neither label is *lost*, only unprinted: each rides its icon's
+`contentDescription`, and both are still the core's own strings —
+`itemGrillButtonLabel` shared verbatim with the web, and the microtask
+affordance's applied count. A `uiautomator dump` on the device reads
+`Resume grill` and `Break into steps` back at equal `y` bounds, which is the
+only evidence that an icon-only control still says what it does.
+
+Two structural notes. The `weight(1f)` between the two groups — not an
+`Arrangement` — is what holds the submit and the check at the right edge, so
+they do not slide as the grill becomes ineligible or the affordance
+disappears; a control that moves when its neighbours vanish cannot be aimed
+at twice. And the microtask run's narration stays *above* the row rather than
+below it, since a stream of prose appended after the controls would push them
+down the pane as it arrived.
+
+Evidence: Pixel 10 Pro Fold, real device, unfolded — one line reading
+`[grill] [steps] ........ (Save) ✓`, four clickable nodes at equal bounds,
+the two affordances' accessible names intact.
 
 ### The item pane's polish pass, on device (2026-08-20)
 
@@ -1079,7 +1196,7 @@ Read off `uiautomator dump` throughout. What it settled:
   Triage, where all four sections then stand open and editable.
 - **The submit row is one line on both panels**, `Grill me` + `Save` on Now
   and `Grill me` + `Promote` on Triage — equal `y` bounds, folded and
-  unfolded.
+  unfolded. (That row is now the leading half of the one action row below.)
 
 The one thing this pass reported rather than fixed — the chevron's own 64dp
 band — was fixed immediately after, on operator decision, by hanging it on

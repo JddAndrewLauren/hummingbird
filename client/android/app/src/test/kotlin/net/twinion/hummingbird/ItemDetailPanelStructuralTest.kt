@@ -107,26 +107,114 @@ class ItemDetailPanelStructuralTest {
         )
     }
 
-    /** The two per-item state leaks this unification fixed. Under a
-     * constant LazyColumn key the panel is NOT disposed between
-     * selections, so an unkeyed `rememberSaveable` carries item A's state
-     * onto item B: title-edit mode opened by itself, and the microtask
-     * grain came along with it. */
+    /** The state leaks this pane has shipped, and the rule that ends the
+     * class of them.
+     *
+     * Both inline hosts rendered the pane as `item(key = "selected-item")`
+     * — a **constant** LazyColumn key — so selecting another item disposed
+     * this composable and recomposed it at the same slot, and the slot's
+     * saveable state was saved on the way out and offered back on the way
+     * in. Those keys name the item now (their own pins hold that), and this
+     * file holds the panel's half: state that says which item it belongs to
+     * cannot be handed to another one whatever the host's slot key does. `rememberSaveable(itemId)` does not stop that: the `inputs` only
+     * decide whether `init()` is eligible to run, and the registry is
+     * consulted first under a key derived from the composition **position**.
+     * A restored value wins over `init()` even when the input changed. Two
+     * of those were sighted on the device — the title opened in edit mode
+     * on every item selected after the first, and the details disclosure
+     * carried its open/shut state across — after a year of comments here
+     * claiming the `(itemId)` input was the fix.
+     *
+     * So the pin is on the registry key, not on the inputs: **every
+     * `rememberSaveable` in this file either names the item in its `key` or
+     * is the one deliberate exception.** Written as a sweep rather than as
+     * one assertion per site, because the defect is a whole species and a
+     * new site added without a key is the same bug again. */
     @Test
-    fun `every piece of per-item composition state is keyed on the item id`() {
+    fun `every saveable piece of composition state names its item in the registry key`() {
+        // Each `rememberSaveable(` in the file, with whatever it was
+        // called with, up to the `{` that opens its `init`.
+        val calls = Regex("""rememberSaveable\(([^{]*)\)\s*\{""")
+            .findAll(panelSrc)
+            .map { it.groupValues[1].replace(Regex("""\s+"""), " ").trim() }
+            .toList()
+        assertEquals(
+            "every rememberSaveable(...) in the pane must be accounted for here — " +
+                "a new one is a new leak until its key names the item: $calls",
+            3,
+            calls.size,
+        )
+        // The one exception, and the only argument-less form allowed: the
+        // discard question. It is not per item on purpose (a question on
+        // screen belongs to the gesture that asked it), and it cannot
+        // outlive its own dialog — which is modal, so no other item can be
+        // selected under it.
+        assertEquals(
+            "the discard question is the only state here allowed to skip the item",
+            1,
+            Regex("""rememberSaveable\s*\{""").findAll(panelSrc).count(),
+        )
+        for (call in calls) {
+            val registryKey = Regex("""key = "([^"]*)"""").find(call)?.groupValues?.get(1)
+            assertTrue(
+                "rememberSaveable($call) must name the item in its registry `key`, " +
+                    "not only in its inputs — inputs do not stop a positional restore",
+                registryKey != null && registryKey.contains("\$itemId"),
+            )
+        }
+        // And the two whose leak was actually watched happen, by name.
         assertTrue(
-            "title-edit mode must be keyed on the item",
-            panelSrc.contains("var editingTitle by rememberSaveable(itemId) { mutableStateOf(false) }"),
+            "the details disclosure must carry a per-item key",
+            panelSrc.replace(Regex("""\s+"""), " ")
+                .contains("var detailsOverride by rememberSaveable( itemId, key = \"details-open-\$itemId\", )"),
         )
         assertTrue(
-            "the microtask grain must be keyed on the item",
-            functionBody(panelSrc, "MicrotaskSection")
-                .contains("var grain by rememberSaveable(itemId) { mutableStateOf(2L) }"),
+            "and so must a section's own open/shut state",
+            panelSrc.replace(Regex("""\s+"""), " ")
+                .contains("key = \"section-open-\$itemId-\$label\","),
+        )
+    }
+
+    /** Title-edit mode is the one piece of state here that must not
+     * survive *anything* — the trap the operator hit, in two halves.
+     *
+     * It is a mode, not content: the typed title lives in the ViewModel's
+     * draft and shows on the title line either way, so reopening a pane
+     * with the field shut loses nothing. A saveable flag, per-item key or
+     * not, brings a pane closed mid-edit back in edit mode — item A's own
+     * restored `true` is still item A's trap. Hence a plain
+     * `remember(itemId)`, and hence no `rememberSaveable` may creep back
+     * onto it.
+     *
+     * The other half is the way out. The field used to end only on the
+     * IME's Done, so a person who opened it by tapping the title — the
+     * pane's own edit affordance, sitting where a tap to close the pane
+     * lands — could not leave without committing a title. Back now escapes
+     * the field before it reaches the draft's discard question, and
+     * discarding shuts the field with the draft it was editing. */
+    @Test
+    fun `title-edit mode does not persist, and Back is the way out of it`() {
+        val body = functionBody(panelSrc, "ItemDetailPanel")
+        assertTrue(
+            "title-edit mode must be a plain remember, keyed on the item",
+            body.contains("var editingTitle by remember(itemId) { mutableStateOf(false) }"),
+        )
+        assertFalse(
+            "and must never become saveable again — a restored mode is the trap",
+            body.contains("editingTitle by rememberSaveable"),
+        )
+        val flat = body.replace(Regex("""\s+"""), " ")
+        assertTrue(
+            "Back must be handled while the field is open, not only while dirty",
+            flat.contains("BackHandler(enabled = editingTitle || viewModel.isDirty)"),
         )
         assertTrue(
-            "a section's open/shut state must be keyed on the item",
-            functionBody(panelSrc, "DetailSection")
-                .contains("rememberSaveable(itemId, label)"),
+            "and it must shut the field first, reaching the discard question only after",
+            flat.contains("if (editingTitle) editingTitle = false else confirmingDiscard = true"),
+        )
+        assertTrue(
+            "discarding the draft must shut the field that was editing it",
+            flat.contains("viewModel.discardDraft() editingTitle = false"),
         )
         // The dialog flag is deliberately NOT keyed: a question on screen
         // belongs to the gesture that asked it, not to an item.
@@ -226,6 +314,88 @@ class ItemDetailPanelStructuralTest {
         assertTrue(
             "the act row must filter complete out — the check is that gesture",
             body.contains("record.availableActions.filter { it != \"complete\" }"),
+        )
+    }
+
+    /** One action row (operator decision 2026-08-20): the grill, the
+     * microtask affordance, the submit and the mark-done check share the
+     * pane's last line. They used to occupy three vertical slices — a
+     * `ChoiceRow` of grill + submit, the microtask section's own button
+     * row, and a row holding nothing but the check — which is three bands
+     * of whitespace for four controls.
+     *
+     * What can drift back, and what each pin catches:
+     *
+     * - a control on a line of its own again. There is exactly ONE `Row`
+     *   under the act row, and all four are inside it.
+     * - a printed label on either agent affordance. Four labels do not fit
+     *   the 272dp the narrowest host gives the pane — that is measured in
+     *   `ItemDetailSubmitRowTest` — so the grill and the microtask run are
+     *   `IconButton`s whose words ride `contentDescription`. A `Text(` in
+     *   either is the row wrapping again.
+     * - the words being lost rather than unprinted. Both are still the
+     *   core's own strings, not this surface's inventions.
+     * - the submit or the check sliding left as the affordances come and
+     *   go: the `weight(1f)` between the two groups is what holds them at
+     *   the edge, and a fixed `Arrangement` in its place would not. */
+    @Test
+    fun `the grill, the microtask run, the submit and the check share one row`() {
+        val row = functionBody(panelSrc, "DetailBody")
+            .substringAfter("var grain by rememberSaveable(itemId)")
+        assertTrue(
+            "the action row must be one Row, laid out full width",
+            row.replace(Regex("""\s+"""), " ").contains(
+                "Row( modifier = Modifier.fillMaxWidth(), " +
+                    "verticalAlignment = Alignment.CenterVertically,",
+            ),
+        )
+        assertEquals(
+            "and it must be the only row after it — a second is a control back on a line of its own",
+            1,
+            Regex("""(?m)^    Row\(""").findAll(row).count(),
+        )
+        for (control in listOf(
+            "onClick = onGrill",
+            "onMicrotaskRun(false, null)",
+            "Button(onClick = onSubmit, enabled = canSave)",
+            "IconButton(onClick = onComplete)",
+        )) {
+            assertTrue("the action row must carry $control", row.contains(control))
+        }
+        assertTrue(
+            "the submit and the check must be held at the right edge by the weight, " +
+                "not by an arrangement that moves with the button count",
+            row.contains("Spacer(Modifier.weight(1f))"),
+        )
+        // The two agent affordances are icon-only, and the words are the
+        // core's — `itemGrillButtonLabel` is shared verbatim with the web,
+        // and the microtask label is the affordance's applied count.
+        assertTrue(
+            "the grill must speak its label through the icon's accessible name",
+            row.replace(Regex("""\s+"""), " ").contains(
+                "contentDescription = itemGrillButtonLabel(hasGrillDraft),",
+            ),
+        )
+        assertTrue(
+            "and so must the microtask run",
+            row.replace(Regex("""\s+"""), " ").contains(
+                "contentDescription = microtaskLabel(affordance),",
+            ),
+        )
+        assertFalse(
+            "neither may print a label — a third word does not fit the row",
+            row.contains("Text(itemGrillButtonLabel") || row.contains("Text(microtaskLabel"),
+        )
+        // The microtask's answer still renders, above the row: a stream of
+        // narration must not push the controls down the pane.
+        val body = functionBody(panelSrc, "DetailBody")
+        assertTrue(
+            "the run's narration must still render",
+            body.contains("MicrotaskNarration("),
+        )
+        assertTrue(
+            "and above the action row, not below it",
+            body.indexOf("MicrotaskNarration(") < body.indexOf("var grain by rememberSaveable"),
         )
     }
 
@@ -424,8 +594,10 @@ class ItemDetailPanelStructuralTest {
             body.contains("detailsOverride ?: (mode == ItemDetailPanelMode.PROMOTE)"),
         )
         assertTrue(
-            "its state must be keyed on the item like every other piece here",
-            body.contains("var detailsOverride by rememberSaveable(itemId) { mutableStateOf<Boolean?>(null) }"),
+            "its state must be keyed on the item like every other piece here — " +
+                "in the registry key, which is the half that counts (see the sweep above)",
+            body.replace(Regex("""\s+"""), " ")
+                .contains("""var detailsOverride by rememberSaveable( itemId, key = "details-open-${'$'}itemId", )"""),
         )
         // The three that are behind it, and the one that is not: `isSet`
         // reads uniquely enough to locate each section, and the axes line

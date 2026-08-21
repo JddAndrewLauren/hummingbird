@@ -410,8 +410,16 @@ fun NowScreen(
                     // on tap was the bug). The panel lives in its own file, so
                     // acting/editing/steps stay one implementation with the
                     // notification door's full-screen route.
+                    // The key names the item, and must: with a constant one
+                    // the panel is disposed and recomposed at the same slot
+                    // on a selection change, and LazyColumn's
+                    // `SaveableStateHolder` hands the next item whatever the
+                    // last one saved there — the trap in `README`'s
+                    // "The title-edit trap". The panel keys its own saveable
+                    // state per item as well; this is the half that makes
+                    // any state added later safe by default.
                     selectedId?.let { id ->
-                        item(key = "selected-item") {
+                        item(key = "selected-item-$id") {
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 colors = CardDefaults.cardColors(

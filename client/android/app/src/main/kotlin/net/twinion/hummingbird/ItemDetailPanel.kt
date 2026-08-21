@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -106,14 +107,31 @@ import uniffi.hummingbird_ffi_mobile.skillRunStampLabel
 // scrollables nest into a measurement crash, so the panel itself never
 // scrolls.
 //
-// **State is keyed per item.** Both `viewModel(...)` calls carry
+// **State is keyed per item — and for the saveable kind, keying the input
+// is not what does it.** Both `viewModel(...)` calls carry
 // `key = "…-$itemId"` so a different item is a different ViewModel pair —
 // the inline hosts swap items without navigating, and an unkeyed lookup
-// would hand item B item A's draft. Every piece of *composition* state here
-// is keyed the same way (`rememberSaveable(itemId)`): under a constant
-// LazyColumn key the composable is not disposed between selections, so an
-// unkeyed flag leaks — title-edit mode used to open by itself on the next
-// item selected, and the microtask grain carried over with it.
+// would hand item B item A's draft.
+//
+// Composition state is the same hazard with a different remedy, and this
+// file got the remedy wrong once. Both inline hosts rendered the pane as
+// `item(key = "selected-item")` — a **constant** LazyColumn key — so
+// selecting another item disposed this composable and recomposed it at the
+// same slot, and the slot's saveable state was saved on the way out and
+// offered back on the way in. Those keys name the item now; the rest of
+// this note is why that alone is not what this file relies on. `rememberSaveable(itemId)` does not stop
+// that: its `inputs` only decide whether `init()` is *eligible* to run, and
+// the registry is consulted first under a key derived from the **position**
+// in the composition, not from the inputs. A restored value therefore wins
+// over `init()` even when the input changed, which is item A's state
+// arriving in item B's pane. Two of those shipped and were sighted on the
+// device: the title opened in edit mode on every item selected after the
+// first, and the details disclosure carried its open/shut state across.
+//
+// So each site here says which item it belongs to in the registry key
+// itself (`key = "…-$itemId"`), the same shape the ViewModels use — except
+// title-edit mode, which is a transient mode rather than content and is a
+// plain `remember`: see it at its site.
 //
 // The cost of the keyed ViewModels is one retired pair per item expanded
 // this session, held by the host's back-stack entry and reclaimed when it
@@ -215,20 +233,34 @@ fun ItemDetailPanel(
     // Saveable: an Activity recreation mid-question must not silently
     // answer it.
     var confirmingDiscard by rememberSaveable { mutableStateOf(false) }
-    // Keyed on the item: under a constant LazyColumn key this composable
-    // survives a selection change, so an unkeyed flag would open the next
-    // item's title field by itself.
-    var editingTitle by rememberSaveable(itemId) { mutableStateOf(false) }
+    // **A plain `remember`, deliberately** — the only piece of state here
+    // that does not survive an Activity recreation, and the only one that
+    // must not survive anything at all.
+    //
+    // It is a mode, not content: what the operator typed lives in the
+    // ViewModel's draft and shows on the title line either way, so nothing
+    // is lost by reopening the pane with the field shut. What a saveable
+    // flag cost instead was a trap sighted on the device — a pane closed
+    // mid-title-edit came back in edit mode, and so did the *next item
+    // selected*, because the registry key is positional (this file's
+    // header). A per-item registry key would have fixed the second half
+    // and left the first: item A's own restored `true` is still item A's
+    // trap when it is next opened.
+    //
+    // Keyed on the item so a selection change re-runs `init` rather than
+    // carrying the mode across, which is what `remember` gives for free.
+    var editingTitle by remember(itemId) { mutableStateOf(false) }
     val titleFocus = remember { FocusRequester() }
     // **Keyed on whether the field is actually there, not on the flag
-    // alone.** `editingTitle` is restored per item, so reopening a pane
-    // that was left mid-title-edit composes with the flag already `true`
-    // while the record is still loading — and the field only renders once
-    // there is a draft to bind, so the request would have no target and
-    // `requestFocus()` throws `FocusRequester is not initialized`. That
-    // crash was sighted on hardware and is invisible to every JVM test
-    // here. Keying on the same condition the field renders on fires the
-    // effect in the composition that places it, and never before.
+    // alone.** The field only renders once there is a draft to bind, so a
+    // `requestFocus()` fired on the flag alone can have no target, and
+    // `FocusRequester is not initialized` is a crash, not a no-op. That was
+    // sighted on hardware when the flag was restorable and could compose
+    // `true` while the record was still loading; the flag no longer
+    // survives a recreation (see it above), but the guard is not
+    // redundant — a reload can empty the draft under an open field, and
+    // keying on the condition the field renders on is what fires the
+    // effect in the composition that places it and in no other.
     //
     // Keyed at all (rather than `LaunchedEffect(Unit)`) because #634 found
     // that shape re-firing on Activity recreation and undoing state.
@@ -268,9 +300,21 @@ fun ItemDetailPanel(
         if (viewModel.isDirty) confirmingDiscard = true else onClose()
     }
 
-    // Only while there is something to lose. An idle Back is never fought.
-    BackHandler(enabled = viewModel.isDirty) {
-        confirmingDiscard = true
+    // Back escalates outward, one layer per press: the keyboard (the IME
+    // takes that one itself, before this handler ever sees it), then the
+    // open title field, then the draft's discard question, and only then
+    // the host's own "close the item". Escaping the field is what makes it
+    // escapable at all: it used to end only on the IME's Done, so a person
+    // who opened it by tapping the title — the pane's own edit affordance,
+    // which is easy to hit while aiming to close the pane — had no way out
+    // that did not commit a title. Leaving the field does not revert what
+    // was typed; the draft holds it, and the discard question is still the
+    // one thing that throws work away.
+    //
+    // Enabled only while there is something to escape. An idle Back is
+    // never fought — it belongs to the host.
+    BackHandler(enabled = editingTitle || viewModel.isDirty) {
+        if (editingTitle) editingTitle = false else confirmingDiscard = true
     }
 
     if (confirmingDiscard) {
@@ -279,6 +323,10 @@ fun ItemDetailPanel(
             onDiscard = {
                 confirmingDiscard = false
                 viewModel.discardDraft()
+                // The field was editing the draft that just went away —
+                // leaving it open would offer the reverted title as
+                // something in flight.
+                editingTitle = false
             },
         )
     }
@@ -551,7 +599,13 @@ private fun DetailBody(
     // Open by default on the promoting host, for `DetailSection`'s own
     // reason: filling these in is what the Triage queue is *for*, and fields
     // that open editable behind a shut disclosure would be invisible work.
-    var detailsOverride by rememberSaveable(itemId) { mutableStateOf<Boolean?>(null) }
+    // `key` per item, not just `inputs` per item — this file's header says
+    // why, and the device pass that found it watched item B's pane open
+    // already disclosed because item A's had been.
+    var detailsOverride by rememberSaveable(
+        itemId,
+        key = "details-open-$itemId",
+    ) { mutableStateOf<Boolean?>(null) }
     val detailsOpen = detailsOverride ?: (mode == ItemDetailPanelMode.PROMOTE)
 
     // The three axes the system computes with, then — behind one
@@ -857,40 +911,100 @@ private fun DetailBody(
         }
     }
 
-    if (record.isEditable) {
-        ChoiceRow {
-            // Live (#539): `itemCanGrill` is the seam's own rule, the same
-            // one `TriageItemRecord.canGrill` reads per row. `isEditable`
-            // is gated alongside it, and cannot be folded into
-            // `itemCanGrill(record.stage)` — `stage` alone cannot tell a
-            // cancelled item from a live one: `Core::act`'s cancel sets
-            // `archivedAt`, never `stage`, so a cancelled Ready/In Progress
-            // item still carries a `canGrill`-eligible stage. Without the
-            // enclosing check, that archived row would offer a live "Grill
-            // me" whose Confirm could still enqueue a `CompleteGrill` on
-            // history (the same recall rule gates every editable row here).
-            if (itemCanGrill(record.stage)) {
-                OutlinedButton(onClick = onGrill) {
-                    Text(itemGrillButtonLabel(hasGrillDraft))
-                }
+    // #539's microtask affordance: an *applied result*, not a re-derived
+    // one — `record.microtaskAffordance` is `null` for a non-editable
+    // (archived) item and `Break`/`Rewrite` otherwise, decided by
+    // `hummingbird_core::decisions::skills::microtask_affordance`. Nothing
+    // here — neither this narration nor the button in the action row below
+    // — offers any eligibility logic of its own.
+    if (record.microtaskAffordance != null) {
+        MicrotaskNarration(
+            run = microtaskRun,
+            declinedFallbackLabel = declinedFallbackLabel,
+            onSwitchAndRetry = onSwitchAndRetry,
+        )
+    }
+
+    // The pane's one action row (operator decision 2026-08-20): the grill,
+    // the microtask affordance, the submit and the mark-done check share a
+    // line, where they used to occupy three vertical slices — a `ChoiceRow`
+    // of two buttons, the microtask section's own button, and a row holding
+    // nothing but the check.
+    //
+    // **Labels are what buys the line, and there is not enough of it for
+    // four.** The narrowest host is the notification route, which pays
+    // `.padding(24.dp)` around the panel, so on a 320dp phone this row is
+    // laid out in 272dp; four labelled controls measure ~325dp even with
+    // the words cut to `Grill`/`Steps`, and the real labels are wider still
+    // (`Resume grill` 131dp, `Rewrite 3 steps` 149dp). So the two agent
+    // affordances are icon-only at 48dp each and only the submit keeps its
+    // word: 48 + 48 + 114 + 48 = 258dp, which fits with the gap to spare.
+    // Neither label is lost, only unprinted — each rides its icon's
+    // accessible name, and both are the core's own strings shared verbatim
+    // with the web (`itemGrillButtonLabel`, and the affordance's own
+    // words), not this surface's to shorten. `ItemDetailSubmitRowTest`
+    // measures the row at 272dp and carries that arithmetic.
+    //
+    // The two agent affordances lead, the two writes trail, and the
+    // `weight(1f)` between them is what keeps the submit and the check
+    // anchored right whichever of the leading pair renders — a control that
+    // moves as its neighbours appear is not one anyone can aim at twice.
+    //
+    // Keyed on the item, for this file's header's reason: an unkeyed grain
+    // carried one item's chosen step count onto the next item selected.
+    var grain by rememberSaveable(
+        itemId,
+        key = "microtask-grain-$itemId",
+    ) { mutableStateOf(2L) }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Live (#539): `itemCanGrill` is the seam's own rule, the same
+        // one `TriageItemRecord.canGrill` reads per row. `isEditable`
+        // is gated alongside it, and cannot be folded into
+        // `itemCanGrill(record.stage)` — `stage` alone cannot tell a
+        // cancelled item from a live one: `Core::act`'s cancel sets
+        // `archivedAt`, never `stage`, so a cancelled Ready/In Progress
+        // item still carries a `canGrill`-eligible stage. Without the
+        // enclosing check, that archived row would offer a live "Grill
+        // me" whose Confirm could still enqueue a `CompleteGrill` on
+        // history (the same recall rule gates every editable row here).
+        if (record.isEditable && itemCanGrill(record.stage)) {
+            IconButton(onClick = onGrill) {
+                Icon(
+                    painterResource(R.drawable.ic_messages_square),
+                    contentDescription = itemGrillButtonLabel(hasGrillDraft),
+                    modifier = Modifier.size(18.dp),
+                )
             }
+        }
+        record.microtaskAffordance?.let { affordance ->
+            IconButton(
+                enabled = microtaskRun !is MobileSkillRunState.Running,
+                onClick = {
+                    when (affordance) {
+                        MobileMicrotaskAffordance.Break -> onMicrotaskRun(false, null)
+                        is MobileMicrotaskAffordance.Rewrite -> onMicrotaskRun(true, grain)
+                    }
+                },
+            ) {
+                Icon(
+                    painterResource(R.drawable.ic_list_checks),
+                    contentDescription = microtaskLabel(affordance),
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+
+        Spacer(Modifier.weight(1f))
+
+        if (record.isEditable) {
             // One submit for the whole draft, whatever section it was typed
             // in. Its word and its destination are the mode's only job —
-            // see [ItemDetailPanelMode].
-            //
-            // **This row must never wrap** (operator decision 2026-08-20),
-            // and the word is what buys that rather than the layout: the
-            // promoting submit read "Promote to ready", which with a
-            // `Resume grill` beside it does not share a line on a phone.
-            // `ChoiceRow` would then drop the submit to a second line — not
-            // the letter-column defect #576 fixed, but the pane's two most
-            // important controls stacking and moving as the Grill label
-            // changes under them. `Promote` is the same domain word
-            // (CONTEXT.md's Promotion) short enough to sit beside the widest
-            // Grill label at the narrowest width the app ships to, which is
-            // what `ItemDetailSubmitRowTest` measures. The Grill label
-            // itself is not ours to shorten — it is the core's, shared
-            // verbatim with the web.
+            // see [ItemDetailPanelMode]. `Promote` rather than `Promote to
+            // ready` is the same domain word (CONTEXT.md's Promotion) at a
+            // width this row can pay for; the long one cost 160dp.
             Button(onClick = onSubmit, enabled = canSave) {
                 Text(
                     when (mode) {
@@ -900,33 +1014,9 @@ private fun DetailBody(
                 )
             }
         }
-    }
 
-    // #539's microtask affordance: an *applied result*, not a re-derived
-    // one — `record.microtaskAffordance` is `null` for a non-editable
-    // (archived) item and `Break`/`Rewrite` otherwise, decided by
-    // `hummingbird_core::decisions::skills::microtask_affordance`. This
-    // block offers nothing of its own eligibility logic.
-    record.microtaskAffordance?.let { affordance ->
-        MicrotaskSection(
-            itemId = itemId,
-            affordance = affordance,
-            run = microtaskRun,
-            onRun = onMicrotaskRun,
-            declinedFallbackLabel = declinedFallbackLabel,
-            onSwitchAndRetry = onSwitchAndRetry,
-        )
-    }
-
-    // Bottom-right, on a line of its own rather than sharing the
-    // ChoiceRow's: that row wraps at narrow widths (#576), so anything
-    // beside it moves when the buttons do. Gated on the core's
-    // `canMarkDone` — the wider rule that answers for Triage and Grilling,
-    // where `availableActions` is empty.
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.End,
-    ) {
+        // Gated on the core's `canMarkDone` — the wider rule that answers
+        // for Triage and Grilling, where `availableActions` is empty.
         if (record.canMarkDone) {
             IconButton(onClick = onComplete) {
                 Icon(
@@ -995,7 +1085,11 @@ private fun DetailSection(
     trailing: (@Composable () -> Unit)? = null,
     editor: @Composable () -> Unit,
 ) {
-    var openOverride by rememberSaveable(itemId, label) { mutableStateOf<Boolean?>(null) }
+    var openOverride by rememberSaveable(
+        itemId,
+        label,
+        key = "section-open-$itemId-$label",
+    ) { mutableStateOf<Boolean?>(null) }
     val open = editable &&
         (openOverride ?: (mode == ItemDetailPanelMode.PROMOTE && !isSet))
 
@@ -1045,80 +1139,67 @@ private fun GhostValue(label: String) {
     )
 }
 
-/** The microtask affordance's own render — narrates as it streams, and a
- * decline is shown verbatim (#539's own AC), never paraphrased: #307 made
+/** The words the microtask affordance offers, which since the pane's one
+ * action row (2026-08-20) are spoken by its icon's accessible name rather
+ * than printed on a button — the row has no width for a third label. The
+ * count is the affordance's own applied number, so "Rewrite 1 step" is
+ * never pluralised wrong. */
+private fun microtaskLabel(affordance: MobileMicrotaskAffordance) =
+    when (affordance) {
+        MobileMicrotaskAffordance.Break -> "Break into steps"
+        is MobileMicrotaskAffordance.Rewrite ->
+            "Rewrite ${affordance.undoneCount} step" +
+                if (affordance.undoneCount == 1u) "" else "s"
+    }
+
+/** What the microtask run says while it runs — narrates as it streams, and
+ * a decline is shown verbatim (#539's own AC), never paraphrased: #307 made
  * the seam's decline prose-only, with no reason code, precisely so nothing
- * string-matches it, here as on the web. */
+ * string-matches it, here as on the web.
+ *
+ * The run's *button* is not here: it sits in the pane's one action row with
+ * the grill and the submit. This block is only the answer, and it renders
+ * above that row — the last line of a pane is where the controls are, not
+ * where a stream of narration should push them. Nothing at all before the
+ * first run, since an `Idle` run has nothing to say. */
 @Composable
-private fun MicrotaskSection(
-    itemId: String,
-    affordance: MobileMicrotaskAffordance,
+private fun MicrotaskNarration(
     run: MobileSkillRunState,
-    onRun: (replace: Boolean, grain: Long?) -> Unit,
     declinedFallbackLabel: String?,
     onSwitchAndRetry: () -> Unit,
 ) {
-    // Keyed on the item, for this file's header's reason: an unkeyed grain
-    // carried one item's chosen step count onto the next item selected.
-    var grain by rememberSaveable(itemId) { mutableStateOf(2L) }
-    val running = run is MobileSkillRunState.Running
+    if (run is MobileSkillRunState.Idle) return
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Button(
-                enabled = !running,
-                onClick = {
-                    when (affordance) {
-                        MobileMicrotaskAffordance.Break -> onRun(false, null)
-                        is MobileMicrotaskAffordance.Rewrite -> onRun(true, grain)
-                    }
-                },
-            ) {
-                Text(
-                    when (affordance) {
-                        MobileMicrotaskAffordance.Break -> "Break into steps"
-                        is MobileMicrotaskAffordance.Rewrite ->
-                            "Rewrite ${affordance.undoneCount} step" +
-                                if (affordance.undoneCount == 1u) "" else "s"
-                    },
-                )
-            }
+        val messages = when (run) {
+            MobileSkillRunState.Idle -> emptyList()
+            is MobileSkillRunState.Running -> run.messages
+            is MobileSkillRunState.Done -> run.messages
+            is MobileSkillRunState.Declined -> run.messages
+        }
+        Narration(messages)
+
+        val stamp = skillRunStampLabel(run)
+        if (stamp != null) {
+            Text(stamp, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
-        if (run !is MobileSkillRunState.Idle) {
-            val messages = when (run) {
-                MobileSkillRunState.Idle -> emptyList()
-                is MobileSkillRunState.Running -> run.messages
-                is MobileSkillRunState.Done -> run.messages
-                is MobileSkillRunState.Declined -> run.messages
-            }
-            Narration(messages)
+        if (run is MobileSkillRunState.Done && run.note.isNotEmpty()) {
+            Text(run.note, style = MaterialTheme.typography.bodyMedium)
+        }
 
-            val stamp = skillRunStampLabel(run)
-            if (stamp != null) {
-                Text(stamp, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-
-            if (run is MobileSkillRunState.Done && run.note.isNotEmpty()) {
-                Text(run.note, style = MaterialTheme.typography.bodyMedium)
-            }
-
-            // Verbatim, unprefixed, unbranched.
-            if (run is MobileSkillRunState.Declined) {
-                Text(run.reason, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-                // #274: a pinned, dead backend is never silently rerouted —
-                // this is the one-tap offer, not an automatic fallback.
-                // Absent whenever the current selection is Auto, the
-                // decline names no reachability problem, or the registry
-                // has nothing else to try (`declinedBackendFallback`'s own
-                // doc states all four exclusions).
-                if (declinedFallbackLabel != null) {
-                    OutlinedButton(onClick = onSwitchAndRetry) {
-                        Text("Switch to $declinedFallbackLabel")
-                    }
+        // Verbatim, unprefixed, unbranched.
+        if (run is MobileSkillRunState.Declined) {
+            Text(run.reason, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+            // #274: a pinned, dead backend is never silently rerouted —
+            // this is the one-tap offer, not an automatic fallback.
+            // Absent whenever the current selection is Auto, the
+            // decline names no reachability problem, or the registry
+            // has nothing else to try (`declinedBackendFallback`'s own
+            // doc states all four exclusions).
+            if (declinedFallbackLabel != null) {
+                OutlinedButton(onClick = onSwitchAndRetry) {
+                    Text("Switch to $declinedFallbackLabel")
                 }
             }
         }
