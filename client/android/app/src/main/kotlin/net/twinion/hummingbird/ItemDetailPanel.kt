@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -46,6 +47,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -129,9 +131,25 @@ import uniffi.hummingbird_ffi_mobile.skillRunStampLabel
 // first, and the details disclosure carried its open/shut state across.
 //
 // So each site here says which item it belongs to in the registry key
-// itself (`key = "…-$itemId"`), the same shape the ViewModels use — except
-// title-edit mode, which is a transient mode rather than content and is a
-// plain `remember`: see it at its site.
+// itself (`key = "…-$itemId"`), the same shape the ViewModels use — with
+// exactly two exceptions, both deliberate:
+//
+//   - title-edit mode, which is a transient mode rather than content and
+//     is a plain `remember`: see it at its site.
+//   - `confirmingDiscard`, the discard question, which is a bare
+//     `rememberSaveable { … }` with neither an input nor a key — the one
+//     site in this file still resting on the positional registry key the
+//     paragraph above calls unsafe. It is safe *here* because it is
+//     modal, and nothing weaker would do: the flag is only ever set true
+//     by a leaving gesture that does not close, and every composition in
+//     which it is true renders `DiscardConfirmation`, an `AlertDialog`,
+//     which takes the touches beneath it. So no other item can be
+//     selected while it is true, and a positional restore therefore
+//     cannot cross items — it can only bring the same pane's own
+//     unanswered question back after an Activity recreation, which is
+//     exactly what it is saveable for. Keying it on the item would be
+//     wrong as well as unnecessary: a question on screen belongs to the
+//     gesture that asked it.
 //
 // The cost of the keyed ViewModels is one retired pair per item expanded
 // this session, held by the host's back-stack entry and reclaimed when it
@@ -423,16 +441,30 @@ fun ItemDetailPanel(
             }
         }
 
-        // `HB-<seq>` with the project riding beside it — `ItemPanel.tsx`'s
-        // own `.hb-meta` line, "ITEM DETAIL" while the seq hasn't synced
-        // yet, never blank. The project id stands in for an unsynced name:
-        // the name is unsynced, not the project.
-        val meta = buildList {
-            add(loadedRecord?.seq?.let { "HB-$it" } ?: "ITEM DETAIL")
-            (loadedRecord?.projectName ?: loadedRecord?.projectId)?.let { add(it) }
-        }
+        // The pane's meta line: the item's project, and **no `HB-<seq>`**.
+        // CLAUDE.md's repo-wide rule is that an item is named to the
+        // operator by its title, never by that ref — it is a client-side
+        // handle onto a uuid, no route accepts it, and a person reading one
+        // cannot look the item up in the app.
+        //
+        // **The web still prints it** (`ItemPanel.tsx`'s `.hb-meta` line,
+        // `HB-${item.seq}` with an `item detail` fallback — this line was
+        // its port, and dropping the ref here is the operator's decision of
+        // 2026-08-20, not a parity fix). So the two clients differ on this
+        // until the rule itself is settled either way, which is #661. Do
+        // not "restore consistency" by putting the ref back: that decision
+        // belongs to the rule, not to this file.
+        //
+        // The project id stands in for an unsynced name: the name is
+        // unsynced, not the project. "ITEM DETAIL" is the floor rather than
+        // a state of its own — the line sits under the title in the pane's
+        // chrome and must never render blank, and an item with no project
+        // has nothing else to put there.
+        val meta = loadedRecord?.projectName
+            ?: loadedRecord?.projectId
+            ?: "ITEM DETAIL"
         Text(
-            meta.joinToString(" · "),
+            meta,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -938,7 +970,9 @@ private fun DetailBody(
     // the words cut to `Grill`/`Steps`, and the real labels are wider still
     // (`Resume grill` 131dp, `Rewrite 3 steps` 149dp). So the two agent
     // affordances are icon-only at 48dp each and only the submit keeps its
-    // word: 48 + 48 + 114 + 48 = 258dp, which fits with the gap to spare.
+    // word: 48 + 48 + 105 + 48 = 249dp of 272dp (the submit measures 105dp,
+    // not the 114dp this comment used to claim) — it fits, but only just,
+    // which is what the cap below is for.
     // Neither label is lost, only unprinted — each rides its icon's
     // accessible name, and both are the core's own strings shared verbatim
     // with the web (`itemGrillButtonLabel`, and the affordance's own
@@ -950,12 +984,42 @@ private fun DetailBody(
     // anchored right whichever of the leading pair renders — a control that
     // moves as its neighbours appear is not one anyone can aim at twice.
     //
-    // Keyed on the item, for this file's header's reason: an unkeyed grain
-    // carried one item's chosen step count onto the next item selected.
-    var grain by rememberSaveable(
-        itemId,
-        key = "microtask-grain-$itemId",
-    ) { mutableStateOf(2L) }
+    // **The submit is the row's only elastic control, and it is capped.** A
+    // plain `Row` measures its non-weighted children in composition order,
+    // each against whatever width is left, and the mark-done check is
+    // composed **last** — so the check is what this row spends when the
+    // submit's label grows, and it spends it silently. Measured uncapped at
+    // 272dp (`ItemDetailSubmitRowTest`), the check's touch target goes 40dp
+    // at 1.6x font scale → 37 at 1.7 → 33 at 1.8 → 30 at 1.9 → 24 at 2.0 →
+    // 12 at 2.2 → **0 at 2.5**: a write control gone with no sign it was
+    // ever there. Which is the failure `NowScreen`'s frontier chips name
+    // too ("a fixed `Row` squeezes whatever runs out of width, and the chip
+    // at the trailing edge is … hidden with no sign it is there"), and it
+    // is worse here, because what vanishes is a write rather than a filter.
+    //
+    // The fix is arithmetic, not layout: the three touch targets are the
+    // floor at Material's nominal 48dp each, so the submit may have
+    // 272 − 3 × 48 = **128dp** and no more, and its label goes to one
+    // ellipsised line rather than growing the row. Derived from the nominal
+    // rather than the 40dp the buttons actually measure, so the cap is the
+    // conservative side of the real need.
+    //
+    // At default scale `Promote` measures 105dp — 23dp inside the cap — so
+    // the row renders exactly as it did, and the test measures that rather
+    // than trusting the eye. Past the cap the submit is what gives way,
+    // and the check holds a whole touch target to 3.0x. The row does not
+    // wrap at any scale — operator decision; `ChoiceRow` is what wrapping
+    // looks like where it is wanted, one band up in the act row.
+    val submitMaxWidth = 128.dp
+    // The grain the `Rewrite` affordance asks for. A plain constant, not
+    // state: **no surface in this build can write it** — there is no
+    // stepper, picker or seam for it anywhere, and this was a
+    // `rememberSaveable` whose comment described carrying "the chosen step
+    // count" between items, a capability that never existed. If a control
+    // for it lands it becomes saveable state again, keyed on the item per
+    // this file's header, and the structural sweep over `rememberSaveable(`
+    // will cover it.
+    val grain = 2L
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -1005,12 +1069,23 @@ private fun DetailBody(
             // see [ItemDetailPanelMode]. `Promote` rather than `Promote to
             // ready` is the same domain word (CONTEXT.md's Promotion) at a
             // width this row can pay for; the long one cost 160dp.
-            Button(onClick = onSubmit, enabled = canSave) {
+            //
+            // [submitMaxWidth] is the cap that keeps the three 48dp targets
+            // out of the squeeze, and `maxLines = 1` with an ellipsis is
+            // what the label does instead of growing the row when the cap
+            // bites — see the note where the cap is derived.
+            Button(
+                onClick = onSubmit,
+                enabled = canSave,
+                modifier = Modifier.widthIn(max = submitMaxWidth),
+            ) {
                 Text(
                     when (mode) {
                         ItemDetailPanelMode.SAVE -> "Save"
                         ItemDetailPanelMode.PROMOTE -> "Promote"
                     },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -1143,8 +1218,15 @@ private fun GhostValue(label: String) {
  * action row (2026-08-20) are spoken by its icon's accessible name rather
  * than printed on a button — the row has no width for a third label. The
  * count is the affordance's own applied number, so "Rewrite 1 step" is
- * never pluralised wrong. */
-private fun microtaskLabel(affordance: MobileMicrotaskAffordance) =
+ * never pluralised wrong.
+ *
+ * `internal` rather than private only so its pluralisation can be asserted
+ * directly (`ItemDetailSubmitRowTest`) — it is the whole accessible name of
+ * a control that prints no words, so "Rewrite 1 steps" is a defect nothing
+ * else in this module would see, and Robolectric cannot read the string off
+ * a rendered icon. Same widening, for the same reason, as
+ * `DiscardConfirmation` below. Still nobody else's to call. */
+internal fun microtaskLabel(affordance: MobileMicrotaskAffordance) =
     when (affordance) {
         MobileMicrotaskAffordance.Break -> "Break into steps"
         is MobileMicrotaskAffordance.Rewrite ->

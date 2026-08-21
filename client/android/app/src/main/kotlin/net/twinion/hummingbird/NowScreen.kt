@@ -66,6 +66,9 @@ import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
 import uniffi.hummingbird_ffi_mobile.NowBlockedEntryRecord
+import uniffi.hummingbird_ffi_mobile.NowBoardRecord
+import uniffi.hummingbird_ffi_mobile.NowColumnRecord
+import uniffi.hummingbird_ffi_mobile.NowItemRecord
 
 // M1-6's whole surface (#141/#504), widened to the frontier board by
 // M3/#530: the board, decided by `hummingbird-ffi-mobile::MobileTaskHost.
@@ -143,6 +146,54 @@ private fun blockedReasonLabel(titles: List<String>): String = when (titles.size
 /** Cards shown per column before the "N more" affordance — `COLUMN_CAP` in
  * `FrontierColumns.tsx`, ported verbatim. */
 private const val COLUMN_CAP = 6
+
+/** Which of a capped column's items the board draws: [COLUMN_CAP]'s own
+ * first N, plus the open pane's item wherever it ranks. The pane lives in
+ * the selected row's own slot now, so a re-rank that pushes the open item
+ * past the cap would otherwise make the pane vanish while the selection
+ * stayed set — and a selection with no pane in the list is exactly the
+ * state [selectedPaneIsEmitted] exists to keep Back out of.
+ *
+ * Rank order is the seam's ([NowColumnRecord.items] arrives in display
+ * order and this never re-orders it, ADR-0025), and the exception is a
+ * pure addition: nothing is dropped to make room, so the column shows
+ * `COLUMN_CAP + 1` rows in exactly the case where the selected item ranks
+ * past the cap. */
+internal fun cappedColumnRows(items: List<NowItemRecord>, selectedId: String?): List<NowItemRecord> {
+    val capped = items.take(COLUMN_CAP)
+    if (selectedId == null ||
+        capped.any { it.id == selectedId } ||
+        items.none { it.id == selectedId }
+    ) {
+        return capped
+    }
+    val cappedIds = capped.map { it.id }.toSet()
+    return items.filter { it.id in cappedIds || it.id == selectedId }
+}
+
+/** Whether the open pane is actually emitted into the list. The pane is no
+ * longer an unconditional entry at index 0: it is drawn only in the
+ * selected row's own slot, so it exists only while the board still carries
+ * the item (a facet can drop it) and its column is open (the collapse
+ * toggle can shut it). Back's dirty branch turns on this — a pane that is
+ * not in the list cannot be scrolled into view, and scrolling to a stale
+ * index instead is a Back press that does nothing at all.
+ *
+ * The column cap is deliberately not consulted: [cappedColumnRows] already
+ * guarantees an open column draws the selected item whatever its rank.
+ * Blocked entries are always drawn (that section has no collapse of its
+ * own, [ColumnHeader]'s null `onToggleCollapsed`). */
+internal fun selectedPaneIsEmitted(
+    board: NowBoardRecord?,
+    collapsed: Set<String>,
+    selectedId: String?,
+): Boolean {
+    if (board == null || selectedId == null) return false
+    val inOpenColumn = board.columns.any { column ->
+        !collapsed.contains(column.value ?: "") && column.items.any { it.id == selectedId }
+    }
+    return inOpenColumn || board.blocked.any { it.item.id == selectedId }
+}
 
 /** One Now-surface pane's label, from its [MobileStandingQuestion] —
  * `StatusScreen.kt`'s own `paneLabel`, this surface's twin: a rendering
@@ -235,20 +286,24 @@ fun NowScreen(
         viewModel(factory = ItemDetailViewModel.factory(context), key = "item-$id")
     }
 
-    // Where the open pane sits in the list, remembered while it is on
-    // screen. It used to be index 0 and needed no remembering; now it is
+    // Where the open pane last sat in the list — **best-effort, and only a
+    // fallback.** It used to be index 0 and needed no remembering; now it is
     // the selected row's own slot, whose index depends on which column the
     // item ranks into and how much is expanded above it. Captured from the
     // layout rather than recomputed from the board, so there is no second
-    // copy of the emission order to drift: the pane is on screen the moment
-    // it opens (it replaces the row that was just tapped), which is when
-    // this reads it.
-    var panePosition by remember { mutableStateOf(0) }
+    // copy of the emission order to drift. Keyed on the selection, because
+    // a remembered index outlives nothing else: collapsing a column above a
+    // scrolled-away pane shifts every index below it, and the index a
+    // *previous* selection was seen at names an unrelated row for this one.
+    // Back re-reads the live layout first and reaches for this only when the
+    // pane is currently off screen (`visibleItemsInfo` holds the viewport,
+    // not the list).
+    var lastSeenPanePosition by remember(selectedId) { mutableStateOf<Int?>(null) }
     LaunchedEffect(listState, selectedId) {
         val key = selectedId?.let { selectedItemKey(it) } ?: return@LaunchedEffect
         snapshotFlow {
             listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == key }?.index
-        }.collect { index -> if (index != null) panePosition = index }
+        }.collect { index -> if (index != null) lastSeenPanePosition = index }
     }
 
     // Collapse before leaving: with a panel open, Back is "close the item",
@@ -259,9 +314,34 @@ fun NowScreen(
     // re-checked here: Back then scrolls the panel back into view (where
     // its own handler and dialog take over) rather than silently closing
     // an edit mid-flight.
+    //
+    // That branch is taken ONLY while the pane is really in the list
+    // ([selectedPaneIsEmitted]) — `RecallOverlay`'s own shape, which
+    // requires its computed panel index and falls through to closing
+    // otherwise. Since the pane became the selected row's own slot it can
+    // be gone with the selection still set (collapse the column, or pick a
+    // facet that excludes the item), and `reseedIfClean` keeps a dirty
+    // draft dirty forever, so without the guard every Back press scrolls to
+    // an index that is no longer the pane and does nothing at all: no
+    // dialog, no close, no way out.
+    //
+    // Closing there does NOT discard the typed words: the panel's
+    // ViewModel is keyed on the item and outlives the pane's slot, so
+    // re-opening the item shows the draft again, still dirty and still
+    // guarded by the panel's own confirmation. What is lost is only the
+    // guard's *placement* — the confirmation happens the next time the pane
+    // is opened rather than now, which is the trade for not trapping the
+    // reader behind a pane they cannot see.
     BackHandler(enabled = selectedId != null) {
-        if (panelViewModel?.isDirty == true) {
-            scope.launch { listState.animateScrollToItem(panePosition) }
+        val paneIndex = selectedId
+            ?.takeIf { selectedPaneIsEmitted(board, collapsed, it) }
+            ?.let { id ->
+                val key = selectedItemKey(id)
+                listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == key }?.index
+                    ?: lastSeenPanePosition
+            }
+        if (paneIndex != null && panelViewModel?.isDirty == true) {
+            scope.launch { listState.animateScrollToItem(paneIndex) }
         } else {
             viewModel.closeItem()
         }
@@ -414,12 +494,12 @@ fun NowScreen(
                     // The last row scrolls clear of the Capture FAB.
                     contentPadding = PaddingValues(bottom = 64.dp),
                 ) {
-                    // The opened item, ABOVE the board, which keeps rendering
-                    // below — never an early return of the panel instead of the
-                    // frontier (ADR-0021 decision 7 / #404: the board vanishing
-                    // on tap was the bug). The panel lives in its own file, so
-                    // acting/editing/steps stay one implementation with the
-                    // notification door's full-screen route.
+                    // The opened item, INSIDE the board, which keeps rendering
+                    // around it — never an early return of the panel instead of
+                    // the frontier (ADR-0021 decision 7 / #404: the board
+                    // vanishing on tap was the bug). The panel lives in its own
+                    // file, so acting/editing/steps stay one implementation with
+                    // the notification door's full-screen route.
                     // The pane is NOT an entry of its own here: it is
                     // rendered in the selected row's own slot, further
                     // down, so tapping a card expands *that card* rather
@@ -484,29 +564,14 @@ fun NowScreen(
 
                                 if (!isCollapsed) {
                                     val isExpanded = expanded.contains(key)
-                                    // The selected item is rendered wherever
-                                    // it ranks even when the cap would hide
-                                    // it: the pane lives in that row's slot
-                                    // now, so a re-rank that pushes the open
-                                    // item past `COLUMN_CAP` would otherwise
-                                    // make the pane vanish while the
-                                    // selection stayed set.
-                                    val visible = when {
-                                        isExpanded -> column.items
-                                        else -> {
-                                            val capped = column.items.take(COLUMN_CAP)
-                                            val cappedIds = capped.map { it.id }.toSet()
-                                            if (selectedId != null &&
-                                                selectedId !in cappedIds &&
-                                                column.items.any { it.id == selectedId }
-                                            ) {
-                                                column.items.filter {
-                                                    it.id in cappedIds || it.id == selectedId
-                                                }
-                                            } else {
-                                                capped
-                                            }
-                                        }
+                                    // The cap, plus its one exception for the
+                                    // open pane — decided by
+                                    // [cappedColumnRows], which is where that
+                                    // rule is stated and tested.
+                                    val visible = if (isExpanded) {
+                                        column.items
+                                    } else {
+                                        cappedColumnRows(column.items, selectedId)
                                     }
                                     val hidden = column.items.size - visible.size
 
@@ -525,6 +590,10 @@ fun NowScreen(
                                                     onClose = { viewModel.closeItem() },
                                                     onGrill = onGrill,
                                                     onMutated = { scope.launch { reload() } },
+                                                    onSubmitted = {
+                                                        viewModel.closeItem()
+                                                        scope.launch { reload() }
+                                                    },
                                                 )
                                             }
                                         } else {
@@ -576,6 +645,10 @@ fun NowScreen(
                                                 onClose = { viewModel.closeItem() },
                                                 onGrill = onGrill,
                                                 onMutated = { scope.launch { reload() } },
+                                                onSubmitted = {
+                                                    viewModel.closeItem()
+                                                    scope.launch { reload() }
+                                                },
                                             )
                                         }
                                     } else {
@@ -839,6 +912,56 @@ internal fun FacetChipGroup(
     }
 }
 
+/** The list key the open pane takes, wherever in the board it lands. One
+ * function because two things need to agree on it: the slot that emits the
+ * pane (in the selected row's own place) and the screen's dirty-Back
+ * handler, which finds the pane's index by this key so it can scroll a
+ * disposed panel back into view. */
+private fun selectedItemKey(itemId: String) = "selected-item-$itemId"
+
+/** The selected row, expanded in place: the same card shape the rows use,
+ * carrying the shared `ItemDetailPanel`.
+ *
+ * The row it replaces is not drawn as well — the pane's own header is the
+ * title, and its action row carries the row's mark-done check — so the
+ * board keeps exactly one line per item and the expansion reads as the row
+ * growing rather than as a second thing about it appearing elsewhere.
+ *
+ * [onSubmitted] is separate from [onMutated] for the reason `TriageScreen`
+ * states at its own call: a write that lands can take the item off this
+ * board (a mark-done does), and a selection left set at a vanished row has
+ * no pane — which is also how Back ends up with nothing to scroll to. So
+ * the host closes the selection on a landed submit, then reloads. */
+@Composable
+private fun SelectedItemCard(
+    itemId: String,
+    syncTick: Int,
+    onClose: () -> Unit,
+    onGrill: (String) -> Unit,
+    onMutated: () -> Unit,
+    onSubmitted: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface,
+        ),
+    ) {
+        ItemDetailPanel(
+            itemId = itemId,
+            syncTick = syncTick,
+            closeLabel = "Close",
+            onClose = onClose,
+            onGrill = onGrill,
+            onMutated = onMutated,
+            onSubmitted = onSubmitted,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+        )
+    }
+}
+
 /** One column's (or the Blocked section's) header: its heading, its own
  * count (visible even while collapsed — a closed column must still say
  * how much is inside it), and the collapse toggle. `onToggleCollapsed`
@@ -854,48 +977,6 @@ internal fun FacetChipGroup(
  * quarter-turn when the column is shut, not with a Unicode triangle: the
  * design system's ICONOGRAPHY rule is "Unicode as icons: never". A section
  * with no toggle draws no mark at all rather than a disabled-looking one. */
-/** The list key the open pane takes, wherever in the board it lands. One
- * function because two things need to agree on it: the slot that emits the
- * pane (in the selected row's own place) and the screen's dirty-Back
- * handler, which finds the pane's index by this key so it can scroll a
- * disposed panel back into view. */
-private fun selectedItemKey(itemId: String) = "selected-item-$itemId"
-
-/** The selected row, expanded in place: the same card shape the rows use,
- * carrying the shared `ItemDetailPanel`.
- *
- * The row it replaces is not drawn as well — the pane's own header is the
- * title, and its action row carries the row's mark-done check — so the
- * board keeps exactly one line per item and the expansion reads as the row
- * growing rather than as a second thing about it appearing elsewhere. */
-@Composable
-private fun SelectedItemCard(
-    itemId: String,
-    syncTick: Int,
-    onClose: () -> Unit,
-    onGrill: (String) -> Unit,
-    onMutated: () -> Unit,
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface,
-        ),
-    ) {
-        ItemDetailPanel(
-            itemId = itemId,
-            syncTick = syncTick,
-            closeLabel = "Close",
-            onClose = onClose,
-            onGrill = onGrill,
-            onMutated = onMutated,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-        )
-    }
-}
-
 @Composable
 private fun ColumnHeader(
     heading: String,

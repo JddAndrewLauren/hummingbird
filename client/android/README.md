@@ -1020,6 +1020,32 @@ nothing scrolls. Consequences worth knowing:
   was just tapped. Reading the layout rather than recomputing the emission
   order keeps there from being a second copy of that order to drift.
 
+**Two escape hatches the index-0 pane did not need.** Because the pane is
+now a slot that can stop existing while the selection stays set, two paths
+had to be closed. Back's dirty-draft branch — the one that scrolls a
+disposed panel back into view rather than losing an edit — now runs only
+when the pane is genuinely in the list (`selectedPaneIsEmitted`: the board
+still carries the item and its column is open), and otherwise falls through
+to closing, `RecallOverlay`'s own shape. Without that guard, collapsing the
+open item's column with a dirty draft left every Back press scrolling to an
+index that was no longer the pane: no dialog, no close, no way out, and
+`reseedIfClean` keeps the draft dirty forever. Closing there does not
+discard the words — the panel's ViewModel is keyed on the item and outlives
+the slot, so reopening shows the draft still dirty and still guarded; what
+moves is only when the question gets asked. And `SelectedItemCard` now
+passes `onSubmitted`, for the reason `TriageScreen` already had it: the
+pane's own mark-done takes the item off the board, so the selection must
+close with it instead of dangling at a vanished row.
+
+The column cap's exception lives in `cappedColumnRows` now — a pure
+function, unit-tested, rather than inline list logic no test could reach.
+
+What remains open is deliberate: nothing prunes the selection when a
+*sync-driven* reload drops the item (another device completes it, a rule
+re-stages it). The guard above makes that survivable — one dead Back press,
+no lost work — and the fix needs a decision about dirty drafts rather than a
+patch, so it is #660.
+
 Triage still renders its pane at index 0. It is *not* what it was cited as
 being, and making it match is a one-line change of the same shape — left
 undone deliberately rather than assumed.
@@ -1190,14 +1216,24 @@ the pane's last line.
 **Labels are what buys that line, and there is not enough of it for four.**
 The numbers are measured in `ItemDetailSubmitRowTest` at the 272dp the
 narrowest host gives the pane, and they leave no room to negotiate:
-`Resume grill` 131dp, `Rewrite 3 steps` 149dp, `Promote` 114dp, the check
-48dp — 466dp with the gaps. Cutting the words to `Grill` + `Steps` + `Save`
-still needs 325dp; the check's 48dp is what tips even that over, which is
-worth knowing, because without it those three fit 272dp with 3dp to spare
-and a test that omitted the check called the shortened labels safe. So the
+`Resume grill` 131dp, `Rewrite 3 steps` 149dp, `Promote` 105dp, the check
+48dp — 457dp with the gaps. Cutting the words to `Grill` + `Steps` + `Save`
+still needs 316dp; the check's 48dp is what tips even that over, which is
+worth knowing, because without it those three fit 272dp with room to spare
+(260dp) and a test that omitted the check called the shortened labels safe. So the
 two agent affordances are icon-only — Lucide `messages-square` and
 `list-checks`, hand-ported like every other glyph (ADR-0026) — and only the
-submit keeps a printed word: 48 + 48 + 114 + 48 = 258dp.
+submit keeps a printed word: 48 + 48 + 105 + 48 = 249dp.
+
+Those filled-button figures were **9dp too high when first written here**
+(`Promote` as 114dp, the row as 258dp), and the error is worth naming
+because it is the same species as everything else in this section: the
+probe that measured them rendered each filled button with a one-character
+prefix on its label so the three variants could be told apart in one pass,
+and the prefix went into the width. The outlined figures were measured
+unprefixed and stand. No conclusion moves — 457dp and 316dp are both still
+far past 272dp — which is exactly why a wrong number can sit unnoticed in a
+correct argument. `ItemDetailSubmitRowTest` measures the real ones.
 
 Neither label is *lost*, only unprinted: each rides its icon's
 `contentDescription`, and both are still the core's own strings —
@@ -1213,6 +1249,47 @@ disappears; a control that moves when its neighbours vanish cannot be aimed
 at twice. And the microtask run's narration stays *above* the row rather than
 below it, since a stream of prose appended after the controls would push them
 down the pane as it arrived.
+
+**The check is the row's shock absorber, and it is capped so it cannot be
+spent.** A plain `Row` measures its non-weighted children in composition
+order against whatever width is left, and the mark-done check is composed
+last — so a submit label that grows takes the check's width, and a *write
+control* vanishes with no sign it was there (the failure class `NowScreen`
+already names for its facet chips). Measured uncapped at 272dp: the check
+holds its full 40dp to 1.6x font scale, degrades from 1.7x, and reaches
+**zero at 2.5x**. So the submit is now the only elastic control —
+`widthIn(max = 128.dp)` (272 less three nominal 48dp targets) with a
+single-line ellipsis — which holds all four controls on one line and
+hittable to 3.0x. The row's *height* grows there; that is correct, not a
+wrap. `ItemDetailSubmitRowTest` measures both the capped row and the
+uncapped control that proves 2.5x is what took the check.
+
+One numbers note for anyone re-deriving the cap: an `IconButton`'s merged
+node measures **40dp** here, while 48dp is Material's nominal minimum. The
+cap is derived from the nominal, deliberately, so it errs toward leaving the
+targets room.
+
+**The pane no longer prints `HB-<seq>`.** The meta line is the project name
+(its id when the name has not synced) and `ITEM DETAIL` when there is
+neither — never blank. Operator decision 2026-08-20: CLAUDE.md's repo-wide
+rule is that an item is named to the operator by its title, never by that
+ref. `seq` still crosses the seam; only its display is gone.
+
+**The decision was taken on a wrong premise, and the premise is worth
+recording.** It was put to the operator as "this is the only client surface
+printing the ref, and the comment defending it cites a web file that no
+longer exists". Both halves were false: `client/web/src/components/domain/
+ItemPanel.tsx` renders `` `HB-${item.seq}` `` in a `.hb-meta` span with an
+`item detail` fallback, exactly the line this one was ported from. The
+grep that "proved" the web clean had been run from inside
+`client/android/app/src/main/kotlin/...`, where `client/web/src` does not
+resolve — and a path that does not exist returns no matches rather than an
+error, so an absent directory and an absent string look identical.
+
+So the two clients now differ, the rule is still contradicted by the web,
+and which way that resolves is #661. **Check the shell's working directory
+before believing an empty grep** — this is the second time this session that
+a green-looking check turned out to have been aimed at the wrong subject.
 
 Evidence: Pixel 10 Pro Fold, real device, unfolded — one line reading
 `[grill] [steps] ........ (Save) ✓`, four clickable nodes at equal bounds,

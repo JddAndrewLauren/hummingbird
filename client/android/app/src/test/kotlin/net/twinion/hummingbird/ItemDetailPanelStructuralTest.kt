@@ -141,7 +141,7 @@ class ItemDetailPanelStructuralTest {
         assertEquals(
             "every rememberSaveable(...) in the pane must be accounted for here — " +
                 "a new one is a new leak until its key names the item: $calls",
-            3,
+            2,
             calls.size,
         )
         // The one exception, and the only argument-less form allowed: the
@@ -340,24 +340,23 @@ class ItemDetailPanelStructuralTest {
      *   the edge, and a fixed `Arrangement` in its place would not. */
     @Test
     fun `the grill, the microtask run, the submit and the check share one row`() {
-        val row = functionBody(panelSrc, "DetailBody")
-            .substringAfter("var grain by rememberSaveable(itemId)")
+        val body = functionBody(panelSrc, "DetailBody")
+        val rowAt = body.indexOf(ACTION_ROW_HEAD)
         assertTrue(
             "the action row must be one Row, laid out full width",
-            row.replace(Regex("""\s+"""), " ").contains(
-                "Row( modifier = Modifier.fillMaxWidth(), " +
-                    "verticalAlignment = Alignment.CenterVertically,",
-            ),
+            rowAt >= 0,
         )
+        val row = body.substring(rowAt)
         assertEquals(
-            "and it must be the only row after it — a second is a control back on a line of its own",
+            "and it must be the only row at that level — a second is a control back on a " +
+                "line of its own",
             1,
-            Regex("""(?m)^    Row\(""").findAll(row).count(),
+            Regex("""(?m)^    Row\(""").findAll(body).count(),
         )
         for (control in listOf(
             "onClick = onGrill",
             "onMicrotaskRun(false, null)",
-            "Button(onClick = onSubmit, enabled = canSave)",
+            "onClick = onSubmit,",
             "IconButton(onClick = onComplete)",
         )) {
             assertTrue("the action row must carry $control", row.contains(control))
@@ -388,14 +387,127 @@ class ItemDetailPanelStructuralTest {
         )
         // The microtask's answer still renders, above the row: a stream of
         // narration must not push the controls down the pane.
-        val body = functionBody(panelSrc, "DetailBody")
         assertTrue(
             "the run's narration must still render",
             body.contains("MicrotaskNarration("),
         )
         assertTrue(
             "and above the action row, not below it",
-            body.indexOf("MicrotaskNarration(") < body.indexOf("var grain by rememberSaveable"),
+            body.indexOf("MicrotaskNarration(") < rowAt,
+        )
+    }
+
+    /** The squeeze this row shipped with, and the arithmetic that ends it.
+     *
+     * A plain `Row` measures its non-weighted children in composition order
+     * against whatever width is left, and the mark-done check is composed
+     * **last**. At default scale the four controls needed 258dp of the
+     * 272dp the narrowest host gives the pane (`ItemDetailSubmitRowTest`
+     * derives that width), so a font scale of about 1.15x was enough for
+     * the submit's label to take the remainder and leave the check measured
+     * to zero width — a WRITE control gone, with nothing on screen saying
+     * it was ever there. `NowScreen` names the same failure class for its
+     * frontier chips.
+     *
+     * So the submit is capped at the width the three 48dp touch targets do
+     * not need — 272 − 3 × 48 = 128dp — and its label ellipsises on one
+     * line instead of growing the row. Both halves are load-bearing: the
+     * cap alone would let the label wrap to two lines and stand the row up,
+     * and `maxLines` alone would not stop the squeeze.
+     *
+     * `ItemDetailSubmitRowTest` measures the consequence at both font
+     * scales; this pin is on the mechanism, which a measurement cannot
+     * distinguish from a lucky label. */
+    @Test
+    fun `the submit is the only control that gives way, and it is capped`() {
+        val body = functionBody(panelSrc, "DetailBody")
+        val flatBody = body.replace(Regex("""\s+"""), " ")
+        assertTrue(
+            "the cap must be 128dp — 272dp of row less the three 48dp touch targets",
+            flatBody.contains("val submitMaxWidth = 128.dp"),
+        )
+        val row = body.substring(body.indexOf(ACTION_ROW_HEAD))
+        val flatRow = row.replace(Regex("""\s+"""), " ")
+        assertTrue(
+            "the submit must carry the cap, so the three 48dp targets are measured first",
+            flatRow.contains(
+                "Button( onClick = onSubmit, enabled = canSave, " +
+                    "modifier = Modifier.widthIn(max = submitMaxWidth), )",
+            ),
+        )
+        assertTrue(
+            "and its label must ellipsise on one line rather than stand the row up",
+            flatRow.contains("maxLines = 1, overflow = TextOverflow.Ellipsis,"),
+        )
+        // No other control may take a max width: capping a 48dp target is
+        // the same defect from the other side.
+        assertEquals(
+            "only the submit may be capped (widthIn uses: ${Regex("""widthIn\(""")
+                .findAll(row).count()})",
+            1,
+            Regex("""widthIn\(""").findAll(row).count(),
+        )
+    }
+
+    /** The microtask grain is a constant, and saying so is the point.
+     *
+     * It was a `rememberSaveable` whose comment described carrying "the
+     * chosen step count" between items — a capability this build has never
+     * had: there is no stepper, picker or seam that can write it anywhere in
+     * the app, one read and no assignment. A comment describing a control
+     * that does not exist is a defect in this repo, because the next agent
+     * reasons from it, and this one sat beside the action row where it read
+     * as documentation of a live one.
+     *
+     * The pin is that it stays inert *visibly*: a `rememberSaveable` grain
+     * with still nothing able to write it is the same untruth again, and if
+     * a control does land it belongs in the keyed sweep above. */
+    @Test
+    fun `the microtask grain is a constant while nothing can write it`() {
+        val body = functionBody(panelSrc, "DetailBody")
+        assertTrue(
+            "the grain must be a plain constant",
+            body.contains("val grain = 2L"),
+        )
+        assertFalse(
+            "and must not become state again without a control that can write it",
+            body.contains("grain by remember") || body.contains("grain by rememberSaveable"),
+        )
+        assertEquals(
+            "nothing may assign it — an assignment means a control landed, and the " +
+                "state (and the sweep above) come back with it",
+            0,
+            Regex("""(?m)^\s*grain\s*=""").findAll(body).count(),
+        )
+    }
+
+    /** The pane's meta line names the project, and never the `HB-<seq>`
+     * ref.
+     *
+     * CLAUDE.md's repo-wide rule: an item is named to the operator by its
+     * title, never by that ref — it is a client-side handle onto a uuid, no
+     * route accepts it, and a person reading one cannot look the item up in
+     * the app. This pane printed one under the title and was the last client
+     * surface doing it (`client/web/src` contains no `HB-` at all).
+     *
+     * The line must still never render blank, which is the other half of
+     * why this is a pin rather than a deletion: with the ref gone, an item
+     * whose project has not synced (or has none) has nothing to say there,
+     * and "ITEM DETAIL" is the floor. */
+    @Test
+    fun `the meta line names the project, never the HB ref`() {
+        assertFalse(
+            "no client surface displays seq — the ref is not how an item is named",
+            panelSrc.contains("HB-"),
+        )
+        val flat = functionBody(panelSrc, "ItemDetailPanel").replace(Regex("""\s+"""), " ")
+        assertTrue(
+            "the meta line must be the project name, falling back to the id, " +
+                "and must never be blank",
+            flat.contains(
+                "val meta = loadedRecord?.projectName ?: loadedRecord?.projectId " +
+                    "?: \"ITEM DETAIL\"",
+            ),
         )
     }
 
@@ -447,11 +559,12 @@ class ItemDetailPanelStructuralTest {
         assertEquals(
             "exactly one submit button in the pane",
             1,
-            Regex("""Button\(onClick = onSubmit""").findAll(body).count(),
+            Regex("""onClick = onSubmit""").findAll(body).count(),
         )
         assertTrue(
             "the submit must refuse an unsendable draft rather than sending it",
-            body.contains("Button(onClick = onSubmit, enabled = canSave)"),
+            body.replace(Regex("""\s+"""), " ")
+                .contains("Button( onClick = onSubmit, enabled = canSave,"),
         )
         assertTrue(body.contains("ItemDetailPanelMode.SAVE -> \"Save\""))
         assertTrue(body.contains("ItemDetailPanelMode.PROMOTE -> \"Promote\""))
@@ -636,5 +749,20 @@ class ItemDetailPanelStructuralTest {
             "and the write itself must refuse, not merely be un-rendered",
             viewModelSrc.contains("if (!record.isEditable) {"),
         )
+    }
+
+    private companion object {
+        /** The action row's own opening — every pin on that row is bounded
+         * by locating this, not by `substringAfter` on a neighbouring
+         * declaration. The previous anchor was
+         * `substringAfter("var grain by rememberSaveable(itemId)")`, a
+         * literal the file stopped containing when the call went
+         * multi-line, and `substringAfter` returns the **whole string**
+         * when its delimiter is missing — so the bound silently became "the
+         * entire function" and every assertion under it stopped claiming
+         * what it said. Located and asserted instead, so a rename fails
+         * here rather than going quiet. */
+        val ACTION_ROW_HEAD = "Row(\n        modifier = Modifier.fillMaxWidth(),\n" +
+            "        verticalAlignment = Alignment.CenterVertically,"
     }
 }
