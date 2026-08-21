@@ -1033,3 +1033,42 @@ well, so a pane measured only in its resting state would have called the old
 label safe. And sharing a line is asserted as *equal tops* rather than
 against a height constant — a wrapped `ChoiceRow` puts the second control a
 full button lower, and nothing else moves either of them.
+
+### The item pane's polish pass, on device (2026-08-20)
+
+Pixel 10 Pro Fold emulator, **both** panels — which is the point, since the
+handoff that opened this work flagged the 443dp cover display as the width
+nobody had checked. `cmd device_state state 0` folds it; `state 2` unfolds.
+Two hosts, which covers both modes: Now's inline expansion (`SAVE`) and
+Triage's pane (`PROMOTE`). The notification route is still unexercised for
+`README` check 27's reason — it needs a real `item-threshold/v1` push — and
+it takes the panel's default mode with no arguments of its own.
+
+Read off `uiautomator dump` throughout. What it settled:
+
+- **No pencil node exists** on any surface of the pane, and the pane's
+  clickable nodes are the ones intended: the header row (close), the title
+  inside it (edit, a *separate* node — the gesture split is real and not
+  just a claim about Compose's hit-testing), one per condensed section, and
+  the chevron.
+- **Every tap-to-edit row measures 48dp**, not the 44dp minimum asked for:
+  the condensed content is taller than the floor, so the floor never binds.
+  A row is a bigger target than the pencil it replaced, since the pencil was
+  48dp of *icon* inside a wider row that did nothing.
+- **Tapping a condensed line opens its editor** and the label replaces the
+  line; tapping the label shuts it. Exercised on the axes section (Now) and
+  on `NOTES` (both).
+- **The disclosure defaults per mode, as designed**: shut on Now, open on
+  Triage, where all four sections then stand open and editable.
+- **The submit row is one line on both panels**, `Grill me` + `Save` on Now
+  and `Grill me` + `Promote` on Triage — equal `y` bounds, folded and
+  unfolded.
+
+One thing to know rather than to fix: the chevron sits in a ~64dp band of
+its own (8dp panel gap, a 48dp `IconButton`, 8dp again), and between two
+open editors on Triage that band is the most conspicuous whitespace left in
+the pane. It is the design system's touch target around a 24dp glyph, so
+tightening it means going off-spec, hanging the chevron on the axes row's
+trailing edge, or giving the band a hairline divider so it reads as a
+separator rather than as air. Left alone deliberately; the disclosure it
+controls is what bought the height back.
