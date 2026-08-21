@@ -1,4 +1,3 @@
-import { Badge } from "../../components/core/Badge";
 import { Button } from "../../components/core/Button";
 import { Card } from "../../components/core/Card";
 import { Icon } from "../../components/core/Icon";
@@ -107,7 +106,6 @@ function EntryRow({
 }) {
   const meta = [
     timeLabel(entry),
-    entry.event?.calendarId,
     entry.alsoScheduledOn ? `planned ${shortDayLabel(entry.alsoScheduledOn)}` : null,
     entry.deadlineOutsideWindow ? `due ${entry.deadlineOutsideWindow}` : null,
   ].filter(Boolean);
@@ -239,23 +237,6 @@ function WeekendCard({
           </div>
         ))
       )}
-
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "var(--space-3)",
-          flexWrap: "wrap",
-          paddingTop: "var(--space-4)",
-          borderTop: "1px solid var(--border-subtle)",
-        }}
-      >
-        <Badge icon="calendar-clock">on the calendar</Badge>
-        <Badge icon="flag" tone="warn">
-          due
-        </Badge>
-        <Badge icon="calendar">planned</Badge>
-      </div>
     </Card>
   );
 }
