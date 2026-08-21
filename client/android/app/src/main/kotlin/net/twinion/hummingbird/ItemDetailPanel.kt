@@ -182,9 +182,13 @@ fun ItemDetailPanel(
      * their board so the mutation shows behind the panel immediately; the
      * route host has no board and passes nothing. */
     onMutated: () -> Unit = {},
-    /** Fired after a *submit* or a mark-done lands — the gestures that can
-     * take the item out of the host's own list. Triage closes its selection
-     * on it, or `selectedId` would dangle at a vanished row. */
+    /** Fired after a submit or a mark-done **lands** — the gestures that
+     * can take the item out of the host's own list. Triage closes its
+     * selection on it, or `selectedId` would dangle at a vanished row.
+     *
+     * Only on one that landed: a refused or failed write words itself into
+     * the pane's own status line, and closing the pane would unmount both
+     * that message and the draft it is about. */
     onSubmitted: () -> Unit = {},
     mode: ItemDetailPanelMode = ItemDetailPanelMode.SAVE,
     modifier: Modifier = Modifier,
@@ -381,19 +385,25 @@ fun ItemDetailPanel(
                     mode = mode,
                     dark = dark,
                     formMeta = viewModel.formMeta,
+                    // Plain getters over the draft's `StateFlow.value`, so
+                    // reading them subscribes to nothing. They are fresh
+                    // anyway — and only because `draft` above is collected
+                    // as state, so every draft change recomposes this call
+                    // and recomputes them. Load-bearing: pass the draft
+                    // down without collecting it and these two go stale.
                     problems = viewModel.metaProblems,
                     canSave = viewModel.canSave,
                     onDraftChange = viewModel::updateDraft,
                     onSubmit = {
                         scope.launch {
-                            when (mode) {
+                            val landed = when (mode) {
                                 ItemDetailPanelMode.SAVE ->
                                     viewModel.save(itemId, System.currentTimeMillis())
                                 ItemDetailPanelMode.PROMOTE ->
                                     viewModel.promote(itemId, System.currentTimeMillis())
                             }
                             onMutated()
-                            onSubmitted()
+                            if (landed) onSubmitted()
                         }
                     },
                     onAct = { action ->
@@ -404,9 +414,9 @@ fun ItemDetailPanel(
                     },
                     onComplete = {
                         scope.launch {
-                            viewModel.act(itemId, "complete", System.currentTimeMillis())
+                            val landed = viewModel.act(itemId, "complete", System.currentTimeMillis())
                             onMutated()
-                            onSubmitted()
+                            if (landed) onSubmitted()
                         }
                     },
                     onAck = { alertId ->

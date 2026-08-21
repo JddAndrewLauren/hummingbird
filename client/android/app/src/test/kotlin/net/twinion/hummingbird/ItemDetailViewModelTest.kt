@@ -377,6 +377,61 @@ class ItemDetailViewModelTest {
         assertTrue(model.statusLine.value?.contains("Couldn't promote") == true)
     }
 
+    /** The answer a host closes its pane on. A refusal and a failure are
+     * worded into the status line rather than thrown, so without this the
+     * caller could not tell them from a landed write — and Triage, which
+     * closes its selection on a submit, would unmount the refusal message
+     * and the draft that caused it. */
+    @Test
+    fun `a submit says whether it landed, and a refused one says no`() = runBlocking {
+        val model = vm()
+        model.load("i-1", 1_000)
+
+        assertTrue("a clean submit landed", model.save("i-1", 2_000))
+
+        model.updateDraft(model.draft.value!!.copy(title = ""))
+        assertFalse("a refused submit did not", model.save("i-1", 2_000))
+        assertFalse("nor a refused promote", model.promote("i-1", 2_000))
+    }
+
+    @Test
+    fun `a failed submit says it did not land`() = runBlocking {
+        val failing = vm(
+            edit = { _, _, _ -> throw RuntimeException("offline") },
+            promote = { _, _, _ -> throw RuntimeException("offline") },
+        )
+        failing.load("i-1", 1_000)
+
+        assertFalse(failing.save("i-1", 2_000))
+        assertFalse(failing.promote("i-1", 2_000))
+    }
+
+    /** Same answer for the mark-done gesture, which takes the item out of
+     * the Triage queue when it works and leaves it there when it does
+     * not. */
+    @Test
+    fun `an act says whether it landed`() = runBlocking {
+        val model = vm()
+        model.load("i-1", 1_000)
+        assertTrue(model.act("i-1", "complete", 2_000))
+
+        val failing = vm(act = { _, _, _ -> throw RuntimeException("offline") })
+        failing.load("i-1", 1_000)
+        assertFalse(failing.act("i-1", "complete", 2_000))
+        assertTrue(failing.statusLine.value?.contains("Couldn't complete") == true)
+    }
+
+    /** An archived item takes no write, and must say so rather than
+     * reporting a success that never happened. */
+    @Test
+    fun `a refused archived write says it did not land`() = runBlocking {
+        val model = vm(fetch = { id, _ -> itemDetail(id, isEditable = false, isArchived = true) })
+        model.load("i-1", 1_000)
+
+        assertFalse(model.save("i-1", 2_000))
+        assertFalse(model.promote("i-1", 2_000))
+    }
+
     /** Nothing is trimmed on the caller's behalf (#110's "raw string
      * reaches the mutation unmodified"), and what counts as empty is the
      * injected rule's answer, never Kotlin's. */

@@ -285,6 +285,35 @@ class ItemDetailPanelStructuralTest {
         assertTrue(body.contains("ItemDetailPanelMode.PROMOTE -> \"Promote to ready\""))
     }
 
+    /** The seam between the panel and its hosts, and the one thing that
+     * can go wrong at it silently: a refused submit words itself into the
+     * pane's own status line, so a host told "submitted" unconditionally
+     * closes the pane over both that message and the draft it is about.
+     * Triage is that host. Both gestures that can empty a host's list —
+     * the submit and the mark-done check — must gate on the answer. */
+    @Test
+    fun `the host is told a submit happened only when it landed`() {
+        val flat = functionBody(panelSrc, "ItemDetailPanel").replace(Regex("""\s+"""), " ")
+        assertEquals(
+            "onSubmitted must never be called unconditionally",
+            0,
+            Regex("""(?<!if \(landed\) )onSubmitted\(\)""").findAll(flat).count(),
+        )
+        assertEquals(
+            "both the submit and the mark-done must gate on the write landing",
+            2,
+            Regex("""if \(landed\) onSubmitted\(\)""").findAll(flat).count(),
+        )
+        assertTrue(
+            "the submit's answer must come from the ViewModel, not be assumed",
+            flat.contains("val landed = when (mode)"),
+        )
+        assertTrue(
+            "and so must the mark-done's",
+            flat.contains("""val landed = viewModel.act(itemId, "complete","""),
+        )
+    }
+
     /** An unset field opens editable where filling it in is the work
      * (Triage), and rests as a ghost where the surface is mostly for
      * reading. `isSet` is read off the RECORD, never the draft: reading the

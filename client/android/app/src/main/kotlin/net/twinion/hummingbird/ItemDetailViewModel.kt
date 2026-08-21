@@ -300,15 +300,14 @@ class ItemDetailViewModel(
      * surface); this ViewModel is shared, so the enforcement is the
      * panel's mode plus the structural pins named in
      * [ItemDetailPanelMode]'s own doc. */
-    suspend fun save(itemId: String, nowMs: Long) {
+    suspend fun save(itemId: String, nowMs: Long): Boolean =
         submit(itemId, nowMs, refusal = "This edit can't be saved yet", verb = "save", send = editFn)
-    }
 
     /** Promotes the item to Ready, carrying whatever else the draft
      * touched — one CAS `PATCH` through `Core::triage`, per its own doc.
      * The Triage host's only submit: promotion is the sole destination
      * that surface offers (#360). */
-    suspend fun promote(itemId: String, nowMs: Long) {
+    suspend fun promote(itemId: String, nowMs: Long): Boolean =
         submit(
             itemId,
             nowMs,
@@ -316,32 +315,38 @@ class ItemDetailViewModel(
             verb = "promote",
             send = promoteFn,
         )
-    }
 
     /** What the two submits share: refuse an unsendable draft in the
      * caller's own words, send one patch, and on success re-read and let
-     * the reseed advance the seed. */
+     * the reseed advance the seed.
+     *
+     * **Returns whether the write landed**, because the caller has a
+     * decision riding on it: a host that closes its pane on a submit
+     * (Triage does — the item leaves its queue) must not close it on a
+     * *refused* one, or it unmounts both the refusal message and the draft
+     * that caused it. Refusals are worded into [statusLine] rather than
+     * thrown, so a `Unit` return left the caller unable to tell. */
     private suspend fun submit(
         itemId: String,
         nowMs: Long,
         refusal: String,
         verb: String,
         send: suspend (String, ItemEdit, Long) -> Unit,
-    ) {
-        val record = (_state.value as? ItemDetailState.Loaded)?.record ?: return
-        val draft = _draft.value ?: return
+    ): Boolean {
+        val record = (_state.value as? ItemDetailState.Loaded)?.record ?: return false
+        val draft = _draft.value ?: return false
         // Recall's rule (#478) enforced where it is acted on, not only
         // where it is rendered: the panel draws no pencil and no submit for
         // a non-editable item, and this is the second lock on the same door
         // — history stays readable.
         if (!record.isEditable) {
             _statusLine.value = "This item is history — readable, not editable."
-            return
+            return false
         }
         if (!canSave) {
             _statusLine.value = "$refusal — an item needs a title, " +
                 "and a date must be the shape shown."
-            return
+            return false
         }
         try {
             send(itemId, draft.toEdit(record, hasContentFn), nowMs)
@@ -351,14 +356,20 @@ class ItemDetailViewModel(
             _seed.value = draft
         } catch (error: Exception) {
             _statusLine.value = "Couldn't $verb — ${error.message}"
-            return
+            return false
         }
         load(itemId, nowMs)
+        return true
     }
 
-    /** One act from the item screen. Completing or cancelling also acks
-     * the live alert about this item — decided in the core, not here. */
-    suspend fun act(itemId: String, action: String, nowMs: Long) {
+    /** One act from the item pane. Completing or cancelling also acks the
+     * live alert about this item — decided in the core, not here.
+     *
+     * Returns whether the act landed, for [submit]'s reason: a mark-done
+     * takes the item out of the Triage queue, so that host closes its pane
+     * on one — but only on one that happened. The re-read runs either way,
+     * because a failed act still leaves a board worth refreshing. */
+    suspend fun act(itemId: String, action: String, nowMs: Long): Boolean {
         val failure = try {
             actFn(itemId, action, nowMs)
             null
@@ -367,6 +378,7 @@ class ItemDetailViewModel(
         }
         load(itemId, nowMs)
         failure?.let { _statusLine.value = it }
+        return failure == null
     }
 
     /** Acks the live alert about this item, then re-reads so the card
