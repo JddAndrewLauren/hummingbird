@@ -153,6 +153,30 @@ describe("writeFailureMessage", () => {
     expect(writeFailureMessage(write("busy"))).toBe("That project write did not go through.");
     expect(writeFailureMessage(write("failed"))).toBe("That project write did not go through.");
   });
+
+  // #669: seed-keyed reads. `issuedSeed` is how a reader recognises its OWN
+  // write in a slot shared by more than one card — omitting the argument
+  // (the tests above) keeps the grid's pre-existing, ungated read; passing
+  // it scopes the message to a write this exact caller issued.
+  it("says nothing about a failure whose seed this caller did not issue", () => {
+    expect(writeFailureMessage(write("failed", { error: "no can do" }), "other-seed")).toBeNull();
+  });
+
+  it("says nothing while the caller holds no write of its own outstanding", () => {
+    expect(writeFailureMessage(write("failed", { error: "no can do" }), null)).toBeNull();
+  });
+
+  it("renders the message once the seed matches the caller's own", () => {
+    expect(writeFailureMessage(write("failed", { seed: "s-1", error: "no can do" }), "s-1")).toBe(
+      "no can do",
+    );
+  });
+
+  it("takes a caller-specific fallback for a seed-matched busy drop", () => {
+    expect(writeFailureMessage(write("busy", { seed: "s-1" }), "s-1", "That link write did not go through.")).toBe(
+      "That link write did not go through.",
+    );
+  });
 });
 
 describe("githubRepoUrl", () => {

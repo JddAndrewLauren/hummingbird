@@ -28,6 +28,10 @@ const NOW_MS = Date.parse("2026-03-04T10:00:00Z");
  * not care what the seed is (most of this file) pass this default rather
  * than `noop`, which cannot satisfy the `=> string` return type. */
 const noopPatchProject = (): string => "unused-seed";
+/** Same shape as `noopPatchProject`, for the four other writes #669 gave a
+ * minted-seed return to (`useProjectsWiring.ts`'s own doc) — a test that
+ * does not care what the seed is passes this rather than `noop`. */
+const noopWriteSeed = (): string => "unused-seed";
 
 /** A fresh in-memory `storage` per render, for the board's own view
  * preferences. Not optional: the screen falls back to the ambient
@@ -60,10 +64,10 @@ function renderProjectsScreen(props: Partial<ProjectsScreenProps> & Pick<Project
       onCreateProject={noop}
       onPatchProject={noopPatchProject}
       onRequestProjectLinks={noop}
-      onCreateProjectLink={noop}
-      onPatchProjectLink={noop}
+      onCreateProjectLink={noopWriteSeed}
+      onPatchProjectLink={noopWriteSeed}
       onRequestRoute={noop}
-      onPatchRoute={noop}
+      onPatchRoute={noopWriteSeed}
       nowMs={NOW_MS}
       selectedItemId={null}
       onOpenItem={noop}
@@ -302,6 +306,36 @@ describe("ProjectsScreen", () => {
     expect(screen.queryByText("no can do")).toBeNull();
   });
 
+  // #669's sixth reader: `PropertiesCard` used to gate its failure read on
+  // `project.id` alone, so a failed `ArchiveCard` write on the SAME
+  // dossier — a different seed, sharing this card's one `lastProjectWrite`
+  // broadcast slot — satisfied it just as readily as its own. Asserting on
+  // the rendered label, not on internal state, is what makes this fail
+  // against the pre-fix predicate.
+  it("does not paint a sibling card's failed write — same project, a different seed — into this card", () => {
+    const project = projectDTO({ id: "p-1", name: "House repairs" });
+    const task = taskState({ projects: [project], ledger: [] });
+    const { rerenderWith } = renderProjectsScreen({ task, onPatchProject: () => "properties-seed" });
+    fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+    fireEvent.change(screen.getByLabelText("GitHub repo"), {
+      target: { value: "JddAndrewLauren/hummingbird" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // The sibling `ArchiveCard`'s own write fails and broadcasts, with a
+    // different seed — this card issued no such write.
+    rerenderWith({
+      task: {
+        ...task,
+        lastProjectWrite: { seed: "archive-seed", projectId: "p-1", kind: "failed", error: "no can do" },
+      },
+      onPatchProject: () => "properties-seed",
+    });
+
+    expect(screen.queryByText("no can do")).toBeNull();
+  });
+
   it("disables Save until a field actually changes", () => {
     const task = taskState({
       projects: [projectDTO({ id: "p-1", name: "House repairs" })],
@@ -512,14 +546,14 @@ describe("ProjectsScreen", () => {
         linksByProject: overrides.linksByProject ?? {},
         lastProjectLinkWrite: overrides.lastProjectLinkWrite ?? null,
       });
-      renderProjectsScreen({
+      const { rerenderWith } = renderProjectsScreen({
         task,
         onRequestProjectLinks: overrides.onRequestProjectLinks ?? noop,
-        onCreateProjectLink: overrides.onCreateProjectLink ?? noop,
-        onPatchProjectLink: overrides.onPatchProjectLink ?? noop,
+        onCreateProjectLink: overrides.onCreateProjectLink ?? noopWriteSeed,
+        onPatchProjectLink: overrides.onPatchProjectLink ?? noopWriteSeed,
       });
       fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
-      return task;
+      return { task, rerenderWith };
     }
 
     it("requests this project's links the moment the dossier opens", () => {
@@ -546,10 +580,10 @@ describe("ProjectsScreen", () => {
           onCreateProject={noop}
           onPatchProject={noopPatchProject}
           onRequestProjectLinks={onRequestProjectLinks}
-          onCreateProjectLink={noop}
-          onPatchProjectLink={noop}
+          onCreateProjectLink={noopWriteSeed}
+          onPatchProjectLink={noopWriteSeed}
           onRequestRoute={noop}
-          onPatchRoute={noop}
+          onPatchRoute={noopWriteSeed}
           nowMs={NOW_MS}
           selectedItemId={null}
           onOpenItem={noop}
@@ -688,12 +722,48 @@ describe("ProjectsScreen", () => {
     });
 
     it("renders a failed link write's own message, scoped to this project", () => {
-      openDossier({
+      // Must return the seed the simulated broadcast below carries — #669's
+      // fix, ported from `ArchiveCard`'s own #668 fix: this card only reacts
+      // to a `lastProjectLinkWrite` whose `seed` matches the one its own
+      // write minted.
+      const { task, rerenderWith } = openDossier({
         linksByProject: { "p-1": [] },
-        lastProjectLinkWrite: { seed: "s-1", projectId: "p-1", kind: "failed", error: "url must be non-empty" },
+        onCreateProjectLink: () => "s-1",
+      });
+      fireEvent.change(screen.getByLabelText("URL"), { target: { value: "https://docs.example" } });
+      fireEvent.click(screen.getByRole("button", { name: "Add link" }));
+
+      rerenderWith({
+        task: {
+          ...task,
+          lastProjectLinkWrite: { seed: "s-1", projectId: "p-1", kind: "failed", error: "url must be non-empty" },
+        },
       });
 
       expect(screen.getByText("url must be non-empty")).toBeTruthy();
+    });
+
+    // #669's regression: under the old `projectId`-only gate, a foreign
+    // write on the SAME project (a different seed) satisfied this card's
+    // failure read just as readily as its own. Asserting on the rendered
+    // label, not on internal state, is what makes this fail against the
+    // pre-fix predicate.
+    it("does not paint a foreign write's failure — same project, a different seed — into this card", () => {
+      const { task, rerenderWith } = openDossier({
+        linksByProject: { "p-1": [] },
+        onCreateProjectLink: () => "s-1",
+      });
+      fireEvent.change(screen.getByLabelText("URL"), { target: { value: "https://docs.example" } });
+      fireEvent.click(screen.getByRole("button", { name: "Add link" }));
+
+      rerenderWith({
+        task: {
+          ...task,
+          lastProjectLinkWrite: { seed: "foreign-seed", projectId: "p-1", kind: "failed", error: "no can do" },
+        },
+      });
+
+      expect(screen.queryByText("no can do")).toBeNull();
     });
 
     it("does not paint another project's failed link write into this dossier", () => {
@@ -922,13 +992,13 @@ describe("ProjectsScreen", () => {
         routeByProject: overrides.routeByProject ?? {},
         lastRouteWrite: overrides.lastRouteWrite ?? null,
       });
-      renderProjectsScreen({
+      const { rerenderWith } = renderProjectsScreen({
         task,
         onRequestRoute: overrides.onRequestRoute ?? noop,
-        onPatchRoute: overrides.onPatchRoute ?? noop,
+        onPatchRoute: overrides.onPatchRoute ?? noopWriteSeed,
       });
       fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
-      return task;
+      return { task, rerenderWith };
     }
 
     // The Route card and the properties card both carry a "Save" button —
@@ -1007,7 +1077,7 @@ describe("ProjectsScreen", () => {
         ledger: [],
         routeByProject: { "p-1": route },
       });
-      const { rerenderWith } = renderProjectsScreen({ task, onPatchRoute: noop });
+      const { rerenderWith } = renderProjectsScreen({ task, onPatchRoute: noopWriteSeed });
       fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
 
       fireEvent.change(screen.getByLabelText("Destination"), { target: { value: "Ship the deck" } });
@@ -1039,7 +1109,10 @@ describe("ProjectsScreen", () => {
         ledger: [],
         routeByProject: { "p-1": route },
       });
-      const { rerenderWith } = renderProjectsScreen({ task, onPatchRoute: noop });
+      // Must return the seed the simulated broadcast below carries — the
+      // same seed-keyed contract every other write result on this screen
+      // now carries (#669).
+      const { rerenderWith } = renderProjectsScreen({ task, onPatchRoute: () => "s-1" });
       fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
 
       fireEvent.change(screen.getByLabelText("Destination"), { target: { value: "Ship the deck" } });
@@ -1070,7 +1143,7 @@ describe("ProjectsScreen", () => {
         ledger: [],
         routeByProject: { "p-1": route },
       });
-      const { rerenderWith } = renderProjectsScreen({ task, onPatchRoute: noop });
+      const { rerenderWith } = renderProjectsScreen({ task, onPatchRoute: noopWriteSeed });
       fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
 
       fireEvent.change(screen.getByLabelText("Destination"), { target: { value: "Ship the deck" } });
@@ -1085,9 +1158,18 @@ describe("ProjectsScreen", () => {
     });
 
     it("renders a failed route write's own message, scoped to this project", () => {
-      openDossier({
+      // Must return the seed the simulated broadcast below carries — same
+      // seed-keyed contract `ArchiveCard`'s #668 fix established, ported to
+      // this card by #669.
+      const { task, rerenderWith } = openDossier({
         routeByProject: { "p-1": routeDTO({ projectId: "p-1" }) },
-        lastRouteWrite: { seed: "s-1", projectId: "p-1", kind: "failed", error: "no can do" },
+        onPatchRoute: () => "s-1",
+      });
+      fireEvent.change(screen.getByLabelText("Destination"), { target: { value: "Ship the deck" } });
+      fireEvent.click(routeSaveButton());
+
+      rerenderWith({
+        task: { ...task, lastRouteWrite: { seed: "s-1", projectId: "p-1", kind: "failed", error: "no can do" } },
       });
 
       expect(screen.getByText("no can do")).toBeTruthy();
@@ -1099,6 +1181,39 @@ describe("ProjectsScreen", () => {
         lastRouteWrite: { seed: "s-1", projectId: "p-2", kind: "failed", error: "no can do" },
       });
 
+      expect(screen.queryByText("no can do")).toBeNull();
+    });
+
+    // #669's regression: under the old `projectId`-only gate, a foreign
+    // write on the SAME project (a different seed — e.g. a sibling card's
+    // own write, or a stale result from an earlier save this card already
+    // resolved) satisfied this card's failure read just as readily as its
+    // own, suppressing "Saving…" over a write that is still queued.
+    // Asserting on the rendered label, not on internal state, is what makes
+    // this fail against the pre-fix predicate.
+    it("keeps Saving… through a foreign write's failure — same project, a different seed", () => {
+      const route = routeDTO({ projectId: "p-1", version: 1 });
+      const task = taskState({
+        projects: [projectDTO({ id: "p-1", name: "House repairs" })],
+        ledger: [],
+        routeByProject: { "p-1": route },
+      });
+      const { rerenderWith } = renderProjectsScreen({ task, onPatchRoute: () => "s-1" });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      fireEvent.change(screen.getByLabelText("Destination"), { target: { value: "Ship the deck" } });
+      fireEvent.click(routeSaveButton());
+
+      expect(screen.getByText("Saving…")).toBeTruthy();
+
+      rerenderWith({
+        task: {
+          ...task,
+          lastRouteWrite: { seed: "foreign-seed", projectId: "p-1", kind: "failed", error: "no can do" },
+        },
+      });
+
+      expect(screen.getByText("Saving…")).toBeTruthy();
       expect(screen.queryByText("no can do")).toBeNull();
     });
   });
