@@ -232,6 +232,10 @@ private fun LazyListScope.nowPaneSection(
     collapsed: (MobileRankedPane) -> Boolean,
     onToggle: (MobileRankedPane) -> Unit,
     onGoToSettings: () -> Unit,
+    /** The weekend card's plan chips (#621) — one do-date write per tap,
+     * through [NowViewModel.setScheduledDate], which reloads the panes so
+     * the chip fills before any network is touched. */
+    onSetScheduledDate: (itemId: String, date: String?) -> Unit,
 ) {
     if (panes.isEmpty()) return
     item(key = "panes-header") {
@@ -245,7 +249,7 @@ private fun LazyListScope.nowPaneSection(
         onGoToSettings = onGoToSettings,
         // The Now surface's expanded renderings (the pane-content slice) —
         // dispatched here and nowhere else.
-        expandedContent = { pane -> NowPaneExpanded(pane, nowMs) },
+        expandedContent = { pane -> NowPaneExpanded(pane, nowMs, onSetScheduledDate) },
     )
 }
 
@@ -693,6 +697,9 @@ fun NowScreen(
                             scope.launch { viewModel.togglePaneCollapsed(pane) }
                         },
                         onGoToSettings = onGoToSettings,
+                        onSetScheduledDate = { itemId, date ->
+                            scope.launch { viewModel.setScheduledDate(itemId, date, panesNowMs) }
+                        },
                     )
                 }
             }

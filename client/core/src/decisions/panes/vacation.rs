@@ -42,7 +42,7 @@
 //! place every other "bound, but nothing usable landed" case lands
 //! (`waste.rs`'s own `WasteGap::UnresolvableZone` handling).
 
-use super::contract::{AnswerState, Band, PaneAnswerCore};
+use super::contract::{AnswerState, Band, CalendarInterval, PaneAnswerCore};
 use super::inputs::{
     BindingValueFact, CalendarEventFacts, CalendarEventStatusFact, CalendarEventWhenFacts,
     CalendarReadFacts, FreshnessFact, PaneInputs,
@@ -195,6 +195,11 @@ pub fn trip_from_event(event: &CalendarEventFacts, today: &CivilDate, facts: &Zo
 /// this list; [`super::zone_queries`] dedupes again across questions.
 pub fn vacation_zone_queries(inputs: &PaneInputs) -> Vec<ZoneQuery> {
     let mut queries = vec![ZoneQuery::CivilDate { zone: DEVICE_ZONE.to_string(), at_ms: inputs.now_ms }];
+    // The horizon's own two ends, so `vacation_calendar_interval` is
+    // answerable from the same single round trip (#564): a host that has to
+    // ask twice would be resolving the interval it needs *before* it can
+    // request the read that interval is for.
+    queries.extend(calendar_interval_queries(inputs.now_ms));
 
     if let VacationSetup::Bound { calendar_id, events, .. } = vacation_setup(inputs) {
         for event in events {
@@ -231,6 +236,51 @@ pub fn vacation_zone_queries(inputs: &PaneInputs) -> Vec<ZoneQuery> {
         }
     }
     deduped
+}
+
+/// The two `CivilDate` facts [`vacation_calendar_interval`] needs — the
+/// device's own day at each end of the horizon. Folded into
+/// [`vacation_zone_queries`] so one round trip answers both the interval
+/// and the trips.
+fn calendar_interval_queries(now_ms: i64) -> [ZoneQuery; 2] {
+    [
+        ZoneQuery::CivilDate { zone: DEVICE_ZONE.to_string(), at_ms: horizon_start_ms(now_ms) },
+        ZoneQuery::CivilDate { zone: DEVICE_ZONE.to_string(), at_ms: horizon_end_ms(now_ms) },
+    ]
+}
+
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+
+fn horizon_start_ms(now_ms: i64) -> i64 {
+    now_ms - HORIZON_BEFORE_DAYS * DAY_MS
+}
+
+fn horizon_end_ms(now_ms: i64) -> i64 {
+    now_ms + HORIZON_AHEAD_DAYS * DAY_MS
+}
+
+/// The calendar-arm interval this question needs (#267) — the long horizon,
+/// [`HORIZON_BEFORE_DAYS`] back and [`HORIZON_AHEAD_DAYS`] ahead.
+/// `vacation.ts`'s `vacationCalendarInterval`, sunk by #564 for the same
+/// reason [`super::weekend::weekend_calendar_interval`] was.
+///
+/// **`None` rather than a throw** where the TS copy throws: the web's
+/// version runs inside an effect where a throw takes the whole hook down,
+/// which its own comment calls out as the reason it guards. A pane that
+/// cannot resolve the device's zone has no interval to request, and that is
+/// an ordinary answer here — the same `None` [`vacation_zone_queries`]'
+/// consumers already handle.
+pub fn vacation_calendar_interval(now_ms: i64, facts: &ZoneFacts) -> Option<CalendarInterval> {
+    let start_ms = horizon_start_ms(now_ms);
+    let end_ms = horizon_end_ms(now_ms);
+    let end_day = facts.civil_date(DEVICE_ZONE, end_ms)?;
+    Some(CalendarInterval {
+        start_ms,
+        end_ms,
+        start_date: facts.civil_date(DEVICE_ZONE, start_ms)?,
+        // Exclusive, like every other civil upper bound here.
+        end_date: add_civil_days(&end_day, 1)?,
+    })
 }
 
 /// Every trip still ahead of (or under) today, soonest first.
@@ -682,6 +732,39 @@ mod tests {
         let day2 = timed("t9", "trips@g", start, end);
         let earlier = with_read(bound_inputs(now_at("2026-04-01", 9)), vec![day2], 0);
         assert_eq!(queue_of(&earlier)[0].days_until, 2);
+    }
+
+    // ------------------------------------------- vacation_calendar_interval
+
+    #[test]
+    fn the_calendar_interval_is_the_long_horizon_in_both_arms() {
+        let now_ms = now_at("2026-08-14", 9);
+        // Answerable from the pane's own single round trip — the interval's
+        // two civil ends ride `vacation_zone_queries`.
+        let facts = resolve(&vacation_zone_queries(&PaneInputs {
+            now_ms,
+            ..PaneInputs::default()
+        }));
+
+        let interval = vacation_calendar_interval(now_ms, &facts).expect("an interval");
+
+        assert_eq!(interval.start_ms, now_ms - HORIZON_BEFORE_DAYS * 86_400_000);
+        assert_eq!(interval.end_ms, now_ms + HORIZON_AHEAD_DAYS * 86_400_000);
+        assert_eq!(interval.start_date, "2026-08-07");
+        // 730 days after 2026-08-14 is 2028-08-13; the civil end is
+        // exclusive, so it is the day after.
+        assert_eq!(interval.end_date, "2028-08-14");
+    }
+
+    #[test]
+    fn an_unresolvable_device_zone_has_no_calendar_interval() {
+        // `None`, not a throw — the web copy throws because it runs inside
+        // an effect; here a pane with no resolvable zone simply has no
+        // interval to request.
+        assert_eq!(
+            vacation_calendar_interval(now_at("2026-08-14", 9), &ZoneFacts::default()),
+            None
+        );
     }
 
     // -------------------------------------------------------- vacation_band

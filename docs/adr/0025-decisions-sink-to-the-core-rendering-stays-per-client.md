@@ -352,6 +352,96 @@ vitest instantiates the module in both `node` and `jsdom` from one
 Later M1 briefs quote their row. A verdict of "stays" here is scoped to M1,
 not permanent — it is where the line fell for the capture/Now slice.
 
+*Amended 2026-08-21 ([#564](https://github.com/JddAndrewLauren/hummingbird/issues/564)):
+**four of the calendar rows below were reasoned against a mechanism Android
+no longer runs, and one more row is added.** #564 was scoped on 2026-08-18
+around a native `AuthorizationClient` grant; the operator's 2026-08-21
+decision replaced it with ADR-0028's authority-minted route, on the grounds
+that two mechanisms for one operator's one calendar is a maintenance tax
+with no matching risk reduction. The corrections, each named by the row it
+corrects:*
+
+- *`msUntilRotation` — **now sunk in spirit, ported in fact, and it does
+  have an Android caller.** The row's argument was that Android
+  re-authorizes on demand and keeps no rotation schedule; under ADR-0028 the
+  phone holds a ~1-hour Google access token exactly as a browser does and
+  must rotate ahead of it. The 5-minute margin is ported into
+  `ffi-mobile/src/calendar_token.rs` rather than sunk, for a reason the
+  original row would have accepted: what it is coupled to is the
+  **authority's** `CACHE_REMINT_MARGIN_MS`, which is not a client decision
+  at all, and both copies pin themselves against that constant's own source
+  text. The "exactly one caller" clause is what is stale, not the verdict.*
+- *`shouldKeepExistingConnection` — verdict unchanged (sunk in effect on
+  both clients), reasoning corrected: the Android case is not "cannot reach
+  Play Services to confirm a grant it still holds" but "cannot reach the
+  **authority** to mint". Same rule, same cost of getting it wrong, a
+  different unreachable party.*
+- *`persistence.ts` — verdict unchanged (storage mechanism), corollary
+  corrected: the phone still persists strictly less than the browser, and
+  still never a credential, but the reason is that the access token is
+  **held in Rust for its lifetime and re-minted at the authority**, not that
+  Play Services re-mints it silently. `CalendarPrefs.kt` carries a source
+  gate against anything token-shaped appearing in it.*
+- *`remint-health.ts` — **the deferral survives, for a different reason.**
+  Not "Android's `AuthorizationClient` failure vocabulary is unseen"; the
+  phone's vocabulary is the authority's, and it is the same seven codes the
+  web already has. What defers it is that #419 Phase 9's degradation is an
+  ITP-specific remedy with no Android counterpart, so the *question* is
+  shared while the *remedy* is not. #564 answers the shared half in
+  `calendar_token::connection_state`, which decides which of four
+  Source-connection states each code puts the device in — that function is
+  the phone's `remint-health.ts`, and a later slice may sink the pair.*
+- *`connect-error.ts` — verdict unchanged (display copy), with the note that
+  four of its nine arms are now unreachable on **both** clients, not just on
+  Android: `gis.ts` is deleted, so `popup_failed_to_open`, `popup_closed`,
+  `gis_script_load_failed` and `gis_unavailable` can no longer occur
+  anywhere. That is #577's residue, not this ADR's, and it is a cleanup for
+  whichever slice next touches that file.*
+
+*A second correction, recorded 2026-08-21 once #564/#621 were built: **three
+rows above describe a sink that did not land the way they say.** These are
+not reasoning errors like the four above — they are rows that ran ahead of
+the code, which is the exact drift this ADR's own sequencing rule exists to
+prevent, so they are rewritten rather than annotated:*
+
+- *`selection.ts`'s `effectiveSelection`/... — **partly sunk, and the web is
+  not rewired.** `effectiveSelection` itself is now
+  `calendar::selection::effective_selection` in `hummingbird-core`, and the
+  mobile seam derives the polled set through it (the picker's list ∪ the
+  bound Trips calendar, at the long horizon) on every push and every tick.
+  What did **not** happen is the "web rewired in the same slice" half:
+  reaching core from a browser needs an `ffi-web` export #564 did not scope,
+  so `client/web/src/calendar/selection.ts` still runs its own copy behind
+  `useCalendarWiring.ts`. `acceptSelectionChange`, `unavailableSelectedIds`
+  and `toggleCalendarId` are **not** sunk at all: they are picker
+  affordances, and Android's picker has no locked Trips row to refuse yet —
+  a real gap, and the one behaviour where the two clients still differ.*
+- *`connection.ts`'s `shouldKeepExistingConnection` — "sunk in effect on
+  both clients" was the hedge doing the work. It is **ported, not sunk**:
+  `connect_calendar`'s `was_opted_in || minted` and the TS predicate are two
+  spellings of one rule. They agree on all four inputs today and nothing
+  pins them to each other. Same verdict as `msUntilRotation`, and it should
+  have been recorded the same way.*
+- *`calendarRequests` (the row further down, "calendar-request building stays
+  per-client") — **reversed for the computation.** Both windows are now
+  built core-side (`weekend_calendar_interval`, `vacation_calendar_interval`
+  in `decisions::panes`), because Android needs the identical bounds and the
+  7/730-day horizon. The row's tzdb argument is answered by
+  `vacation_zone_queries`, which pre-resolves the horizon's two civil ends so
+  the core **can** decide the interval in advance of asking. The web's copy
+  is likewise un-rewired pending the same `ffi-web` export, and diverges on
+  one path: an unresolvable zone makes the web fall back to a UTC slice while
+  the core returns `None`.*
+
+*And one row is added, from #564's own work — the first row in this table
+to sink something that was left unsunk by an **earlier** ruling and reversed
+on the tie-breaker rather than on a new argument:*
+
+| Module | Verdict |
+|---|---|
+| `weekend.ts`'s `mergeWindow` per-day entries (sunk at #564/#621) | sunk to `decisions::panes::weekend`'s `merge_window`/`count_kinds` — **reversing #534's own verdict**, which folded the merge straight to a `WindowCounts` tally on the grounds that no decision read an entry's `id`/`title`/`at_ms`/`anchor`. That was right with one client. Android's expanded weekend card is the second caller ADR-0025's tie-breaker asks for, and what would have been duplicated is #122's due-beats-scheduled dedupe and both its residues (`also_scheduled_on`, `deadline_outside_window`) — a rule two hand-written merges would each have to get right, where the one that got it wrong would look entirely plausible. The counts are now tallied **from** the entries, so they can no longer disagree with the list they describe. What still does not cross is the DTOs: an entry carries a `source_id` and each host re-attaches its own event or item |
+
+
 | Module | Verdict |
 |---|---|
 | `size-energy.ts` | rendering; re-imports vocabulary via the shim |
@@ -497,7 +587,7 @@ glyphs, and whole `Expanded` rendering are per-client and do not.*
 | `vacation.ts`'s `Trip.name`/`tripName` | `vacation.rs`'s `Trip` carries no `name` field — no core decision reads it (only the headline does), so this file recovers it locally by matching a core `Trip`'s `id` back to the `CalendarEventDTO` it came from |
 | `vacation.ts`'s `vacationHeadline`/`tripDateRange`/`tripDayLabel`/`MONTH_NAMES`/`civilParts` | headline and date-range wording |
 | `vacation.ts`'s `vacationSetup`'s `Bound` arm's `read` field | the seam carries only `calendarId` (`vacation_setup_kind`'s kind-only projection — `VacationSetup::Bound` itself borrows the inputs' own event slice and has no `Serialize`); `read` is attached locally from the same `calendarReads` the core already consulted to decide `Bound`, never a second guess about its state |
-| `weekend-pane/question.ts`'s and `vacation-pane/question.ts`'s `calendarRequests` (`vacationCalendarInterval`, the weekend window's civil bounds) | **calendar-request building stays per-client, keeping the tzdb at request-build time** — #267's calendar arm is asked in civil dates resolved in the device's own zone at the moment of the request, which is a per-render host concern (`useCalendarEventsWiring`'s effect), not a fact the core needs to have decided in advance of asking for it |
+| `weekend-pane/question.ts`'s and `vacation-pane/question.ts`'s `calendarRequests` (`vacationCalendarInterval`, the weekend window's civil bounds) | ~~calendar-request building stays per-client, keeping the tzdb at request-build time~~ — **reversed at #564/#621, see the second amendment above.** Both windows are computed core-side (`weekend_calendar_interval`, `vacation_calendar_interval`); the web's copy stays live and un-rewired until an `ffi-web` export exists. The original argument — that this is a per-render host concern (`useCalendarEventsWiring`'s effect) rather than a fact the core needs decided in advance of asking — is answered by `vacation_zone_queries` pre-resolving the horizon's civil ends |
 | `WastePaneExpanded.tsx`-shaped `Expanded` components for all seven (`KimiPaneExpanded`, `GithubPaneExpanded`, `UptimePaneExpanded`, `ReachabilityPaneExpanded`, `RacePaneExpanded`, `WeekendPaneExpanded`, `VacationPaneExpanded`) | whole renderings |
 | `kimi.ts`/`github.ts`/`uptime.ts`/`reachability.ts`/`race.ts`/`weekend.ts`/`vacation.ts`'s own `SOURCE`/`SNAPSHOT_KEY`/`BINDING_KEY`/`STALE_AFTER_MS`-shaped constants | same module-evaluation-order constraint as waste's own four (each question's `sources: [SOURCE]` in its `question.ts` is built at module evaluation); pinned against the core's own `*_constants_json()` by `seam.test.ts`, not sunk at runtime |
 | The weekday/month *words* everywhere they appear | per-client, from the core's own civil-date/index facts (`weekendDay.date`, `Trip.startDate`) — the core decides which day, the client names it |

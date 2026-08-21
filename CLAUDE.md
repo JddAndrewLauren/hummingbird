@@ -39,6 +39,7 @@ grepping it.
 | The decisions every client shares (#141/M1) | `client/core/src/decisions/`, `client/ffi-web/src/decisions.rs`, `client/web/src/decisions/seam.ts` | `decisions/mod.rs`, then `seam.ts`; ADR-0025 |
 | The panes' decision half + the zone bridge (#533/M4) | `client/core/src/decisions/panes/`, `client/web/src/screens/questions/zone-bridge.ts` | `panes/mod.rs`, then `panes/zone.rs`; ADR-0025 |
 | The pane lane's mobile seam (#536/M4) — `paneZoneQueries`/`rankPanes`, applied results only | `client/ffi-mobile/src/lib.rs` (its panes (#536) section) | that section's own header; ADR-0025 |
+| Android's calendar lane (#564) and the panes it unblocks (#621) — the authority mint, the calendar half behind its own lock, Settings' Calendar section, the weekend card's plan chips | `client/ffi-mobile/src/{calendar_token.rs,lib.rs}` (its calendar (#564) section), `client/core/src/calendar/{host.rs,selection.rs}`, `client/android/.../{CalendarPrefs.kt,SettingsScreen.kt,ui/panes/NowPanesExpanded.kt}` | `calendar_token.rs`, then `host.rs`; ADR-0028 as amended by #564, ADR-0025 |
 | The skills runner lane, client side (#538/M4) | `client/core/src/decisions/skills/`, `client/web/src/skills/`, `client/android/.../hummingbird/skills/` | `decisions/skills/mod.rs`, then `SkillRunner.kt`; ADR-0025 as amended by #538 |
 | The `/next-up-hb` seam | `client/next-up/` | `src/lib.rs` |
 | The wasm seams | `client/ffi-web/src/{task_host,calendar_host}.rs` | those headers |
@@ -94,7 +95,10 @@ scope and is write-everything, so anything holding one is treated as a write
 credential however read-only it looks — since #273 it can also *cause
 spend*, via `POST /api/skills/run`, and since #577 it can also mint a Google
 `calendar.readonly` access token via `POST /api/google/calendar_token`,
-against a server-held credential shared by every device (ADR-0028). The
+against a server-held credential shared by every device (ADR-0028) —
+**and since #564 the phone is one of the minters**, over that same route
+with that same credential, so the sentence above is a statement about every
+device token rather than about browsers. The
 population of `device` tokens is: one per operator device, the runner's
 (`runner`), and the OpenClaw agent's (`openclaw-agent`, on the gateway
 machine — ADR-0029, minted and rotated per `docs/openclaw.md`).

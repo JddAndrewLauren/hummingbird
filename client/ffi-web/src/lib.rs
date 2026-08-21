@@ -1,10 +1,13 @@
 //! `hummingbird-ffi-web`: `#[wasm_bindgen]` wrappers over `hummingbird-core`
 //! for TypeScript, building for `wasm32-unknown-unknown` (ADR-0003).
 //!
-//! [`calendar_host::CalendarHostCore`] (issue #73) is the web host's one
-//! door into #72's `ContextPoller`/#71's Google adapter: push a token, drive
-//! the selected calendars, trigger a poll, and drain credential events. It is plain,
-//! `wasm_bindgen`-free Rust, testable with `cargo test --workspace` on any
+//! [`CalendarHostCore`] (issue #73) is the web host's one door into #72's
+//! `ContextPoller`/#71's Google adapter: push a token, drive the selected
+//! calendars, trigger a poll, and drain credential events. It lives in
+//! `hummingbird_core::calendar::host` since #564 gave it a second caller
+//! (`ffi-mobile`), and is re-exported here under its old name so this
+//! crate's own surface did not change; it is plain, `wasm_bindgen`-free
+//! Rust, testable with `cargo test --workspace` on any
 //! target; [`CalendarHost`] below is the thin `#[wasm_bindgen]` shim over it
 //! that only compiles for `wasm32` — `js_sys`/`wasm-bindgen-futures`'s JS
 //! interop has no working implementation to test against outside an actual
@@ -18,13 +21,18 @@
 //! than reaching through the SharedWorker. Its header states what may be
 //! added to it without breaking that arrangement.
 
-mod calendar_host;
 pub mod decisions;
 mod task_host;
 
-pub use calendar_host::{
-    CalendarEventsResponse, CalendarHostCore, CalendarListResponse, CALENDAR_POLL_INTERVAL_MS,
+pub use hummingbird_core::calendar::{
+    CalendarEventsResponse, CalendarListResponse, CALENDAR_POLL_INTERVAL_MS,
 };
+
+/// This crate's [`hummingbird_core::calendar::CalendarHostCore`]: one
+/// resolved over the store `hummingbird_core` picks for this target
+/// (IndexedDB on `wasm32`), so the shim below reads exactly as it did
+/// before the move.
+pub type CalendarHostCore = hummingbird_core::calendar::CalendarHostCore<hummingbird_core::CoreStore>;
 pub use task_host::{
     ActResponse, BlockedEntryDTO, BlockedListResponse, CaptureFields, CaptureResponse, CoreFieldDTO,
     CreateRuleResponse, DeadLetterEntryDTO, DeadLetterFieldDTO, DeadLettersResponse,
@@ -51,9 +59,10 @@ mod wasm_bindings {
     use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::future_to_promise;
 
-    use hummingbird_core::calendar::CalendarSelection;
+    use hummingbird_core::calendar::{outcome_name, CalendarSelection};
+    use hummingbird_core::storage::IndexedDbSnapshotStore;
 
-    use super::calendar_host::{outcome_name, CalendarHostCore};
+    use super::CalendarHostCore;
 
     /// Parses the host's selection JSON — `[{"id": "...", "horizon":
     /// "standard"|"long"}]` (#121). Unparseable text is an **empty**
@@ -222,7 +231,12 @@ mod wasm_bindings {
         pub fn new(namespace: String, selections_json: String) -> CalendarHost {
             CalendarHost {
                 inner: Rc::new(Shared::new(CalendarHostCore::new(
-                    namespace,
+                    // The database name is `namespace` itself, unprefixed —
+                    // `core.worker.ts`'s `"hummingbird-calendar"`, unchanged
+                    // by #564's move of this type into `hummingbird-core`.
+                    // Deriving it instead would rename the database and
+                    // orphan every already-polled mirror.
+                    IndexedDbSnapshotStore::new(namespace),
                     parse_selections(&selections_json),
                 ))),
             }

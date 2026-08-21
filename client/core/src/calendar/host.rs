@@ -1,39 +1,31 @@
-//! [`CalendarHostCore`]: the web host's one door into #72's `ContextPoller`
-//! over #71's Google adapter (issue #73), kept free of `wasm_bindgen` so it
-//! is testable with plain `cargo test` on any target — `lib.rs`'s
-//! `wasm_bindings` module is the thin JS-facing shim over this.
+//! [`CalendarHostCore`]: the one door every host has into #72's
+//! `ContextPoller` over #71's Google adapter (issue #73), kept free of both
+//! FFI layers so it is testable with plain `cargo test` on any target.
+//!
+//! It lived in `client/ffi-web/src/calendar_host.rs` until #564 gave it a
+//! second caller. `ffi-web`'s `wasm_bindings` module is still the thin
+//! JS-facing shim over this, and `ffi-mobile`'s calendar half
+//! (`MobileTaskHost`) is the UniFFI one — neither restates a decision made
+//! here.
+//!
+//! **Generic over the snapshot store** rather than resolving one itself:
+//! the two hosts persist the mirror in different places (IndexedDB in the
+//! browser, the app-local files dir on the phone), and that is the only
+//! thing about them this type ever cared about. The store arrives at
+//! [`CalendarHostCore::new`]; every host already owns a namespace to build
+//! one from ([`crate::Core::init`]'s own contract, ADR-0003).
 
-use hummingbird_core::calendar::google::{
-    CalendarListEntry, GoogleProviderPoller, ReqwestGoogleTransport,
-};
-use hummingbird_core::calendar::{
+use serde::Serialize;
+
+use crate::calendar::google::{CalendarListEntry, GoogleProviderPoller, ReqwestGoogleTransport};
+use crate::calendar::{
     events_overlapping_interval, CalendarSelection, CalendarSnapshot, EventRecord, Interval,
 };
-use hummingbird_core::context::{ContextPoller, CredentialEvent, PollOutcome};
-use hummingbird_core::freshness::Freshness;
-use hummingbird_core::storage::Envelope;
+use crate::context::{ContextPoller, CredentialEvent, PollOutcome};
+use crate::freshness::Freshness;
+use crate::storage::{Envelope, SnapshotStore};
 
-// The snapshot store: real IndexedDB in the browser, in-memory on any other
-// target (only reached by `cargo test --workspace`, which never touches
-// `wasm32`-gated code — see `client/core/src/storage/mod.rs`).
-#[cfg(target_arch = "wasm32")]
-type StoreImpl = hummingbird_core::storage::IndexedDbSnapshotStore;
-#[cfg(not(target_arch = "wasm32"))]
-type StoreImpl = hummingbird_core::storage::MemorySnapshotStore;
-
-fn new_store(namespace: &str) -> StoreImpl {
-    #[cfg(target_arch = "wasm32")]
-    {
-        StoreImpl::new(namespace)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let _ = namespace;
-        StoreImpl::default()
-    }
-}
-
-type GooglePoller = ContextPoller<GoogleProviderPoller<ReqwestGoogleTransport>, StoreImpl>;
+type GooglePoller<S> = ContextPoller<GoogleProviderPoller<ReqwestGoogleTransport>, S>;
 
 /// Bumped 1 -> 2 by #46's two-arm event shape (ADR-0015's 2026-08-10
 /// amendment): a v1 snapshot's events carry `start`/`end`/`all_day` and
@@ -69,7 +61,7 @@ pub const CALENDAR_POLL_INTERVAL_MS: i64 = 15 * 60 * 1000;
 /// checked out for another call) is a third, wasm-only state added by
 /// `wasm_bindings::CalendarHost::events_in_interval` — this type never
 /// produces it itself, since a plain `&self` read is never checked out.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CalendarEventsResponse {
     pub kind: &'static str,
     /// Every non-cancelled event overlapping the requested interval, in the
@@ -88,7 +80,7 @@ pub struct CalendarEventsResponse {
 /// A failure is reported as a `kind`, not thrown: the option list is a UX
 /// nicety and never a poll dependency, so the host's job on a bad list is to
 /// leave the picker as it stands, not to surface an error.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CalendarListResponse {
     /// `"ok"`, `"no_credential"` (nothing pushed yet, or polling is held on
     /// a rejected token), or `"failed"`.
@@ -97,14 +89,15 @@ pub struct CalendarListResponse {
 }
 
 /// Plain-Rust wrapper over one Google Calendar [`ContextPoller`], holding
-/// exactly the operations the web host needs.
-pub struct CalendarHostCore {
-    poller: GooglePoller,
+/// exactly the operations a host needs.
+pub struct CalendarHostCore<S: SnapshotStore> {
+    poller: GooglePoller<S>,
 }
 
-impl CalendarHostCore {
-    pub fn new(namespace: String, selections: Vec<CalendarSelection>) -> Self {
-        let store = new_store(&namespace);
+impl<S: SnapshotStore> CalendarHostCore<S> {
+    /// `store` is the host's own snapshot slot for this mirror — see the
+    /// module header for why it arrives rather than being resolved here.
+    pub fn new(store: S, selections: Vec<CalendarSelection>) -> Self {
         let transport = ReqwestGoogleTransport::default();
         let fetcher = GoogleProviderPoller::new(transport, selections);
         let poller = ContextPoller::new(PROVIDER, fetcher, store, SCHEMA_VERSION);
@@ -115,10 +108,28 @@ impl CalendarHostCore {
         self.poller.push_token(token);
     }
 
+    /// Drops the Google access token this host is holding — the disconnect
+    /// gesture's other half. Without it "Disconnect" would only stop the
+    /// polling loop while [`Self::list_calendars`] went on making
+    /// authenticated requests on the old credential until it expired.
+    pub fn clear_token(&mut self) {
+        self.poller.clear_token();
+    }
+
     /// The picker's current selection (#121: each entry carries its own poll
     /// horizon). Takes effect on the next poll trigger.
     pub fn set_calendar_selections(&self, selections: Vec<CalendarSelection>) {
         self.poller.fetcher().set_calendar_selections(selections);
+    }
+
+    /// What the next poll will actually query — the read side of
+    /// [`Self::set_calendar_selections`]. A host derives the polled set from
+    /// more than the picker (see
+    /// [`crate::calendar::effective_selection`]), so being able to read back
+    /// what it ended up pushing is the only way to prove the derivation
+    /// without a network.
+    pub fn calendar_selections(&self) -> Vec<CalendarSelection> {
+        self.poller.fetcher().calendar_selections()
     }
 
     pub async fn start(&mut self, now_ms: i64) -> PollOutcome {
@@ -235,8 +246,8 @@ fn build_events_response(
 }
 
 /// Maps a [`PollOutcome`] to the stable string name the web host's protocol
-/// (`client/web/src/store/protocol.ts`) matches on.
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+/// (`client/web/src/store/protocol.ts`) matches on — and, since #564, the
+/// same vocabulary `ffi-mobile`'s `MobileCalendarOutcome` carries to Kotlin.
 pub fn outcome_name(outcome: PollOutcome) -> &'static str {
     match outcome {
         PollOutcome::NoCredential => "no_credential",
@@ -250,7 +261,8 @@ pub fn outcome_name(outcome: PollOutcome) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hummingbird_core::calendar::{EventStatus, EventWhen};
+    use crate::calendar::{EventStatus, EventWhen};
+    use crate::storage::MemorySnapshotStore;
 
     fn timed_event(id: &str, start_ms: i64, end_ms: i64) -> EventRecord {
         EventRecord {
@@ -494,7 +506,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_fresh_host_has_no_credential_events() {
-        let mut host = CalendarHostCore::new("test-ns".to_string(), vec![CalendarSelection::standard("primary")]);
+        let mut host = CalendarHostCore::new(MemorySnapshotStore::default(), vec![CalendarSelection::standard("primary")]);
 
         assert_eq!(host.take_credential_events(), Vec::new());
     }
@@ -506,7 +518,7 @@ mod tests {
         // but this is the one state reachable without a network call, and it
         // proves the wiring from `current_snapshot()` through to the pure
         // `build_events_response` above.
-        let host = CalendarHostCore::new("test-ns".to_string(), vec![CalendarSelection::standard("primary")]);
+        let host = CalendarHostCore::new(MemorySnapshotStore::default(), vec![CalendarSelection::standard("primary")]);
 
         let response = host
             .events_in_interval(
@@ -530,7 +542,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_with_no_pushed_token_reports_no_credential() {
-        let mut host = CalendarHostCore::new("test-ns".to_string(), vec![CalendarSelection::standard("primary")]);
+        let mut host = CalendarHostCore::new(MemorySnapshotStore::default(), vec![CalendarSelection::standard("primary")]);
         let outcome = host.start(1_000).await;
         assert_eq!(outcome_name(outcome), "no_credential");
     }
@@ -541,7 +553,7 @@ mod tests {
         // picker calls this on a device whose silent re-mint failed, and a
         // "no_credential" answer must leave the existing options alone
         // rather than clearing them.
-        let host = CalendarHostCore::new("test-ns".to_string(), vec![CalendarSelection::standard("primary")]);
+        let host = CalendarHostCore::new(MemorySnapshotStore::default(), vec![CalendarSelection::standard("primary")]);
 
         assert_eq!(
             host.list_calendars().await,
@@ -553,9 +565,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clearing_the_token_takes_the_option_list_back_to_no_credential() {
+        // The disconnect gesture's proof: after it, the auxiliary read the
+        // picker makes cannot go out on the old credential. Without the
+        // clear this would be a live Google request.
+        let mut host = CalendarHostCore::new(MemorySnapshotStore::default(), vec![CalendarSelection::standard("primary")]);
+        host.push_token("token-1".to_string());
+
+        host.clear_token();
+
+        assert_eq!(
+            host.list_calendars().await,
+            CalendarListResponse {
+                kind: "no_credential",
+                calendars: Vec::new(),
+            }
+        );
+        assert_eq!(outcome_name(host.start(1_000).await), "no_credential");
+    }
+
+    #[tokio::test]
     async fn set_calendar_selections_is_readable_back_through_the_wrapped_fetcher() {
         let host = CalendarHostCore::new(
-            "test-ns".to_string(),
+            MemorySnapshotStore::default(),
             vec![CalendarSelection::standard("a")],
         );
         host.set_calendar_selections(vec![

@@ -149,7 +149,7 @@ class PaneAnswersTest {
             lengthDays = 8,
             dayOfTrip = 2,
         )
-        assertEquals("Nothing booked in the next 6 months", vacationTripHeadline(null))
+        assertEquals("Nothing booked in the next 2 years", vacationTripHeadline(null))
         assertEquals("Lisbon in 3 days", vacationTripHeadline(trip(MobileTripPhase.UPCOMING)))
         assertEquals("Lisbon tomorrow", vacationTripHeadline(trip(MobileTripPhase.UPCOMING, daysUntil = 1)))
         assertEquals("Lisbon today", vacationTripHeadline(trip(MobileTripPhase.DEPARTS_TODAY)))

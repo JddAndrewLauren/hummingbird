@@ -1,12 +1,14 @@
 import {
   weekendAnswerFromCore,
+  weekendFactsFromCore,
   weekendZoneQueriesFromCore,
   type PaneInputsSource,
+  type WeekendEntryCore,
 } from "../../decisions/seam";
 import { resolveZoneFacts } from "../questions/zone-bridge";
 import type { CalendarEventDTO, TaskItemDTO } from "../../store/protocol";
 import type { Band, PaneAnswer, PaneGlyph, QuestionInputs } from "../questions/contract";
-import { computeUrgency, deadlineSortKey, type Urgency } from "../urgency";
+import { computeUrgency, type Urgency } from "../urgency";
 
 // The weekend-plans pane (#122), answered over #245's pane shell — and
 // since #534, **the web's rendering half, plus one pinned-not-called
@@ -35,12 +37,18 @@ import { computeUrgency, deadlineSortKey, type Urgency } from "../urgency";
 // `weekend-window.shared.test.ts` rather than called at runtime, on
 // `field-vocabulary.test.ts`'s own precedent.
 //
-// **The full per-entry merge (`mergeWindow`) also stays here**, with its
-// titles, ids and anchors — the decision only ever needs the *counts*
-// (`weekend.rs`'s own module header), and every title/id crossing the
-// seam with no decision reading it would be exactly the "do not re-cross
-// whole DTOs" violation `inputs.rs`'s own discipline forbids.
-// `entryUrgency` is also unsunk — it reads `computeUrgency`, which is
+// **The per-entry merge sank at #564**, and `mergeWindow` below is now a
+// call through the seam plus the re-attachment this side alone can do.
+// It stayed local at #534 on the grounds that no decision read an entry's
+// `id`/`title`/`atMs`/`anchor` — true, and the right call with one client.
+// Android's expanded weekend rendering is the second caller ADR-0025's own
+// tie-breaker asks for, and the dedupe rule (due beats scheduled) is
+// exactly the sort of rule two hand-written merges would each have to get
+// right. What still does not cross is the DTOs: the core hands back a
+// `sourceId`, and the events and items are re-attached here, where they
+// already are.
+//
+// `entryUrgency` is still unsunk — it reads `computeUrgency`, which is
 // already `hummingbird_core::decisions::urgency` (M1-2, #500) under a
 // different name; there is nothing second to sink.
 
@@ -138,32 +146,6 @@ export interface WindowEntry {
   deadlineOutsideWindow?: string;
 }
 
-/** Day-membership test for an item's due/do-date, deliberately NOT
- * `[window.startMs, window.endMs]` — #122 review fix. `window.startMs` is
- * Friday **17:00** (the band's own "has the weekend started" instant), but
- * `window.days[0]` (Friday) spans the whole day from local midnight, and a
- * scheduled or due date anchors to the *start* of its day
- * (`scheduledToMs`/`deadlineToMs`'s day-only case). Testing against
- * `window.startMs` made every Friday do-date or day-only Friday deadline
- * fail `inWindow` even though `PlanChips` offers a `FRI` chip for it: the
- * write landed, the row either disappeared from the merge entirely or the
- * chip never filled, and there was no way to tell from the pane that
- * anything had happened. The lower bound here is the first day's own
- * `startMs` (Friday local midnight); the upper bound is unchanged, since
- * `window.days[2].endMs === window.endMs` already. */
-function inWindow(ms: number, window: WeekendWindow): boolean {
-  const lowerMs = window.days[0]?.startMs ?? window.startMs;
-  return ms >= lowerMs && ms <= window.endMs;
-}
-
-function deadlineToMs(deadline: string): number | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(deadlineSortKey(deadline));
-  if (!match) return null;
-  const [, y, m, d, h, min] = match;
-  const at = new Date(Number(y), Number(m) - 1, Number(d), Number(h), Number(min));
-  return Number.isNaN(at.getTime()) ? null : at.getTime();
-}
-
 function scheduledToMs(scheduled: string): number | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(scheduled);
   if (!match) return null;
@@ -172,123 +154,97 @@ function scheduledToMs(scheduled: string): number | null {
   return Number.isNaN(at.getTime()) ? null : at.getTime();
 }
 
+/** One core entry, re-attached to whichever DTO it came from.
+ *
+ * `event`/`item` are the whole reason this mapping exists: `timeLabel`
+ * reads the event's own `when`, and `entryUrgency` reads the item's
+ * deadline. Neither crosses the seam (`weekend.rs`'s module header — a
+ * DTO does not go out any more than it comes in), so `sourceId` is what
+ * does, and the lookup happens here, where both maps already are. */
+function toWindowEntry(
+  entry: WeekendEntryCore,
+  eventsById: ReadonlyMap<string, CalendarEventDTO>,
+  itemsById: ReadonlyMap<string, TaskItemDTO>,
+): WindowEntry {
+  const attached =
+    entry.kind === "event"
+      ? { event: eventsById.get(entry.sourceId) }
+      : { item: itemsById.get(entry.sourceId) };
+  return {
+    id: entry.id,
+    kind: entry.kind,
+    title: entry.title,
+    atMs: entry.atMs,
+    anchor: entry.anchor,
+    dayKey: entry.dayKey,
+    ...attached,
+    ...(entry.alsoScheduledOn !== null ? { alsoScheduledOn: entry.alsoScheduledOn } : {}),
+    ...(entry.deadlineOutsideWindow !== null
+      ? { deadlineOutsideWindow: entry.deadlineOutsideWindow }
+      : {}),
+  };
+}
+
 /**
- * The merge, run fresh on every render: events + due items + scheduled
- * items, grouped by day, chronological within a day — for the expanded
- * rendering alone; see the module header for why this is not the
- * decision's own path.
+ * The merge: events + due items + scheduled items, grouped by day and in
+ * display order within a day — `weekend.rs`'s `merge_window` since #564,
+ * with the DTOs re-attached here.
  *
  * The dedupe rule is #122's own acceptance criterion — an item both
- * scheduled and due inside the window appears **once, as due** (a deadline
- * is a consequence, a do-date is a preference, and when both apply, the one
- * with consequences is what the day owes) — and the inverse: an item
- * scheduled in the window but due *outside* it still shows its deadline.
+ * scheduled and due inside the window appears **once, as due** — and its
+ * inverse (scheduled inside, due outside, deadline still shown) rides the
+ * surviving entry. Both now live in the core alone.
+ *
+ * **`nowMs` is `window.startMs`**, not a sampled clock: the core computes
+ * its own window from the instant it is given, and Friday 17:00 is inside
+ * the window it came from, so it re-derives the identical one. Sampling
+ * `Date.now()` here instead would let a merge run against next weekend's
+ * window on a Sunday evening render — the exact rollover this function's
+ * caller has already decided.
  */
 export function mergeWindow(
   window: WeekendWindow,
   events: readonly CalendarEventDTO[],
   items: readonly TaskItemDTO[],
 ): WeekendWindow {
-  const days = window.days.map((day) => ({ ...day, entries: [] as WindowEntry[] }));
-  const byKey = new Map(days.map((day) => [day.key, day]));
+  const nowMs = window.startMs;
+  const facts = resolveZoneFacts(weekendZoneQueriesFromCore(nowMs));
+  const resolved = weekendFactsFromCore(
+    {
+      nowMs,
+      bindings: null,
+      paneReads: {},
+      calendarReads: {
+        [CALENDAR_REQUEST_KEY]: {
+          state: "read",
+          events: [...events],
+          freshness: { kind: "unknown" },
+        },
+      },
+      // The gap states are the *caller's* to decide — `weekendAnswer` and
+      // `weekendView` both check them before ever reaching here — so this
+      // asks the core the merge question alone.
+      calendarConnected: true,
+      items: [...items],
+    },
+    facts,
+  );
 
-  for (const event of events) {
-    if (event.status === "cancelled") continue; // defence in depth — the core already filters these.
-
-    // The two arms are asked in their own terms and never converted into
-    // one another (ADR-0015's 2026-08-10 amendment). An all-day event's
-    // day membership is a pure string compare against the day's own
-    // `YYYY-MM-DD` key — no zone, no instant, and so no way for a device
-    // east or west of the calendar to land it on the wrong day. A timed
-    // event overlaps in milliseconds, rendered with plain `Date` in the
-    // reader's device zone, which is the only zone anywhere in this pane.
-    //
-    // Either way, an event spanning more than one day of the window
-    // belongs to each of them — a fact about each day, so showing it once
-    // would leave the other day reading as free.
-    if (event.when.kind === "allDay") {
-      const { startDate, endDate } = event.when;
-      for (const day of days) {
-        if (!(startDate <= day.key && day.key < endDate)) continue;
-        day.entries.push({
-          id: `${event.providerEventId}@${day.key}`,
-          kind: "event",
-          title: event.title,
-          atMs: day.startMs,
-          anchor: "day",
-          dayKey: day.key,
-          event,
-        });
-      }
-      continue;
-    }
-
-    const overlapStart = Math.max(event.when.startMs, window.startMs);
-    const overlapEnd = Math.min(event.when.endMs, window.endMs);
-    if (overlapStart > overlapEnd) continue;
-
-    for (const day of days) {
-      const dayOverlapStart = Math.max(overlapStart, day.startMs);
-      const dayOverlapEnd = Math.min(overlapEnd, day.endMs);
-      if (dayOverlapStart > dayOverlapEnd) continue;
-      day.entries.push({
-        id: `${event.providerEventId}@${day.key}`,
-        kind: "event",
-        title: event.title,
-        atMs: dayOverlapStart,
-        anchor: "time",
-        dayKey: day.key,
-        event,
-      });
-    }
+  const emptyDays = window.days.map((day) => ({ ...day, entries: [] as WindowEntry[] }));
+  if (resolved.kind !== "facts") {
+    // Only reachable when the device's own zone will not resolve, which
+    // is the same nothing-to-show the callers already render.
+    return { ...window, days: emptyDays };
   }
 
-  for (const item of items) {
-    const dueMs = item.deadline ? deadlineToMs(item.deadline) : null;
-    const scheduledMs = item.scheduledDate ? scheduledToMs(item.scheduledDate) : null;
-    const dueHere = dueMs !== null && inWindow(dueMs, window);
-    const scheduledHere = scheduledMs !== null && inWindow(scheduledMs, window);
-
-    if (dueHere && dueMs !== null) {
-      const day = byKey.get(dayKeyOf(dueMs));
-      if (day) {
-        day.entries.push({
-          id: item.id,
-          kind: "due",
-          title: item.title,
-          atMs: dueMs,
-          anchor: item.deadline && item.deadline.length === 10 ? "day" : "time",
-          dayKey: day.key,
-          item,
-          ...(scheduledHere && item.scheduledDate ? { alsoScheduledOn: item.scheduledDate } : {}),
-        });
-      }
-      continue; // the dedupe: never also emitted as scheduled.
-    }
-
-    if (scheduledHere && scheduledMs !== null) {
-      const day = byKey.get(dayKeyOf(scheduledMs));
-      if (day) {
-        day.entries.push({
-          id: item.id,
-          kind: "scheduled",
-          title: item.title,
-          atMs: scheduledMs,
-          anchor: "day",
-          dayKey: day.key,
-          item,
-          ...(item.deadline ? { deadlineOutsideWindow: item.deadline } : {}),
-        });
-      }
-    }
-  }
-
-  for (const day of days) {
-    day.entries.sort(
-      (a, b) => a.atMs - b.atMs || a.kind.localeCompare(b.kind) || a.id.localeCompare(b.id),
-    );
-  }
-
+  const eventsById = new Map(events.map((event) => [event.providerEventId, event]));
+  const itemsById = new Map(items.map((item) => [item.id, item]));
+  const days = window.days.map((day) => ({
+    ...day,
+    entries: (resolved.days.find((core) => core.date === day.key)?.entries ?? []).map((entry) =>
+      toWindowEntry(entry, eventsById, itemsById),
+    ),
+  }));
   return { ...window, days };
 }
 

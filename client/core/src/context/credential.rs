@@ -29,6 +29,15 @@ impl CredentialState {
         }
     }
 
+    /// Drops the held token outright. Unlike [`Self::hold`] this leaves no
+    /// credential in memory at all, which is what a host disconnecting a
+    /// source needs: the operator's gesture must dispose of the credential,
+    /// not merely stop using it.
+    pub(super) fn clear(&mut self) {
+        self.token = None;
+        self.held = false;
+    }
+
     /// Marks this provider held: an expiry/401 was just observed and no
     /// further poll should be attempted until a fresh token arrives.
     pub(super) fn hold(&mut self) {
@@ -56,6 +65,16 @@ mod tests {
         let mut state = CredentialState::default();
         state.push("t-1".to_string());
         assert_eq!(state.token(), Some("t-1"));
+    }
+
+    #[test]
+    fn clearing_disposes_of_the_token_and_of_any_hold() {
+        let mut state = CredentialState::default();
+        state.push("t-1".to_string());
+        state.hold();
+        state.clear();
+        assert_eq!(state.token(), None);
+        assert!(!state.is_held());
     }
 
     #[test]

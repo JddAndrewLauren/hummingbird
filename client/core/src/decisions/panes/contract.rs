@@ -13,6 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::zone::CivilDate;
+
 /// Whether this question has an answer at all, and if not, why not. Three
 /// states rather than "answered or not": a question whose binding is set
 /// but whose data has not landed is something the reader can act on, while
@@ -157,6 +159,27 @@ pub struct RankedPaneRecord {
 /// The stable per-pane identity — question and subject, never position.
 pub fn pane_key(question: &str, subject_key: &str) -> String {
     format!("{question}:{subject_key}")
+}
+
+/// One calendar-arm request: the interval a question needs from the
+/// calendar mirror, in both of the arms [`crate::calendar::Interval`] takes
+/// — instants for timed events, the reader's own civil dates (exclusive
+/// end) for all-day ones. Neither half is derived from the other, here or
+/// anywhere: deriving one would need the tzdb this crate deliberately does
+/// not carry (ADR-0015's 2026-08-10 amendment).
+///
+/// The web builds the same shape in each question's `calendarRequests`
+/// (`registry.ts`'s `requiredCalendarRequests`); #564 gave the two that
+/// build one from a resolved zone — weekend and vacation — a second caller,
+/// so the computation sank and this is what it answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarInterval {
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub start_date: CivilDate,
+    /// **Exclusive** — the day after the last day the window covers.
+    pub end_date: CivilDate,
 }
 
 #[cfg(test)]

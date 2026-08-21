@@ -289,14 +289,17 @@ expanded body**, which is unusual for this port and is the issue's own
 decision: the pane's whole reason to exist is that the notes are reachable
 without hunting for the item, and a phone is where that matters most. It is
 also the one Now pane that needs no binding and no calendar, so unlike the
-two below it there is nothing to switch on later. Read-only, exactly as the
+calendar-fed two below it there is nothing to switch on later. Read-only, exactly as the
 web's is, and **not** through a row component: the web's first cut used
 `ItemRow` and the visual gate caught it ellipsising a title to two
 characters in the 320px aside, so both clients draw a title and a meta line
-instead. **Weekend and Vacation render no card of their own**: the mobile
-seam hardcodes `calendar_connected = false`, so both are permanently
-unbound on Android and the shell's setup rendering is the honest whole
-story — the calendar-lane follow-up issue owns turning them on. One
+instead. **Weekend renders its own card since #564/#621** — the merged
+per-day entries `weekend.rs` now sinks, plus the plan chips that write a
+do-date through `MobileTaskHost.setScheduledDate`. **Vacation still renders
+none**, and that is a scope line rather than a missing lane: `MobileTrip`
+carries no event title, so a card would name every trip by its location or
+"a trip" (`PaneAnswers.kt`'s `vacationTripHeadline` records the same
+divergence). One
 recorded seam gap: the race card says "starting soon" without the live
 alert's title, because only the `hasLiveAlert` fact crosses the mobile
 seam. The web's Badge chips render as coloured meta words (no Badge
@@ -862,10 +865,11 @@ costs the device token every run.
     reachability, Uptime ×3, Kimi, GitHub.
 23. **Now's panes, and the weekend do-date write** (#537). The three panes
     below the queue render through the same shell Status uses. The write
-    half **cannot be run on this device**: `weekend.rs`'s
-    `!calendar_connected` is the only path to `Unbound`, Android reports no
-    calendar (#564), and the affordance was never built anyway (#575). Skip
-    it until #564 lands rather than hunting for the control.
+    half **is runnable since #564/#621**: connect a calendar in Settings,
+    expand the weekend pane, and tap a day chip on a due or scheduled row.
+    The chip fills before any network is touched, and the do-date must
+    survive a sync. Tapping the filled chip clears it — one control, two
+    directions.
 24. **A real grill turn** (#539), from **both** mounts — item detail's
     Grill button and a Triage row's (gated on `canGrill`). One turn must
     show all three: heartbeats **collapsed** (the runner beats every 20s;

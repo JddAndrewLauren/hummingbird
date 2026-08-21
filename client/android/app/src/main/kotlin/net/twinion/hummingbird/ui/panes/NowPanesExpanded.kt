@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,19 +40,28 @@ import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 import uniffi.hummingbird_ffi_mobile.MobileWasteGap
 import uniffi.hummingbird_ffi_mobile.MobileWasteResolved
 import uniffi.hummingbird_ffi_mobile.MobileWasteStream
+import uniffi.hummingbird_ffi_mobile.MobileWeekendEntry
+import uniffi.hummingbird_ffi_mobile.MobileWeekendEntryAnchor
+import uniffi.hummingbird_ffi_mobile.MobileWeekendEntryKind
+import uniffi.hummingbird_ffi_mobile.MobileWeekendGap
+import uniffi.hummingbird_ffi_mobile.MobileWeekendResolved
 
 // The Now surface's expanded renderings (the pane-content slice, second
 // half) — homework (#675), waste and race, each web `*PaneExpanded.tsx`
 // ported: the bins do
 // the talking on waste (real kerb colours, three words, a date), and the
-// race card is the prototype's series tile under real rules. Weekend and
-// Vacation deliberately have NO card here: `calendar_connected` is
-// hardcoded `false` on the mobile seam (`ffi-mobile`'s
-// `mobile_pane_inputs`), so both are permanently unbound on Android and
-// the shell's own setup rendering — headline plus the Open Settings door —
-// is the honest whole story until a mobile calendar lane exists. Their
-// arms below render nothing on purpose, and the calendar-lane follow-up
-// issue owns turning them on.
+// race card is the prototype's series tile under real rules — plus, since
+// #564/#621, the weekend card. Its entries are `weekend.rs`'s own merged
+// `days` (sunk at #564 precisely so this card and `WeekendPaneExpanded.tsx`
+// cannot disagree about the due-beats-scheduled dedupe), and its plan chips
+// are `MobileTaskHost.setScheduledDate`'s first caller.
+//
+// **Vacation still has no card**, and that is a scope line rather than a
+// missing lane now: the trips themselves cross fine, but `MobileTrip`
+// carries no event title, so a card here would name every trip by its
+// location or "a trip" — see `PaneAnswers.kt`'s `vacationTripHeadline` for
+// the same recorded divergence. The shell's collapsed headline is the
+// honest whole story until the seam grows the name the web derives.
 //
 // **Nothing here decides.** Bands, answer states and facts arrive on the
 // pane; the words reuse `PaneAnswers.kt`'s ports (`wasteCollapsedHeadline`
@@ -66,14 +76,18 @@ import uniffi.hummingbird_ffi_mobile.MobileWasteStream
 /** The Now surface's `expandedContent` — one dispatcher, exhaustive over
  * every facts arm the way `NowScreen.kt`'s `nowPaneLabel` is. */
 @Composable
-internal fun NowPaneExpanded(pane: MobileRankedPane, nowMs: Long) {
+internal fun NowPaneExpanded(
+    pane: MobileRankedPane,
+    nowMs: Long,
+    onSetScheduledDate: (itemId: String, date: String?) -> Unit = { _, _ -> },
+) {
     when (val facts = pane.facts) {
         is MobilePaneFacts.Homework -> HomeworkPaneExpanded(facts.resolved)
         is MobilePaneFacts.Waste -> WastePaneExpanded(pane, facts.resolved)
         is MobilePaneFacts.Race -> RacePaneExpanded(pane, facts.resolved, nowMs)
-        // Permanently unbound on Android (no mobile calendar lane): the
-        // shell's setup rendering is the whole card — see the file header.
-        is MobilePaneFacts.Weekend -> Unit
+        is MobilePaneFacts.Weekend ->
+            WeekendPaneExpanded(pane, facts.resolved, onSetScheduledDate)
+        // No card by choice, not for want of a lane — see the file header.
         is MobilePaneFacts.Vacation -> Unit
         is MobilePaneFacts.Kimi,
         is MobilePaneFacts.Github,
@@ -406,6 +420,183 @@ private fun RacePaneExpanded(pane: MobileRankedPane, resolved: MobileRaceResolve
                 style = MaterialTheme.typography.labelSmall,
                 color = warnColor(),
             )
+        }
+    }
+}
+
+// --------------------------------------------------------------- weekend
+
+/** Why an answered-looking weekend pane has nothing to draw, per gap kind
+ * — the expanded card's own sentence, wordier than the collapsed
+ * headline's "Checking calendar", exactly as `wasteGapReason` is wordier
+ * than its headline. Exhaustive with no `else`: a fourth gap in the core's
+ * enum is a compile error here, not a card that renders as nothing. */
+internal fun weekendGapReason(gap: MobileWeekendGap): String = when (gap) {
+    MobileWeekendGap.NOT_CONNECTED ->
+        "Connect a calendar in Settings to see what the weekend already holds."
+    MobileWeekendGap.UNACQUIRED -> "This device hasn't read the calendar yet."
+    MobileWeekendGap.UNRESOLVABLE_ZONE ->
+        "This device's own time zone couldn't be resolved, so the weekend can't be placed."
+}
+
+/** The short weekday a plan chip is labelled with — "Fri"/"Sat"/"Sun",
+ * from the day's own civil date. `weekend.ts`'s `shortDayLabel`, ported.
+ *
+ * Parsed as a civil date and formatted in the device's own zone, which is
+ * the only zone this pane has: the day key came from `weekend.rs`'s window,
+ * resolved through `DEVICE_ZONE` in the first place. */
+internal fun shortDayLabel(dayKey: String): String = runCatching {
+    java.time.LocalDate.parse(dayKey).format(DateTimeFormatter.ofPattern("EEE", Locale.getDefault()))
+}.getOrDefault(dayKey)
+
+/** One entry's time words — `weekend.ts`'s `timeLabel`, ported.
+ *
+ * Reads the entry's own `anchor` rather than inferring one from the
+ * timestamp: whether something covers a day or sits at an instant is the
+ * core's answer (`weekend.rs`'s `EntryAnchor`), and a Kotlin
+ * `atMs % DAY_MS == 0` test would be a second, worse copy of it. */
+internal fun weekendEntryTimeLabel(entry: MobileWeekendEntry, zone: ZoneId): String =
+    when (entry.kind) {
+        MobileWeekendEntryKind.SCHEDULED -> "anytime"
+        MobileWeekendEntryKind.DUE ->
+            when (entry.anchor) {
+                MobileWeekendEntryAnchor.DAY -> "by end of day"
+                MobileWeekendEntryAnchor.TIME -> "by ${clockOf(entry.atMs, zone)}"
+            }
+        MobileWeekendEntryKind.EVENT ->
+            when (entry.anchor) {
+                MobileWeekendEntryAnchor.DAY -> "all day"
+                MobileWeekendEntryAnchor.TIME -> clockOf(entry.atMs, zone)
+            }
+    }
+
+private fun clockOf(atMs: Long, zone: ZoneId): String =
+    DateTimeFormatter.ofPattern("h:mm a", Locale.getDefault())
+        .format(Instant.ofEpochMilli(atMs).atZone(zone))
+
+/** Which day this entry is currently planned for, or `null` if none —
+ * `PlanChips`' own `planned`, ported. A `scheduled` entry is planned for
+ * its own day; a `due` entry that ALSO has a do-date inside the window
+ * carries it as `alsoScheduledOn`, because the merge deduped the second
+ * entry away (`weekend.rs`'s `merge_window`). Nothing else is planned. */
+internal fun plannedDayOf(entry: MobileWeekendEntry): String? = when (entry.kind) {
+    MobileWeekendEntryKind.SCHEDULED -> entry.dayKey
+    MobileWeekendEntryKind.DUE -> entry.alsoScheduledOn
+    MobileWeekendEntryKind.EVENT -> null
+}
+
+/** Whether a plan chip is offered at all: only for something with an item
+ * behind it. An event is the calendar's, and this app writes no calendar
+ * (ADR-0002 rule 1 — a context mirror cannot mint or modify anything). */
+internal fun offersPlanChips(entry: MobileWeekendEntry): Boolean =
+    entry.kind != MobileWeekendEntryKind.EVENT
+
+@Composable
+private fun WeekendPaneExpanded(
+    pane: MobileRankedPane,
+    resolved: MobileWeekendResolved,
+    onSetScheduledDate: (itemId: String, date: String?) -> Unit,
+) {
+    if (pane.answer.answerState == MobilePaneAnswerState.UNBOUND) {
+        // The shell already says "Not set up" and offers the Open Settings
+        // door; this is the body sentence under them.
+        Text(
+            "Connect a calendar in Settings to see what the weekend already holds.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        return
+    }
+    val facts = when (resolved) {
+        is MobileWeekendResolved.Gap -> {
+            Text(
+                weekendGapReason(resolved.gap),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return
+        }
+        is MobileWeekendResolved.Facts -> resolved.facts
+    }
+    val zone = ZoneId.systemDefault()
+    val dayKeys = facts.days.map { it.date }
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (facts.days.all { it.entries.isEmpty() }) {
+            Text(
+                if (facts.window.underWay) "Nothing on so far." else "Nothing planned yet.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        for (day in facts.days) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    shortDayLabel(day.date),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (day.entries.isEmpty()) {
+                    Text(
+                        "—",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                // Already in display order — `merge_window` sorted them,
+                // and re-sorting here would be a second total order.
+                for (entry in day.entries) {
+                    WeekendEntryRow(entry, zone, dayKeys, onSetScheduledDate)
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun WeekendEntryRow(
+    entry: MobileWeekendEntry,
+    zone: ZoneId,
+    dayKeys: List<String>,
+    onSetScheduledDate: (itemId: String, date: String?) -> Unit,
+) {
+    val planned = plannedDayOf(entry)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { contentDescription = "${entry.title}, ${entry.kind.name.lowercase()}" },
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(entry.title, style = MaterialTheme.typography.bodyMedium)
+        Text(
+            listOfNotNull(
+                weekendEntryTimeLabel(entry, zone),
+                entry.deadlineOutsideWindow?.let { "due $it" },
+            ).joinToString(" · "),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (offersPlanChips(entry)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (key in dayKeys) {
+                    val on = planned == key
+                    // Tapping the filled chip clears the do-date, exactly
+                    // as the web's chip toggles — one control, two
+                    // directions, so there is no separate "unplan".
+                    TextButton(onClick = { onSetScheduledDate(entry.sourceId, if (on) null else key) }) {
+                        Text(
+                            shortDayLabel(key).uppercase(Locale.getDefault()),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (on) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
+                }
+            }
         }
     }
 }

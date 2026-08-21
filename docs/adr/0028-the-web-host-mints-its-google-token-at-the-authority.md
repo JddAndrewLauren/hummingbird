@@ -9,6 +9,23 @@ alone. **Nothing here changes:** this route's credential, its cache, its
 contract and its `calendar.readonly` scope are untouched, and the route
 table below is still complete for this route. The sibling's own table, and
 why the readonly credential was not simply widened, are in ADR-0031.
+*Amended 2026-08-21 (#564): **the route's callers are no longer "the web
+host" alone.** Android mints here too, over the same route, the same
+`device` token, the same server-held `calendar.readonly` credential and the
+same DO cache — `client/ffi-mobile/src/calendar_token.rs`, a Rust port of
+`client/web/src/calendar/authority-token-client.ts` carrying its seven error
+codes verbatim. Three things follow, and none of them is new machinery:
+the per-device-revocation loss in Consequences now covers the phone as well
+as every browser; the phone's rotation timer competes for the same
+one-exchange-per-hour cache, which in practice means it is a cache **hit**
+(that is what the cache is for); and the phone's `device` token could
+already reach this route before any of this code existed, so the blast
+radius is unchanged. #564 was originally scoped around a native
+`AuthorizationClient` grant instead — per-device consent, the credential
+never leaving the device — and that design is recorded on the issue as the
+rejected alternative, with the condition that would reopen it (the phone's
+calendar having to keep working while `hb.twinion.net` is down).*
+
 **Context:** #577, the hourly-popup elimination plan. Narrows
 [ADR-0005](0005-context-polling-lives-in-the-client-core.md) (device polling
 remains the display path; only the web host's *source* of the calendar

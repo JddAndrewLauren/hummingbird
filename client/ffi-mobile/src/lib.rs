@@ -70,7 +70,17 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+mod calendar_token;
+
+use calendar_token::{
+    connection_state, mint_calendar_token, CalendarState, MintOutcome, ROTATION_MARGIN_MS,
+};
+
 use hummingbird_core::bindings::{Binding, BindingKey, BindingValue};
+use hummingbird_core::calendar::{
+    effective_selection, outcome_name, CalendarEventsResponse, CalendarHorizon, CalendarHostCore,
+    CalendarSelection, EventRecord, EventStatus, EventWhen, CALENDAR_POLL_INTERVAL_MS,
+};
 use hummingbird_core::decisions::{
     available_actions, can_grill, can_mark_done, frontier, panes, queue, roster, rules, urgency,
 };
@@ -78,9 +88,11 @@ use hummingbird_core::decisions::panes::contract::{
     AnswerState, Band, PaneAnswerCore, StandingQuestion, Surface,
 };
 use hummingbird_core::decisions::panes::inputs::{
-    BindingFact, BindingValueFact, FreshnessFact, PaneInputs, PaneItemFacts, PaneReadFacts,
-    SyncFacts,
+    BindingFact, BindingValueFact, CalendarEventFacts, CalendarEventStatusFact,
+    CalendarEventWhenFacts, CalendarReadFacts, FreshnessFact, PaneInputs, PaneItemFacts,
+    PaneReadFacts, SyncFacts,
 };
+use hummingbird_core::freshness::Freshness;
 use hummingbird_core::decisions::panes::zone::{ZoneFact, ZoneFacts, ZoneQuery};
 use hummingbird_core::decisions::panes::{
     github, homework, kimi, race, reachability, uptime, vacation, waste, weekend,
@@ -1963,12 +1975,12 @@ fn to_backtest_item(item: &Item, occurred_at_utc: String) -> rules::BacktestItem
 // (né `status_pane_inputs`, #536) now wires every field a sunk pane reads:
 // the status four's three sources, plus waste's and race's
 // `context_snapshots` sources, the bindings table (waste/race/vacation) and
-// the actionable-items list (weekend's merge). The one field still at its
-// default is the calendar arm — `calendar_connected: false`,
-// `calendar_reads: {}` — because Android has no calendar integration at all
-// yet (#527's out-of-scope list, `#564` the eventual slice); weekend and
-// vacation therefore honestly read as "not connected" on this device until
-// that lands, never a fabricated read. The door's shape (`surface` in,
+// the actionable-items list (weekend's merge). **#564/#621 filled the last
+// field**: the calendar arm now carries this device's own `calendar_reads`
+// and `calendar_connected` off the lane below, so weekend and vacation
+// answer for real once a calendar is connected and fall back to their
+// honest "not connected" state only when it is not — never a fabricated
+// read either way. The door's shape (`surface` in,
 // applied results out) did not change under this growth, exactly as #536
 // predicted.
 //
@@ -2271,8 +2283,8 @@ pub struct MobileWeekendWindow {
     pub under_way: bool,
 }
 
-/// [`weekend::WindowCounts`], mirrored — counts, never a per-entry list
-/// (the core module's own call).
+/// [`weekend::WindowCounts`], mirrored — tallied from the entries
+/// themselves core-side, so the two can never disagree.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct MobileWeekendCounts {
     pub events: i64,
@@ -2288,6 +2300,27 @@ pub enum MobileWeekendGap {
     UnresolvableZone,
 }
 
+fn map_weekend_entry(entry: weekend::WindowEntry) -> MobileWeekendEntry {
+    MobileWeekendEntry {
+        id: entry.id,
+        kind: match entry.kind {
+            weekend::EntryKind::Event => MobileWeekendEntryKind::Event,
+            weekend::EntryKind::Due => MobileWeekendEntryKind::Due,
+            weekend::EntryKind::Scheduled => MobileWeekendEntryKind::Scheduled,
+        },
+        title: entry.title,
+        at_ms: entry.at_ms,
+        anchor: match entry.anchor {
+            weekend::EntryAnchor::Time => MobileWeekendEntryAnchor::Time,
+            weekend::EntryAnchor::Day => MobileWeekendEntryAnchor::Day,
+        },
+        day_key: entry.day_key,
+        source_id: entry.source_id,
+        also_scheduled_on: entry.also_scheduled_on,
+        deadline_outside_window: entry.deadline_outside_window,
+    }
+}
+
 fn map_weekend_gap(gap: weekend::WeekendGap) -> MobileWeekendGap {
     match gap {
         weekend::WeekendGap::NotConnected => MobileWeekendGap::NotConnected,
@@ -2296,11 +2329,57 @@ fn map_weekend_gap(gap: weekend::WeekendGap) -> MobileWeekendGap {
     }
 }
 
+/// [`weekend::EntryKind`], mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileWeekendEntryKind {
+    Event,
+    Due,
+    Scheduled,
+}
+
+/// [`weekend::EntryAnchor`], mirrored — an instant within the day, or the
+/// whole day. What a renderer needs to choose between "9:30 – 10:00" and
+/// "all day", and nothing Kotlin re-derives from a timestamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileWeekendEntryAnchor {
+    Time,
+    Day,
+}
+
+/// [`weekend::WindowEntry`], mirrored (#564/#621). The merge — including
+/// the due-beats-scheduled dedupe and both its residues — happens in
+/// `weekend.rs`; this crossing carries the result.
+///
+/// `source_id` is the phone's handle back into its own item, and the reason
+/// the plan chips can write: `also_scheduled_on` and `day_key` say which
+/// chip is filled, `source_id` says which item a tap writes to.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileWeekendEntry {
+    pub id: String,
+    pub kind: MobileWeekendEntryKind,
+    pub title: String,
+    pub at_ms: i64,
+    pub anchor: MobileWeekendEntryAnchor,
+    pub day_key: String,
+    pub source_id: String,
+    pub also_scheduled_on: Option<String>,
+    pub deadline_outside_window: Option<String>,
+}
+
+/// [`weekend::WeekendDayEntries`], mirrored.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileWeekendDayEntries {
+    pub date: String,
+    pub entries: Vec<MobileWeekendEntry>,
+}
+
 /// [`weekend::WeekendFacts`], mirrored.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct MobileWeekendFacts {
     pub window: MobileWeekendWindow,
     pub counts: MobileWeekendCounts,
+    /// Always exactly three, in window order — Friday, Saturday, Sunday.
+    pub days: Vec<MobileWeekendDayEntries>,
 }
 
 /// [`weekend::WeekendResolved`], mirrored.
@@ -2334,6 +2413,14 @@ fn map_weekend_resolved(resolved: weekend::WeekendResolved) -> MobileWeekendReso
                     due: facts.counts.due,
                     scheduled: facts.counts.scheduled,
                 },
+                days: facts
+                    .days
+                    .into_iter()
+                    .map(|day| MobileWeekendDayEntries {
+                        date: day.date,
+                        entries: day.entries.into_iter().map(map_weekend_entry).collect(),
+                    })
+                    .collect(),
             },
         },
         weekend::WeekendResolved::Gap { gap } => {
@@ -3105,13 +3192,24 @@ fn pane_item_facts(
         .collect()
 }
 
+/// The calendar arm of [`mobile_pane_inputs`] — what this device has
+/// mirrored for each question's own window, and whether it has ever
+/// connected a calendar at all. Empty and `false` for phase one
+/// ([`MobileTaskHost::pane_zone_queries`]), which runs *before* any zone is
+/// resolved and so cannot name a window to read.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct CalendarArm {
+    reads: HashMap<String, CalendarReadFacts>,
+    connected: bool,
+}
+
 /// Builds [`PaneInputs`] for every sunk pane on both surfaces — see this
-/// section's header for what each field is for and why the calendar arm
-/// alone stays at its default.
+/// section's header for what each field is for.
 fn mobile_pane_inputs(
     core: &Core<FsSnapshotStore, FsSnapshotStore>,
     now_ms: i64,
     sync: MobileSyncFacts,
+    calendar: CalendarArm,
 ) -> PaneInputs {
     let mut pane_reads = HashMap::new();
     pane_reads.insert(kimi::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(kimi::SOURCE, now_ms)));
@@ -3135,8 +3233,8 @@ fn mobile_pane_inputs(
         // that state for a host where one is possible).
         bindings: Some(bindings),
         pane_reads,
-        calendar_reads: HashMap::new(),
-        calendar_connected: false,
+        calendar_reads: calendar.reads,
+        calendar_connected: calendar.connected,
         items,
         sync: to_sync_facts(sync),
     }
@@ -3205,6 +3303,264 @@ fn mobile_pane_facts_of(
     }
 }
 
+// ---------------------------------------------------- the calendar (#564)
+// Android's calendar lane. The mirror, the poll triggers and the read
+// queries are `hummingbird_core::calendar::CalendarHostCore` — the same type
+// the web host drives, moved into `core` by this issue rather than copied
+// (that module's own header). What lives here is the two things a UniFFI
+// host has to add: where the token comes from (`calendar_token.rs`, ADR-0028)
+// and which doors Kotlin gets.
+//
+// **The credential stays in Rust.** Kotlin never sees a Google access token
+// — not as a return value, not as a parameter, not in a log line. It asks
+// for a connection and receives a *state*; the mint, the rotation and the
+// 401 retry all happen below this seam. The only credential Kotlin holds is
+// the device token it already held for sync, and that one it hands to
+// `push_api_key` as it always did.
+//
+// **`play-services-auth` is deliberately absent from
+// `libs.versions.toml`.** #564 was originally scoped around a native
+// `AuthorizationClient` grant; the operator's 2026-08-21 decision replaced
+// it with ADR-0028's authority-minted route, on the grounds that two
+// mechanisms for one operator's one calendar is a maintenance tax with no
+// matching risk reduction. The registered Android OAuth client from
+// 2026-08-18 is left in place and unused. That decision's reopening
+// conditions are recorded on #564.
+
+/// One of #564's four Source-connection states, as Kotlin sees it. A
+/// *decided* answer, never an error string for `SettingsScreen.kt` to match
+/// on — the module header's own per-row rule, applied to a per-gesture
+/// answer for the same reason `AlertRecord` ships `can_ack`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileCalendarState {
+    /// Never opted in on this device. **The only state that offers
+    /// Connect.**
+    NeverConnected,
+    /// Opted in, last mint succeeded.
+    Connected,
+    /// Opted in; the authority could not be reached. Reads as connected and
+    /// keeps showing the (stale) mirror. Covers "phone offline" and
+    /// "authority down" alike — the phone cannot tell them apart and does
+    /// not need to.
+    CannotConfirm,
+    /// This device's own token is bad. Settings' existing token control is
+    /// the remedy.
+    RefusedDeviceToken,
+    /// The server-side lane is broken (unset secrets, bad upstream,
+    /// malformed answer). There is no per-device action.
+    RefusedServerLane,
+}
+
+/// The answer to every connection gesture: connect, disconnect, init, and
+/// each timer tick.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileCalendarConnection {
+    pub state: MobileCalendarState,
+    /// When the currently-held access token expires, or `None` when none is
+    /// held. Kotlin does **not** schedule rotation off this — the tick does
+    /// (see [`MobileTaskHost::calendar_on_timer`]); it is here so Settings
+    /// can say something honest about a connection that is holding.
+    pub expires_at_ms: Option<i64>,
+    /// The raw failure code of the last attempt, or `None` if it succeeded.
+    /// Raw and not a sentence, on `connection.ts`'s own rule: the words are
+    /// the host's, and a health check needs the code. Never rendered
+    /// directly.
+    pub error: Option<String>,
+}
+
+/// One calendar the device's credential can read — the picker's options.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileCalendarEntry {
+    pub id: String,
+    pub summary: String,
+}
+
+/// The picker's option list, or why there is none. `kind` is
+/// [`CalendarHostCore::list_calendars`]'s own vocabulary (`"ok"` /
+/// `"no_credential"` / `"failed"`) — a failed list leaves the picker as it
+/// stands rather than clearing it, exactly as on the web.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileCalendarList {
+    pub kind: String,
+    pub calendars: Vec<MobileCalendarEntry>,
+}
+
+/// A calendar the operator picked, with the poll horizon it was picked
+/// under (#121).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileCalendarSelection {
+    pub id: String,
+    pub long_horizon: bool,
+}
+
+/// What one timer tick did: the poll's own outcome name (the same
+/// vocabulary `client/web/src/store/protocol.ts` matches on) plus the
+/// connection state the tick left the device in.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileCalendarTick {
+    pub outcome: String,
+    pub connection: MobileCalendarConnection,
+}
+
+fn to_calendar_selection(selection: &MobileCalendarSelection) -> CalendarSelection {
+    CalendarSelection {
+        id: selection.id.clone(),
+        horizon: if selection.long_horizon {
+            CalendarHorizon::Long
+        } else {
+            CalendarHorizon::Standard
+        },
+    }
+}
+
+fn map_calendar_state(state: CalendarState) -> MobileCalendarState {
+    match state {
+        CalendarState::NeverConnected => MobileCalendarState::NeverConnected,
+        CalendarState::Connected => MobileCalendarState::Connected,
+        CalendarState::CannotConfirm => MobileCalendarState::CannotConfirm,
+        CalendarState::RefusedDeviceToken => MobileCalendarState::RefusedDeviceToken,
+        CalendarState::RefusedServerLane => MobileCalendarState::RefusedServerLane,
+    }
+}
+
+/// The calendar's own half of the host, behind its **own** mutex.
+///
+/// Deliberately not `Inner`'s lock. A calendar poll is a Google round trip
+/// held across `await`; a sync cycle is an authority round trip held across
+/// `await`. Sharing one lock would let either stall the other for the length
+/// of a network call — an intermittent multi-second hang that no unit test
+/// reaches and only hardware shows. They share nothing but the device token,
+/// which is read out of `Inner` under a momentary lock that is released
+/// before this one is taken (never the reverse, so there is no lock order to
+/// get wrong and no deadlock to have).
+struct CalendarHalf {
+    host: CalendarHostCore<FsSnapshotStore>,
+    client: reqwest::Client,
+    base_url: String,
+    /// The opt-in flag, as this process currently believes it. Durably the
+    /// host's (Preferences DataStore, beside `FrontierPrefs`), handed back
+    /// at each launch through [`MobileTaskHost::init_calendar`] — a flag,
+    /// never a credential (`calendar/persistence.ts`'s own distinction).
+    opted_in: bool,
+    /// The expiry of the access token currently pushed into `host`, or
+    /// `None` when none is.
+    expires_at_ms: Option<i64>,
+    /// The last mint's failure code, or `None` if it succeeded.
+    last_error: Option<&'static str>,
+    /// The **device's own** ticked calendars, as the picker last wrote them
+    /// — never the polled set. What is actually polled is
+    /// [`hummingbird_core::calendar::effective_selection`] over this plus
+    /// the synced `trips-calendar` binding, re-derived on every push and
+    /// every tick, so a binding that arrives by sync starts being polled
+    /// without the operator touching the picker.
+    stored_selections: Vec<CalendarSelection>,
+}
+
+/// One mirrored event, as a pane rule reads it — `inputs.rs`'s trimmed
+/// shape, not the whole [`EventRecord`]. `recurrence_id`, `organizer`,
+/// `provider_updated_at_ms` and `html_link` stay behind: no sunk pane reads
+/// any of them, and `inputs.rs`'s own discipline is that a field crosses
+/// only once some rule reads it.
+fn to_calendar_event_facts(event: &EventRecord) -> CalendarEventFacts {
+    CalendarEventFacts {
+        provider_event_id: event.provider_event_id.clone(),
+        calendar_id: event.calendar_id.clone(),
+        title: event.title.clone(),
+        when: match &event.when {
+            EventWhen::AllDay { start_date, end_date } => CalendarEventWhenFacts::AllDay {
+                start_date: start_date.clone(),
+                end_date: end_date.clone(),
+            },
+            EventWhen::Timed { start_ms, end_ms } => CalendarEventWhenFacts::Timed {
+                start_ms: *start_ms,
+                end_ms: *end_ms,
+            },
+        },
+        location: event.location.clone(),
+        status: match event.status {
+            EventStatus::Confirmed => CalendarEventStatusFact::Confirmed,
+            EventStatus::Tentative => CalendarEventStatusFact::Tentative,
+            EventStatus::Cancelled => CalendarEventStatusFact::Cancelled,
+        },
+    }
+}
+
+/// A calendar-arm answer, mapped to what the panes read.
+///
+/// **Anything that is not a real `"read"` becomes
+/// [`CalendarReadFacts::NotRead`]** — including the wasm-only `"busy"`
+/// kind, which this host cannot produce. That is not a flattening of two
+/// facts into one: `not_read` already means "this device has nothing to say
+/// about that window", and a host that could not answer has exactly that
+/// much to say. The distinction the panes actually gate on — never
+/// connected vs connected-but-nothing-landed — is `calendar_connected`, a
+/// separate field.
+fn to_calendar_read_facts(response: CalendarEventsResponse) -> CalendarReadFacts {
+    if response.kind != "read" {
+        return CalendarReadFacts::NotRead;
+    }
+    CalendarReadFacts::Read {
+        events: response.events.iter().map(to_calendar_event_facts).collect(),
+        freshness: match response.freshness {
+            None | Some(Freshness::Unknown) => FreshnessFact::Unknown,
+            Some(Freshness::Age { age_ms, declared_cadence_ms }) => {
+                FreshnessFact::Age { age_ms, declared_cadence_ms }
+            }
+        },
+    }
+}
+
+impl CalendarHalf {
+    fn connection(&self) -> MobileCalendarConnection {
+        MobileCalendarConnection {
+            state: map_calendar_state(connection_state(self.opted_in, self.last_error)),
+            expires_at_ms: self.expires_at_ms,
+            error: self.last_error.map(str::to_string),
+        }
+    }
+
+    /// One mint, pushed into the poller on success. Records the code either
+    /// way; **never clears `opted_in`** — a failed re-mint on an opted-in
+    /// device leaves the device connected-but-stale, which is
+    /// `shouldKeepExistingConnection`'s whole point, ported.
+    async fn mint(&mut self, device_token: Option<&str>) -> bool {
+        match mint_calendar_token(&self.client, &self.base_url, device_token).await {
+            MintOutcome::Minted {
+                access_token,
+                expires_at_ms,
+            } => {
+                self.host.push_token(access_token);
+                self.expires_at_ms = Some(expires_at_ms);
+                self.last_error = None;
+                true
+            }
+            MintOutcome::Failed(code) => {
+                self.last_error = Some(code);
+                false
+            }
+        }
+    }
+
+    /// Pushes the polled set: this device's picks unioned with the bound
+    /// Trips calendar, which is always polled and always at the long
+    /// horizon. `effectiveSelection`'s rule, read out of core so there is
+    /// no ffi-side copy of it.
+    fn apply_selection(&self, trips_id: Option<&str>) {
+        self.host
+            .set_calendar_selections(effective_selection(&self.stored_selections, trips_id));
+    }
+
+    /// Whether the held token is close enough to expiry to rotate now —
+    /// `connection.ts`'s `msUntilRotation` reaching zero, expressed as the
+    /// predicate the tick actually asks.
+    fn due_for_rotation(&self, now_ms: i64) -> bool {
+        match self.expires_at_ms {
+            None => true,
+            Some(expires_at_ms) => now_ms >= expires_at_ms - ROTATION_MARGIN_MS,
+        }
+    }
+}
+
 struct Inner {
     core: Core<FsSnapshotStore, FsSnapshotStore>,
     read_transport: ReqwestSyncTransport,
@@ -3231,6 +3587,9 @@ struct Inner {
 #[derive(uniffi::Object)]
 pub struct MobileTaskHost {
     inner: tokio::sync::Mutex<Inner>,
+    /// #564's calendar lane, behind its own lock — see [`CalendarHalf`] for
+    /// why it is not `inner`'s.
+    calendar: tokio::sync::Mutex<CalendarHalf>,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -3252,6 +3611,7 @@ impl MobileTaskHost {
     ) -> Result<Arc<Self>, MobileInitError> {
         let empty_key = api_key.is_empty();
         let shadow_key = (!empty_key).then(|| api_key.clone());
+        let namespace_path = namespace.clone();
         let mut core = Core::init(namespace, api_key)
             .await
             .map_err(|error| MobileInitError::InitFailed {
@@ -3267,7 +3627,25 @@ impl MobileTaskHost {
         }
         let client = reqwest_client();
         let read_transport = ReqwestSyncTransport::new(client.clone(), base_url.clone());
-        let write_transport = ReqwestMutationTransport::new(client, base_url);
+        let write_transport = ReqwestMutationTransport::new(client.clone(), base_url.clone());
+        // The calendar mirror is a fourth snapshot slot under the same
+        // host-supplied namespace, sibling to the queue/mirror/grill-draft
+        // files `Core::init` just laid down (ADR-0003: the namespace is the
+        // one thing the host contributes). Selections start empty — a
+        // never-opted-in device polls nothing — and arrive at
+        // `init_calendar`.
+        let calendar = CalendarHalf {
+            host: CalendarHostCore::new(
+                FsSnapshotStore::new(std::path::Path::new(&namespace_path).join("calendar.json")),
+                Vec::new(),
+            ),
+            client,
+            base_url,
+            opted_in: false,
+            expires_at_ms: None,
+            last_error: None,
+            stored_selections: Vec::new(),
+        };
         Ok(Arc::new(Self {
             inner: tokio::sync::Mutex::new(Inner {
                 core,
@@ -3275,6 +3653,7 @@ impl MobileTaskHost {
                 write_transport,
                 api_key: shadow_key,
             }),
+            calendar: tokio::sync::Mutex::new(calendar),
         }))
     }
 
@@ -4258,7 +4637,16 @@ impl MobileTaskHost {
     /// it unchanged.
     pub async fn pane_zone_queries(&self, surface: MobileSurface, now_ms: i64) -> Vec<MobileZoneQuery> {
         let inner = self.inner.lock().await;
-        let inputs = mobile_pane_inputs(&inner.core, now_ms, MobileSyncFacts::default());
+        // Phase one reads no calendar arm — it runs before any zone is
+        // resolved, and every calendar window this lane needs is a function
+        // of the reader's own zone. `weekend`/`vacation` ask for their zone
+        // facts here and read their events in phase two.
+        let inputs = mobile_pane_inputs(
+            &inner.core,
+            now_ms,
+            MobileSyncFacts::default(),
+            CalendarArm::default(),
+        );
         panes::zone_queries(map_surface(surface), &inputs)
             .iter()
             .map(to_mobile_zone_query)
@@ -4280,9 +4668,13 @@ impl MobileTaskHost {
         zone_facts: Vec<MobileZoneFact>,
         sync: MobileSyncFacts,
     ) -> Vec<MobileRankedPane> {
-        let inner = self.inner.lock().await;
-        let inputs = mobile_pane_inputs(&inner.core, now_ms, sync);
         let zone = to_zone_facts(zone_facts);
+        // The calendar lock is taken and released BEFORE `inner`'s, never
+        // while holding it — see [`CalendarHalf`] for the whole of this
+        // crate's lock discipline.
+        let calendar = self.calendar_arm(now_ms, &zone).await;
+        let inner = self.inner.lock().await;
+        let inputs = mobile_pane_inputs(&inner.core, now_ms, sync, calendar);
         panes::rank_panes(map_surface(surface), &inputs, &zone)
             .into_iter()
             .map(|record| {
@@ -4325,6 +4717,269 @@ impl MobileTaskHost {
             total: outcome.total as u32,
         }
     }
+
+    // --------------------------------------------- the calendar (#564)
+    // Mirrors the web host's `CalendarHost` shim one door for one, over the
+    // same `CalendarHostCore`. See the `CalendarHalf` section above for why
+    // the token never crosses this seam.
+
+    /// Re-arms the lane at app start from the host's persisted state: the
+    /// opt-in flag and the picked calendars, both DataStore-owned
+    /// (Slice 3), neither a credential. An opted-in device mints once here,
+    /// so a launch that is online is already connected by the time Settings
+    /// renders; a never-opted-in one does nothing and stays
+    /// [`MobileCalendarState::NeverConnected`] — `initConnection`'s own
+    /// two-branch shape.
+    pub async fn init_calendar(
+        &self,
+        was_previously_connected: bool,
+        selections: Vec<MobileCalendarSelection>,
+    ) -> MobileCalendarConnection {
+        let device_token = self.device_token().await;
+        let trips_id = self.trips_calendar_id().await;
+        let mut calendar = self.calendar.lock().await;
+        calendar.stored_selections = selections.iter().map(to_calendar_selection).collect();
+        calendar.apply_selection(trips_id.as_deref());
+        if !was_previously_connected {
+            return calendar.connection();
+        }
+        calendar.opted_in = true;
+        calendar.mint(device_token.as_deref()).await;
+        calendar.connection()
+    }
+
+    /// The interactive Connect gesture: mint once and report what happened.
+    ///
+    /// A device that was already opted in stays opted in whatever this
+    /// returns — `shouldKeepExistingConnection`'s rule, and the reason a
+    /// cancelled or failed *re*-connect cannot cost the operator their
+    /// stale-but-real mirror. A **first** connect that fails leaves the
+    /// device never-connected, so the Connect affordance is still offered.
+    pub async fn connect_calendar(&self) -> MobileCalendarConnection {
+        let device_token = self.device_token().await;
+        let mut calendar = self.calendar.lock().await;
+        let was_opted_in = calendar.opted_in;
+        let minted = calendar.mint(device_token.as_deref()).await;
+        calendar.opted_in = was_opted_in || minted;
+        calendar.connection()
+    }
+
+    /// "Disconnect": forget the opt-in and dispose of the held access
+    /// token.
+    ///
+    /// **The mirror is not cleared.** A disconnected device's already-polled
+    /// events stay on disk — the mirror is disposable, not a lie, and
+    /// deleting it would turn a revocation into data loss for the panes that
+    /// read it. Nothing polls it again until the device reconnects, and the
+    /// panes gate on the flag this clears.
+    ///
+    /// **The credential is disposed of, not merely unused.** Clearing the
+    /// flag alone would leave the access token live inside
+    /// [`CalendarHostCore`], where [`Self::list_calendars`] reads it — and
+    /// Settings lists again on exactly this state change, so a disconnected
+    /// device would have gone on making authenticated Google requests until
+    /// the token expired.
+    pub async fn disconnect_calendar(&self) -> MobileCalendarConnection {
+        let mut calendar = self.calendar.lock().await;
+        calendar.opted_in = false;
+        calendar.expires_at_ms = None;
+        calendar.last_error = None;
+        calendar.host.clear_token();
+        calendar.connection()
+    }
+
+    /// The picker's options — [`CalendarHostCore::list_calendars`] over the
+    /// token already pushed for polling, never a second credential
+    /// crossing.
+    pub async fn list_calendars(&self) -> MobileCalendarList {
+        let calendar = self.calendar.lock().await;
+        let response = calendar.host.list_calendars().await;
+        MobileCalendarList {
+            kind: response.kind.to_string(),
+            calendars: response
+                .calendars
+                .into_iter()
+                .map(|entry| MobileCalendarEntry {
+                    id: entry.id,
+                    summary: entry.summary,
+                })
+                .collect(),
+        }
+    }
+
+    /// The picker's current selection. Durably the host's, like the opt-in
+    /// flag.
+    ///
+    /// **It polls straight away rather than waiting for the next tick**, and
+    /// that is a correctness matter, not a nicety: an empty selection is not
+    /// a no-op poll, it is a *successful* one over zero calendars, so the
+    /// first tick after Connect saves a real, fresh, empty snapshot. Leaving
+    /// the new selection until the next 15-minute tick would have the
+    /// weekend pane answer a confident "nothing on" for a quarter of an hour
+    /// after the operator picked the calendar that says otherwise.
+    /// `ContextPoller::refresh` is the user-invoked trigger this is.
+    pub async fn set_calendar_selections(
+        &self,
+        selections: Vec<MobileCalendarSelection>,
+        now_ms: i64,
+    ) -> MobileCalendarTick {
+        let device_token = self.device_token().await;
+        let trips_id = self.trips_calendar_id().await;
+        let mut calendar = self.calendar.lock().await;
+        calendar.stored_selections = selections.iter().map(to_calendar_selection).collect();
+        calendar.apply_selection(trips_id.as_deref());
+        if !calendar.opted_in {
+            return MobileCalendarTick {
+                outcome: outcome_name(hummingbird_core::context::PollOutcome::NoCredential)
+                    .to_string(),
+                connection: calendar.connection(),
+            };
+        }
+        if calendar.due_for_rotation(now_ms) {
+            calendar.mint(device_token.as_deref()).await;
+        }
+        let outcome = calendar.host.refresh(now_ms).await;
+        MobileCalendarTick {
+            outcome: outcome_name(outcome).to_string(),
+            connection: calendar.connection(),
+        }
+    }
+
+    /// One foreground timer tick, at [`calendar_poll_interval_ms`].
+    ///
+    /// The whole mint/rotate/401 loop is here, not in Kotlin:
+    ///
+    /// 1. A device that never opted in polls nothing and answers
+    ///    `"no_credential"`.
+    /// 2. If the held token is inside `connection.ts`'s rotation margin (or
+    ///    there is none), re-mint **before** polling — that margin is
+    ///    smaller than the authority's own cache margin, so this request is
+    ///    normally a cache hit that nonetheless comes back with a genuinely
+    ///    fresh token.
+    /// 3. Poll.
+    /// 4. Drain the poller's credential events (a live 401 mid-poll) and
+    ///    re-mint on any of them, so the *next* tick starts with a good
+    ///    token rather than repeating the 401.
+    pub async fn calendar_on_timer(&self, now_ms: i64) -> MobileCalendarTick {
+        let device_token = self.device_token().await;
+        let trips_id = self.trips_calendar_id().await;
+        let mut calendar = self.calendar.lock().await;
+        // Re-derived every tick, not just at a picker gesture: the Trips
+        // binding is *synced*, so it can arrive from another device between
+        // two ticks and must start being polled without the operator
+        // opening Settings.
+        calendar.apply_selection(trips_id.as_deref());
+        if !calendar.opted_in {
+            return MobileCalendarTick {
+                outcome: outcome_name(hummingbird_core::context::PollOutcome::NoCredential)
+                    .to_string(),
+                connection: calendar.connection(),
+            };
+        }
+        if calendar.due_for_rotation(now_ms) {
+            calendar.mint(device_token.as_deref()).await;
+        }
+        let outcome = calendar.host.on_timer(now_ms).await;
+        if !calendar.host.take_credential_events().is_empty() {
+            calendar.mint(device_token.as_deref()).await;
+        }
+        MobileCalendarTick {
+            outcome: outcome_name(outcome).to_string(),
+            connection: calendar.connection(),
+        }
+    }
+
+}
+
+/// Not `#[uniffi::export]`ed: this block holds the calendar lane's internal
+/// helper, which is Rust-side plumbing rather than a door. Kotlin has no
+/// business asking for the device token back.
+impl MobileTaskHost {
+    /// The device token, copied out from under `inner`'s lock and released
+    /// again before the calendar's is taken — see [`CalendarHalf`] for why
+    /// that order is the whole lock discipline here.
+    async fn device_token(&self) -> Option<String> {
+        self.inner.lock().await.api_key.clone()
+    }
+
+    /// The designated Trips calendar, read off the synced bindings table
+    /// under `inner`'s lock and released before the calendar's is taken —
+    /// the same lock order [`Self::device_token`] keeps, for the same
+    /// reason.
+    ///
+    /// It is a *binding*, not a device preference: the operator names their
+    /// Trips calendar once, anywhere, and every device polls it. That is
+    /// why the polled set cannot be the picker's list alone.
+    async fn trips_calendar_id(&self) -> Option<String> {
+        let inner = self.inner.lock().await;
+        inner
+            .core
+            .bindings()
+            .into_iter()
+            .find(|binding| binding.key == vacation::TRIPS_CALENDAR_BINDING_KEY)
+            .and_then(|binding| match binding.value {
+                BindingValue::Text { text } => {
+                    let id = text.trim().to_string();
+                    if id.is_empty() {
+                        None
+                    } else {
+                        Some(id)
+                    }
+                }
+                _ => None,
+            })
+    }
+
+    /// Phase two's calendar arm (#621): each calendar-reading question's own
+    /// window, read off this device's mirror.
+    ///
+    /// **The windows are computed core-side, never here.**
+    /// `weekend_calendar_interval` and `vacation_calendar_interval` hold the
+    /// bounds the web's `calendarRequests` computes for itself — a Kotlin or
+    /// ffi-side copy of "Friday 17:00 through Sunday" or "seven days back,
+    /// seven hundred and thirty ahead" is exactly the drift ADR-0025 exists
+    /// to prevent. The web is **not** rewired to these yet (it needs an
+    /// `ffi-web` export #564 did not scope), so the two copies coexist;
+    /// ADR-0025's second #564 amendment records that as a divergence rather
+    /// than a completed sink. A question whose zone could not be
+    /// resolved contributes **no entry at all**, which the panes already
+    /// read as "not requested yet" — never an empty `Read`, which would
+    /// claim this device had looked and found nothing.
+    async fn calendar_arm(&self, now_ms: i64, zone: &ZoneFacts) -> CalendarArm {
+        let calendar = self.calendar.lock().await;
+        let mut reads = HashMap::new();
+        let intervals = [
+            (weekend::CALENDAR_REQUEST_KEY, weekend::weekend_calendar_interval(now_ms, zone)),
+            (vacation::CALENDAR_REQUEST_KEY, vacation::vacation_calendar_interval(now_ms, zone)),
+        ];
+        for (key, interval) in intervals {
+            let Some(interval) = interval else { continue };
+            let response = calendar
+                .host
+                .events_in_interval(
+                    interval.start_ms,
+                    interval.end_ms,
+                    interval.start_date,
+                    interval.end_date,
+                    now_ms,
+                )
+                .await;
+            reads.insert(key.to_string(), to_calendar_read_facts(response));
+        }
+        CalendarArm { reads, connected: calendar.opted_in }
+    }
+}
+
+/// The calendar lane's declared poll cadence, read through the seam so
+/// Android adds **zero** new places the 15 minutes is written down —
+/// `MainActivity`'s calendar loop takes its interval from here, the way
+/// `useCalendarWiring.ts` takes it from the same constant.
+///
+/// A free door rather than a method: it is a constant, and there is no host
+/// state to reach for it.
+#[uniffi::export]
+pub fn calendar_poll_interval_ms() -> i64 {
+    CALENDAR_POLL_INTERVAL_MS
 }
 
 /// One `reqwest::Client` per host, cloned into both transports — connection
@@ -5309,6 +5964,285 @@ mod tests {
         assert_eq!(host.api_version().await, hummingbird_core::API_VERSION);
         assert_eq!(host.active_item_count().await, 0);
         assert_eq!(host.queue_depth().await, 0);
+    }
+
+    // ---------------------------------------------- the calendar (#564)
+    // Everything reachable without a live authority. The mint itself is
+    // covered by `calendar_token`'s own tests; what these pin is the state
+    // machine `MobileTaskHost` wraps it in — which is where the four
+    // Source-connection states actually get decided.
+
+    /// A host whose base URL refuses connections, so every mint answers
+    /// `authority_unreachable` without a network of any kind.
+    async fn unreachable_host(dir: &tempfile::TempDir, api_key: &str) -> Arc<MobileTaskHost> {
+        MobileTaskHost::init(
+            dir.path().join("cal-ns").to_str().unwrap().to_string(),
+            "http://127.0.0.1:1".to_string(),
+            api_key.to_string(),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// The polled set is the picker's list unioned with the synced Trips
+    /// binding, at the long horizon — the failure this pins is a Vacation
+    /// pane that answers "nothing booked" because the one calendar it is
+    /// about was never fetched.
+    #[tokio::test]
+    async fn the_bound_trips_calendar_is_polled_whether_or_not_the_picker_ticked_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+        host.set_binding(
+            "seed-trips".to_string(),
+            vacation::TRIPS_CALENDAR_BINDING_KEY.to_string(),
+            "trips@g".to_string(),
+            1_000,
+        )
+        .await
+        .unwrap();
+
+        host.init_calendar(
+            true,
+            vec![MobileCalendarSelection { id: "personal@g".to_string(), long_horizon: false }],
+        )
+        .await;
+
+        let polled = host.calendar.lock().await.host.calendar_selections();
+        assert_eq!(
+            polled,
+            vec![CalendarSelection::standard("personal@g"), CalendarSelection::long("trips@g")]
+        );
+    }
+
+    /// The binding is *synced*: it can arrive from the browser between two
+    /// ticks, and the phone must start polling it without the operator
+    /// opening Settings.
+    #[tokio::test]
+    async fn a_trips_binding_that_arrives_later_is_picked_up_on_the_next_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+        host.init_calendar(true, Vec::new()).await;
+        assert!(host.calendar.lock().await.host.calendar_selections().is_empty());
+
+        host.set_binding(
+            "seed-trips".to_string(),
+            vacation::TRIPS_CALENDAR_BINDING_KEY.to_string(),
+            "trips@g".to_string(),
+            1_000,
+        )
+        .await
+        .unwrap();
+        host.calendar_on_timer(2_000).await;
+
+        assert_eq!(
+            host.calendar.lock().await.host.calendar_selections(),
+            vec![CalendarSelection::long("trips@g")]
+        );
+    }
+
+    /// #621's whole point: the weekend and vacation panes gate on
+    /// `calendar_connected` **first**, so before #564 they were
+    /// permanently "not set up" on the phone whatever the mirror held.
+    /// This is the wiring, at the seam that used to hardcode `false`.
+    #[tokio::test]
+    async fn connecting_a_calendar_moves_the_weekend_pane_off_not_set_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+
+        fn weekend_state(panes: &[MobileRankedPane]) -> MobilePaneAnswerState {
+            panes
+                .iter()
+                .find(|pane| pane.standing_question == MobileStandingQuestion::Weekend)
+                .expect("the weekend pane ranks on Now")
+                .answer
+                .answer_state
+        }
+
+        let before = host
+            .rank_panes(MobileSurface::Now, 1_000, Vec::new(), MobileSyncFacts::default())
+            .await;
+        // `Unbound` is the "go set this up" reading — the only state
+        // `!calendar_connected` produces.
+        assert_eq!(weekend_state(&before), MobilePaneAnswerState::Unbound);
+
+        host.init_calendar(true, Vec::new()).await;
+
+        let after = host
+            .rank_panes(MobileSurface::Now, 1_000, Vec::new(), MobileSyncFacts::default())
+            .await;
+        // Connected, but this device has never actually polled — a
+        // different fact, and the one that stops a connected phone reading
+        // as un-set-up.
+        assert_eq!(
+            weekend_state(&after),
+            MobilePaneAnswerState::BoundButUnacquired
+        );
+    }
+
+    /// Phase one must stay calendar-free: it runs before any zone is
+    /// resolved, so there is no window to read, and asking anyway would be
+    /// a disk read per tick for an answer nothing uses.
+    #[tokio::test]
+    async fn the_zone_query_phase_reads_no_calendar_arm() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+        host.init_calendar(true, Vec::new()).await;
+
+        // The queries a connected device asks are the same ones a
+        // never-connected one does — the calendar arm contributes none.
+        let connected = host.pane_zone_queries(MobileSurface::Now, 1_000).await;
+        host.disconnect_calendar().await;
+        let disconnected = host.pane_zone_queries(MobileSurface::Now, 1_000).await;
+
+        assert_eq!(connected, disconnected);
+    }
+
+    #[tokio::test]
+    async fn a_fresh_host_has_never_connected_a_calendar() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+
+        let connection = host.init_calendar(false, Vec::new()).await;
+
+        assert_eq!(connection.state, MobileCalendarState::NeverConnected);
+        assert_eq!(connection.expires_at_ms, None);
+        // Never opted in is not a failure, and has no code to report — the
+        // same "never tried" vs "tried and failed" split `initConnection`
+        // keeps, and what Settings gates its message on.
+        assert_eq!(connection.error, None);
+    }
+
+    #[tokio::test]
+    async fn a_never_connected_device_polls_nothing_and_reaches_no_network() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+
+        let tick = host.calendar_on_timer(1_000).await;
+
+        assert_eq!(tick.outcome, "no_credential");
+        assert_eq!(tick.connection.state, MobileCalendarState::NeverConnected);
+    }
+
+    #[tokio::test]
+    async fn a_first_connect_that_cannot_reach_the_authority_stays_offerable() {
+        // The Connect affordance must still be there afterwards: a device
+        // that has never opted in and whose first attempt failed is not
+        // connected, however the attempt failed.
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+
+        let connection = host.connect_calendar().await;
+
+        assert_eq!(connection.state, MobileCalendarState::NeverConnected);
+        assert_eq!(connection.error.as_deref(), Some("authority_unreachable"));
+    }
+
+    #[tokio::test]
+    async fn a_device_with_no_token_at_all_is_refused_at_its_own_token_control() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "").await;
+
+        // Opted in at launch, so this is a re-mint on an established
+        // connection rather than a first attempt.
+        let connection = host.init_calendar(true, Vec::new()).await;
+
+        assert_eq!(connection.state, MobileCalendarState::RefusedDeviceToken);
+        assert_eq!(connection.error.as_deref(), Some("no_device_token"));
+    }
+
+    #[tokio::test]
+    async fn an_opted_in_device_that_cannot_reach_the_authority_reads_as_cannot_confirm() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+
+        let connection = host.init_calendar(true, Vec::new()).await;
+
+        // Not `NeverConnected`: the phone cannot tell "I am offline" from
+        // "the authority is down", and neither is a reason to un-opt-in
+        // this device or to offer Connect again.
+        assert_eq!(connection.state, MobileCalendarState::CannotConfirm);
+        assert_eq!(connection.error.as_deref(), Some("authority_unreachable"));
+    }
+
+    #[tokio::test]
+    async fn a_failed_reconnect_never_un_opts_in_the_device() {
+        // `shouldKeepExistingConnection`, ported: the same button is
+        // Connect and Reconnect, and a failed reconnect that wrote
+        // `connected: false` would take the stale-but-real mirror and the
+        // Reconnect affordance down with it.
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+        host.init_calendar(true, Vec::new()).await;
+
+        let connection = host.connect_calendar().await;
+
+        assert_eq!(connection.state, MobileCalendarState::CannotConfirm);
+    }
+
+    #[tokio::test]
+    async fn disconnecting_returns_the_device_to_never_connected() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+        host.init_calendar(true, Vec::new()).await;
+
+        let connection = host.disconnect_calendar().await;
+
+        assert_eq!(connection.state, MobileCalendarState::NeverConnected);
+        assert_eq!(connection.error, None);
+        // And the lane really is off: the next tick polls nothing.
+        assert_eq!(host.calendar_on_timer(1_000).await.outcome, "no_credential");
+    }
+
+    #[tokio::test]
+    async fn an_opted_in_tick_reports_the_pollers_own_outcome_vocabulary() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+        host.init_calendar(true, Vec::new()).await;
+
+        let tick = host.calendar_on_timer(1_000).await;
+
+        // The mint failed, so nothing was ever pushed into the poller and
+        // it has no credential to poll with — the same string
+        // `client/web/src/store/protocol.ts` matches on.
+        assert_eq!(tick.outcome, "no_credential");
+        assert_eq!(tick.connection.state, MobileCalendarState::CannotConfirm);
+    }
+
+    #[tokio::test]
+    async fn listing_calendars_before_any_mint_leaves_the_picker_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+
+        let list = host.list_calendars().await;
+
+        assert_eq!(list.kind, "no_credential");
+        assert_eq!(list.calendars, Vec::new());
+    }
+
+    #[tokio::test]
+    async fn the_poll_cadence_crosses_the_seam_rather_than_being_restated_in_kotlin() {
+        assert_eq!(
+            calendar_poll_interval_ms(),
+            hummingbird_core::calendar::CALENDAR_POLL_INTERVAL_MS
+        );
+    }
+
+    #[tokio::test]
+    async fn no_calendar_answer_ever_carries_the_device_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "s3cret-device-token").await;
+
+        let connection = host.init_calendar(true, Vec::new()).await;
+        let tick = host.calendar_on_timer(1_000).await;
+        let list = host.list_calendars().await;
+
+        for answer in [
+            format!("{connection:?}"),
+            format!("{tick:?}"),
+            format!("{list:?}"),
+        ] {
+            assert!(!answer.contains("s3cret"), "{answer}");
+        }
     }
 
     #[tokio::test]
@@ -8553,8 +9487,9 @@ mod settings_tests {
         assert_eq!(facts.window.days.len(), 3);
         assert_eq!(facts.counts, MobileWeekendCounts { events: 0, due: 0, scheduled: 0 });
 
-        // `calendar_connected` is hardcoded `false` in `mobile_pane_inputs`
-        // today, so THIS is the arm every real Android device sees.
+        // THIS is the arm a device with no calendar connected still sees —
+        // `calendar_connected` is real since #564, so it is now one of two
+        // arms rather than the only one.
         let gap = mobile_pane_facts_of(
             StandingQuestion::Weekend,
             weekend::SUBJECT_KEY,
