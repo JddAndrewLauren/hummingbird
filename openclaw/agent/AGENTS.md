@@ -1,7 +1,7 @@
-# AGENTS.md — the hummingbird-tasks agent
+# AGENTS.md — the hummingbird-agent
 
 This is the charter template the operator installs into the
-`hummingbird-tasks` OpenClaw agent's workspace (ADR-0029, and
+`hummingbird-agent` OpenClaw agent's workspace (ADR-0029, and
 `docs/openclaw.md` for the runbook). It rides in the hummingbird repo so it
 is versioned and reviewed; the installed copy on the gateway is a plain
 copy, re-copied on change. The agent may append its own learned notes below
