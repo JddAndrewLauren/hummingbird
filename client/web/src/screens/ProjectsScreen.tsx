@@ -117,20 +117,25 @@ export interface ProjectsScreenProps {
    * (this component's own effect) decides when: on open, and again on
    * every completed cycle it is still open for. */
   onRequestProjectLinks: (projectId: string) => void;
-  /** #626: the links card's add gesture. */
-  onCreateProjectLink: (projectId: string, url: string, label: string | null, position: number) => void;
+  /** #626: the links card's add gesture. Returns the write's minted seed
+   * (#669) — `LinksCard` holds it to recognise its own write in
+   * `lastProjectLinkWrite`, the one broadcast slot every open dossier's
+   * links card shares. */
+  onCreateProjectLink: (projectId: string, url: string, label: string | null, position: number) => string;
   /** #626: the links card's edit/reorder/remove gesture — `patch` carries
-   * only the fields the card actually changed. */
+   * only the fields the card actually changed. Returns the write's minted
+   * seed (#669), same reasoning as `onCreateProjectLink` above. */
   onPatchProjectLink: (
     current: ProjectLinkDTO,
     patch: { url?: string; label?: string | null; position?: number; removedAt?: number | null },
-  ) => void;
+  ) => string;
   /** #627: the Route card's read — fetches one project's Route. Same
    * "the caller's own effect decides when" shape as `onRequestProjectLinks`. */
   onRequestRoute: (projectId: string) => void;
   /** #627: the Route card's edit gesture — `patch` carries only the fields
-   * the card actually changed. */
-  onPatchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => void;
+   * the card actually changed. Returns the write's minted seed (#669) —
+   * `RouteCard` holds it to recognise its own write in `lastRouteWrite`. */
+  onPatchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => string;
   /** The board's clock — `App.tsx`'s `syncNowMs`, the same one Now gets.
    * One tick for the whole shell, never a second one per screen. */
   nowMs: number;
@@ -419,18 +424,18 @@ function Dossier({
   links: ProjectLinkDTO[] | undefined;
   lastProjectLinkWrite: TaskProjectLinkResult | null;
   onRequestProjectLinks: (projectId: string) => void;
-  onCreateProjectLink: (projectId: string, url: string, label: string | null, position: number) => void;
+  onCreateProjectLink: (projectId: string, url: string, label: string | null, position: number) => string;
   onPatchProjectLink: (
     current: ProjectLinkDTO,
     patch: { url?: string; label?: string | null; position?: number; removedAt?: number | null },
-  ) => void;
+  ) => string;
   /** `undefined` = not read yet (`TaskState.routeByProject`'s own doc) —
    * every project has exactly one Route, so there is no "this project has
    * none" to distinguish it from, unlike `links`. */
   route: RouteDTO | undefined;
   lastRouteWrite: TaskRouteResult | null;
   onRequestRoute: (projectId: string) => void;
-  onPatchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => void;
+  onPatchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => string;
   syncOutcomeSeq: number;
   /** The whole store, for the board — its four queries get filtered here,
    * and its broadcast slots (`lastAct`, `lastTriage`, `pending`,
@@ -578,7 +583,7 @@ function PropertiesCard({
   onPatchProject: (
     current: ProjectDTO,
     patch: { githubRepo?: string | null; defaultContext?: string | null },
-  ) => void;
+  ) => string;
 }) {
   const [repoInput, setRepoInput] = useState(project.githubRepo ?? "");
   const [contextInput, setContextInput] = useState(project.defaultContext ?? "");
@@ -587,6 +592,12 @@ function PropertiesCard({
     repo: project.githubRepo ?? "",
     context: project.defaultContext ?? "",
   });
+  // The seed THIS card's own write minted (#669) — `null` whenever it has
+  // no write outstanding. `lastProjectWrite` is one broadcast slot shared
+  // with `ArchiveCard`, mounted alongside this card on the same dossier and
+  // patching the same `project.id` (a failed archive used to paint this
+  // card's badge under the old `projectId`-only gate).
+  const [issuedSeed, setIssuedSeed] = useState<string | null>(null);
 
   if (project.version !== synced.version) {
     // Only a field nobody has typed in since the last seed is re-seeded. A
@@ -616,13 +627,11 @@ function PropertiesCard({
   const contextChanged = trimmedContext !== (project.defaultContext ?? "");
   const dirty = repoChanged || contextChanged;
   const link = githubRepoUrl(project.githubRepo);
-  // Gated on `projectId` — `lastProjectWrite` is one global slot shared with
-  // `createProject` and every other dossier's own patch, so an unguarded
-  // read would paint a stranger's failure into this card.
-  const failure =
-    lastProjectWrite !== null && lastProjectWrite.projectId === project.id
-      ? writeFailureMessage(lastProjectWrite)
-      : null;
+  // Seed-keyed (`roster.ts`'s `writeFailureMessage`'s own doc), not merely
+  // `projectId`-gated: `lastProjectWrite` is one broadcast slot shared with
+  // `ArchiveCard`, so an unguarded read would paint a sibling card's failure
+  // into this one.
+  const failure = writeFailureMessage(lastProjectWrite, issuedSeed);
 
   function save() {
     const patch: { githubRepo?: string | null; defaultContext?: string | null } = {};
@@ -632,7 +641,7 @@ function PropertiesCard({
     if (contextChanged) {
       patch.defaultContext = trimmedContext === "" ? null : trimmedContext;
     }
-    onPatchProject(project, patch);
+    setIssuedSeed(onPatchProject(project, patch));
   }
 
   return (
@@ -711,15 +720,18 @@ function PropertiesCard({
  * in the ordinary dead-letter journal like every other CAS write (ADR-0030
  * decision 1) — this card adds no bespoke conflict UI. */
 function RouteCard({
-  projectId,
   route,
   lastRouteWrite,
   onPatchRoute,
 }: {
+  // Kept on the type even though the body below no longer reads it directly
+  // — seed-keying (`writeFailureMessage`) needs no `projectId` gate of its
+  // own, but every call site still passes it and every sibling card's props
+  // keep the same shape.
   projectId: string;
   route: RouteDTO | undefined;
   lastRouteWrite: TaskRouteResult | null;
-  onPatchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => void;
+  onPatchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => string;
 }) {
   const [destinationInput, setDestinationInput] = useState(route?.destination ?? "");
   const [notesInput, setNotesInput] = useState(route?.notes ?? "");
@@ -730,6 +742,10 @@ function RouteCard({
   });
   const [saving, setSaving] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  // The seed THIS card's own write minted (#669) — `null` whenever it has no
+  // write outstanding, so a sibling dossier's write on `lastRouteWrite` (one
+  // broadcast slot shared across every open dossier) never resolves here.
+  const [issuedSeed, setIssuedSeed] = useState<string | null>(null);
 
   if (route !== undefined && route.version !== synced.version) {
     if (destinationInput === synced.destination) {
@@ -745,11 +761,11 @@ function RouteCard({
     }
   }
 
-  // Gated on `projectId`, same reasoning `PropertiesCard`'s own failure read
-  // carries: `lastRouteWrite` is one broadcast slot shared by every open
-  // dossier.
-  const failedHere =
-    lastRouteWrite !== null && lastRouteWrite.projectId === projectId && lastRouteWrite.kind !== "ok";
+  // Seed-keyed (`roster.ts`'s `writeFailureMessage`'s own doc), not merely
+  // `projectId`-gated: `lastRouteWrite` is one broadcast slot shared by
+  // every open dossier's own Route card.
+  const failure = writeFailureMessage(lastRouteWrite, issuedSeed, "That route write did not go through.");
+  const failedHere = failure !== null;
 
   // The write never reached the queue at all — no `version` bump is ever
   // coming to clear `saving` for us (the branch above only fires on a real
@@ -765,10 +781,6 @@ function RouteCard({
   const destinationChanged = trimmedDestination !== (route?.destination ?? "");
   const notesChanged = trimmedNotes !== (route?.notes ?? "");
   const dirty = destinationChanged || notesChanged;
-  const failure =
-    failedHere && lastRouteWrite !== null
-      ? lastRouteWrite.error ?? "That route write did not go through."
-      : null;
 
   function save() {
     if (route === undefined) {
@@ -781,7 +793,7 @@ function RouteCard({
     if (notesChanged) {
       patch.notes = trimmedNotes === "" ? null : trimmedNotes;
     }
-    onPatchRoute(route, patch);
+    setIssuedSeed(onPatchRoute(route, patch));
     setSaving(true);
     setJustSaved(false);
   }
@@ -862,24 +874,24 @@ function LinksCard({
   projectId: string;
   links: ProjectLinkDTO[] | undefined;
   lastProjectLinkWrite: TaskProjectLinkResult | null;
-  onCreateProjectLink: (projectId: string, url: string, label: string | null, position: number) => void;
+  onCreateProjectLink: (projectId: string, url: string, label: string | null, position: number) => string;
   onPatchProjectLink: (
     current: ProjectLinkDTO,
     patch: { url?: string; label?: string | null; position?: number; removedAt?: number | null },
-  ) => void;
+  ) => string;
 }) {
   const [urlInput, setUrlInput] = useState("");
   const [labelInput, setLabelInput] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
+  // The seed THIS card's own most recent write minted (#669) — `null`
+  // whenever it has no write outstanding. `lastProjectLinkWrite` is one
+  // broadcast slot shared by every open dossier's own links card. A
+  // reorder issues two patches at once; only the second's seed is tracked
+  // here, same "one slot, latest write" simplification `ArchiveCard`'s own
+  // single `issuedSeed` carries.
+  const [issuedSeed, setIssuedSeed] = useState<string | null>(null);
 
-  // Gated on `projectId`, same reasoning `PropertiesCard`'s own failure
-  // read carries: `lastProjectLinkWrite` is one broadcast slot shared by
-  // every open dossier, so an unguarded read would paint a stranger's
-  // failure into this card.
-  const failure =
-    lastProjectLinkWrite !== null && lastProjectLinkWrite.projectId === projectId
-      ? (lastProjectLinkWrite.kind === "ok" ? null : lastProjectLinkWrite.error ?? "That link write did not go through.")
-      : null;
+  const failure = writeFailureMessage(lastProjectLinkWrite, issuedSeed, "That link write did not go through.");
 
   const sortedLinks = links === undefined ? undefined : [...links].sort((a, b) => a.position - b.position);
 
@@ -904,7 +916,7 @@ function LinksCard({
     // and they need not: a collision with a removed row's position is
     // harmless, since only live rows are ever sorted or swapped.
     const position = sortedLinks === undefined || sortedLinks.length === 0 ? 0 : sortedLinks[sortedLinks.length - 1].position + 1;
-    onCreateProjectLink(projectId, trimmedUrl, trimmedLabel === "" ? null : trimmedLabel, position);
+    setIssuedSeed(onCreateProjectLink(projectId, trimmedUrl, trimmedLabel === "" ? null : trimmedLabel, position));
     setUrlInput("");
     setLabelInput("");
   }
@@ -920,7 +932,7 @@ function LinksCard({
     const link = sortedLinks[index];
     const other = sortedLinks[swapIndex];
     onPatchProjectLink(link, { position: other.position });
-    onPatchProjectLink(other, { position: link.position });
+    setIssuedSeed(onPatchProjectLink(other, { position: link.position }));
   }
 
   return (
@@ -939,7 +951,7 @@ function LinksCard({
                   key={link.id}
                   link={link}
                   onSave={(url, label) => {
-                    onPatchProjectLink(link, { url, label });
+                    setIssuedSeed(onPatchProjectLink(link, { url, label }));
                     setEditingId(null);
                   }}
                   onCancel={() => setEditingId(null)}
@@ -992,7 +1004,7 @@ function LinksCard({
                     icon="trash-2"
                     label="Remove link"
                     size="sm"
-                    onClick={() => onPatchProjectLink(link, { removedAt: Date.now() })}
+                    onClick={() => setIssuedSeed(onPatchProjectLink(link, { removedAt: Date.now() }))}
                   />
                 </li>
               ),
@@ -1140,17 +1152,13 @@ function ArchiveCard({
   // project — a `projectId`-only gate let a failed properties write clear
   // this card's `pending` while its own archive write was still queued (see
   // this function's own doc). `issuedSeed` is `null` whenever this card has
-  // no write outstanding, so a stray broadcast never matches by accident.
-  const failedHere =
-    issuedSeed !== null &&
-    lastProjectWrite !== null &&
-    lastProjectWrite.projectId === project.id &&
-    lastProjectWrite.seed === issuedSeed &&
-    lastProjectWrite.kind !== "ok";
-  if (pending && failedHere) {
+  // no write outstanding, so a stray broadcast never matches by accident —
+  // `roster.ts`'s `writeFailureMessage` is the shared, seed-keyed helper
+  // every reader on this screen now goes through (#669).
+  const failure = writeFailureMessage(lastProjectWrite, issuedSeed);
+  if (pending && failure !== null) {
     setPending(false);
   }
-  const failure = failedHere ? writeFailureMessage(lastProjectWrite) : null;
 
   const archived = project.archivedAt !== null;
 
