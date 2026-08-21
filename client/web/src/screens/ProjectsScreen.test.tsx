@@ -219,11 +219,25 @@ describe("ProjectsScreen", () => {
 
     fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
 
-    const link = screen.getByRole("link", { name: "https://github.com/JddAndrewLauren/hummingbird" });
+    const link = screen.getByRole("link", { name: "Open GitHub repo" });
     expect(link.getAttribute("href")).toBe("https://github.com/JddAndrewLauren/hummingbird");
     expect((screen.getByLabelText("GitHub repo") as HTMLInputElement).value).toBe(
       "JddAndrewLauren/hummingbird",
     );
+  });
+
+  // The glyph beside the label is the only trace of the URL on this card, so
+  // its absence when there is no repo is the whole of the empty case.
+  it("renders no repo link when the project has no github repo", () => {
+    const task = taskState({
+      projects: [projectDTO({ id: "p-1", name: "House repairs" })],
+      ledger: [],
+    });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
+
+    fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+    expect(screen.queryByRole("link", { name: "Open GitHub repo" })).toBeNull();
   });
 
   it("sends only the changed properties fields to onPatchProject", () => {

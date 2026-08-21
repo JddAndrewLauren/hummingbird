@@ -530,7 +530,12 @@ for (const theme of THEMES) {
       // The links card must actually be populated in the shot — a regression
       // back to the unanswered-read placeholder would otherwise photograph
       // an empty region and still pass.
-      await expect(page.getByRole("link", { name: "Repo" })).toBeVisible();
+      // `exact` because the properties card's own link is named "Open GitHub
+      // repo", which the default substring match also picks up.
+      await expect(page.getByRole("link", { name: "Repo", exact: true })).toBeVisible();
+      // Same guarantee for the properties card's repo link glyph, which is
+      // the only thing on that card carrying the derived URL.
+      await expect(page.getByRole("link", { name: "Open GitHub repo" })).toBeVisible();
       // Same guarantee for the Route card (#627).
       await expect(page.getByLabel("Destination")).toHaveValue(
         "The deck is rebuilt, permitted and passes inspection.",

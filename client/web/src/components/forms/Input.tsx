@@ -12,6 +12,11 @@ export interface InputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 
   size?: "sm" | "md" | "lg";
   /** Node pinned to the right inside the field (a key hint, a clear button). */
   trailing?: ReactNode;
+  /** Node beside the label, outside it — an affordance about the field's
+   * *value* rather than part of its name, so it stays out of the `<label>`
+   * (nesting a control there would both be invalid and steal the click that
+   * focuses the field). */
+  labelTrailing?: ReactNode;
   /** The `<input>` itself, for a wrapper that has to command focus rather
    * than merely read it — `Combobox` returning focus to the field after the
    * chevron opens its popup. Not a `forwardRef` on the component: the ref a
@@ -21,7 +26,7 @@ export interface InputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 
   style?: CSSProperties;
 }
 
-export function Input({ label, hint, error, icon, size = "md", trailing, inputRef, id, style = {}, ...rest }: InputProps) {
+export function Input({ label, hint, error, icon, size = "md", trailing, labelTrailing, inputRef, id, style = {}, ...rest }: InputProps) {
   const [focus, setFocus] = useState(false);
   const autoId = useId();
   const inputId = id || autoId;
@@ -34,7 +39,12 @@ export function Input({ label, hint, error, icon, size = "md", trailing, inputRe
   const borderColor = error ? "var(--status-danger-fg)" : focus ? "var(--accent)" : "var(--border-default)";
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)", ...style }}>
-      {label ? <label htmlFor={inputId} style={{ font: "var(--weight-semibold) var(--size-body-sm)/1.2 var(--font-sans)", color: "var(--text-secondary)" }}>{label}</label> : null}
+      {label ? (
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+          <label htmlFor={inputId} style={{ font: "var(--weight-semibold) var(--size-body-sm)/1.2 var(--font-sans)", color: "var(--text-secondary)" }}>{label}</label>
+          {labelTrailing}
+        </div>
+      ) : null}
       <div style={{
         display: "flex", alignItems: "center", gap: "var(--space-4)", height: h,
         padding: "0 var(--space-5)", background: "var(--surface-card)",
