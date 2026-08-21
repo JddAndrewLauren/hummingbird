@@ -1,6 +1,10 @@
 //! `PATCH /api/routes/:project_id` — the only route write. The row itself
-//! is created by project create (see `projects.rs`); `/to-actions` owns the
-//! content.
+//! is created by project create (see `projects.rs`). Its content is
+//! shared-owned between `/to-actions` and every client since ADR-0030
+//! decision 1 (#627 is the first client writer to actually use this door);
+//! this handler enforces nothing about who calls it beyond the ordinary
+//! `device`-scope auth and the CAS `expected_version` every patch here
+//! carries.
 
 use hummingbird_domain::{Route, RoutePatch};
 

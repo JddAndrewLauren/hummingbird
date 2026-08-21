@@ -564,6 +564,21 @@ export interface ProjectLinkDTO {
   version: number;
 }
 
+/** One `routes` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
+ * field mirror of `hummingbird_domain::Route`, camelCased. 1:1 with its
+ * project (`projectId` is its own key, not a separate `id`) — the dossier's
+ * reading column's read (#627, ADR-0030 decision 1). Its content is
+ * shared-owned with `/to-actions`: a 409 patching it is an ordinary
+ * outcome, handled by the same rebase-and-retry machinery and dead-letter
+ * journal every other CAS write here uses. */
+export interface RouteDTO {
+  projectId: string;
+  destination: string | null;
+  notes: string | null;
+  updatedAt: number;
+  version: number;
+}
+
 /** One drained `CoreEvent` (`client/core/src/lib.rs`), as the web host's
  * JSON shape. `"credential_needed"` is the only kind `Core` produces today. */
 export interface TaskEventDTO {
@@ -910,6 +925,27 @@ export type TaskWorkerRequest =
       removedAt: number | null;
       nowMs: number;
     }
+  /** #627's per-project Route read — the dossier's reading column, same
+   * "only what a view actually asked about" shape as `getProjectLinks`. */
+  | { type: "getRoute"; projectId: string }
+  /** #627's route patch — the dossier's reading column edits
+   * `destination`/`notes` through this one entry point (ADR-0030 decision
+   * 1). `current` is the caller's own last-known copy of the row (from the
+   * `route` push) — the CAS `base` a 409 is diffed against.
+   * `destinationTouched`/`notesTouched` each distinguish "leave this field
+   * alone" from "set it, possibly to `null`" — the same double-`Option`
+   * `RoutePatch` itself carries, flattened for the wire exactly like
+   * `patchProject`'s `githubRepoTouched`. */
+  | {
+      type: "patchRoute";
+      seed: string;
+      current: RouteDTO;
+      destinationTouched: boolean;
+      destination: string | null;
+      notesTouched: boolean;
+      notes: string | null;
+      nowMs: number;
+    }
   | { type: "isPending"; itemId: string }
   | {
       type: "runSync";
@@ -1168,6 +1204,23 @@ export type TaskWorkerResponse =
    * `patchProjectResult`. */
   | {
       type: "patchProjectLinkResult";
+      seed: string;
+      projectId: string;
+      kind: "ok" | "failed" | "busy";
+      error: string | null;
+    }
+  /** Answers `getRoute` (#627) — the `projectLinks`-style per-project read,
+   * keyed by the requested `projectId`. Never posted for a `"busy"` read or
+   * a not-yet-pulled row — the worker drops both rather than post a `null`,
+   * same "drop, don't store" contract `ledger`'s own busy answer follows;
+   * every project has exactly one Route, so there is no genuine "this
+   * project has none" answer to represent. */
+  | { type: "route"; projectId: string; route: RouteDTO }
+  /** #627's route patch result, matched back by `seed`. Same
+   * handled-not-swallowed 409 contract as `patchProjectResult`: this
+   * result only reports whether the enqueue itself succeeded. */
+  | {
+      type: "patchRouteResult";
       seed: string;
       projectId: string;
       kind: "ok" | "failed" | "busy";

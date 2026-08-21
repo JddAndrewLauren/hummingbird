@@ -13,6 +13,7 @@ import type {
   GrillVerdictName,
   ProjectDTO,
   ProjectLinkDTO,
+  RouteDTO,
   RuleDTO,
   StepDTO,
   SyncCadenceRequest,
@@ -92,6 +93,7 @@ type Store = Pick<
   | "setTaskPending"
   | "setTaskSteps"
   | "setTaskProjectLinks"
+  | "setTaskRoute"
   | "setTaskPaneRead"
   | "setTaskGrillDraft"
 >;
@@ -440,6 +442,28 @@ export function attachWorkerClient(
           // the edit becomes visible once the next completed cycle pulls
           // it back, so this re-request answers the *old* row until then.
           requestProjectLinks(worker, message.projectId);
+        }
+        return;
+      case "route":
+        store.setTaskRoute(message.projectId, message.route);
+        return;
+      case "patchRouteResult":
+        store.setTaskState({
+          lastRouteWrite: {
+            seed: message.seed,
+            projectId: message.projectId,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        if (message.kind === "ok") {
+          // No overlay for routes (`Core::patch_route`'s own doc) — the
+          // edit becomes visible once the next completed cycle pulls it
+          // back, so this re-request answers the *old* row until then, and
+          // is also how the dossier discovers a 409 that landed on it: the
+          // row's `version` simply does not move to what this write
+          // expected.
+          requestRoute(worker, message.projectId);
         }
         return;
       case "isPendingResult":
@@ -1029,6 +1053,38 @@ export function patchProjectLink(
     position: patch.position ?? null,
     removedAtTouched: "removedAt" in patch,
     removedAt: patch.removedAt ?? null,
+    nowMs,
+  });
+}
+
+/** #627's per-project Route read — the dossier's reading column's fetch,
+ * same `requestProjectLinks`-style per-id shape. */
+export function requestRoute(worker: WorkerLike, projectId: string): void {
+  worker.postMessage({ type: "getRoute", projectId });
+}
+
+/** #627's route patch — the dossier's reading column edits
+ * destination/notes through this one call. `current` is the caller's own
+ * last-known copy of the row (the CAS `base` a 409 is diffed against);
+ * every field in `patch` is `undefined` to mean "leave this alone," except
+ * `destination`/`notes`, which distinguish a present-but-`null` clear from
+ * an absent "don't touch" the same way `patchProject`'s `patch.githubRepo`
+ * does. */
+export function patchRoute(
+  worker: WorkerLike,
+  seed: string,
+  current: RouteDTO,
+  patch: { destination?: string | null; notes?: string | null },
+  nowMs: number,
+): void {
+  worker.postMessage({
+    type: "patchRoute",
+    seed,
+    current,
+    destinationTouched: "destination" in patch,
+    destination: patch.destination ?? null,
+    notesTouched: "notes" in patch,
+    notes: patch.notes ?? null,
     nowMs,
   });
 }

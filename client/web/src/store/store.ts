@@ -17,6 +17,7 @@ import type {
   ProjectDTO,
   ProjectLinkDTO,
   RecallRowDTO,
+  RouteDTO,
   RuleDTO,
   StepDTO,
   TaskActionName,
@@ -179,6 +180,21 @@ export interface TaskProjectLinkResult {
   error: string | null;
 }
 
+/** The result of the most recent Route patch request this view issued
+ * (#627, ADR-0030 decision 1). Same "one broadcast slot" shape as
+ * [`TaskProjectLinkResult`] — shared across every open dossier, not scoped
+ * to one project's route. A 409 lands here as an ordinary `"ok"` (the write
+ * was enqueued; the conflict itself is discovered later at drain time and
+ * surfaces through the ordinary dead-letter journal, not through this
+ * field) — same handled-not-swallowed contract every other CAS write here
+ * carries. */
+export interface TaskRouteResult {
+  seed: string;
+  projectId: string;
+  kind: "ok" | "failed" | "busy";
+  error: string | null;
+}
+
 /** Issue #105/S7's task read-model slice: the owned-schema counterpart to
  * [`CalendarState`], fed by `worker/task-worker.ts`'s broadcasts. */
 export interface TaskState {
@@ -221,6 +237,15 @@ export interface TaskState {
   /** The result of the most recent link create/patch request this view
    * issued (#626) — `null` until the first one resolves. */
   lastProjectLinkWrite: TaskProjectLinkResult | null;
+  /** The dossier's reading column's Route, keyed by project id (#627) —
+   * only ever grows entries a view actually asked about via `getRoute`,
+   * the same `linksByProject` shape. A missing entry means "not read yet";
+   * every project has exactly one Route, so a settled entry is never
+   * `null`. */
+  routeByProject: Record<string, RouteDTO>;
+  /** The result of the most recent Route patch request this view issued
+   * (#627) — `null` until the first one resolves. */
+  lastRouteWrite: TaskRouteResult | null;
   /** The complete retained roster — every item the mirror has ever known,
    * archived rows included and labelled (`getLedger`). `null` until the
    * first `ledger` answer arrives, for `bindings`'s own reason: an empty
@@ -398,6 +423,8 @@ const initialTaskState: TaskState = {
   archivedProjects: null,
   linksByProject: {},
   lastProjectLinkWrite: null,
+  routeByProject: {},
+  lastRouteWrite: null,
   ledger: null,
   search: null,
   done: null,
@@ -485,6 +512,11 @@ export function createCoreStore() {
     setTaskState({ linksByProject: { ...state.task.linksByProject, [projectId]: links } });
   }
 
+  // Same idea for `routeByProject` (the dossier's reading column, #627).
+  function setTaskRoute(projectId: string, route: RouteDTO): void {
+    setTaskState({ routeByProject: { ...state.task.routeByProject, [projectId]: route } });
+  }
+
   // And for `paneReads` (#245), keyed by source rather than item id.
   function setTaskPaneRead(source: string, read: PaneReadDTO): void {
     setTaskState({ paneReads: { ...state.task.paneReads, [source]: read } });
@@ -515,6 +547,7 @@ export function createCoreStore() {
     setTaskPending,
     setTaskSteps,
     setTaskProjectLinks,
+    setTaskRoute,
     setTaskPaneRead,
     setTaskGrillDraft,
     subscribe,

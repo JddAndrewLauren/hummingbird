@@ -65,7 +65,8 @@ use bindings::{Binding, BindingKey, BindingValue};
 use hummingbird_domain::{
     resulting_stage, Alert, AlertPatch, Condition, CreateGrill, CreateItem, CreateProject,
     CreateProjectLink, CreateRule, Energy, GrillVerdict, Item, Project, ProjectLink,
-    ProjectLinkPatch, ProjectPatch, Rule, RulePatch, Setting, Size, Stage, Step, Tier,
+    ProjectLinkPatch, ProjectPatch, Route, RoutePatch, Rule, RulePatch, Setting, Size, Stage,
+    Step, Tier,
 };
 
 use serde::{Deserialize, Serialize};
@@ -1367,6 +1368,67 @@ where
                 // `version` alone, same as `Fog`'s own patch (which has no
                 // `updated_at` either).
                 base_updated_at: 0,
+                patch_fields,
+                rebase_fields: None,
+            },
+        };
+        self.cycle.enqueue(entry, now_ms).await?;
+        Ok(())
+    }
+
+    /// One project's Route — the dossier's reading column's read (#627,
+    /// ADR-0030 decision 1). 1:1 with the project ([`Route::project_id`] is
+    /// its own key, not a separate id), created structurally by
+    /// [`Core::create_project`] — so `None` here means the mirror has not
+    /// pulled it yet, not that it does not exist. Same "live accessor"
+    /// contract as [`Core::links_for`]: a Route absent from the mirror for
+    /// ADR-0007's own reasons (a gap this device hasn't reconciled) is
+    /// indistinguishable from "not read yet" — this is a read model, not a
+    /// standing claim either way.
+    pub fn route(&self, project_id: &str) -> Option<Route> {
+        self.cycle.mirror().route(project_id).cloned()
+    }
+
+    /// Patches a project's Route (#627, ADR-0030 decision 1) — the
+    /// dossier's reading column, editing `destination`/`notes`. Same
+    /// contract as [`Core::patch_project`]: every `Some` field is touched,
+    /// absolute-set; `None` means "leave this field alone." `expected_version`
+    /// is CAS as everywhere — the route's content is **shared-owned** with
+    /// `/to-actions` since ADR-0030 decision 1, so a 409 here is an
+    /// ordinary outcome, handled by the same rebase-and-retry machinery and
+    /// dead-letter journal every other CAS write here uses. `base` is
+    /// `current` verbatim, for [`sync::write::rebase::decide`] to diff a
+    /// 409 against.
+    ///
+    /// No optimistic overlay, same reasoning as [`Core::patch_project`]'s
+    /// own doc: the edit becomes visible once the next completed cycle
+    /// pulls it back.
+    pub async fn patch_route(
+        &mut self,
+        seed: &str,
+        current: &Route,
+        destination: Option<Option<String>>,
+        notes: Option<Option<String>>,
+        now_ms: i64,
+    ) -> Result<(), SnapshotError<QS::Error>> {
+        let base = serde_json::to_value(current).expect("Route always serializes");
+        let patch = RoutePatch { expected_version: current.version, destination, notes };
+
+        let mut patch_fields = serde_json::to_value(&patch).expect("RoutePatch always serializes");
+        // `expected_version` rides on the wire body but is not itself a
+        // "touched field" for rebase purposes — same reasoning
+        // `Core::patch_project`'s own comment carries.
+        if let serde_json::Value::Object(map) = &mut patch_fields {
+            map.remove("expected_version");
+        }
+
+        let entry = QueueEntry {
+            id: sync::write::deterministic_id(seed),
+            intent: MutationIntent::Patch {
+                path: sync::write::paths::route(&current.project_id),
+                method: HttpMethod::Patch,
+                base,
+                base_updated_at: current.updated_at,
                 patch_fields,
                 rebase_fields: None,
             },
@@ -6286,6 +6348,140 @@ mod tests {
             patch_fields,
             &serde_json::json!({ "github_repo": null, "default_context": null }),
         );
+    }
+
+    /// Runs one full-sweep cycle seeding `routes` — [`core_with_projects`]'s
+    /// own shape, since a Route pulled from the authority must reach the
+    /// mirror the ordinary way or not at all.
+    async fn core_with_routes(routes: Vec<hummingbird_domain::Route>) -> Core {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            routes,
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let outcome = core
+            .run(&read, &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0)
+            .await;
+        assert!(matches!(
+            outcome,
+            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
+        ));
+        core
+    }
+
+    fn fixture_route(project_id: &str) -> hummingbird_domain::Route {
+        hummingbird_domain::Route {
+            project_id: project_id.to_string(),
+            destination: None,
+            notes: None,
+            updated_at: 1,
+            version: 1,
+        }
+    }
+
+    /// #627 acceptance: "the route for a project is readable from the
+    /// mirror" — a Route pulled by an ordinary sweep answers
+    /// [`Core::route`], and an unread one answers `None` rather than a
+    /// standing "no Route" claim.
+    #[tokio::test]
+    async fn route_reads_the_pulled_row() {
+        let core = core_with_routes(vec![fixture_route("p-1")]).await;
+        assert_eq!(core.route("p-1"), Some(fixture_route("p-1")));
+        assert_eq!(core.route("p-unknown"), None);
+    }
+
+    /// #627 acceptance: "the core gains a route patch following the rules
+    /// stack's contract, taking the current row so the CAS has an expected
+    /// version" — [`patch_project_sets_repo_and_context_touching_only_those_fields`]'s
+    /// own shape, adopted for the dossier's destination/notes edit.
+    #[tokio::test]
+    async fn patch_route_sets_destination_and_notes_touching_only_those_fields() {
+        let mut core = core_with_routes(vec![fixture_route("p-1")]).await;
+        let current = core.route("p-1").unwrap();
+
+        core.patch_route(
+            "seed-1",
+            &current,
+            Some(Some("Ship the deck".to_string())),
+            Some(Some("Ask the neighbour about the fence line".to_string())),
+            3_000,
+        )
+        .await
+        .unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        assert_eq!(entries.len(), 1);
+        let MutationIntent::Patch { path, method, base_updated_at, patch_fields, .. } =
+            &entries[0].intent
+        else {
+            panic!("a route edit is a CAS patch, not a create");
+        };
+        assert_eq!(path, "/api/routes/p-1");
+        assert_eq!(*method, HttpMethod::Patch);
+        assert_eq!(*base_updated_at, current.updated_at);
+        assert_eq!(
+            patch_fields,
+            &serde_json::json!({
+                "destination": "Ship the deck",
+                "notes": "Ask the neighbour about the fence line",
+            }),
+        );
+        assert!(
+            patch_fields.get("expected_version").is_none(),
+            "expected_version is not a touched field — drain fills it at send time"
+        );
+    }
+
+    /// The clearing half: `Some(None)` sends an explicit JSON `null`, the
+    /// same double-`Option` contract every other nullable patch field here
+    /// carries.
+    #[tokio::test]
+    async fn patch_route_clears_destination_and_notes_with_explicit_null() {
+        let mut core = core_with_routes(vec![hummingbird_domain::Route {
+            project_id: "p-1".to_string(),
+            destination: Some("Ship the deck".to_string()),
+            notes: Some("Ask the neighbour".to_string()),
+            updated_at: 1,
+            version: 1,
+        }])
+        .await;
+        let current = core.route("p-1").unwrap();
+
+        core.patch_route("seed-1", &current, Some(None), Some(None), 3_000)
+            .await
+            .unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        let MutationIntent::Patch { patch_fields, .. } = &entries[0].intent else {
+            panic!("a route edit is a CAS patch, not a create");
+        };
+        assert_eq!(
+            patch_fields,
+            &serde_json::json!({ "destination": null, "notes": null }),
+        );
+    }
+
+    /// Only `destination` is touched when `notes` is left `None` —
+    /// [`toggling_enabled_is_one_cas_patch_touching_only_that_field`]'s own
+    /// "leave this field alone" contract, adopted for the Route.
+    #[tokio::test]
+    async fn patch_route_touching_only_destination_leaves_notes_out_of_patch_fields() {
+        let mut core = core_with_routes(vec![fixture_route("p-1")]).await;
+        let current = core.route("p-1").unwrap();
+
+        core.patch_route("seed-1", &current, Some(Some("Ship the deck".to_string())), None, 3_000)
+            .await
+            .unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        let MutationIntent::Patch { patch_fields, .. } = &entries[0].intent else {
+            panic!("a route edit is a CAS patch, not a create");
+        };
+        assert_eq!(patch_fields, &serde_json::json!({ "destination": "Ship the deck" }));
     }
 
     /// #140 acceptance: "the enable/disable toggle is one CAS field,

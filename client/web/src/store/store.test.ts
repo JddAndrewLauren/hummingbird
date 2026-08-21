@@ -31,6 +31,8 @@ const initialTask: TaskState = {
   lastProjectWrite: null,
   linksByProject: {},
   lastProjectLinkWrite: null,
+  routeByProject: {},
+  lastRouteWrite: null,
   paneReads: {},
   pending: {},
   lastCapture: null,

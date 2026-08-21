@@ -22,7 +22,7 @@ use hummingbird_core::{
 };
 use hummingbird_domain::{
     core_field_type, is_valid_deadline, is_valid_github_repo, Alert, Condition, Energy,
-    EventKindEntry, FieldType, Item, Project, ProjectLink, Rule, Size, Stage, Step, Tier,
+    EventKindEntry, FieldType, Item, Project, ProjectLink, Route, Rule, Size, Stage, Step, Tier,
     CORE_FIELDS, EVENT_KINDS, GrillVerdict,
 };
 
@@ -425,6 +425,33 @@ pub struct CreateProjectLinkResponse {
 /// shape as [`PatchProjectResponse`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PatchProjectLinkResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
+/// The wrapper around [`TaskHostCore::route`]'s answer — the dossier's
+/// reading column's read (#627, ADR-0030 decision 1). Same `"busy"`
+/// contract as [`ProjectLinkListResponse`]. `route` is `None` both when the
+/// mirror has not pulled this project's Route yet and when `busy` — the two
+/// share a JSON shape by design, since [`Core::route`]'s own doc makes the
+/// same "not read yet" claim, not "this project has none" (every project
+/// has exactly one Route, created structurally by
+/// [`hummingbird_core::Core::create_project`]).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RouteResponse {
+    pub kind: &'static str,
+    pub route: Option<Route>,
+}
+
+/// What [`TaskHostCore::patch_route`] resolves to (#627) — the dossier's
+/// reading column edits destination and notes through this one entry
+/// point. Same shape as [`PatchProjectResponse`]: `"failed"` is a
+/// durability failure enqueueing the write; a 409 is handled, not
+/// swallowed, through the ordinary CAS path (ADR-0030 decision 1 — the
+/// route's content is shared-owned with `/to-actions`, so this is an
+/// ordinary outcome, not a bespoke conflict).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PatchRouteResponse {
     pub kind: &'static str,
     pub error: Option<String>,
 }
@@ -1302,6 +1329,46 @@ impl TaskHostCore {
         {
             Ok(()) => PatchProjectLinkResponse { kind: "ok", error: None },
             Err(error) => PatchProjectLinkResponse {
+                kind: "failed",
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// One project's Route, per [`Core::route`] (#627) — the dossier's
+    /// reading column's read.
+    pub fn route(&self, project_id: &str) -> RouteResponse {
+        RouteResponse {
+            kind: "ok",
+            route: self.core.route(project_id),
+        }
+    }
+
+    /// Patches a project's Route, per [`Core::patch_route`] (#627) — the
+    /// dossier's reading column, editing `destination`/`notes` through this
+    /// one entry point. `current` is the caller's own last-known copy of
+    /// the row (from [`TaskHostCore::route`]), the same "caller supplies
+    /// `base`" contract every other CAS write here follows.
+    /// `destination_touched`+`destination`/`notes_touched`+`notes` mirror
+    /// [`TaskHostCore::patch_project`]'s touched-flag shape: `wasm_bindgen`
+    /// has no `Option<Option<T>>` argument shape, so each nullable field
+    /// arrives as a touched flag plus a value.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn patch_route(
+        &mut self,
+        seed: &str,
+        current: &Route,
+        destination_touched: bool,
+        destination: Option<String>,
+        notes_touched: bool,
+        notes: Option<String>,
+        now_ms: i64,
+    ) -> PatchRouteResponse {
+        let destination = destination_touched.then_some(destination);
+        let notes = notes_touched.then_some(notes);
+        match self.core.patch_route(seed, current, destination, notes, now_ms).await {
+            Ok(()) => PatchRouteResponse { kind: "ok", error: None },
+            Err(error) => PatchRouteResponse {
                 kind: "failed",
                 error: Some(error.to_string()),
             },
@@ -4380,5 +4447,89 @@ mod project_link_tests {
         assert_eq!(response.kind, "ok");
 
         assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 2 });
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+
+    /// #627: an unread project's Route answers `None`, not a standing "no
+    /// Route" claim — [`Core::route`]'s own doc.
+    #[tokio::test]
+    async fn an_unread_route_answers_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-route-unread");
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        assert_eq!(host.route("p-1"), RouteResponse { kind: "ok", route: None });
+    }
+
+    fn fixture_route() -> hummingbird_domain::Route {
+        hummingbird_domain::Route {
+            project_id: "p-1".to_string(),
+            destination: None,
+            notes: None,
+            updated_at: 1,
+            version: 3,
+        }
+    }
+
+    /// #627: the dossier's destination/notes edit enqueues one CAS patch.
+    #[tokio::test]
+    async fn patching_a_routes_destination_and_notes_enqueues_one_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-route");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let route = fixture_route();
+
+        let response = host
+            .patch_route(
+                "seed-1",
+                &route,
+                true,
+                Some("Ship the deck".to_string()),
+                true,
+                Some("Ask the neighbour".to_string()),
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+    }
+
+    /// The clearing half: touched-but-`None` sends an explicit clear, same
+    /// discipline `patching_clears_repo_and_context_without_validation_tripping`
+    /// follows for the properties card.
+    #[tokio::test]
+    async fn patching_clears_destination_and_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-route-clear");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let route = fixture_route();
+
+        let response = host.patch_route("seed-1", &route, true, None, true, None, 2_000).await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+    }
+
+    /// Only `destination` is touched when `notes_touched` is `false` — the
+    /// wasm-seam half of the "leave this field alone" contract
+    /// [`Core::patch_route`] itself carries.
+    #[tokio::test]
+    async fn leaving_notes_untouched_mints_no_extra_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-route-partial");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let route = fixture_route();
+
+        let response = host
+            .patch_route("seed-1", &route, true, Some("Ship the deck".to_string()), false, None, 2_000)
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
     }
 }

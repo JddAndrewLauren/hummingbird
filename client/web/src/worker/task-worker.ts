@@ -15,6 +15,7 @@ import type {
   ProjectLinkDTO,
   RecallGroup,
   RecallRowDTO,
+  RouteDTO,
   RuleDTO,
   StepDTO,
   TaskEventDTO,
@@ -234,6 +235,25 @@ export interface TaskHostLike {
     removedAt: number | null,
     nowMs: number,
   ): Promise<string>;
+  /** #627's per-project Route read. Mirrors `TaskHost::route`, resolved to
+   * JSON: `{"kind": "ok"|"busy", "route": Route|null}`. */
+  route(projectId: string): string;
+  /** #627's route patch — the dossier's reading column edits
+   * destination/notes. Mirrors `TaskHost::patchRoute`, resolved to JSON:
+   * `{"kind": "ok"|"failed"|"busy", "error": string|null}`. `currentJson`
+   * is the caller's own last-known `Route`, as JSON — the CAS `base` a 409
+   * is diffed against. Each `*Touched` flag distinguishes "leave this
+   * field alone" (`false`) from "set it, possibly to `null`" (`true`, with
+   * the paired value carrying the new value or `null`). */
+  patchRoute(
+    seed: string,
+    currentJson: string,
+    destinationTouched: boolean,
+    destination: string | null,
+    notesTouched: boolean,
+    notes: string | null,
+    nowMs: number,
+  ): Promise<string>;
   isPending(itemId: string): string;
   takeEvents(): string;
   runSync(
@@ -442,6 +462,24 @@ interface RawCreateProjectLinkResponse {
 }
 
 interface RawPatchProjectLinkResponse {
+  kind: "ok" | "failed" | "busy";
+  error: string | null;
+}
+
+interface RawRoute {
+  project_id: string;
+  destination: string | null;
+  notes: string | null;
+  updated_at: number;
+  version: number;
+}
+
+interface RawRouteResponse {
+  kind: "ok" | "busy";
+  route: RawRoute | null;
+}
+
+interface RawPatchRouteResponse {
   kind: "ok" | "failed" | "busy";
   error: string | null;
 }
@@ -736,6 +774,16 @@ function mapProjectLink(raw: RawProjectLink): ProjectLinkDTO {
     label: raw.label,
     position: raw.position,
     removedAt: raw.removed_at,
+    version: raw.version,
+  };
+}
+
+function mapRoute(raw: RawRoute): RouteDTO {
+  return {
+    projectId: raw.project_id,
+    destination: raw.destination,
+    notes: raw.notes,
+    updatedAt: raw.updated_at,
     version: raw.version,
   };
 }
@@ -1302,6 +1350,41 @@ export async function handleTaskRequest(
       ) as RawPatchProjectLinkResponse;
       post({
         type: "patchProjectLinkResult",
+        seed: request.seed,
+        projectId: request.current.projectId,
+        kind: raw.kind,
+        error: raw.error,
+      });
+      return;
+    }
+    case "getRoute": {
+      const raw = JSON.parse(host.route(request.projectId)) as RawRouteResponse;
+      if (raw.kind === "busy" || raw.route === null) {
+        return;
+      }
+      post({ type: "route", projectId: request.projectId, route: mapRoute(raw.route) });
+      return;
+    }
+    case "patchRoute": {
+      const raw = JSON.parse(
+        await host.patchRoute(
+          request.seed,
+          JSON.stringify({
+            project_id: request.current.projectId,
+            destination: request.current.destination,
+            notes: request.current.notes,
+            updated_at: request.current.updatedAt,
+            version: request.current.version,
+          }),
+          request.destinationTouched,
+          request.destination,
+          request.notesTouched,
+          request.notes,
+          request.nowMs,
+        ),
+      ) as RawPatchRouteResponse;
+      post({
+        type: "patchRouteResult",
         seed: request.seed,
         projectId: request.current.projectId,
         kind: raw.kind,

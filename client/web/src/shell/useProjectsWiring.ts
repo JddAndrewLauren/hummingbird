@@ -1,11 +1,13 @@
-import type { ProjectDTO, ProjectLinkDTO } from "../store/protocol";
+import type { ProjectDTO, ProjectLinkDTO, RouteDTO } from "../store/protocol";
 import type { WorkerLike } from "../store/worker-client";
 import {
   createProject,
   createProjectLink,
   patchProject,
   patchProjectLink,
+  patchRoute,
   requestProjectLinks,
+  requestRoute,
 } from "../store/worker-client";
 
 // #624's projects wiring: the Projects screen's one write.
@@ -56,6 +58,13 @@ export interface ProjectsWiring {
     current: ProjectLinkDTO,
     patch: { url?: string; label?: string | null; position?: number; removedAt?: number | null },
   ) => void;
+  /** #627's per-project Route read — same "scoped to one open dossier, the
+   * caller's own effect decides when" shape as `requestProjectLinks`. */
+  requestRoute: (projectId: string) => void;
+  /** #627's route patch: the dossier's reading column edits
+   * destination/notes, `patch` carrying only the fields the card actually
+   * changed — same "leave this alone" contract `patchProject` carries. */
+  patchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => void;
 }
 
 export function useProjectsWiring(worker: WorkerLike): ProjectsWiring {
@@ -77,6 +86,13 @@ export function useProjectsWiring(worker: WorkerLike): ProjectsWiring {
     patchProjectLink: (current, patch) => {
       const nowMs = Date.now();
       patchProjectLink(worker, mintProjectLinkPatchSeed(current.id, nowMs), current, patch, nowMs);
+    },
+    requestRoute: (projectId) => {
+      requestRoute(worker, projectId);
+    },
+    patchRoute: (current, patch) => {
+      const nowMs = Date.now();
+      patchRoute(worker, mintRoutePatchSeed(current.projectId, nowMs), current, patch, nowMs);
     },
   };
 }
@@ -116,4 +132,13 @@ export function mintProjectLinkCreateSeed(): string {
  * identical queue entry rather than enqueue a second one. */
 export function mintProjectLinkPatchSeed(linkId: string, nowMs: number): string {
   return `${linkId}:patch:${nowMs}`;
+}
+
+/** Mints one Route patch's seed (#627). Deterministic, same
+ * [`mintProjectPatchSeed`] reasoning: a patch touches the Route
+ * `projectId` itself names (its own key, not a separate id), so retrying
+ * the identical intent must reproduce the identical queue entry rather
+ * than enqueue a second one. */
+export function mintRoutePatchSeed(projectId: string, nowMs: number): string {
+  return `${projectId}:route:patch:${nowMs}`;
 }

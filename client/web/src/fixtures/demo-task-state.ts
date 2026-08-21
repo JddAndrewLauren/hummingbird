@@ -803,6 +803,20 @@ export function buildDemoTaskState(): TaskState {
       ],
     },
     lastProjectLinkWrite: null,
+    // #627: the reading column's Route card — one filled row on the
+    // dossier the links fixture above also seeds, so the visual gate
+    // photographs the card holding real destination/notes text rather than
+    // its "Reading Route…" state.
+    routeByProject: {
+      "b-p1": {
+        projectId: "b-p1",
+        destination: "The deck is rebuilt, permitted and passes inspection.",
+        notes: "Neighbour agreed to the fence-line survey; contractor quote due back Friday.",
+        updatedAt: Date.now() - 2 * DAY,
+        version: 1,
+      },
+    },
+    lastRouteWrite: null,
     // Piece 3: every standing question's read, built by `demo-pane-reads.ts`
     // — the kit world's own `demoQuestionInputs` called the same functions
     // before #452 folded its content into this seed and #455 deleted that
