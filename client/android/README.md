@@ -938,3 +938,34 @@ mScreenState=ON` will not tell you which; read `state ON` off the
 
 Afterwards: revoke the ingest token, disable the test rules (there is no
 DELETE for rules, only PATCH), and dismiss the test alerts.
+
+### The unified item-detail pane's pass (2026-08-20, `2c82b6b`)
+
+Pixel 10 Pro Fold **emulator**, inner display (the attached hardware was
+locked and only the operator can unlock it; `docs/SURFACES.md` accepts
+either). Three of the four hosts exercised: Now's inline expansion, Triage's
+`PROMOTE` pane, and the Recall overlay's expansion. The notification route
+was **not** exercised — reaching it needs a real `item-threshold/v1` push,
+and it takes the panel's default mode with no arguments of its own, so what
+was verified on Now is what it renders; check 27 above still owns that door.
+
+**It caught a crash 480 green JVM tests could not.** Reopening a pane left
+mid-title-edit threw `FocusRequester is not initialized`: `editingTitle` is
+restored per item, so it composes `true` while the record is still loading,
+and the inline field that carries the `focusRequester` only exists once
+there is a draft. The effect and the field now read one condition. The
+lesson is the general one: **an effect that requests focus must key on the
+target being composed, not on the flag that will eventually compose it** —
+and a `rememberSaveable` keyed per item makes "the flag is true before the
+content exists" reachable on the very first frame.
+
+Exercised and settled: title-edit mode does **not** leak across selections
+(the fixed bug — open the pencil on one row, close, open another, and the
+accessibility tree shows no `EditText`); a dirty draft raises the one
+`DiscardConfirmation` from Back, and Discard resets the draft to its seed
+while leaving the pane open; a promote closes the pane and drops the
+captured count (12 → 11); the pane's own mark-done check does the same
+(11 → 10) without a second gesture. Read off `uiautomator dump` throughout,
+per round 5's lesson — and note the pane's check is a full 48dp target only
+when it is not clipped by the viewport edge, so measure it scrolled into
+view or a clipped 15px node reads as a layout defect it is not.
