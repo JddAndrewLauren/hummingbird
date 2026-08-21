@@ -12,7 +12,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::context::{Alert, ContextSnapshot, Setting};
 use crate::grill::{GrillVerdict, GrillWithoutTranscript};
 use crate::item::{Energy, Item, Size, Stage};
-use crate::project::{Fog, Project, Route};
+use crate::project::{Fog, Project, ProjectLink, Route};
 use crate::rule::{Condition, Platform, Rule, Tier};
 use crate::step::{BlockedBy, Step};
 use crate::token::Scope;
@@ -96,6 +96,7 @@ non_null_shim!(non_null_stage, Stage, "stage");
 non_null_shim!(non_null_priority, i64, "priority");
 non_null_shim!(non_null_name, String, "name");
 non_null_shim!(non_null_question, String, "question");
+non_null_shim!(non_null_url, String, "url");
 non_null_shim!(non_null_position, i64, "position");
 non_null_shim!(non_null_body, String, "body");
 non_null_shim!(non_null_done, bool, "done");
@@ -150,21 +151,34 @@ pub struct ItemPatch {
 
 /// `POST /api/projects` body. Creating a project also creates its empty
 /// Route row — the 1:1 invariant is structural, so there is no
-/// `POST /api/routes`.
+/// `POST /api/routes`. `github_repo`/`default_context` are plain `Option`,
+/// not the patch's double-`Option`: a create names no prior value a `null`
+/// could be clearing, the same reasoning [`CreateItem`]'s own nullable
+/// fields carry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateProject {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_context: Option<String>,
 }
 
-/// `PATCH /api/projects/:id` body.
+/// `PATCH /api/projects/:id` body. `github_repo`/`default_context` are
+/// double-`Option` (#625) — the same [`touched`] contract every other
+/// nullable patch field here carries.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectPatch {
     pub expected_version: i64,
     #[serde(default, deserialize_with = "non_null_name", skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub github_repo: Option<Option<String>>,
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub default_context: Option<Option<String>>,
     #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<Option<i64>>,
 }
@@ -201,6 +215,40 @@ pub struct FogPatch {
     pub position: Option<i64>,
     #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
     pub resolved_at: Option<Option<i64>>,
+}
+
+/// `POST /api/project_links` body (#626, ADR-0030 decision 4). `url` is
+/// non-nullable — a link with no url would be nothing to click — `label` is
+/// plain `Option`, not the patch's double-`Option`, same [`CreateProject`]
+/// reasoning: a create names no prior value a `null` could be clearing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProjectLink {
+    pub id: String,
+    pub project_id: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub position: i64,
+}
+
+/// `PATCH /api/project_links/:id` body. `url` is `NOT NULL` and cannot be
+/// cleared, same as [`FogPatch::question`]; `label` and `removed_at` are
+/// double-`Option` — the removal flag double-`Option` the brief asks for,
+/// so un-removing (clearing `removed_at` with an explicit `null`) is the
+/// same gesture [`FogPatch::resolved_at`] already carries.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectLinkPatch {
+    pub expected_version: i64,
+    #[serde(default, deserialize_with = "non_null_url", skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub label: Option<Option<String>>,
+    #[serde(default, deserialize_with = "non_null_position", skip_serializing_if = "Option::is_none")]
+    pub position: Option<i64>,
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub removed_at: Option<Option<i64>>,
 }
 
 /// `POST /api/steps` body.
@@ -500,6 +548,12 @@ pub struct ChangesResponse {
     pub projects: Vec<Project>,
     pub routes: Vec<Route>,
     pub fog: Vec<Fog>,
+    /// `project_links` (#626, ADR-0030 decision 4). `#[serde(default)]` on
+    /// the same #131 precedent as `rules`/`grills`: a response predating
+    /// this slice carries no `project_links` key at all and must still
+    /// deserialize.
+    #[serde(default)]
+    pub project_links: Vec<ProjectLink>,
     pub items: Vec<Item>,
     pub steps: Vec<Step>,
     pub blocked_by: Vec<BlockedBy>,
@@ -528,6 +582,7 @@ impl ChangesResponse {
             projects: vec![],
             routes: vec![],
             fog: vec![],
+            project_links: vec![],
             items: vec![],
             steps: vec![],
             blocked_by: vec![],
@@ -636,6 +691,34 @@ mod tests {
         assert_eq!(p.notes, None);
     }
 
+    /// #626: `url` is `NOT NULL` and rejects an explicit `null`, `label` and
+    /// `removed_at` are double-`Option` — the same contract [`FogPatch`]
+    /// carries for `question`/`resolved_at`.
+    #[test]
+    fn project_link_patch_shares_the_touched_contract() {
+        assert!(
+            serde_json::from_str::<ProjectLinkPatch>(r#"{"expected_version": 1, "url": null}"#)
+                .is_err(),
+            "url is NOT NULL"
+        );
+        let p: ProjectLinkPatch = serde_json::from_str(
+            r#"{"expected_version": 1, "label": null, "removed_at": 7000}"#,
+        )
+        .unwrap();
+        assert_eq!(p.label, Some(None), "explicit null = clear");
+        assert_eq!(p.removed_at, Some(Some(7000)));
+        assert_eq!(p.url, None, "absent = untouched");
+    }
+
+    #[test]
+    fn create_project_link_defaults_label_to_none() {
+        let c: CreateProjectLink = serde_json::from_str(
+            r#"{"id": "l-1", "project_id": "p-1", "url": "https://example.com", "position": 1}"#,
+        )
+        .unwrap();
+        assert_eq!(c.label, None);
+    }
+
     #[test]
     fn scope_round_trips_and_rejects_unknown() {
         for scope in Scope::ALL {
@@ -683,6 +766,7 @@ mod tests {
             "projects",
             "routes",
             "fog",
+            "project_links",
             "items",
             "steps",
             "blocked_by",
@@ -708,6 +792,42 @@ mod tests {
         }"#;
         let parsed: ChangesResponse = serde_json::from_str(pre_slice).unwrap();
         assert!(parsed.grills.is_empty());
+    }
+
+    /// The acceptance criterion for `project_links` (#626): a response
+    /// minted before this slice — carrying no `project_links` key, same as
+    /// the pre-grills fixture above — still deserializes.
+    #[test]
+    fn changes_response_without_a_project_links_key_still_deserializes() {
+        let pre_slice = r#"{
+            "version": 1, "projects": [], "routes": [], "fog": [], "items": [],
+            "steps": [], "blocked_by": [], "alerts": [], "context_snapshots": [],
+            "settings": [], "rules": [], "grills": []
+        }"#;
+        let parsed: ChangesResponse = serde_json::from_str(pre_slice).unwrap();
+        assert!(parsed.project_links.is_empty());
+    }
+
+    /// `project_links` participates in the delta pull like any other entity
+    /// — it must round-trip on the wire, not sit beside it.
+    #[test]
+    fn changes_response_carries_project_links() {
+        let link = ProjectLink {
+            id: "l-1".into(),
+            project_id: "p-1".into(),
+            url: "https://example.com".into(),
+            label: Some("Example".into()),
+            position: 1,
+            removed_at: None,
+            version: 1,
+        };
+        let response = ChangesResponse {
+            project_links: vec![link.clone()],
+            ..ChangesResponse::empty(1)
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        let back: ChangesResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.project_links, vec![link]);
     }
 
     /// The acceptance criterion for the anti-goal: `grills` participates in

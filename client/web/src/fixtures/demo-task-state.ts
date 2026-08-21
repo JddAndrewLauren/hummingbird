@@ -245,6 +245,8 @@ function project(seed: (typeof PROJECT_SEEDS)[number], loadedAt: number): Projec
   return {
     id: seed.id,
     name: seed.name,
+    githubRepo: null,
+    defaultContext: null,
     archivedAt: seed.archived === true ? createdAt + DAY : null,
     createdAt,
     updatedAt: createdAt,
@@ -762,6 +764,45 @@ export function buildDemoTaskState(): TaskState {
     rules: DEMO_DATA.ruleDetails,
     lastRuleWrite: null,
     lastProjectWrite: null,
+    // #626: the dossier's links card, populated for the project the visual
+    // gate actually opens ("House repairs") — an empty map here left the card
+    // photographing only "Reading links…", so the row layout (ellipsised URL
+    // + move/Edit/Remove affordances inside a narrow `Aside`) shipped
+    // unphotographed at every width. One labelled row, one bare long-URL row
+    // (the ellipsis case), and a position gap at 1 — removal is a soft flag,
+    // so a gapped sequence is the shape production actually develops.
+    linksByProject: {
+      "b-p1": [
+        {
+          id: "b-p1-link-1",
+          projectId: "b-p1",
+          url: "https://github.com/example/house-repairs",
+          label: "Repo",
+          position: 0,
+          removedAt: null,
+          version: 1,
+        },
+        {
+          id: "b-p1-link-3",
+          projectId: "b-p1",
+          url: "https://www.example.com/contractors/quotes/2026/deck-railing-replacement-comparison",
+          label: null,
+          position: 2,
+          removedAt: null,
+          version: 1,
+        },
+        {
+          id: "b-p1-link-4",
+          projectId: "b-p1",
+          url: "https://permits.example.gov/applications/4711",
+          label: "Permit application",
+          position: 3,
+          removedAt: null,
+          version: 2,
+        },
+      ],
+    },
+    lastProjectLinkWrite: null,
     // Piece 3: every standing question's read, built by `demo-pane-reads.ts`
     // — the kit world's own `demoQuestionInputs` called the same functions
     // before #452 folded its content into this seed and #455 deleted that

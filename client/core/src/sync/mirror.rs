@@ -42,8 +42,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use hummingbird_domain::{
-    Alert, BlockedBy, ChangesResponse, ContextSnapshot, Fog, Item, Project, Route, Rule, Setting,
-    Step,
+    Alert, BlockedBy, ChangesResponse, ContextSnapshot, Fog, Item, Project, ProjectLink, Route,
+    Rule, Setting, Step,
 };
 
 use crate::storage::{Persistable, PersistableSealed};
@@ -75,7 +75,14 @@ use crate::task::Presence;
 /// genuinely has no rules," which the Rules screen cannot tell apart from
 /// "this device hasn't re-swept since the field was added." Discarding and
 /// resweeping is the same safe answer #153's bump already established.
-pub const SYNC_MIRROR_SCHEMA_VERSION: u32 = 3;
+///
+/// Bumped to 4 for #626's `project_links` table — the identical "the shape
+/// changed" reasoning the bump to 3 states, ported: a v3 snapshot has no
+/// `project_links` key, and defaulting it to an empty map would make
+/// "this device has synced and this project genuinely has no links"
+/// indistinguishable from "this device hasn't re-swept since the field was
+/// added." Discard and resweep, same as every bump above.
+pub const SYNC_MIRROR_SCHEMA_VERSION: u32 = 4;
 
 /// One stored row plus whether it is currently live — the retained-history
 /// half of the retention rule above.
@@ -101,6 +108,7 @@ pub struct SyncMirror {
     projects: BTreeMap<String, Slot<Project>>,
     routes: BTreeMap<String, Slot<Route>>,
     fog: BTreeMap<String, Slot<Fog>>,
+    project_links: BTreeMap<String, Slot<ProjectLink>>,
     items: BTreeMap<String, Slot<Item>>,
     steps: BTreeMap<String, Slot<Step>>,
     /// `serde_json` cannot serialize a map keyed by a tuple (it requires
@@ -217,6 +225,20 @@ impl SyncMirror {
 
     pub fn route(&self, project_id: &str) -> Option<&Route> {
         live(self.routes.get(project_id))
+    }
+
+    /// Every live Link on one project, position order — the dossier
+    /// aside's read (#626). Live only: a removed link is retained (flagged,
+    /// per ADR-0020) but never returned here, same "live accessor filters
+    /// to `Presence::Live`" contract every other table's own read follows.
+    pub fn links_for_project<'a>(
+        &'a self,
+        project_id: &'a str,
+    ) -> impl Iterator<Item = &'a ProjectLink> {
+        self.project_links
+            .values()
+            .filter_map(live_slot)
+            .filter(move |link| link.project_id == project_id)
     }
 
     /// Every live Step attached to `item_id`, id order — first-class
@@ -394,6 +416,14 @@ impl SyncMirror {
             now_ms,
         );
         apply_table(
+            &mut self.project_links,
+            resp.project_links,
+            |l| l.id.clone(),
+            |l| l.removed_at,
+            full,
+            now_ms,
+        );
+        apply_table(
             &mut self.items,
             resp.items,
             |i| i.id.clone(),
@@ -542,6 +572,8 @@ mod tests {
         Project {
             id: id.to_string(),
             name: format!("project {id}"),
+            github_repo: None,
+            default_context: None,
             archived_at: None,
             created_at: 1,
             updated_at: 1,
@@ -555,6 +587,18 @@ mod tests {
             destination: None,
             notes: None,
             updated_at: 1,
+            version: 1,
+        }
+    }
+
+    fn project_link(id: &str, project_id: &str) -> ProjectLink {
+        ProjectLink {
+            id: id.to_string(),
+            project_id: project_id.to_string(),
+            url: format!("https://example.com/{id}"),
+            label: None,
+            position: 1,
+            removed_at: None,
             version: 1,
         }
     }
@@ -588,6 +632,7 @@ mod tests {
             projects: vec![project("p-1")],
             routes: vec![route("p-1")],
             fog: vec![],
+            project_links: vec![],
             items: vec![item("a-1"), item("a-2")],
             steps: vec![step("s-1", "a-1")],
             blocked_by: vec![blocked_by("a-1", "a-2")],
@@ -1033,6 +1078,35 @@ mod tests {
             mirror.all_rules().map(|r| r.id.as_str()).collect::<Vec<_>>(),
             vec!["r-1"]
         );
+    }
+
+    /// #626: project Links are live-only reads scoped to their project, and
+    /// a removed link (its own `removed_at` flag, ADR-0020) is retained but
+    /// absent from [`SyncMirror::links_for_project`] — unlike `fog`/`rules`
+    /// above, this table's own soft-delete flag drives the demotion, not
+    /// only a full sweep's absence.
+    #[test]
+    fn project_links_are_scoped_to_their_project_and_removal_is_flagged() {
+        let mut mirror = SyncMirror::new();
+        mirror.apply_delta(ChangesResponse {
+            version: 1,
+            project_links: vec![project_link("l-1", "p-1"), project_link("l-2", "p-2")],
+            ..ChangesResponse::empty(1)
+        });
+        assert_eq!(
+            mirror.links_for_project("p-1").map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            vec!["l-1"]
+        );
+
+        let mut removed = project_link("l-1", "p-1");
+        removed.removed_at = Some(9_000);
+        removed.version = 2;
+        mirror.apply_delta(ChangesResponse {
+            version: 2,
+            project_links: vec![removed],
+            ..ChangesResponse::empty(2)
+        });
+        assert_eq!(mirror.links_for_project("p-1").count(), 0, "flagged removal, not a full sweep, demotes it");
     }
 
     /// #103 acceptance: "the cycle exposes the active-issue count, so the

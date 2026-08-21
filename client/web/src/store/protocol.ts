@@ -536,9 +536,31 @@ export interface PaneReadDTO {
 export interface ProjectDTO {
   id: string;
   name: string;
+  /** `owner/repo` only, never a URL — the derived link is a display-time
+   * computation, never stored (#625, ADR-0030 decision 2). `null` when the
+   * project names no repo. */
+  githubRepo: string | null;
+  /** Copied onto a context-less item at the three entry points ADR-0030
+   * decision 3 names — never read live, never joined. `null` when the
+   * project names no default. */
+  defaultContext: string | null;
   archivedAt: number | null;
   createdAt: number;
   updatedAt: number;
+  version: number;
+}
+
+/** One `project_links` row (#626, ADR-0030 decision 4), as the web host's
+ * JSON/DTO shape — a 1:1 field mirror of `hummingbird_domain::ProjectLink`,
+ * camelCased. The dossier aside's read: an ordered URL on a project,
+ * removed by flagging (`removedAt`), never deleted. */
+export interface ProjectLinkDTO {
+  id: string;
+  projectId: string;
+  url: string;
+  label: string | null;
+  position: number;
+  removedAt: number | null;
   version: number;
 }
 
@@ -826,6 +848,68 @@ export type TaskWorkerRequest =
    * `Core` — the authority 400s on an empty name. Same caller-mints-`seed`
    * contract as `"capture"`: this seed's hash becomes the project's id. */
   | { type: "createProject"; seed: string; name: string; nowMs: number }
+  /** #625's project patch — the dossier's properties card, and every other
+   * project edit, share this one message: renaming, archiving, and setting
+   * or clearing `githubRepo`/`defaultContext` (ADR-0030 decisions 2–3).
+   * `current` is the caller's own last-known copy of the row (from the
+   * `projects` push) — the CAS `base` a 409 is diffed against.
+   * `githubRepoTouched`/`defaultContextTouched`/`archivedAtTouched` each
+   * distinguish "leave this field alone" from "set it, possibly to `null`"
+   * — the same double-`Option` `ProjectPatch` itself carries, flattened for
+   * the wire exactly like `patchRule`'s `eventKindTouched`. `githubRepo`,
+   * when touched and non-null, is checked with `is_valid_github_repo` in
+   * `client/ffi-web/src/task_host.rs`'s `patch_project` before it can reach
+   * `Core`. */
+  | {
+      type: "patchProject";
+      seed: string;
+      current: ProjectDTO;
+      name: string | null;
+      githubRepoTouched: boolean;
+      githubRepo: string | null;
+      defaultContextTouched: boolean;
+      defaultContext: string | null;
+      archivedAtTouched: boolean;
+      archivedAt: number | null;
+      nowMs: number;
+    }
+  /** #626's per-project link read — the dossier aside's `stepsByItem`-style
+   * "only what a view actually asked about" fetch. */
+  | { type: "getProjectLinks"; projectId: string }
+  /** #626's link create: one `POST /api/project_links`, enqueued durably
+   * like every other mutation (ADR-0030 decision 4). `url` is trimmed and
+   * an empty one refused in `client/ffi-web/src/task_host.rs`'s
+   * `create_project_link` before it can reach `Core` — the authority 400s
+   * on an empty url. Same caller-mints-`seed` contract as `createProject`:
+   * this seed's hash becomes the link's id. */
+  | {
+      type: "createProjectLink";
+      seed: string;
+      projectId: string;
+      url: string;
+      label: string | null;
+      position: number;
+      nowMs: number;
+    }
+  /** #626's link patch — editing, reordering and removing a link all share
+   * this one message. `current` is the caller's own last-known copy of the
+   * row (from the `projectLinks` push) — the CAS `base` a 409 is diffed
+   * against. `labelTouched`/`removedAtTouched` each distinguish "leave this
+   * field alone" from "set it, possibly to `null`" — the same
+   * double-`Option` `ProjectLinkPatch` itself carries, flattened for the
+   * wire exactly like `patchProject`'s `githubRepoTouched`. */
+  | {
+      type: "patchProjectLink";
+      seed: string;
+      current: ProjectLinkDTO;
+      url: string | null;
+      labelTouched: boolean;
+      label: string | null;
+      position: number | null;
+      removedAtTouched: boolean;
+      removedAt: number | null;
+      nowMs: number;
+    }
   | { type: "isPending"; itemId: string }
   | {
       type: "runSync";
@@ -1051,6 +1135,42 @@ export type TaskWorkerResponse =
       seed: string;
       kind: "ok" | "failed" | "busy";
       id: string | null;
+      error: string | null;
+    }
+  /** #625's project patch result (the properties card's set/clear gesture,
+   * and every other project edit), matched back by `seed`. Same
+   * handled-not-swallowed 409 contract as `patchRuleResult`: this result
+   * only reports whether the enqueue itself succeeded — `"failed"` covers
+   * both a `githubRepo` this seam refused and a durability failure. */
+  | {
+      type: "patchProjectResult";
+      seed: string;
+      projectId: string;
+      kind: "ok" | "failed" | "busy";
+      error: string | null;
+    }
+  /** Answers `getProjectLinks` (#626) — the `stepsByItem`-style per-project
+   * read, keyed by the requested `projectId`. */
+  | { type: "projectLinks"; projectId: string; links: ProjectLinkDTO[] }
+  /** #626's link create result, matched back by `seed`. Same
+   * broadcast-not-reply, enqueued-not-saved contract as
+   * `createProjectResult`. */
+  | {
+      type: "createProjectLinkResult";
+      seed: string;
+      projectId: string;
+      kind: "ok" | "failed" | "busy";
+      id: string | null;
+      error: string | null;
+    }
+  /** #626's link patch result (editing, reordering, removing), matched back
+   * by `seed`. Same handled-not-swallowed 409 contract as
+   * `patchProjectResult`. */
+  | {
+      type: "patchProjectLinkResult";
+      seed: string;
+      projectId: string;
+      kind: "ok" | "failed" | "busy";
       error: string | null;
     }
   | { type: "isPendingResult"; itemId: string; pending: boolean }

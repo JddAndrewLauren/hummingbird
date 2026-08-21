@@ -2,7 +2,8 @@
 //! *ingest* — items, steps, blocked_by edges, projects, routes, fog,
 //! settings — plus #140's rules addition (ADR-0012/0013, `device`-scope
 //! like every entry here — `POST /api/rules`/`PATCH /api/rules/:id` carry
-//! no `ingest` restriction, unlike alert ingest below).
+//! no `ingest` restriction, unlike alert ingest below) and #626's
+//! `project_links` (ADR-0030 decision 4).
 //!
 //! **Alert ingest (`POST /api/alerts`) is deliberately absent** and stays
 //! absent: it is `ingest`-scope only (`auth::permitted` on the authority),
@@ -61,6 +62,16 @@ pub fn fog_item(id: &str) -> String {
     format!("/api/fog/{id}")
 }
 
+/// `POST /api/project_links` (#626, ADR-0030 decision 4).
+pub fn project_links() -> String {
+    "/api/project_links".to_string()
+}
+
+/// `PATCH /api/project_links/:id` (#626).
+pub fn project_link(id: &str) -> String {
+    format!("/api/project_links/{id}")
+}
+
 pub fn setting(key: &str) -> String {
     format!("/api/settings/{key}")
 }
@@ -111,6 +122,8 @@ mod tests {
             route("x"),
             fog(),
             fog_item("x"),
+            project_links(),
+            project_link("x"),
             setting("x"),
             rules(),
             rule("x"),

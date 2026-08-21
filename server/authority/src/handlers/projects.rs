@@ -1,8 +1,13 @@
 //! `POST /api/projects` and `PATCH /api/projects/:id`. A project's Route
 //! row is born with it — the 1:1 invariant is structural, so there is no
 //! route create anywhere.
+//!
+//! `github_repo` (#625, ADR-0030 decision 2) is validated here with
+//! [`is_valid_github_repo`] — the handler half of "validate at the handler
+//! **and** the wasm seam" the brief asks for; `default_context` carries no
+//! validation of its own, same as `items.context`'s free vocabulary.
 
-use hummingbird_domain::{is_url_safe_id, CreateProject, Project, ProjectPatch};
+use hummingbird_domain::{is_url_safe_id, is_valid_github_repo, CreateProject, Project, ProjectPatch};
 
 use super::{conflict, error, json, parse_body, read_meta_version, write_meta_version, ApiResponse, ID_NOT_URL_SAFE};
 use crate::codec::{RowReader, Sets};
@@ -31,22 +36,31 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
     if create.name.is_empty() {
         return Ok(error(400, "validation", "name must be non-empty"));
     }
+    if let Some(repo) = &create.github_repo {
+        if !is_valid_github_repo(repo) {
+            return Ok(error(400, "validation", "github_repo must be owner/repo"));
+        }
+    }
 
     let version = read_meta_version(sql)? + 1;
     let project = Project {
         id: create.id,
         name: create.name,
+        github_repo: create.github_repo,
+        default_context: create.default_context,
         archived_at: None,
         created_at: now_ms,
         updated_at: now_ms,
         version,
     };
     sql.exec(
-        "INSERT INTO projects (id, name, archived_at, created_at, updated_at, version) \
-         VALUES (?, ?, NULL, ?, ?, ?)",
+        "INSERT INTO projects (id, name, github_repo, default_context, archived_at, created_at, updated_at, version) \
+         VALUES (?, ?, ?, ?, NULL, ?, ?, ?)",
         &[
             SqlValue::Text(project.id.clone()),
             SqlValue::Text(project.name.clone()),
+            SqlValue::from_opt_text(project.github_repo.as_deref()),
+            SqlValue::from_opt_text(project.default_context.as_deref()),
             SqlValue::Integer(project.created_at),
             SqlValue::Integer(project.updated_at),
             SqlValue::Integer(project.version),
@@ -81,6 +95,11 @@ pub fn patch(
     if patch.name.as_deref() == Some("") {
         return Ok(error(400, "validation", "name must be non-empty"));
     }
+    if let Some(Some(repo)) = &patch.github_repo {
+        if !is_valid_github_repo(repo) {
+            return Ok(error(400, "validation", "github_repo must be owner/repo"));
+        }
+    }
 
     let Some(row) = select_project(sql, id)? else {
         return Ok(error(404, "not_found", "no such project"));
@@ -96,6 +115,16 @@ pub fn patch(
     if let Some(name) = &patch.name {
         if *name != current.name {
             sets.set("name", SqlValue::Text(name.clone()));
+        }
+    }
+    if let Some(github_repo) = &patch.github_repo {
+        if *github_repo != current.github_repo {
+            sets.set("github_repo", SqlValue::from_opt_text(github_repo.as_deref()));
+        }
+    }
+    if let Some(default_context) = &patch.default_context {
+        if *default_context != current.default_context {
+            sets.set("default_context", SqlValue::from_opt_text(default_context.as_deref()));
         }
     }
     if let Some(archived_at) = patch.archived_at {
@@ -141,6 +170,8 @@ pub(super) fn project_from_row(row: &Row) -> Result<Project, SqlError> {
     Ok(Project {
         id: r.text("id")?,
         name: r.text("name")?,
+        github_repo: r.opt_text("github_repo"),
+        default_context: r.opt_text("default_context"),
         archived_at: r.opt_int("archived_at"),
         created_at: r.int("created_at")?,
         updated_at: r.int("updated_at")?,

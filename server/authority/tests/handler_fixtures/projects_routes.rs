@@ -51,11 +51,40 @@ fn create_project_validation_400() {
         (r#"{"id": "", "name": "n"}"#, "empty id"),
         (r#"{"id": "p", "name": ""}"#, "empty name"),
         (r#"{"id": "p", "name": "n", "version": 3}"#, "server-stamped field"),
+        (r#"{"id": "p", "name": "n", "github_repo": "not-a-slug"}"#, "malformed github_repo"),
+        (
+            r#"{"id": "p", "name": "n", "github_repo": "https://github.com/o/r"}"#,
+            "a URL, not owner/repo",
+        ),
     ] {
         let resp = post_to(&sql, "/api/projects", body, 0);
         assert_eq!(resp.status, 400, "{why}: {}", resp.body);
     }
     assert_eq!(meta_version(&sql), 0);
+}
+
+#[test]
+fn create_project_carries_github_repo_and_default_context() {
+    let sql = RusqliteSql::new();
+    let resp = post_to(
+        &sql,
+        "/api/projects",
+        r#"{"id": "p-1", "name": "sell the M3", "github_repo": "JddAndrewLauren/hummingbird", "default_context": "@computer"}"#,
+        1000,
+    );
+    assert_eq!(resp.status, 201, "{}", resp.body);
+    let created: Project = body_as(&resp);
+    assert_eq!(created.github_repo.as_deref(), Some("JddAndrewLauren/hummingbird"));
+    assert_eq!(created.default_context.as_deref(), Some("@computer"));
+}
+
+#[test]
+fn create_project_without_the_new_fields_leaves_them_null() {
+    let sql = RusqliteSql::new();
+    let resp = post_to(&sql, "/api/projects", r#"{"id": "p-1", "name": "sell the M3"}"#, 1000);
+    let created: Project = body_as(&resp);
+    assert_eq!(created.github_repo, None);
+    assert_eq!(created.default_context, None);
 }
 
 #[test]
@@ -82,6 +111,49 @@ fn patch_project_renames_and_archives_under_cas() {
     );
     let archived: Project = body_as(&resp);
     assert_eq!(archived.archived_at, Some(9000), "archival is a flag, not a delete");
+}
+
+#[test]
+fn patch_project_sets_and_clears_github_repo_and_default_context() {
+    let sql = RusqliteSql::new();
+    seed_project(&sql, "p-1"); // version 1
+    let resp = patch_at(
+        &sql,
+        "/api/projects/p-1",
+        r#"{"expected_version": 1, "github_repo": "JddAndrewLauren/hummingbird", "default_context": "@computer"}"#,
+        2000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let updated: Project = body_as(&resp);
+    assert_eq!(updated.github_repo.as_deref(), Some("JddAndrewLauren/hummingbird"));
+    assert_eq!(updated.default_context.as_deref(), Some("@computer"));
+    assert_eq!(updated.version, 2);
+
+    let resp = patch_at(
+        &sql,
+        "/api/projects/p-1",
+        r#"{"expected_version": 2, "github_repo": null, "default_context": null}"#,
+        3000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let cleared: Project = body_as(&resp);
+    assert_eq!(cleared.github_repo, None, "explicit null clears");
+    assert_eq!(cleared.default_context, None, "explicit null clears");
+    assert_eq!(cleared.version, 3);
+}
+
+#[test]
+fn patch_project_rejects_a_malformed_github_repo() {
+    let sql = RusqliteSql::new();
+    seed_project(&sql, "p-1");
+    let resp = patch_at(
+        &sql,
+        "/api/projects/p-1",
+        r#"{"expected_version": 1, "github_repo": "not-a-slug"}"#,
+        0,
+    );
+    assert_eq!(resp.status, 400, "{}", resp.body);
+    assert_eq!(meta_version(&sql), 1, "the rejected patch bumps nothing");
 }
 
 #[test]

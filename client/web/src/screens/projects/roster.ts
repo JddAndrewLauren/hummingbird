@@ -120,3 +120,12 @@ export function writeFailureMessage(lastProjectWrite: TaskProjectResult | null):
   }
   return lastProjectWrite.error ?? "That project write did not go through.";
 }
+
+/** The derived display link for a project's `githubRepo` (#625, ADR-0030
+ * decision 2) — computed here, never stored: `github_repo` holds only the
+ * `owner/repo` slug, so there is one spelling to compare and no half-typed
+ * link to normalize. `null` when the project names no repo, so a caller
+ * never has to re-check for an empty string. */
+export function githubRepoUrl(githubRepo: string | null): string | null {
+  return githubRepo === null || githubRepo === "" ? null : `https://github.com/${githubRepo}`;
+}

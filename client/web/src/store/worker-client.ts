@@ -11,6 +11,8 @@ import type {
   ConditionDTO,
   GrillDraftTurnDTO,
   GrillVerdictName,
+  ProjectDTO,
+  ProjectLinkDTO,
   RuleDTO,
   StepDTO,
   SyncCadenceRequest,
@@ -89,6 +91,7 @@ type Store = Pick<
   | "setTaskState"
   | "setTaskPending"
   | "setTaskSteps"
+  | "setTaskProjectLinks"
   | "setTaskPaneRead"
   | "setTaskGrillDraft"
 >;
@@ -384,6 +387,59 @@ export function attachWorkerClient(
           // point: the grid says it is waiting rather than showing a card
           // the authority has not confirmed.
           requestProjects(worker);
+        }
+        return;
+      case "patchProjectResult":
+        store.setTaskState({
+          lastProjectWrite: {
+            seed: message.seed,
+            projectId: message.projectId,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        if (message.kind === "ok") {
+          // No overlay for projects — same reasoning as `createProjectResult`:
+          // the edit becomes visible once the next completed cycle pulls it
+          // back, so this re-request answers the *old* row until then.
+          requestProjects(worker);
+        }
+        return;
+      case "projectLinks":
+        store.setTaskProjectLinks(message.projectId, message.links);
+        return;
+      case "createProjectLinkResult":
+        store.setTaskState({
+          lastProjectLinkWrite: {
+            seed: message.seed,
+            projectId: message.projectId,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        if (message.kind === "ok") {
+          // No overlay for links (`Core::create_project_link`'s own doc) —
+          // the new link becomes visible once the next completed cycle
+          // pulls it back, so this re-request answers the *old* list,
+          // which is the point: the card says it is waiting rather than
+          // showing a row the authority has not confirmed.
+          requestProjectLinks(worker, message.projectId);
+        }
+        return;
+      case "patchProjectLinkResult":
+        store.setTaskState({
+          lastProjectLinkWrite: {
+            seed: message.seed,
+            projectId: message.projectId,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        if (message.kind === "ok") {
+          // No overlay for links, same reasoning as `patchProjectResult`:
+          // the edit becomes visible once the next completed cycle pulls
+          // it back, so this re-request answers the *old* row until then.
+          requestProjectLinks(worker, message.projectId);
         }
         return;
       case "isPendingResult":
@@ -889,6 +945,92 @@ export function requestProjects(worker: WorkerLike): void {
  * trimmed and an empty one refused at the wasm seam, not here. */
 export function createProject(worker: WorkerLike, seed: string, name: string, nowMs: number): void {
   worker.postMessage({ type: "createProject", seed, name, nowMs });
+}
+
+/** #625's project patch — the dossier's properties card, and every other
+ * project edit. `current` is the caller's own last-known copy of the row
+ * (the CAS `base` a 409 is diffed against); every field in `patch` is
+ * `undefined` to mean "leave this alone," except `githubRepo`/
+ * `defaultContext`, which distinguish a present-but-`null` clear from an
+ * absent "don't touch" the same way `patchRule`'s `patch.eventKind` does. */
+export function patchProject(
+  worker: WorkerLike,
+  seed: string,
+  current: ProjectDTO,
+  patch: {
+    name?: string | null;
+    githubRepo?: string | null;
+    defaultContext?: string | null;
+    archivedAt?: number | null;
+  },
+  nowMs: number,
+): void {
+  worker.postMessage({
+    type: "patchProject",
+    seed,
+    current,
+    name: patch.name ?? null,
+    githubRepoTouched: "githubRepo" in patch,
+    githubRepo: patch.githubRepo ?? null,
+    defaultContextTouched: "defaultContext" in patch,
+    defaultContext: patch.defaultContext ?? null,
+    archivedAtTouched: "archivedAt" in patch,
+    archivedAt: patch.archivedAt ?? null,
+    nowMs,
+  });
+}
+
+/** #626's per-project link read — the dossier aside's `requestSteps`-style
+ * per-id fetch. */
+export function requestProjectLinks(worker: WorkerLike, projectId: string): void {
+  worker.postMessage({ type: "getProjectLinks", projectId });
+}
+
+/** #626's link create. `seed` mints `Core::create_project_link`'s own
+ * queue-entry id — same caller-mints contract as `createProject`'s. The url
+ * is trimmed and an empty one refused at the wasm seam, not here. */
+export function createProjectLink(
+  worker: WorkerLike,
+  seed: string,
+  projectId: string,
+  url: string,
+  label: string | null,
+  position: number,
+  nowMs: number,
+): void {
+  worker.postMessage({ type: "createProjectLink", seed, projectId, url, label, position, nowMs });
+}
+
+/** #626's link patch — editing, reordering and removing a link all share
+ * this one call. `current` is the caller's own last-known copy of the row
+ * (the CAS `base` a 409 is diffed against); every field in `patch` is
+ * `undefined` to mean "leave this alone," except `label`/`removedAt`, which
+ * distinguish a present-but-`null` clear from an absent "don't touch" the
+ * same way `patchProject`'s `patch.githubRepo` does. */
+export function patchProjectLink(
+  worker: WorkerLike,
+  seed: string,
+  current: ProjectLinkDTO,
+  patch: {
+    url?: string;
+    label?: string | null;
+    position?: number;
+    removedAt?: number | null;
+  },
+  nowMs: number,
+): void {
+  worker.postMessage({
+    type: "patchProjectLink",
+    seed,
+    current,
+    url: patch.url ?? null,
+    labelTouched: "label" in patch,
+    label: patch.label ?? null,
+    position: patch.position ?? null,
+    removedAtTouched: "removedAt" in patch,
+    removedAt: patch.removedAt ?? null,
+    nowMs,
+  });
 }
 
 export function requestIsPending(worker: WorkerLike, itemId: string): void {

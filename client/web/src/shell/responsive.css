@@ -226,8 +226,18 @@
      swallows the page's own scroll wherever a thumb happens to land. The
      reachability problem the desktop rule solves does not exist here: stacked
      in the flow, the panel's whole height is scrolled by the page. */
+  /* `flex: 1 1 100%` rather than the desktop rule's `0 0 auto`: with `width:
+     auto` a no-shrink flex item is max-content-sized, so one long nowrap
+     string anywhere in the panel (#626's bare link URLs were the first)
+     widens the whole panel past the viewport and defeats every ellipsis
+     inside it — an ellipsis only truncates when an ancestor actually
+     constrains the width. Basis 100% pins the stacked panel to the
+     container, which is what desktop's fixed `--panel-width` was already
+     doing for it. */
   .hb-aside {
     width: auto;
+    flex: 1 1 100%;
+    min-width: 0;
     position: static;
     max-height: none;
     overflow: visible;

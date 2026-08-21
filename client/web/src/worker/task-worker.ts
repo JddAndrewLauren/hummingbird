@@ -12,6 +12,7 @@ import type {
   PaneEnvelopeDTO,
   PaneReadDTO,
   ProjectDTO,
+  ProjectLinkDTO,
   RecallGroup,
   RecallRowDTO,
   RuleDTO,
@@ -178,6 +179,61 @@ export interface TaskHostLike {
    * "error": string|null}`. The name is trimmed and an empty one refused at
    * the seam, before `Core`. */
   createProject(seed: string, name: string, nowMs: number): Promise<string>;
+  /** #625's project patch — the dossier's properties card, and every other
+   * project edit. Mirrors `TaskHost::patchProject`, resolved to JSON:
+   * `{"kind": "ok"|"failed"|"busy", "error": string|null}`. `currentJson`
+   * is the caller's own last-known `Project`, as JSON — the CAS `base` a
+   * 409 is diffed against. Each `*Touched` flag distinguishes "leave this
+   * field alone" (`false`) from "set it, possibly to `null`" (`true`, with
+   * the paired value carrying the new value or `null`) — the same
+   * double-`Option` `ProjectPatch` itself carries. `githubRepo`, when
+   * touched and non-null, is checked with `is_valid_github_repo` before
+   * `Core` is reached. */
+  patchProject(
+    seed: string,
+    currentJson: string,
+    name: string | null,
+    githubRepoTouched: boolean,
+    githubRepo: string | null,
+    defaultContextTouched: boolean,
+    defaultContext: string | null,
+    archivedAtTouched: boolean,
+    archivedAt: number | null,
+    nowMs: number,
+  ): Promise<string>;
+  /** #626's per-project link read. Mirrors `TaskHost::projectLinks`,
+   * resolved to JSON: `{"kind": "ok"|"busy", "links": [ProjectLink]}`. */
+  projectLinks(projectId: string): string;
+  /** #626's link create. Mirrors `TaskHost::createProjectLink`, resolved to
+   * JSON: `{"kind": "ok"|"failed"|"busy", "id": string|null,
+   * "error": string|null}`. The url is trimmed and an empty one refused at
+   * the seam, before `Core`. */
+  createProjectLink(
+    seed: string,
+    projectId: string,
+    url: string,
+    label: string | null,
+    position: number,
+    nowMs: number,
+  ): Promise<string>;
+  /** #626's link patch — editing, reordering and removing a link. Mirrors
+   * `TaskHost::patchProjectLink`, resolved to JSON:
+   * `{"kind": "ok"|"failed"|"busy", "error": string|null}`. `currentJson`
+   * is the caller's own last-known `ProjectLink`, as JSON — the CAS `base`
+   * a 409 is diffed against. Each `*Touched` flag distinguishes "leave this
+   * field alone" (`false`) from "set it, possibly to `null`" (`true`, with
+   * the paired value carrying the new value or `null`). */
+  patchProjectLink(
+    seed: string,
+    currentJson: string,
+    url: string | null,
+    labelTouched: boolean,
+    label: string | null,
+    position: number | null,
+    removedAtTouched: boolean,
+    removedAt: number | null,
+    nowMs: number,
+  ): Promise<string>;
   isPending(itemId: string): string;
   takeEvents(): string;
   runSync(
@@ -335,6 +391,8 @@ interface RawPaneReadResponse {
 interface RawProject {
   id: string;
   name: string;
+  github_repo: string | null;
+  default_context: string | null;
   archived_at: number | null;
   created_at: number;
   updated_at: number;
@@ -354,6 +412,37 @@ interface RawProjectListResponse {
 interface RawCreateProjectResponse {
   kind: "ok" | "failed" | "busy";
   id: string | null;
+  error: string | null;
+}
+
+interface RawPatchProjectResponse {
+  kind: "ok" | "failed" | "busy";
+  error: string | null;
+}
+
+interface RawProjectLink {
+  id: string;
+  project_id: string;
+  url: string;
+  label: string | null;
+  position: number;
+  removed_at: number | null;
+  version: number;
+}
+
+interface RawProjectLinkListResponse {
+  kind: "ok" | "busy";
+  links: RawProjectLink[];
+}
+
+interface RawCreateProjectLinkResponse {
+  kind: "ok" | "failed" | "busy";
+  id: string | null;
+  error: string | null;
+}
+
+interface RawPatchProjectLinkResponse {
+  kind: "ok" | "failed" | "busy";
   error: string | null;
 }
 
@@ -630,9 +719,23 @@ function mapProject(raw: RawProject): ProjectDTO {
   return {
     id: raw.id,
     name: raw.name,
+    githubRepo: raw.github_repo,
+    defaultContext: raw.default_context,
     archivedAt: raw.archived_at,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
+    version: raw.version,
+  };
+}
+
+function mapProjectLink(raw: RawProjectLink): ProjectLinkDTO {
+  return {
+    id: raw.id,
+    projectId: raw.project_id,
+    url: raw.url,
+    label: raw.label,
+    position: raw.position,
+    removedAt: raw.removed_at,
     version: raw.version,
   };
 }
@@ -1109,6 +1212,99 @@ export async function handleTaskRequest(
         seed: request.seed,
         kind: raw.kind,
         id: raw.id,
+        error: raw.error,
+      });
+      return;
+    }
+    case "patchProject": {
+      const raw = JSON.parse(
+        await host.patchProject(
+          request.seed,
+          JSON.stringify({
+            id: request.current.id,
+            name: request.current.name,
+            github_repo: request.current.githubRepo,
+            default_context: request.current.defaultContext,
+            archived_at: request.current.archivedAt,
+            created_at: request.current.createdAt,
+            updated_at: request.current.updatedAt,
+            version: request.current.version,
+          }),
+          request.name,
+          request.githubRepoTouched,
+          request.githubRepo,
+          request.defaultContextTouched,
+          request.defaultContext,
+          request.archivedAtTouched,
+          request.archivedAt,
+          request.nowMs,
+        ),
+      ) as RawPatchProjectResponse;
+      post({
+        type: "patchProjectResult",
+        seed: request.seed,
+        projectId: request.current.id,
+        kind: raw.kind,
+        error: raw.error,
+      });
+      return;
+    }
+    case "getProjectLinks": {
+      const raw = JSON.parse(host.projectLinks(request.projectId)) as RawProjectLinkListResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "projectLinks", projectId: request.projectId, links: raw.links.map(mapProjectLink) });
+      return;
+    }
+    case "createProjectLink": {
+      const raw = JSON.parse(
+        await host.createProjectLink(
+          request.seed,
+          request.projectId,
+          request.url,
+          request.label,
+          request.position,
+          request.nowMs,
+        ),
+      ) as RawCreateProjectLinkResponse;
+      post({
+        type: "createProjectLinkResult",
+        seed: request.seed,
+        projectId: request.projectId,
+        kind: raw.kind,
+        id: raw.id,
+        error: raw.error,
+      });
+      return;
+    }
+    case "patchProjectLink": {
+      const raw = JSON.parse(
+        await host.patchProjectLink(
+          request.seed,
+          JSON.stringify({
+            id: request.current.id,
+            project_id: request.current.projectId,
+            url: request.current.url,
+            label: request.current.label,
+            position: request.current.position,
+            removed_at: request.current.removedAt,
+            version: request.current.version,
+          }),
+          request.url,
+          request.labelTouched,
+          request.label,
+          request.position,
+          request.removedAtTouched,
+          request.removedAt,
+          request.nowMs,
+        ),
+      ) as RawPatchProjectLinkResponse;
+      post({
+        type: "patchProjectLinkResult",
+        seed: request.seed,
+        projectId: request.current.projectId,
+        kind: raw.kind,
         error: raw.error,
       });
       return;

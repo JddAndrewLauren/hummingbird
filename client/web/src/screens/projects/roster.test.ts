@@ -4,6 +4,7 @@ import type { TaskProjectResult } from "../../store/store";
 import {
   awaitingCreate,
   countsMeta,
+  githubRepoUrl,
   projectRoster,
   rosterSummary,
   visibleRows,
@@ -14,6 +15,8 @@ function project(id: string, name: string, archived = false): ProjectDTO {
   return {
     id,
     name,
+    githubRepo: null,
+    defaultContext: null,
     archivedAt: archived ? 1_000 : null,
     createdAt: 1,
     updatedAt: 1,
@@ -143,5 +146,18 @@ describe("writeFailureMessage", () => {
   it("states a busy drop in the fallback copy rather than staying silent", () => {
     expect(writeFailureMessage(write("busy"))).toBe("That project write did not go through.");
     expect(writeFailureMessage(write("failed"))).toBe("That project write did not go through.");
+  });
+});
+
+describe("githubRepoUrl", () => {
+  it("derives the display link from owner/repo, never storing it", () => {
+    expect(githubRepoUrl("JddAndrewLauren/hummingbird")).toBe(
+      "https://github.com/JddAndrewLauren/hummingbird",
+    );
+  });
+
+  it("is null when the project names no repo", () => {
+    expect(githubRepoUrl(null)).toBeNull();
+    expect(githubRepoUrl("")).toBeNull();
   });
 });

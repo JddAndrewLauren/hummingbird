@@ -135,6 +135,16 @@ half answers `200` with the stored row, and nothing is duplicated. That is what
 lets the whole batch be one confirmed pass with no bookkeeping between halves
 of it.
 
+**A context-less action minted into a project is filled with that project's
+`default_context`** (ADR-0030 decision 3, copy-at-mint). An entry naming no
+`project_id` is never touched, an entry whose project carries no
+`default_context` is never touched, and an entry that already names its own
+`context` is left exactly as written — the human's typed value always wins,
+even when it happens to match the default. This fills a *field*, never
+changes *which row* an entry addresses: the id recipe stays
+`item/<project>/<title>` regardless, so a re-run against the same manifest
+still lands on the same rows.
+
 Server-stamped fields (`seq`, `created_at`, `updated_at`, `version`) cannot be
 supplied — the authority answers `400`, not a silent no-op, and so does a typo.
 Every minted action is normalized to `stage: ready`; an explicit non-ready

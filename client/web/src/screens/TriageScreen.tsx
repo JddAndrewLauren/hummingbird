@@ -26,6 +26,10 @@ export interface TriageScreenProps {
   /** The row checkmark's `Core::act` complete — see `TriageRow`'s own prop
    * doc. */
   onComplete?: (itemId: string) => void;
+  /** #631: each row's inline "new project" affordance — `TriageRow`'s own
+   * prop doc carries the rest. Optional for the same "no worker, no
+   * affordance" reason `onTriage` is. */
+  onCreateProject?: (name: string) => void;
   /** "Now", for the age each collapsed row states. Passed in rather than read
    * here: `useSyncWiring`'s tick is the one clock this origin gets (ADR-0007),
    * and a screen that read `Date.now()` per render would be a second one. */
@@ -45,6 +49,7 @@ export function TriageScreen({
   task,
   onTriage,
   onComplete,
+  onCreateProject,
   nowMs,
   grill,
 }: TriageScreenProps) {
@@ -161,6 +166,8 @@ export function TriageScreen({
                 onGrillMe={grill ? handleGrillMe : undefined}
                 hasGrillDraft={task.grillDraftItemIds.includes(item.id)}
                 lastTriage={task.lastTriage}
+                onCreateProject={onCreateProject}
+                lastProjectWrite={task.lastProjectWrite}
               />
             ))}
           </div>

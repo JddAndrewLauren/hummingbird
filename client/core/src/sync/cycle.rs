@@ -871,6 +871,8 @@ mod tests {
                 projects: vec![hummingbird_domain::Project {
                     id: "p-1".to_string(),
                     name: "project p-1".to_string(),
+                    github_repo: None,
+                    default_context: None,
                     archived_at: None,
                     created_at: 1,
                     updated_at: 1,
@@ -1291,6 +1293,8 @@ mod tests {
                 projects: vec![hummingbird_domain::Project {
                     id: "p-1".to_string(),
                     name: "project p-1".to_string(),
+                    github_repo: None,
+                    default_context: None,
                     archived_at: None,
                     created_at: 1,
                     updated_at: 1,

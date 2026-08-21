@@ -207,7 +207,13 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // #624: a write door only — the `projects` read is already refreshed
   // app-wide by `useFrontierWiring`, and a second per-cycle requester would
   // be a competing clock for one read (see `useProjectsWiring`'s header).
-  const { createProject: handleCreateProject } = useProjectsWiring(worker);
+  const {
+    createProject: handleCreateProject,
+    patchProject: handlePatchProject,
+    requestProjectLinks: handleRequestProjectLinks,
+    createProjectLink: handleCreateProjectLink,
+    patchProjectLink: handlePatchProjectLink,
+  } = useProjectsWiring(worker);
   // #245: every source the registered standing questions need, refreshed on
   // the same per-cycle signal as the bindings they depend on.
   usePaneReadsWiring(worker, status, task.syncOutcomeSeq);
@@ -589,6 +595,10 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               task={task}
               onTriage={handleTriage}
               onComplete={(itemId) => handleAct(itemId, "complete")}
+              // #631: the same project create Projects' own grid uses
+              // (`useProjectsWiring.ts`) — one write door, reached from a
+              // second surface.
+              onCreateProject={handleCreateProject}
               nowMs={syncNowMs}
               grill={grillTakeover}
             />
@@ -599,7 +609,14 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               for, and a mutation typed over the board world goes to the real
               worker already (see `demoTask`'s comment above). */}
           {screen === "projects" && (
-            <ProjectsScreen task={task} onCreateProject={handleCreateProject} />
+            <ProjectsScreen
+              task={task}
+              onCreateProject={handleCreateProject}
+              onPatchProject={handlePatchProject}
+              onRequestProjectLinks={handleRequestProjectLinks}
+              onCreateProjectLink={handleCreateProjectLink}
+              onPatchProjectLink={handlePatchProjectLink}
+            />
           )}
           {screen === "alerts" && <AlertsScreen />}
           {screen === "rules" && (

@@ -29,6 +29,8 @@ const initialTask: TaskState = {
   rules: null,
   lastRuleWrite: null,
   lastProjectWrite: null,
+  linksByProject: {},
+  lastProjectLinkWrite: null,
   paneReads: {},
   pending: {},
   lastCapture: null,

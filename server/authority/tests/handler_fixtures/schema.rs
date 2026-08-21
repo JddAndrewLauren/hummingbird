@@ -1,9 +1,11 @@
 //! Schema lifecycle: idempotent init, the full table set, and the additive
 //! growth path (1→2, then 2→3 for the notification lane, #131, then 3→4 for
 //! ADR-0015's `alerts.subject_key`, then 4→5 for `items.agent`, then 5→6
-//! for `grills`, #353) — and then 6→7, the one growth that is not additive
+//! for `grills`, #353) — then 6→7, the one growth that is not additive
 //! at all: the `short` → `normal` size rename (#446, ADR-0024), which
-//! rebuilds `items`.
+//! rebuilds `items` — and then 7→8, back to additive: `projects.github_repo`
+//! and `projects.default_context` (#625, ADR-0030) — then 8→9, additive
+//! again: `project_links` (#626, ADR-0030 decision 4).
 
 use hummingbird_authority::{init_schema, SqlValue, SCHEMA_VERSION};
 
@@ -37,6 +39,7 @@ fn init_schema_creates_every_adr_0009_table() {
         "projects",
         "routes",
         "fog",
+        "project_links",
         "items",
         "steps",
         "blocked_by",
@@ -50,6 +53,29 @@ fn init_schema_creates_every_adr_0009_table() {
         "grills",
     ] {
         assert!(names.iter().any(|n| n == table), "missing table `{table}` in {names:?}");
+    }
+}
+
+/// Pins `project_links`' two indexes (#626) by name. The migrated-vs-fresh
+/// `sqlite_master.sql` equality assertions below structurally cannot see a
+/// dropped index — deleting one from `CREATE_INDEXES` removes it from BOTH
+/// sides of the comparison, and equality still holds — so existence has to
+/// be asserted somewhere, once, by name.
+#[test]
+fn init_schema_creates_the_project_links_indexes() {
+    let sql = RusqliteSql::new();
+    let rows = sql
+        .exec(
+            "SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name",
+            &[],
+        )
+        .unwrap();
+    let names: Vec<String> = rows
+        .iter()
+        .map(|r| r.get("name").unwrap().as_text().unwrap().to_string())
+        .collect();
+    for index in ["idx_project_links_version", "idx_project_links_project"] {
+        assert!(names.iter().any(|n| n == index), "missing index `{index}` in {names:?}");
     }
 }
 
@@ -900,6 +926,208 @@ fn the_column_migration_is_idempotent() {
             .count(),
         1,
         "exactly one agent column",
+    );
+}
+
+/// `items`, exactly the shape the 6→7 rebuild leaves it in — the finished
+/// `'normal'` vocabulary, `agent` inline, byte-identical to the current
+/// `CREATE_ITEMS`. Copied rather than derived from [`v6_store`]'s rebuild,
+/// because there is no `V6_ADDED_TABLES`-style additive path for a
+/// constraint rewrite: this literal *is* what a genuine v7 store's `items`
+/// holds.
+const V7_ITEMS: &str = "\
+CREATE TABLE IF NOT EXISTS items (
+  id          TEXT PRIMARY KEY,
+  seq         INTEGER UNIQUE,
+  title       TEXT NOT NULL CHECK (length(title) > 0),
+  description TEXT,
+  stage       TEXT NOT NULL CHECK (stage IN
+                ('triage','grilling','ready','in_progress','blocked','done')),
+  size        TEXT CHECK (size IN ('quick','normal','deep')),
+  energy      TEXT CHECK (energy IN ('low','medium','high')),
+  context     TEXT,
+  priority    INTEGER NOT NULL DEFAULT 0 CHECK (priority BETWEEN 0 AND 4),
+  project_id  TEXT REFERENCES projects(id),
+  project_pos INTEGER,
+  deadline    TEXT,
+  scheduled_date TEXT,
+  source      TEXT,
+  source_key  TEXT,
+  source_url  TEXT,
+  archived_at INTEGER,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  version     INTEGER NOT NULL
+, agent INTEGER NOT NULL DEFAULT 0)";
+
+/// A genuine v7 store: [`v6_store`] with `items` swapped for [`V7_ITEMS`] —
+/// the same shape the 6→7 rebuild itself produces — and `schema_version`
+/// moved to 7. `projects` is still the untouched v2 shape (no
+/// `github_repo`/`default_context`), which is exactly what the 7→8 growth
+/// below has to find.
+///
+/// Foreign-key enforcement is toggled off only for the swap: `steps`,
+/// `blocked_by` and `grills` all reference `items(id)`, and the fixture
+/// carries no rows yet, so there is nothing to stash — unlike the real
+/// rebuild in [`rebuild_items_for_size_vocabulary`], which must preserve
+/// live data and therefore cannot take this shortcut.
+fn v7_store() -> RusqliteSql {
+    let sql = v6_store();
+    sql.conn
+        .pragma_update(None, "foreign_keys", false)
+        .expect("FK enforcement toggles off for the fixture-only swap");
+    sql.exec("DROP TABLE items", &[]).expect("drop the pre-rebuild items table");
+    sql.exec(V7_ITEMS, &[]).expect("v7 items DDL applies");
+    for index in [
+        "CREATE INDEX IF NOT EXISTS idx_items_version ON items(version)",
+        "CREATE INDEX IF NOT EXISTS idx_items_live    ON items(stage) WHERE archived_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_items_project ON items(project_id)",
+    ] {
+        sql.exec(index, &[]).expect("items index re-applies after the swap");
+    }
+    sql.conn
+        .pragma_update(None, "foreign_keys", true)
+        .expect("FK enforcement toggles back on");
+    sql.exec("UPDATE meta SET schema_version = 7 WHERE id = 1", &[])
+        .expect("v7 meta row seeds");
+    sql
+}
+
+/// The 7→8 growth path (#625, ADR-0030 decisions 2–3): `projects` gains
+/// `github_repo` and `default_context`, the third [`add_missing_columns`]
+/// arm — same style as 3→4 and 4→5, not another rebuild, since both new
+/// columns are nullable and `projects` carries no `CHECK` to rewrite.
+#[test]
+fn init_schema_grows_a_schema_7_database_additively() {
+    let migrated = v7_store();
+    assert_eq!(schema_version(&migrated), 7, "starts genuinely at v7");
+    assert!(
+        !column_names(&migrated, "projects").contains(&"github_repo".to_string()),
+        "the v7 fixture must not already carry github_repo",
+    );
+    assert!(
+        !column_names(&migrated, "projects").contains(&"default_context".to_string()),
+        "the v7 fixture must not already carry default_context",
+    );
+    // A row written before the growth, to prove both ALTERs keep data.
+    migrated
+        .exec(
+            "INSERT INTO projects (id, name, created_at, updated_at, version) \
+             VALUES ('p', 'Rebuild the deck', 1000, 1000, 1)",
+            &[],
+        )
+        .unwrap();
+
+    init_schema(&migrated, 0).expect("growth init succeeds");
+
+    assert_eq!(schema_version(&migrated), SCHEMA_VERSION, "schema_version moved forward");
+    assert!(column_names(&migrated, "projects").contains(&"github_repo".to_string()));
+    assert!(column_names(&migrated, "projects").contains(&"default_context".to_string()));
+    let rows = migrated
+        .exec("SELECT id, github_repo, default_context FROM projects", &[])
+        .unwrap();
+    assert_eq!(rows.len(), 1, "the pre-growth row survives");
+    assert_eq!(
+        rows[0].get("github_repo"),
+        Some(&SqlValue::Null),
+        "a project minted before #625 names no repo",
+    );
+    assert_eq!(
+        rows[0].get("default_context"),
+        Some(&SqlValue::Null),
+        "a project minted before #625 names no default context",
+    );
+
+    let fresh = RusqliteSql::new();
+    assert_eq!(
+        schema_ddl(&migrated),
+        schema_ddl(&fresh),
+        "a migrated v7 store and a fresh store end up with byte-identical DDL — which is \
+         why CREATE_PROJECTS declares both new columns after the newline, before the \
+         closing paren, verified against a real migrated store's sqlite_master rather than \
+         reasoned out",
+    );
+}
+
+/// Running `init_schema` a second time over a v7-grown store must not
+/// attempt either `ALTER` again, same discipline as
+/// [`the_column_migration_is_idempotent`].
+#[test]
+fn the_project_column_migration_is_idempotent() {
+    let migrated = v7_store();
+    init_schema(&migrated, 0).expect("first growth succeeds");
+    init_schema(&migrated, 0).expect("second init is a no-op, not a duplicate-column error");
+    for column in ["github_repo", "default_context"] {
+        assert_eq!(
+            column_names(&migrated, "projects")
+                .iter()
+                .filter(|name| *name == column)
+                .count(),
+            1,
+            "exactly one {column} column",
+        );
+    }
+}
+
+/// A genuine v8 store: [`v7_store`] with `projects` carrying 7→8's own
+/// `ALTER`s, exactly how a real v8 store came to be. `project_links` is not
+/// yet created, which is what the 8→9 growth below has to find.
+fn v8_store() -> RusqliteSql {
+    let sql = v7_store();
+    for ddl in [
+        "ALTER TABLE projects ADD COLUMN github_repo TEXT",
+        "ALTER TABLE projects ADD COLUMN default_context TEXT",
+    ] {
+        sql.exec(ddl, &[]).expect("7→8's own ALTER applies");
+    }
+    sql.exec("UPDATE meta SET schema_version = 8 WHERE id = 1", &[])
+        .expect("v8 meta row seeds");
+    sql
+}
+
+/// The 8→9 growth path (#626, ADR-0030 decision 4): `project_links`, back
+/// to the 1→2 / 2→3 / 5→6 shape — a purely additive new table, not another
+/// [`add_missing_columns`] arm. `CREATE TABLE IF NOT EXISTS` grows a v8
+/// store for free.
+#[test]
+fn init_schema_grows_a_schema_8_database_additively() {
+    let migrated = v8_store();
+    assert_eq!(schema_version(&migrated), 8, "starts genuinely at v8");
+    assert!(
+        !table_names(&migrated).contains(&"project_links".to_string()),
+        "the v8 fixture must not already carry project_links"
+    );
+    // A row written before the growth, to prove the table addition never
+    // touches anything pre-existing.
+    migrated
+        .exec(
+            "INSERT INTO projects (id, name, created_at, updated_at, version) \
+             VALUES ('p', 'Rebuild the deck', 1000, 1000, 1)",
+            &[],
+        )
+        .unwrap();
+
+    init_schema(&migrated, 0).expect("growth init succeeds");
+
+    assert_eq!(schema_version(&migrated), SCHEMA_VERSION, "schema_version moved forward");
+    assert!(
+        table_names(&migrated).contains(&"project_links".to_string()),
+        "migrated store missing `project_links`",
+    );
+    let rows = migrated.exec("SELECT id FROM projects", &[]).unwrap();
+    assert_eq!(rows.len(), 1, "the pre-growth row survives");
+
+    let fresh = RusqliteSql::new();
+    assert_eq!(
+        table_names(&migrated),
+        table_names(&fresh),
+        "a migrated v8 store and a fresh store end up with identical table sets",
+    );
+    assert_eq!(
+        schema_ddl(&migrated),
+        schema_ddl(&fresh),
+        "a migrated v8 store and a fresh store end up with byte-identical DDL, \
+         including both new indexes (idx_project_links_version, idx_project_links_project)",
     );
 }
 

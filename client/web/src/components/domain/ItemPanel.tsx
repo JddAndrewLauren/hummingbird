@@ -24,7 +24,12 @@ import {
   sizeIcon,
   sizeLabel,
 } from "../../screens/size-energy";
-import { buildTriageEdits, hasTriageEdits } from "../../screens/triage-form";
+import {
+  awaitingProjectCreate,
+  buildTriageEdits,
+  hasTriageEdits,
+  NEW_PROJECT_OPTION,
+} from "../../screens/triage-form";
 import { useItemDraft } from "../../screens/useItemDraft";
 import { triageFailureFor } from "../../screens/write-failure";
 import { microtaskAffordance } from "../../skills/microtask-affordance";
@@ -36,7 +41,7 @@ import type {
   TaskActionName,
   TaskItemDTO,
 } from "../../store/protocol";
-import type { TaskTriageResult } from "../../store/store";
+import type { TaskProjectResult, TaskTriageResult } from "../../store/store";
 import type { TriageEdits } from "../../store/worker-client";
 import { StageBadge } from "./StageBadge";
 
@@ -85,11 +90,32 @@ const GRAINS = [
   { value: "3", label: "Fine" },
 ];
 
+/** #631: what the triage row's Project field says while an inline create it
+ * issued is still in flight — the same copy `ProjectsScreen.tsx`'s
+ * `NewProjectCard` uses for the identical wait, since both are the same
+ * "no optimistic overlay" contract (`Core::create_project`'s own doc). */
+const PROJECT_WAITING_COPY = "creating — appears when the round trip lands";
+
 export interface ItemPanelProps {
   item: TaskItemDTO;
   /** The Routes the Project select offers. `[]` is a legitimate value — a
    * device with no projects yet — and renders "No project" alone. */
   projects: ProjectDTO[];
+  /** #631: the triage row's inline "new project" affordance —
+   * `shell/useProjectsWiring.ts`'s `createProject`, threaded down from
+   * `App.tsx` the same way `onTriage` is. Triage mode only (the acceptance
+   * names the triage row, not detail mode's picker); absent renders the
+   * plain Project select with no create option, the same "optional, so a
+   * render with nothing to send it never offers what it cannot do" contract
+   * every other write callback here carries. */
+  onCreateProject?: (name: string) => void;
+  /** The most recent project create/patch result any view issued
+   * (`TaskState.lastProjectWrite`) — what tells this row's own create it is
+   * still waiting, via `triage-form.ts`'s `awaitingProjectCreate`. One
+   * broadcast slot shared by every connected view and every open row, the
+   * same sharing `ProjectsScreen.tsx`'s grid already accepts for its own
+   * create. */
+  lastProjectWrite?: TaskProjectResult | null;
   mode: "detail" | "triage";
   /** Whatever `TaskState.stepsByItem[item.id]` currently holds — `[]` until
    * the request answers, same "not yet known" shape every other S9 read uses;
@@ -167,6 +193,8 @@ export interface ItemPanelProps {
 export function ItemPanel({
   item,
   projects,
+  onCreateProject,
+  lastProjectWrite = null,
   mode,
   steps = [],
   showSteps = true,
@@ -190,6 +218,17 @@ export function ItemPanel({
   const { draft, problems, blocked, set, reset } = useItemDraft(item, lastTriage, () =>
     setEditing(false),
   );
+
+  // #631's inline "new project" affordance — local to this render, and reset
+  // per item by the same `key` contract `grain` below relies on: a half-typed
+  // project name for one item says nothing about the next.
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
+  // The project `draft.projectId` currently resolves to, or `null` when it
+  // resolves to none — what `buildTriageEdits` needs to decide the
+  // copy-at-mint question (ADR-0030 decision 3, that function's own doc).
+  const selectedProject = projects.find((project) => project.id === draft.projectId) ?? null;
+  const awaitingCreate = awaitingProjectCreate(projects, lastProjectWrite);
 
   // Local, and reset per item by the `key` the caller puts on this element: a
   // grain chosen for one item says nothing about the next.
@@ -238,16 +277,69 @@ export function ItemPanel({
           alignItems: "start",
         }}
       >
-        <Select
-          label="Project"
-          size="sm"
-          value={draft.projectId}
-          onChange={(event) => set("projectId", event.target.value)}
-          options={[
-            { value: "", label: "No project" },
-            ...projects.map((project) => ({ value: project.id, label: project.name })),
-          ]}
-        />
+        {mode === "triage" && onCreateProject ? (
+          creatingProject ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+              <Input
+                label="New project"
+                size="sm"
+                value={newProjectName}
+                placeholder="Name"
+                onChange={(event) => setNewProjectName(event.target.value)}
+              />
+              <div style={{ display: "flex", gap: "var(--space-3)" }}>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={newProjectName.trim() === ""}
+                  onClick={() => {
+                    onCreateProject(newProjectName.trim());
+                    setNewProjectName("");
+                    setCreatingProject(false);
+                  }}
+                >
+                  Create
+                </Button>
+                <Button type="button" size="sm" variant="ghost" onClick={() => setCreatingProject(false)}>
+                  Cancel
+                </Button>
+              </div>
+              {awaitingCreate ? <span className="hb-meta">{PROJECT_WAITING_COPY}</span> : null}
+            </div>
+          ) : (
+            <div>
+              <Select
+                label="Project"
+                size="sm"
+                value={draft.projectId}
+                onChange={(event) => {
+                  if (event.target.value === NEW_PROJECT_OPTION) {
+                    setCreatingProject(true);
+                    return;
+                  }
+                  set("projectId", event.target.value);
+                }}
+                options={[
+                  { value: "", label: "No project" },
+                  ...projects.map((project) => ({ value: project.id, label: project.name })),
+                  { value: NEW_PROJECT_OPTION, label: "+ New project" },
+                ]}
+              />
+              {awaitingCreate ? <span className="hb-meta">{PROJECT_WAITING_COPY}</span> : null}
+            </div>
+          )
+        ) : (
+          <Select
+            label="Project"
+            size="sm"
+            value={draft.projectId}
+            onChange={(event) => set("projectId", event.target.value)}
+            options={[
+              { value: "", label: "No project" },
+              ...projects.map((project) => ({ value: project.id, label: project.name })),
+            ]}
+          />
+        )}
         <Select
           label="Priority"
           size="sm"
@@ -360,7 +452,10 @@ export function ItemPanel({
             variant="primary"
             iconLeft="check"
             disabled={item.pending || blocked}
-            onClick={() => onTriage?.(item.id, "ready", buildTriageEdits(draft, item))}
+            // `promoting` — ADR-0030 decision 3's entry point 1. This is the
+            // only call site that passes it: the stage change is what makes
+            // the copy due, and only the caller knows a stage is changing.
+            onClick={() => onTriage?.(item.id, "ready", buildTriageEdits(draft, item, selectedProject, true))}
           >
             Promote to ready
           </Button>
@@ -419,7 +514,7 @@ export function ItemPanel({
               // past triage, and there is no destination for "where it
               // already was".
               disabled={item.pending || blocked || !hasTriageEdits(draft, item)}
-              onClick={() => onTriage?.(item.id, null, buildTriageEdits(draft, item))}
+              onClick={() => onTriage?.(item.id, null, buildTriageEdits(draft, item, selectedProject))}
             >
               Save
             </Button>

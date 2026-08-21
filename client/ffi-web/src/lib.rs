@@ -474,6 +474,16 @@ mod wasm_bindings {
     // #624: same three-way shape as BUSY_CREATE_RULE — busy is "no answer",
     // distinct from a create this seam refused.
     const BUSY_CREATE_PROJECT: &str = r#"{"kind":"busy","id":null,"error":null}"#;
+    // #625: same shape as BUSY_PATCH_RULE — busy is "no answer", distinct
+    // from a patch this seam refused (a malformed github_repo).
+    const BUSY_PATCH_PROJECT: &str = r#"{"kind":"busy","error":null}"#;
+    // #626: same three-way shape as BUSY_PROJECT_LIST above.
+    const BUSY_PROJECT_LINK_LIST: &str = r#"{"kind":"busy","links":[]}"#;
+    // #626: same shape as BUSY_CREATE_PROJECT — busy is "no answer", distinct
+    // from a create this seam refused (an empty url).
+    const BUSY_CREATE_PROJECT_LINK: &str = r#"{"kind":"busy","id":null,"error":null}"#;
+    // #626: same shape as BUSY_PATCH_PROJECT.
+    const BUSY_PATCH_PROJECT_LINK: &str = r#"{"kind":"busy","error":null}"#;
     const BUSY_IS_PENDING: &str = r#"{"kind":"busy","pending":false}"#;
     // #118: an empty binding list would read as "nothing is bound", which
     // is an answer — and the wrong one. Busy says nothing at all.
@@ -658,6 +668,175 @@ mod wasm_bindings {
                 inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("CreateProjectResponse serializes"),
+                ))
+            })
+        }
+
+        /// Patches a project (#625) — the dossier's properties card sets and
+        /// clears `github_repo`/`default_context`, alongside renaming and
+        /// archiving, through this one entry point. Resolves to JSON:
+        /// `{"kind": "ok"|"failed"|"busy", "error": string|null}`.
+        /// `current_json` is the caller's own last-known [`Project`] (from
+        /// [`TaskHost::projects`]), as JSON — the `base` a 409's rebase diffs
+        /// against. `github_repo_touched`/`default_context_touched`/
+        /// `archived_at_touched` each distinguish "leave this field alone"
+        /// (`false`) from "set it, possibly to `null`" (`true`, with the
+        /// paired value carrying the new value or `None`) — the same
+        /// double-`Option` [`hummingbird_domain::ProjectPatch`] itself
+        /// carries, flattened for the wasm boundary exactly like
+        /// [`TaskHost::patch_rule`]'s `event_kind_touched`. A malformed
+        /// `github_repo` is refused before `Core` is reached
+        /// ([`TaskHostCore::patch_project`]).
+        #[wasm_bindgen(js_name = patchProject)]
+        #[allow(clippy::too_many_arguments)]
+        pub fn patch_project(
+            &self,
+            seed: String,
+            current_json: String,
+            name: Option<String>,
+            github_repo_touched: bool,
+            github_repo: Option<String>,
+            default_context_touched: bool,
+            default_context: Option<String>,
+            archived_at_touched: bool,
+            archived_at: Option<f64>,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let current: hummingbird_domain::Project = match serde_json::from_str(&current_json) {
+                    Ok(project) => project,
+                    Err(error) => {
+                        return Ok(JsValue::from_str(&format!(
+                            r#"{{"kind":"failed","error":"malformed project: {error}"}}"#
+                        )))
+                    }
+                };
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_PATCH_PROJECT));
+                };
+                let response = host
+                    .patch_project(
+                        &seed,
+                        &current,
+                        name,
+                        github_repo_touched,
+                        github_repo,
+                        default_context_touched,
+                        default_context,
+                        archived_at_touched,
+                        archived_at.map(|v| v as i64),
+                        now_ms as i64,
+                    )
+                    .await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("PatchProjectResponse serializes"),
+                ))
+            })
+        }
+
+        /// Every live Link on one project, as JSON: `{"kind": "ok"|"busy",
+        /// "links": [ProjectLink]}` — the dossier aside's read (#626,
+        /// ADR-0030 decision 4).
+        #[wasm_bindgen(js_name = projectLinks)]
+        pub fn project_links(&self, project_id: String) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => serde_json::to_string(&host.project_links(&project_id))
+                    .expect("ProjectLinkListResponse serializes"),
+                None => BUSY_PROJECT_LINK_LIST.to_string(),
+            }
+        }
+
+        /// Creates a project Link (#626). Resolves to JSON:
+        /// `{"kind": "ok"|"failed"|"busy", "id": string|null, "error": string|null}`.
+        /// The url is trimmed and an empty one refused before `Core` is
+        /// reached ([`TaskHostCore::create_project_link`]). `"ok"` means
+        /// *enqueued*, not *saved* — no optimistic overlay, so
+        /// `projectLinks()` keeps answering the old list until a cycle
+        /// completes.
+        #[wasm_bindgen(js_name = createProjectLink)]
+        #[allow(clippy::too_many_arguments)]
+        pub fn create_project_link(
+            &self,
+            seed: String,
+            project_id: String,
+            url: String,
+            label: Option<String>,
+            position: f64,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_CREATE_PROJECT_LINK));
+                };
+                let response = host
+                    .create_project_link(&seed, &project_id, &url, label, position as i64, now_ms as i64)
+                    .await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("CreateProjectLinkResponse serializes"),
+                ))
+            })
+        }
+
+        /// Patches a project Link (#626) — editing its url/label,
+        /// reordering it, or flagging/clearing its removal, all through
+        /// this one entry point. Resolves to JSON:
+        /// `{"kind": "ok"|"failed"|"busy", "error": string|null}`.
+        /// `current_json` is the caller's own last-known [`ProjectLink`]
+        /// (from [`TaskHost::projectLinks`]), as JSON — the `base` a 409's
+        /// rebase diffs against. `label_touched`/`removed_at_touched` each
+        /// distinguish "leave this field alone" (`false`) from "set it,
+        /// possibly to `null`" (`true`, with the paired value carrying the
+        /// new value or `None`) — the same double-`Option`
+        /// [`hummingbird_domain::ProjectLinkPatch`] itself carries,
+        /// flattened for the wasm boundary exactly like
+        /// [`TaskHost::patchProject`]'s touched-flag shape.
+        #[wasm_bindgen(js_name = patchProjectLink)]
+        #[allow(clippy::too_many_arguments)]
+        pub fn patch_project_link(
+            &self,
+            seed: String,
+            current_json: String,
+            url: Option<String>,
+            label_touched: bool,
+            label: Option<String>,
+            position: Option<f64>,
+            removed_at_touched: bool,
+            removed_at: Option<f64>,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let current: hummingbird_domain::ProjectLink = match serde_json::from_str(&current_json) {
+                    Ok(link) => link,
+                    Err(error) => {
+                        return Ok(JsValue::from_str(&format!(
+                            r#"{{"kind":"failed","error":"malformed project link: {error}"}}"#
+                        )))
+                    }
+                };
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_PATCH_PROJECT_LINK));
+                };
+                let response = host
+                    .patch_project_link(
+                        &seed,
+                        &current,
+                        url,
+                        label_touched,
+                        label,
+                        position.map(|v| v as i64),
+                        removed_at_touched,
+                        removed_at.map(|v| v as i64),
+                        now_ms as i64,
+                    )
+                    .await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("PatchProjectLinkResponse serializes"),
                 ))
             })
         }

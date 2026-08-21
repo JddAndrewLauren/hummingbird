@@ -5,7 +5,7 @@ import { MarkDoneButton } from "../components/domain/MarkDoneButton";
 import { StageBadge } from "../components/domain/StageBadge";
 import { relativeAge } from "../shell/sync-status";
 import type { ProjectDTO, TaskItemDTO } from "../store/protocol";
-import type { TaskTriageResult } from "../store/store";
+import type { TaskProjectResult, TaskTriageResult } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
 import { canMarkDone } from "./item-actions";
 import { triageFailureFor } from "./write-failure";
@@ -60,6 +60,15 @@ export interface TriageRowProps {
    * "whichever row is open"; an `"ok"` for this item is what clears the
    * typing below (issue #222 — a draft must survive a failed write). */
   lastTriage?: TaskTriageResult | null;
+  /** #631: the row's inline "new project" affordance —
+   * `shell/useProjectsWiring.ts`'s `createProject`, threaded straight to
+   * `ItemPanel` (its own prop doc carries the rest). Optional for the same
+   * "no worker, no affordance" reason every other write callback here is. */
+  onCreateProject?: (name: string) => void;
+  /** The most recent project create/patch result any view issued
+   * (`TaskState.lastProjectWrite`) — `ItemPanel`'s own prop doc carries what
+   * it is for. */
+  lastProjectWrite?: TaskProjectResult | null;
 }
 
 /** One triage-inbox row: a single line by default, the full editor when
@@ -87,6 +96,8 @@ export function TriageRow({
   onGrillMe,
   hasGrillDraft = false,
   lastTriage,
+  onCreateProject,
+  lastProjectWrite,
 }: TriageRowProps) {
   const editorId = `triage-editor-${item.id}`;
 
@@ -221,6 +232,8 @@ export function TriageRow({
           id={editorId}
           item={item}
           projects={projects}
+          onCreateProject={onCreateProject}
+          lastProjectWrite={lastProjectWrite}
           onTriage={onTriage}
           lastTriage={lastTriage}
           onGrillMe={onGrillMe}

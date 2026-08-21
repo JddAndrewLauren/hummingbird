@@ -1,15 +1,27 @@
 //! The project lane of the owned schema (ADR-0009): `projects`, `routes`,
-//! `fog` — a Route is 1:1 with its project (created with it, patched only),
-//! and Fog rows are the segments not yet definable as actions.
+//! `fog`, `project_links` (ADR-0030 decision 4, #626) — a Route is 1:1 with
+//! its project (created with it, patched only), Fog rows are the segments
+//! not yet definable as actions, and a Link is one ordered URL a project's
+//! dossier keeps in its aside.
 
 use serde::{Deserialize, Serialize};
 
-/// One project, exactly the `projects` columns of ADR-0009.
+/// One project, exactly the `projects` columns of ADR-0009, as amended by
+/// ADR-0030 decision 2 (`github_repo`, `default_context`, #625).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     /// uuid, client-supplied.
     pub id: String,
     pub name: String,
+    /// `owner/repo` only, never a URL — validated by
+    /// [`crate::is_valid_github_repo`] at every write door. `None` when the
+    /// project names no repo.
+    pub github_repo: Option<String>,
+    /// Copied onto a context-less item at the three entry points ADR-0030
+    /// decision 3 names (triage promotion, `/to-actions` minting, project
+    /// assignment) — never read live, never joined. `None` when the
+    /// project names no default.
+    pub default_context: Option<String>,
     /// ms epoch; `None` = live. Rows are never deleted, only flagged.
     pub archived_at: Option<i64>,
     pub created_at: i64,
@@ -43,5 +55,22 @@ pub struct Fog {
     pub position: i64,
     /// ms epoch; `None` = open.
     pub resolved_at: Option<i64>,
+    pub version: i64,
+}
+
+/// One project Link: a URL and an optional label, ordered within its
+/// project (ADR-0030 decision 4, #626). References `projects`, not `items`
+/// — it is not part of the item cascade machinery
+/// (`hummingbird_authority::schema::FK_CHILDREN`). Removal is flagged, never
+/// deleted, the same [`Fog`] shape this table otherwise mirrors.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectLink {
+    pub id: String,
+    pub project_id: String,
+    pub url: String,
+    pub label: Option<String>,
+    pub position: i64,
+    /// ms epoch; `None` = live.
+    pub removed_at: Option<i64>,
     pub version: i64,
 }

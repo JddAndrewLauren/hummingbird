@@ -61,6 +61,15 @@ def item(uuid, seq, title, **over):
     return row
 
 
+def project(uuid, name, **over):
+    row = {
+        "id": uuid, "name": name, "github_repo": None, "default_context": None,
+        "archived_at": None, "created_at": 1, "updated_at": 1, "version": 1,
+    }
+    row.update(over)
+    return row
+
+
 def step(uuid, item_id, body, position, **over):
     row = {
         "id": uuid, "item_id": item_id, "body": body, "done": False,
@@ -565,6 +574,84 @@ class MintTest(HelperTestCase):
                 TO_ACTIONS, ["mint", str(manifest)], check=False)
         self.assertNotEqual(0, result.returncode)
         self.assertEqual([], [r for r in requests if r["method"] == "POST"])
+
+
+class MintDefaultContextTest(HelperTestCase):
+    """ADR-0030 decision 3, copy-at-mint: a context-less action minted into a
+    project with a `default_context` is filled with it. The context is
+    copied onto the item at mint, not resolved at read time."""
+
+    PROJECT = "cccccccc-0000-4000-8000-000000000003"
+
+    def _manifest(self, tmp, entries):
+        path = Path(tmp) / "manifest.json"
+        path.write_text(json.dumps(entries))
+        return path
+
+    def _sweep(self, **project_over):
+        return sweep(projects=[project(self.PROJECT, "sell the M3", **project_over)])
+
+    def test_a_context_less_action_is_filled_with_the_projects_default_context(self):
+        ok = [{"status": 201, "body": {"id": "x"}}]
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = self._manifest(
+                tmp, [{"title": "an action", "project_id": self.PROJECT}])
+            _, requests = self.run_script(
+                TO_ACTIONS, ["mint", str(manifest)],
+                sweep_payload=self._sweep(default_context="@computer"), responses=ok)
+        body = json.loads([r for r in requests if r["method"] == "POST"][0]["data"])
+        self.assertEqual("@computer", body["context"])
+
+    def test_an_action_carrying_its_own_context_is_untouched(self):
+        ok = [{"status": 201, "body": {"id": "x"}}]
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = self._manifest(tmp, [
+                {"title": "an action", "project_id": self.PROJECT, "context": "@calls"}])
+            _, requests = self.run_script(
+                TO_ACTIONS, ["mint", str(manifest)],
+                sweep_payload=self._sweep(default_context="@computer"), responses=ok)
+        body = json.loads([r for r in requests if r["method"] == "POST"][0]["data"])
+        self.assertEqual("@calls", body["context"])
+
+    def test_a_project_with_no_default_context_leaves_context_absent(self):
+        ok = [{"status": 201, "body": {"id": "x"}}]
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = self._manifest(
+                tmp, [{"title": "an action", "project_id": self.PROJECT}])
+            _, requests = self.run_script(
+                TO_ACTIONS, ["mint", str(manifest)],
+                sweep_payload=self._sweep(default_context=None), responses=ok)
+        body = json.loads([r for r in requests if r["method"] == "POST"][0]["data"])
+        self.assertNotIn("context", body)
+
+    def test_a_projectless_action_is_untouched_even_with_a_default_context_elsewhere(self):
+        ok = [{"status": 201, "body": {"id": "x"}}]
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = self._manifest(tmp, [{"title": "a standalone action"}])
+            _, requests = self.run_script(
+                TO_ACTIONS, ["mint", str(manifest)],
+                sweep_payload=self._sweep(default_context="@computer"), responses=ok)
+        body = json.loads([r for r in requests if r["method"] == "POST"][0]["data"])
+        self.assertNotIn("context", body)
+
+    def test_ids_are_unaffected_by_the_context_fill(self):
+        # Filling a field at mint changes what is written, never which row
+        # is written, so a re-run against the same manifest addresses the
+        # same rows.
+        ok = [{"status": 201, "body": {"id": "x"}}]
+        entries = [{"title": "an action", "project_id": self.PROJECT}]
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = self._manifest(tmp, entries)
+            _, filled = self.run_script(
+                TO_ACTIONS, ["mint", str(manifest)],
+                sweep_payload=self._sweep(default_context="@computer"), responses=ok)
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = self._manifest(tmp, entries)
+            _, unfilled = self.run_script(
+                TO_ACTIONS, ["mint", str(manifest)],
+                sweep_payload=self._sweep(default_context=None), responses=ok)
+        id_of = lambda rs: json.loads([r for r in rs if r["method"] == "POST"][0]["data"])["id"]
+        self.assertEqual(id_of(filled), id_of(unfilled))
 
 
 class ArchiveTest(HelperTestCase):
