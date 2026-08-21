@@ -10,18 +10,19 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -39,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
@@ -53,13 +55,15 @@ import net.twinion.hummingbird.ui.forms.ContextField
 import net.twinion.hummingbird.ui.forms.LevelSlider
 import net.twinion.hummingbird.ui.forms.PriorityRow
 import net.twinion.hummingbird.ui.forms.ProjectField
+import net.twinion.hummingbird.ui.theme.Sky600
 import uniffi.hummingbird_ffi_mobile.CaptureDestination
 
 // The FAB's capture sheet — the design kit's own Android capture form
 // (`ui_kits/android/AndroidScreens.jsx`, `AndroidTriage`): title field with
 // the dictation mic, the energy/size sliders, the context field, the
 // details disclosure (a chevron since 2026-08-20), and the Triage/Add
-// submit pair. It opens at full height, titleless — both operator
+// submit pair — two coloured glyph squares since 2026-08-21, argued at
+// the row itself. It opens at full height, titleless — both operator
 // decisions of the same date, each argued at its own site below.
 //
 // **Full field parity with `CaptureActivity`, since operator decision
@@ -272,14 +276,20 @@ fun CaptureSheet(
                 selected = draft.size.ifEmpty { null },
                 onSelect = { viewModel.updateDraft(draft.copy(size = it.orEmpty())) },
             )
-            ContextField(
-                value = draft.context,
-                onValueChange = { viewModel.updateDraft(draft.copy(context = it)) },
-                suggestions = viewModel.formMeta.suggestedContexts,
+            // Description is the one mint field that stands open, above
+            // Context (operator decision 2026-08-21): a capture that needs
+            // a sentence of its own needs it while the words are still in
+            // the head, and a field reachable only behind a disclosure is
+            // one the hand does not reach for. The rest of the mint set
+            // stays behind the chevron.
+            OutlinedTextField(
+                value = draft.description,
+                onValueChange = { viewModel.updateDraft(draft.copy(description = it)) },
+                label = { Text("Description") },
+                modifier = Modifier.fillMaxWidth(),
             )
-
-            // Everything a mint would ask, behind one disclosure — the web
-            // capture box's own "More details", and `CaptureActivity`'s
+            // Everything else a mint would ask, behind one disclosure — the
+            // web capture box's own "More details", and `CaptureActivity`'s
             // same field set in the same order.
             // A chevron, not the words (operator decision 2026-08-20) —
             // `ic_chevron_down`, rotated a half-turn when the fields are
@@ -287,24 +297,35 @@ fun CaptureSheet(
             // design system's "Unicode as icons: never" rule. The words it
             // replaces survive as the icon's `contentDescription`, so the
             // control still names itself to a screen reader.
-            IconButton(
-                onClick = { detailsOpen = !detailsOpen },
-                modifier = Modifier.align(Alignment.CenterHorizontally),
+            //
+            // It rides at the right-hand end of the Context row rather than
+            // centred on a line of its own (operator decision 2026-08-21),
+            // which is where the web capture box already keeps it
+            // (`.hb-capture-details-toggle` in `shell/responsive.css`) — a
+            // row carrying nothing but one chevron spent a whole line of
+            // height on it. `CenterVertically` levels it with the field's
+            // box rather than its floating label.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    painterResource(R.drawable.ic_chevron_down),
-                    contentDescription = if (detailsOpen) "Fewer details" else "More details",
-                    modifier = Modifier.rotate(if (detailsOpen) 180f else 0f),
+                ContextField(
+                    value = draft.context,
+                    onValueChange = { viewModel.updateDraft(draft.copy(context = it)) },
+                    suggestions = viewModel.formMeta.suggestedContexts,
+                    modifier = Modifier.weight(1f),
                 )
+                IconButton(onClick = { detailsOpen = !detailsOpen }) {
+                    Icon(
+                        painterResource(R.drawable.ic_chevron_down),
+                        contentDescription = if (detailsOpen) "Fewer details" else "More details",
+                        modifier = Modifier.rotate(if (detailsOpen) 180f else 0f),
+                    )
+                }
             }
             if (detailsOpen) {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    OutlinedTextField(
-                        value = draft.description,
-                        onValueChange = { viewModel.updateDraft(draft.copy(description = it)) },
-                        label = { Text("Description") },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
                     ProjectField(
                         projects = projects,
                         selectedId = draft.projectId,
@@ -350,24 +371,45 @@ fun CaptureSheet(
             // [CaptureViewModel.canSubmitDraft] exists for. Both buttons
             // also read the in-flight flag: two doors to one `captureFn`
             // is two ways to mint the same words twice.
+            //
+            // Both halves are solid coloured squares carrying a glyph and
+            // no word (operator decision 2026-08-21, the same change as the
+            // web's): triage's own blue with the inbox, brand orange with
+            // the plus. The colour and the glyph are the label, so each
+            // button's `contentDescription` is the only place its gesture
+            // is named. `Sky600` is named directly rather than taken from
+            // the scheme because `tertiary` is only the light scheme's blue
+            // and one fill has to carry white content in both themes.
             val canSubmit = viewModel.canSubmitDraft() && !submitting
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                OutlinedButton(
+                Button(
                     onClick = { submit(CaptureDestination.TRIAGE) },
                     enabled = canSubmit,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Sky600,
+                        contentColor = Color.White,
+                    ),
                     modifier = Modifier.weight(1f),
                 ) {
-                    Text("Triage")
+                    Icon(
+                        painter = painterResource(R.drawable.ic_inbox),
+                        contentDescription = "Triage",
+                        modifier = Modifier.size(20.dp),
+                    )
                 }
                 Button(
                     onClick = { submit(CaptureDestination.READY) },
                     enabled = canSubmit,
                     modifier = Modifier.weight(1f),
                 ) {
-                    Text("Add")
+                    Icon(
+                        painter = painterResource(R.drawable.ic_plus),
+                        contentDescription = "Add",
+                        modifier = Modifier.size(20.dp),
+                    )
                 }
             }
         }

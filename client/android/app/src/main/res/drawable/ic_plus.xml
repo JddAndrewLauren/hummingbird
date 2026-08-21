@@ -1,0 +1,23 @@
+<!-- Lucide `plus` at 24dp — the capture surfaces' Add button, whose glyph is
+     the whole label since the submit pair became two coloured squares
+     (`CaptureBox.tsx`'s own row) — outline, 1.75px stroke, rounded caps,
+     `ic_inbox.xml`'s recipe. Drawn in white and tinted at use: icons never
+     carry colour independently of their label. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M5,12h14"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M12,5v14"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>
