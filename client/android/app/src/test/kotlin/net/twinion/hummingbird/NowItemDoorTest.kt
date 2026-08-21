@@ -120,12 +120,14 @@ class NowItemDoorTest {
         // lands can take the item off this board (a mark-done does), and a
         // selection left set at a vanished row draws no pane -- which is also
         // how the dirty-Back branch below ends up with nothing to scroll to.
+        // Three sites since the unfolded slice: a column row, a blocked row,
+        // and the wide board's own FrontierLaneBoard hand-off.
         val src = source("NowScreen.kt")
         val flat = src.replace(Regex("""\s+"""), " ")
         assertEquals(
-            "both SelectedItemCard call sites (a column row and a blocked row) must " +
-                "close the selection when a submit lands",
-            2,
+            "every SelectedItemCard hand-off (a column row, a blocked row, the wide " +
+                "board) must close the selection when a submit lands",
+            3,
             Regex("""onSubmitted = \{ viewModel\.closeItem\(\) scope\.launch \{ reload\(\) \} \}""")
                 .findAll(flat).count(),
         )

@@ -58,7 +58,7 @@ class BottomNavStructuralTest {
 
     private val navDestinations: List<NavEntry> by lazy {
         val block = mainActivitySrc
-            .substringAfter("private enum class NavDestination(")
+            .substringAfter("internal enum class NavDestination(")
             .substringBefore("\n}")
         Regex("""(\w+)\(Routes\.(\w+),\s*"[^"]*",\s*onBar\s*=\s*(true|false)\)""")
             .findAll(block)
@@ -242,11 +242,11 @@ class BottomNavStructuralTest {
         // would quietly turn "compile error" back into "same icon as
         // whatever the fallback is".
         val body = mainActivitySrc
-            .substringAfter("private fun navIcon(")
+            .substringAfter("internal fun navIcon(")
             .substringBefore("\n}")
         val enumNames = Regex("""(\w+)\(Routes\.\w+,""").findAll(
             mainActivitySrc
-                .substringAfter("private enum class NavDestination(")
+                .substringAfter("internal enum class NavDestination(")
                 .substringBefore("\n}"),
         ).map { it.groupValues[1] }.toSet()
         val named = Regex("""NavDestination\.(\w+) ->""").findAll(body)

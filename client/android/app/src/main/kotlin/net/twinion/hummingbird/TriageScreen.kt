@@ -7,9 +7,10 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -32,6 +33,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.ui.LocalWideWindow
+import net.twinion.hummingbird.ui.adaptiveGridCells
 import net.twinion.hummingbird.ui.contentMaxWidth
 import net.twinion.hummingbird.ui.theme.LocalHbDark
 
@@ -72,7 +75,8 @@ fun TriageScreen(
     val statusLine by viewModel.statusLine.collectAsState()
     val selectedId by viewModel.selectedId.collectAsState()
     val dark = LocalHbDark.current
-    val listState = rememberLazyListState()
+    val wide = LocalWideWindow.current
+    val listState = rememberLazyGridState()
 
     // The opened pane's own ViewModel, by the panel's own key — the SAME
     // instance `ItemDetailPanel` resolves, looked up here because the Back
@@ -139,7 +143,9 @@ fun TriageScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .contentMaxWidth()
+                    // Uncapped on a wide window: the grid's columns are what
+                    // the 880dp cap would otherwise fold back to one.
+                    .contentMaxWidth(capped = !wide)
                     // Top 12dp, not the outer 24dp: with the title gone the
                     // counts sit directly under the app row.
                     .padding(start = 24.dp, top = 12.dp, end = 24.dp, bottom = 24.dp),
@@ -177,13 +183,19 @@ fun TriageScreen(
                     lastScrolledSelection = selectedId
                 }
 
-                // One LazyColumn for the whole queue, the Now screen's shape:
+                // One scrollable for the whole queue, the Now screen's shape:
                 // the opened item is always index 0 when present, ABOVE the
                 // queue, which keeps rendering below it — never an early
-                // return of the editor instead of the list.
-                LazyColumn(
+                // return of the editor instead of the list. A grid rather
+                // than a list since the unfolded slice: `adaptiveGridCells`
+                // is one fixed column on the phone — today's list exactly —
+                // and adaptive columns on a wide window, with the pane and
+                // the queue's non-row entries spanning every lane.
+                LazyVerticalGrid(
+                    columns = adaptiveGridCells(),
                     state = listState,
                     verticalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     // The last row scrolls clear of the Capture FAB.
                     contentPadding = PaddingValues(bottom = 64.dp),
                 ) {
@@ -201,7 +213,13 @@ fun TriageScreen(
                     // the churn we want: item B's pane starts as item B's.
                     selectedId?.let { id ->
                         if (board?.items?.any { it.id == id } == true) {
-                            item(key = "selected-item-$id") {
+                            item(
+                                key = "selected-item-$id",
+                                // Full width whatever the column count: the
+                                // pane is the queue's one expanded editor,
+                                // not a card among cards.
+                                span = { GridItemSpan(maxLineSpan) },
+                            ) {
                                 Card(
                                     modifier = Modifier.fillMaxWidth(),
                                     colors = CardDefaults.cardColors(
@@ -240,10 +258,16 @@ fun TriageScreen(
                     }
 
                     when {
-                        current is TriageState.Loading -> item(key = "loading") {
+                        current is TriageState.Loading -> item(
+                            key = "loading",
+                            span = { GridItemSpan(maxLineSpan) },
+                        ) {
                             CircularProgressIndicator()
                         }
-                        board != null && board.items.isEmpty() -> item(key = "empty") {
+                        board != null && board.items.isEmpty() -> item(
+                            key = "empty",
+                            span = { GridItemSpan(maxLineSpan) },
+                        ) {
                             Text(
                                 "Nothing captured is waiting to be sorted.",
                                 style = MaterialTheme.typography.bodyLarge,

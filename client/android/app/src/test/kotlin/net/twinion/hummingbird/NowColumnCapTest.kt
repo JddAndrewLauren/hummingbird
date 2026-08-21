@@ -176,7 +176,7 @@ class NowColumnCapTest {
         assertTrue(
             "the chevron KDoc must sit immediately above ColumnHeader",
             Regex(
-                """ic_chevron_down\][\s\S]{0,600}?\*/\s*@Composable\s*private fun ColumnHeader\(""",
+                """ic_chevron_down\][\s\S]{0,600}?\*/\s*@Composable\s*internal fun ColumnHeader\(""",
             ).containsMatchIn(src),
         )
     }
