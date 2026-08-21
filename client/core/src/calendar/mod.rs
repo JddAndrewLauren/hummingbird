@@ -12,12 +12,18 @@
 
 mod event;
 pub mod google;
+// The host wraps the `reqwest`-backed Google transport, so it exists only in
+// builds that have one — `client/next-up` compiles this crate with
+// `default-features = false` for `rank()` alone (see `core/Cargo.toml`'s
+// `[features]`), and there is no transport for it to hold there.
+#[cfg(feature = "reqwest-transport")]
 mod host;
 mod query;
 pub mod selection;
 mod snapshot;
 
 pub use event::{EventRecord, EventStatus, EventWhen};
+#[cfg(feature = "reqwest-transport")]
 pub use host::{
     outcome_name, CalendarEventsResponse, CalendarHostCore, CalendarListResponse,
     CALENDAR_POLL_INTERVAL_MS,
