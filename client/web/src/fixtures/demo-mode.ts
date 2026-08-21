@@ -26,7 +26,8 @@
 // amendment.*
 //
 // *Amended 2026-08-20 (#456): `NowScreen` deleted its `demo` prop and the
-// branch above with it — it renders `RealFrontier` unconditionally now, on
+// branch above with it — it renders the board (`FrontierBoard.tsx`, which
+// that component was later extracted into) unconditionally now, on
 // every world. The board world's reason for existing (above) is historical;
 // it still stands, since #456 did not restore the kit world's reach into
 // Now's centre column.*

@@ -12,7 +12,8 @@
 // before either was an axis.
 //
 // *Amended 2026-08-20 (#456): `NowScreen` deleted its `demo` prop and the
-// branch above with it — it renders `RealFrontier` unconditionally now, on
+// branch above with it — it renders the board (`FrontierBoard.tsx`, which
+// that component was later extracted into) unconditionally now, on
 // every world. The board world above is unaffected: it is still what this
 // module seeds and still the only populated render of Now's centre column
 // the visual gate photographs.*
@@ -153,7 +154,7 @@
 // test, and it runs in CI after the build.
 
 import { TRIPS_CALENDAR_BINDING_KEY } from "../calendar/selection";
-import type { BindingDTO, FogDTO, LedgerRowDTO, ProjectDTO, RecallRowDTO, TaskItemDTO } from "../store/protocol";
+import type { BindingDTO, LedgerRowDTO, ProjectDTO, RecallRowDTO, TaskItemDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
 import { DEMO_DATA } from "./demo-data";
 import {
@@ -279,7 +280,14 @@ function project(seed: (typeof PROJECT_SEEDS)[number], loadedAt: number): Projec
 /** The startable fourteen — production's measured twelve, plus departure 5's
  * two `@homework` items. Contexts here plus the captures' below sum to
  * production's own spread exactly on every value production actually held;
- * `@homework` is the one column this fixture adds. See the header's table. */
+ * `@homework` is the one column this fixture adds. See the header's table.
+ *
+ * Three of them carry "House repairs" (`b-p1`), and one "Autumn garden
+ * clear-up" (`b-p2`): the project dossier's centre column is this same
+ * frontier filtered to the open project, so a project with one card would
+ * photograph a board too thin to read the columns off. Changing a
+ * `projectId` here therefore moves what BOTH the `project` axis on Now and
+ * the dossier's own board show. */
 const FRONTIER_SEEDS: Seed[] = [
   {
     id: "b-f1",
@@ -315,6 +323,7 @@ const FRONTIER_SEEDS: Seed[] = [
   },
   {
     id: "b-f4",
+    projectId: "b-p1",
     title: "Draft the loft insulation quote request",
     stage: "ready",
     agoMs: 2 * DAY,
@@ -356,6 +365,7 @@ const FRONTIER_SEEDS: Seed[] = [
   },
   {
     id: "b-f8",
+    projectId: "b-p1",
     title: "Clear the gutters before the storms",
     stage: "ready",
     agoMs: 8 * DAY,
@@ -787,13 +797,15 @@ export function buildDemoTaskState(): TaskState {
     // board seeds no item on an external wait, and this list feeds no
     // rendering of its own — a seeded row would show up nowhere.
     externallyBlocked: [],
-    // #629: item detail's checklist read, reused by the dossier's action
-    // checklist. `b-f1` ("Fit the new tap washer", the same row
-    // `actionsByProject` below repositions onto "House repairs") carries
-    // two steps, one already ticked — the "expanded action" visual case.
-    // `b-p1-action-2` carries none at all — the "action with no steps"
-    // case — so both empty-checklist and populated-checklist rows ship
-    // photographed rather than only the happy path.
+    // Item detail's checklist read (issue #96), reused by the dossier's
+    // action checklist (#629). `b-f1` ("Fit the new tap washer", the same
+    // row `actionsByProject` below repositions onto "House repairs")
+    // carries two steps, one already ticked, so the panel's populated
+    // checklist ships photographed wherever that item is opened — on Now,
+    // and on "House repairs"' own board, whose slot renders the same
+    // `ItemPanel`. `b-p1-action-2` carries none at all — the "action with
+    // no steps" case — so both empty-checklist and populated-checklist
+    // rows ship photographed rather than only the happy path.
     stepsByItem: {
       "b-f1": [
         {
@@ -815,7 +827,6 @@ export function buildDemoTaskState(): TaskState {
           version: 1,
         },
       ],
-      "b-p1-action-2": [],
     },
     // Split exactly as the real answer splits it (#624): an archived project
     // is absent in the mirror and arrives on the `archivedProjects` half, so
@@ -896,72 +907,6 @@ export function buildDemoTaskState(): TaskState {
       },
     },
     lastRouteWrite: null,
-    // #628: the dossier reading column's fog card, populated for the
-    // project the visual gate actually opens ("House repairs") — an empty
-    // map here left the card photographing only "Reading fog…", so the
-    // row layout (question text, move pair, Edit, Resolve inside the
-    // reading column) shipped unphotographed at every width. Two open
-    // rows, position order.
-    fogByProject: {
-      "b-p1": [
-        {
-          id: "b-p1-fog-1",
-          projectId: "b-p1",
-          question: "Does the deck need a permit, or does the fence-line survey cover it?",
-          position: 0,
-          resolvedAt: null,
-          version: 1,
-        },
-        {
-          id: "b-p1-fog-2",
-          projectId: "b-p1",
-          question: "Which contractor is actually available before the weather turns?",
-          position: 1,
-          resolvedAt: null,
-          version: 1,
-        },
-      ] satisfies FogDTO[],
-    },
-    lastFogWrite: null,
-    // #629: the dossier's ordered action list, populated for "House
-    // repairs" ("b-p1") — two actions, route order — and explicitly
-    // EMPTY (not absent) for "Autumn garden clear-up" ("b-p2"): the "this
-    // project has no actions yet" visual case, distinct from the
-    // not-read-yet placeholder an absent key would show instead.
-    // `b-p1-action-2` is a fixture-only row (no matching `frontier` seed —
-    // its checklist has never needed one of its own) so the card can show
-    // a second, unexpanded action alongside the one carrying steps.
-    actionsByProject: {
-      "b-p1": [
-        { ...frontier[0], projectPos: 0 },
-        {
-          id: "b-p1-action-2",
-          seq: 900,
-          title: "Order the replacement fence panels",
-          description: null,
-          stage: "ready",
-          size: "normal",
-          energy: null,
-          context: "@computer",
-          priority: 0,
-          projectId: "b-p1",
-          projectPos: 1,
-          deadline: null,
-          scheduledDate: null,
-          source: null,
-          sourceKey: null,
-          sourceUrl: null,
-          archivedAt: null,
-          createdAt: loadedAt - 3 * DAY,
-          updatedAt: loadedAt - 3 * DAY,
-          version: 1,
-          pending: false,
-        },
-      ],
-      "b-p2": [],
-    },
-    lastActionReorder: null,
-    lastStepWrite: null,
     // Piece 3: every standing question's read, built by `demo-pane-reads.ts`
     // — the kit world's own `demoQuestionInputs` called the same functions
     // before #452 folded its content into this seed and #455 deleted that

@@ -270,8 +270,9 @@ export interface CaptureFieldsWire {
 
 /** One `steps` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
  * field mirror of `hummingbird_domain::Step`, camelCased. Item detail's
- * checklist (issue #96, S10), and — since #629 — a project's Action
- * checklist too: `createStep`/`patchStep` below are its write pair. */
+ * checklist (issue #96, S10). Read-only over this protocol: the `steps`
+ * push below is the whole of it, and the write pair the project dossier's
+ * own action checklist used to send went with that checklist. */
 export interface StepDTO {
   id: string;
   itemId: string;
@@ -576,21 +577,6 @@ export interface RouteDTO {
   destination: string | null;
   notes: string | null;
   updatedAt: number;
-  version: number;
-}
-
-/** One `fog` row (#628, ADR-0030 decision 1), as the web host's JSON/DTO
- * shape — a 1:1 field mirror of `hummingbird_domain::Fog`, camelCased. The
- * dossier reading column's read: a segment of a project's Route that
- * cannot yet be defined as an action, carrying the open question that
- * blocks defining it. Resolved by flagging `resolvedAt`, never deleted —
- * `null` = open. */
-export interface FogDTO {
-  id: string;
-  projectId: string;
-  question: string;
-  position: number;
-  resolvedAt: number | null;
   version: number;
 }
 
@@ -970,96 +956,6 @@ export type TaskWorkerRequest =
       notes: string | null;
       nowMs: number;
     }
-  /** #628's per-project open-fog read — the dossier reading column, same
-   * "only what a view actually asked about" shape as `getProjectLinks`. */
-  | { type: "getFog"; projectId: string }
-  /** #628's fog create: one `POST /api/fog`, enqueued durably like every
-   * other mutation (ADR-0030 decision 1). `question` is trimmed and an
-   * empty one refused in `client/ffi-web/src/task_host.rs`'s `create_fog`
-   * before it can reach `Core` — the authority 400s on
-   * `question.is_empty()`. Same caller-mints-`seed` contract as
-   * `createProjectLink`: this seed's hash becomes the segment's id. */
-  | {
-      type: "createFog";
-      seed: string;
-      projectId: string;
-      question: string;
-      position: number;
-      nowMs: number;
-    }
-  /** #628's fog patch — rewording, repositioning and resolving/reopening a
-   * segment all share this one message. `current` is the caller's own
-   * last-known copy of the row (from the `fog` push) — the CAS `base` a
-   * 409 is diffed against. `resolvedAtTouched` distinguishes "leave this
-   * field alone" from "set it, possibly to `null`" — the same
-   * double-`Option` `FogPatch` itself carries, flattened for the wire
-   * exactly like `patchProjectLink`'s `removedAtTouched`. */
-  | {
-      type: "patchFog";
-      seed: string;
-      current: FogDTO;
-      question: string | null;
-      position: number | null;
-      resolvedAtTouched: boolean;
-      resolvedAt: number | null;
-      nowMs: number;
-    }
-  /** #629's per-project Action read — the dossier's ordered action list,
-   * same "only what a view actually asked about" shape as `getFog`. An
-   * Action is an ordinary item, so the answer carries `TaskItemDTO` rows
-   * (including `pending`), not a bespoke shape. */
-  | { type: "getActions"; projectId: string }
-  /** #629's reorder control — moves one Action's `projectPos` through one
-   * CAS `PATCH /api/items/:id`. `current` is the caller's own last-known
-   * copy of the row (from the `actions` push) — the CAS `base` a 409 is
-   * diffed against. `projectId` rides alongside it rather than being read
-   * off `current.projectId`: that field is nullable on `TaskItemDTO` in
-   * general (an ordinary item need not carry a project), so the result's
-   * own scoping is the caller's to state explicitly, not derived from a
-   * value this message shape cannot guarantee is set. The server never
-   * renumbers any other row; a caller reordering a whole list sends one of
-   * these per Action whose position actually changed. */
-  | {
-      type: "reorderAction";
-      seed: string;
-      projectId: string;
-      current: TaskItemDTO;
-      position: number;
-      nowMs: number;
-    }
-  /** #629's step create: one `POST /api/steps`, enqueued durably like
-   * every other mutation. `body` is trimmed and an empty one refused in
-   * `client/ffi-web/src/task_host.rs`'s `create_step` before it can reach
-   * `Core` — the authority 400s on `body.is_empty()`. Same
-   * caller-mints-`seed` contract as `createFog`: this seed's hash becomes
-   * the Step's id. */
-  | {
-      type: "createStep";
-      seed: string;
-      itemId: string;
-      body: string;
-      position: number;
-      nowMs: number;
-    }
-  /** #629's step patch — ticking, rewording, repositioning, or
-   * flagging/clearing a Step's deletion (ADR-0020), all share this one
-   * message. `current` is the caller's own last-known copy of the row
-   * (from the `steps` push) — the CAS `base` a 409 is diffed against.
-   * `deletedAtTouched` distinguishes "leave this field alone" from "set
-   * it, possibly to `null`" — the same double-`Option` `StepPatch` itself
-   * carries, flattened for the wire exactly like `patchFog`'s
-   * `resolvedAtTouched`. */
-  | {
-      type: "patchStep";
-      seed: string;
-      current: StepDTO;
-      body: string | null;
-      done: boolean | null;
-      position: number | null;
-      deletedAtTouched: boolean;
-      deletedAt: number | null;
-      nowMs: number;
-    }
   | { type: "isPending"; itemId: string }
   | {
       type: "runSync";
@@ -1340,70 +1236,6 @@ export type TaskWorkerResponse =
       type: "patchRouteResult";
       seed: string;
       projectId: string;
-      kind: "ok" | "failed" | "busy";
-      error: string | null;
-    }
-  /** Answers `getFog` (#628) — the `projectLinks`-style per-project read,
-   * keyed by the requested `projectId`. Only **open** rows: a resolved
-   * segment is retained but never answers here (`Core::open_fog_for`'s own
-   * doc). */
-  | { type: "fog"; projectId: string; fog: FogDTO[] }
-  /** #628's fog create result, matched back by `seed`. Same
-   * broadcast-not-reply, enqueued-not-saved contract as
-   * `createProjectLinkResult`. */
-  | {
-      type: "createFogResult";
-      seed: string;
-      projectId: string;
-      kind: "ok" | "failed" | "busy";
-      id: string | null;
-      error: string | null;
-    }
-  /** #628's fog patch result (rewording, repositioning, resolving,
-   * reopening), matched back by `seed`. Same handled-not-swallowed 409
-   * contract as `patchProjectLinkResult`. */
-  | {
-      type: "patchFogResult";
-      seed: string;
-      projectId: string;
-      kind: "ok" | "failed" | "busy";
-      error: string | null;
-    }
-  /** Answers `getActions` (#629) — the `fog`-style per-project read, keyed
-   * by the requested `projectId`. An Action is an ordinary item, so this
-   * carries `TaskItemDTO` rows, `projectPos` order. */
-  | { type: "actions"; projectId: string; actions: TaskItemDTO[] }
-  /** #629's reorder result, matched back by `seed`. Same
-   * handled-not-swallowed 409 contract as `patchFogResult`: `projectId`
-   * comes from the caller's own `current.projectId`, since an Action
-   * carries its project on the row itself, unlike a Fog segment's own
-   * message which threads it separately. */
-  | {
-      type: "reorderActionResult";
-      seed: string;
-      projectId: string;
-      itemId: string;
-      kind: "ok" | "failed" | "busy";
-      error: string | null;
-    }
-  /** #629's step create result, matched back by `seed`. Same
-   * broadcast-not-reply, enqueued-not-saved contract as
-   * `createFogResult`. */
-  | {
-      type: "createStepResult";
-      seed: string;
-      itemId: string;
-      kind: "ok" | "failed" | "busy";
-      id: string | null;
-      error: string | null;
-    }
-  /** #629's step patch result (ticking, rewording, repositioning,
-   * deleting), matched back by `seed`. Same handled-not-swallowed 409
-   * contract as `patchFogResult`. */
-  | {
-      type: "patchStepResult";
-      seed: string;
-      itemId: string;
       kind: "ok" | "failed" | "busy";
       error: string | null;
     }

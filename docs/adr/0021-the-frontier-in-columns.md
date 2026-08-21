@@ -52,6 +52,26 @@ nowhere else now that `NOTES.md` is gone.
 Now's centre column renders the frontier as **columns** grouped by an axis the
 reader chooses: **Context**, **Project**, **Size**, **Energy**.
 
+*Amended 2026-08-21: the board has a **second surface**. An open project's
+dossier renders this same board given only that project's items, in place of
+the ordered action list and fog card ADR-0030's own slices put there — a
+project should read as "what can I do on this, right now" rather than as a
+records page. Three consequences, all of them this decision's own rules
+applied rather than relaxed. (a) The **Project axis is not offered there**,
+for exactly the reason delegation is not one of the four here: on a
+single-project board it produces one real column and nothing else. The
+vocabulary is unchanged — the subset is a rendering prop on
+`FrontierColumns`, and a stored axis outside it degrades to the default the
+same way an unrecognised one does. (b) The board became a component of its
+own (`client/web/src/screens/FrontierBoard.tsx`, extracted verbatim from
+`NowScreen.tsx`) rather than being composed a second time from
+`FrontierColumns`: the optimistic-fallback dance, the capture-vs-action slot
+of decision 7 and the Blocked section are precisely the "second
+implementation" this ADR refuses to grow. (c) The **filter is a TS
+re-slice**, not a decision — an identity comparison against a stored
+`project_id`, with ordering, grouping and faceting still flowing through the
+seam untouched, so ADR-0025's carve-out is unaffected.*
+
 **Why these four, and why they are the licensed set.** `CONTEXT.md`'s
 **Delegation axis** entry already names them: "the fourth axis, alongside
 **size**, **energy** and context". Three of that entry's four axes are
@@ -238,6 +258,16 @@ a preference that cannot persist still applies for the session.
 preference for (see the amendment to the Consequences below). The idiom is
 unchanged and `shell/rail-collapse.ts` still shows it; the `StorageLike` this
 decision's modules inject now comes from `client/web/src/screens/storage.ts`.*
+
+*Amended 2026-08-21: with the board on two surfaces (decision 1's own
+amendment), `<screen>` in those keys is now load-bearing rather than
+decorative — the project board reads and writes `hb.projects.*`, Now
+`hb.now.*`, so an axis chosen on a project cannot re-group Now. It stops
+there deliberately: the projects keys are shared by every project, not one
+pair per project, because the prune-against-live-columns write means
+per-project collapse entries would be exactly the unbounded key accretion
+this decision keeps out of `settings`. An axis is the preference worth
+remembering; a collapsed column on another project is not.*
 
 **Why never the `settings` table.** [ADR-0015](0015-the-standing-question-read-contract.md)
 and [ADR-0017](0017-the-standing-question-surface-axis.md) both rejected it for

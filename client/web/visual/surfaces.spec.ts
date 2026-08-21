@@ -509,20 +509,21 @@ for (const theme of THEMES) {
       // otherwise ship unphotographed at every width and in both themes.
       // What this proves is that the frame, the two-column skeleton and the
       // back affordance survive the phone form — exactly where a `TwoColumn`
-      // is most likely to overflow — and, since #626, that the aside's
-      // POPULATED links card does too: the fixture seeds real links onto
-      // "House repairs", so the row layout (ellipsised URL, the move pair,
-      // Edit, Remove, all inside the narrow `Aside`) is in every capture
-      // rather than a "Reading links…" placeholder. Since #627, the reading
-      // column's POPULATED Route card does too — the fixture seeds a real
-      // destination/notes pair onto the same project. Since #628, so does
-      // the reading column's fog card — the fixture seeds two open
-      // questions onto the same project. Since #629, so does the action
-      // list — two actions, route order, one carrying steps and one
-      // carrying none, so both an expanded action's populated checklist
-      // and its empty-checklist sibling ship photographed. Since #630, the
-      // aside's last placeholder is real too — the archive card's confirm
-      // step, opened below and photographed on its own.
+      // is most likely to overflow — and that the aside's four POPULATED
+      // record cards do too: the fixture seeds real links and a real
+      // destination/notes pair onto "House repairs", so the row layouts
+      // (ellipsised URL, the move pair, Edit, Remove, all inside the narrow
+      // `Aside`) are in every capture rather than a "Reading links…"
+      // placeholder, and #630's archive confirm step is photographed on its
+      // own below.
+      //
+      // The centre column is now Now's board filtered to this project, so
+      // these captures are also the board's second surface: the axis
+      // switcher minus the Project button, the columns at a project's own
+      // (much smaller) card count, and — in the third capture — the
+      // selected-item slot open above them. The fixture assigns three
+      // frontier items and one capture to "House repairs" precisely so this
+      // reads as a board rather than a single card.
       await openApp(page, theme, "board");
       await show(page, "Projects", testInfo.project.name);
       await page.getByRole("heading", { level: 3, name: "House repairs" }).click();
@@ -541,42 +542,50 @@ for (const theme of THEMES) {
       await expect(page.getByLabel("Destination")).toHaveValue(
         "The deck is rebuilt, permitted and passes inspection.",
       );
-      // Same guarantee for the fog card (#628).
+      // Same guarantee for the board: this project's own items are on it,
+      // and another project's are not — a filter regression would otherwise
+      // photograph the whole frontier and still pass.
+      // By card, not by text: the board fixture also seeds a failed act
+      // naming this same item, so its stranded-write alert carries the title
+      // too and a bare text locator resolves to two elements.
+      await expect(page.getByRole("button", { name: /^Fit the new tap washer/ })).toBeVisible();
       await expect(
-        page.getByText("Does the deck need a permit, or does the fence-line survey cover it?"),
+        page.getByRole("button", { name: /^Clear the gutters before the storms/ }),
       ).toBeVisible();
-      // Same guarantee for the action list (#629): both actions render,
-      // route order.
-      await expect(page.getByRole("button", { name: "Fit the new tap washer" })).toBeVisible();
-      await expect(page.getByRole("button", { name: "Order the replacement fence panels" })).toBeVisible();
+      await expect(page.getByRole("button", { name: /^Sort the shed shelves/ })).toHaveCount(0);
+      // And the chrome that makes it a board, minus the axis that would be
+      // one column here.
+      // `exact`, both of them: the nav rail's own "Projects" entry and this
+      // screen's cards otherwise match the substring.
+      await expect(
+        page.getByRole("button", { name: "Context", exact: true, pressed: true }),
+      ).toBeVisible();
+      await expect(page.getByRole("button", { name: "Project", exact: true })).toHaveCount(0);
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
         path: `visual/.captures/projects-dossier-${testInfo.project.name}-${theme}.png`,
         fullPage: false,
       });
 
-      // #629: selecting an action expands its steps checklist inline
-      // beneath the row, never into the aside — the "expanded action" and
-      // "action with no steps" visual cases. A second capture rather than
-      // overwriting the first, so both the closed and the open state stay
-      // reviewable.
-      await page.getByRole("button", { name: "Fit the new tap washer" }).click();
+      // ADR-0021 decision 7 on this surface: selecting a card expands the
+      // item's panel ABOVE the columns, which stay standing under it. A
+      // second capture rather than overwriting the first, so both the closed
+      // and the open state stay reviewable — and this is the one that
+      // photographs the panel inside a project's narrower centre column.
+      // `b-f1` carries two steps in the fixture, so the panel's checklist is
+      // populated here rather than empty.
+      await page.getByRole("button", { name: /^Fit the new tap washer/ }).click();
       await expect(page.getByText("Turn off the stopcock")).toBeVisible();
-      await expect(page.getByText("Buy a washer that matches the old one")).toBeVisible();
+      await expect(page.getByRole("button", { name: "Close item detail" })).toBeVisible();
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
-        path: `visual/.captures/projects-dossier-action-expanded-${testInfo.project.name}-${theme}.png`,
+        path: `visual/.captures/projects-dossier-slot-open-${testInfo.project.name}-${theme}.png`,
         fullPage: false,
       });
 
-      await page.getByRole("button", { name: "Fit the new tap washer" }).click();
-      await page.getByRole("button", { name: "Order the replacement fence panels" }).click();
-      await expect(page.getByText("No steps on this action yet.")).toBeVisible();
-      await expectNoHorizontalOverflow(page);
-      await page.screenshot({
-        path: `visual/.captures/projects-dossier-action-no-steps-${testInfo.project.name}-${theme}.png`,
-        fullPage: false,
-      });
+      // Shut again, so the archive capture below is the ordinary dossier and
+      // not the dossier with a panel open across it.
+      await page.getByRole("button", { name: "Close item detail" }).click();
 
       // #630: the archive card's confirm dialog — the last placeholder this
       // aside carried. "House repairs" holds live items in the fixture's own
@@ -591,18 +600,26 @@ for (const theme of THEMES) {
       });
     });
 
-    test("projects: a dossier with no actions", async ({ page }, testInfo) => {
-      // #629: "Autumn garden clear-up" is the fixture's project with no
-      // actions at all — the empty state must say so rather than looking
-      // like an unanswered read forever.
+    test("projects: a dossier whose board is empty", async ({ page }, testInfo) => {
+      // The board's empty state, which must say "in this project" rather
+      // than Now's global "Nothing to start" — a project with nothing
+      // startable is not a claim about the whole frontier.
+      //
+      // The archived "Sell the old bike" is the fixture's project with no
+      // items at all, which is also honest: archiving cascades onto a
+      // project's live items (ADR-0030 decision 5), so an archived project
+      // with an empty board is the state the app really produces. Reaching
+      // it needs the grid's Show-archived toggle, so this capture covers the
+      // archived dossier too — the `archived` badge included.
       await openApp(page, theme, "board");
       await show(page, "Projects", testInfo.project.name);
-      await page.getByRole("heading", { level: 3, name: "Autumn garden clear-up" }).click();
-      await expect(page.getByRole("heading", { level: 2, name: "Autumn garden clear-up" })).toBeVisible();
-      await expect(page.getByText("No actions on this Route yet.")).toBeVisible();
+      await page.getByRole("switch", { name: "Show archived" }).click();
+      await page.getByRole("heading", { level: 3, name: "Sell the old bike" }).click();
+      await expect(page.getByRole("heading", { level: 2, name: "Sell the old bike" })).toBeVisible();
+      await expect(page.getByText("Nothing startable in this project")).toBeVisible();
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
-        path: `visual/.captures/projects-dossier-no-actions-${testInfo.project.name}-${theme}.png`,
+        path: `visual/.captures/projects-dossier-empty-board-${testInfo.project.name}-${theme}.png`,
         fullPage: false,
       });
     });
@@ -616,7 +633,8 @@ for (const theme of THEMES) {
       // startable actions, and #418's stranded-triage alert — was invisible
       // to this gate from the day it landed. Decision 8 recorded that; this
       // closes it. (#456 later deleted that branch entirely — `NowScreen`
-      // renders `RealFrontier` unconditionally now — but the board world's
+      // renders the board unconditionally now (`FrontierBoard.tsx` since the
+      // project dossier began sharing it) — but the board world's
       // populated render below is still the only one this gate photographs.)
       //
       // The fixture mirrors production's measured spread

@@ -95,8 +95,8 @@ describe("buildDemoTaskState — production's shape, none of its content", () =>
     expect(state.archivedProjects?.map((p) => p.id)).toEqual(["b-p3"]);
     expect(state.archivedProjects?.every((p) => p.archivedAt !== null)).toBe(true);
     expect(tally(board.map((i) => i.projectId))).toEqual({
-      "(none)": 27,
-      "b-p1": 2,
+      "(none)": 25,
+      "b-p1": 4,
       "b-p2": 3,
     });
   });

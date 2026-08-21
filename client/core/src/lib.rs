@@ -1590,8 +1590,11 @@ where
     /// any other row on the client's behalf — a caller reordering a whole
     /// list calls this once per Action whose position actually changed,
     /// same "swap two adjacent rows, two CAS patches" gesture
-    /// `ProjectsScreen`'s `FogCard`/`LinksCard` already use for their own
-    /// reorder control.
+    /// `ProjectsScreen`'s `LinksCard` already uses for its own reorder
+    /// control. **The web has no caller since the project dossier's centre
+    /// column became the frontier board** — its ordered action list, this
+    /// method's one web reader, went with it; `/to-actions` and the other
+    /// clients still write `project_pos`.
     ///
     /// Overlaid immediately, exactly [`Core::act`]'s own contract — unlike
     /// the no-overlay project-lane writes ([`Core::patch_route`]/

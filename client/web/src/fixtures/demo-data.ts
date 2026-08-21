@@ -105,7 +105,7 @@ export const DEMO_DATA: DemoData = {
     // ION-118's title is visual/surfaces.spec.ts's KIT_ONLY_TEXT constant —
     // but the invariant that comment used to describe no longer holds. #456
     // deleted NowScreen's kit-only hero card and "Also startable" list (its
-    // only render path now is RealFrontier, against the live — normally
+    // only render path now is the frontier board, against the live — normally
     // empty — TaskState, under `?demo=kit` too), so no kit-world item can
     // render on Now, the landing screen the world-identity check reads, any
     // more. Nothing in this file currently opens the kit world at all
