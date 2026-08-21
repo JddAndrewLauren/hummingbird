@@ -83,7 +83,7 @@ use hummingbird_core::decisions::panes::inputs::{
 };
 use hummingbird_core::decisions::panes::zone::{ZoneFact, ZoneFacts, ZoneQuery};
 use hummingbird_core::decisions::panes::{
-    github, kimi, race, reachability, uptime, vacation, waste, weekend,
+    github, homework, kimi, race, reachability, uptime, vacation, waste, weekend,
 };
 use hummingbird_core::pane::PaneEnvelope;
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
@@ -2001,6 +2001,7 @@ fn map_surface(surface: MobileSurface) -> Surface {
 /// against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum MobileStandingQuestion {
+    Homework,
     Waste,
     Weekend,
     Vacation,
@@ -2015,6 +2016,7 @@ pub enum MobileStandingQuestion {
 /// drift gate this section's header describes.
 fn map_standing_question(question: StandingQuestion) -> MobileStandingQuestion {
     match question {
+        StandingQuestion::Homework => MobileStandingQuestion::Homework,
         StandingQuestion::Waste => MobileStandingQuestion::Waste,
         StandingQuestion::Weekend => MobileStandingQuestion::Weekend,
         StandingQuestion::Vacation => MobileStandingQuestion::Vacation,
@@ -2770,6 +2772,70 @@ fn map_reachability_facts(facts: reachability::ReachabilityFacts) -> MobileReach
     }
 }
 
+/// [`homework::HomeworkItem`], mirrored. `description` is `None` on every
+/// entry but the winner — the core's own trim, carried through rather than
+/// re-decided here.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileHomeworkItem {
+    pub id: String,
+    pub title: String,
+    pub deadline: Option<String>,
+    pub description: Option<String>,
+}
+
+/// [`homework::HomeworkFacts`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileHomeworkFacts {
+    pub winner: Option<MobileHomeworkItem>,
+    pub others: Vec<MobileHomeworkItem>,
+    /// Whole civil days to the winner's deadline — negative when overdue,
+    /// `0` today. **The number this client writes its own sentence from**
+    /// (`PaneAnswers.kt`'s `homeworkCollapsedHeadline`): ADR-0025 crosses
+    /// facts, never sentences.
+    pub days_away: Option<i64>,
+}
+
+/// [`homework::HomeworkGap`], mirrored. One arm, and it is the zone
+/// bridge's own — see that module's doc for why "nothing open" is an
+/// answer rather than a gap.
+#[derive(Debug, Clone, Copy, PartialEq, uniffi::Enum)]
+pub enum MobileHomeworkGap {
+    UnresolvableZone,
+}
+
+/// [`homework::HomeworkResolved`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobileHomeworkResolved {
+    Facts { facts: MobileHomeworkFacts },
+    Gap { gap: MobileHomeworkGap },
+}
+
+fn map_homework_item(item: homework::HomeworkItem) -> MobileHomeworkItem {
+    MobileHomeworkItem {
+        id: item.id,
+        title: item.title,
+        deadline: item.deadline,
+        description: item.description,
+    }
+}
+
+fn map_homework_resolved(resolved: homework::HomeworkResolved) -> MobileHomeworkResolved {
+    match resolved {
+        homework::HomeworkResolved::Facts(facts) => MobileHomeworkResolved::Facts {
+            facts: MobileHomeworkFacts {
+                winner: facts.winner.map(map_homework_item),
+                others: facts.others.into_iter().map(map_homework_item).collect(),
+                days_away: facts.days_away,
+            },
+        },
+        homework::HomeworkResolved::Gap { gap } => MobileHomeworkResolved::Gap {
+            gap: match gap {
+                homework::HomeworkGap::UnresolvableZone => MobileHomeworkGap::UnresolvableZone,
+            },
+        },
+    }
+}
+
 /// One pane's decided fact set, keyed by its question — the union
 /// [`MobileRankedPane::facts`] carries. Two arms are `Option`al for the two
 /// questions whose facts genuinely may not exist yet: `Vacation`'s facts
@@ -2786,6 +2852,7 @@ fn map_reachability_facts(facts: reachability::ReachabilityFacts) -> MobileReach
 /// [`MobileWasteSetup`].
 #[derive(Debug, Clone, PartialEq, uniffi::Enum)]
 pub enum MobilePaneFacts {
+    Homework { resolved: MobileHomeworkResolved },
     Waste { setup: MobileWasteSetup, resolved: MobileWasteResolved },
     Weekend { resolved: MobileWeekendResolved },
     Vacation { resolved: Option<MobileVacationResolved> },
@@ -2986,17 +3053,30 @@ fn to_pane_item_facts(item: &hummingbird_domain::Item) -> PaneItemFacts {
     }
 }
 
-/// `[...frontier, ...blocked.map(e => e.item)]` — `NowScreen.tsx::
-/// realQuestionInputs`'s own union, matched here rather than `frontier`
-/// alone: [`hummingbird_core::Core::frontier`] deliberately excludes a
+/// Every live item this device knows about — `NowScreen.tsx::
+/// realQuestionInputs`'s own union, matched here field for field.
+///
+/// `frontier ∪ blocked` was the whole of it at #537:
+/// [`hummingbird_core::Core::frontier`] deliberately excludes a
 /// relation-blocked item ([`hummingbird_core::Core::blocked`] is the
 /// separate section for those), so a due/scheduled item that happens to be
 /// relation-blocked would silently vanish from the weekend pane's merge
 /// without this — a per-client divergence in a sunk decision's own inputs
 /// (#537 review). A blocked entry's own blockers never join this list:
-/// only the blocked item itself is a due/scheduled candidate, exactly as
-/// `entry.item` (never `entry.blockedByTitles`) is the only thing
-/// `realQuestionInputs` reads off each `blocked` entry.
+/// only the blocked item itself is a candidate, exactly as `entry.item`
+/// (never `entry.blockedByTitles`) is the only thing `realQuestionInputs`
+/// reads off each `blocked` entry.
+///
+/// **#675 added the triage inbox and the grilling queue.** The homework
+/// pane's subject is the operator's own items and its reading of "open"
+/// includes everything not yet triaged — a captured piece of homework is
+/// still homework. The two surfaces must widen together or they answer
+/// differently about the same mirror, which is the divergence #537's
+/// review was about in the first place. The weekend pane was pinned
+/// against the widening first (`weekend.rs`'s `MERGED_STAGES`); a question
+/// added later that reads `items` owes the same explicit filter, because
+/// this list is "every live item", never "the items your pane should
+/// consider".
 ///
 /// Factored out of [`mobile_pane_inputs`] so it is unit-testable without a
 /// synced [`Core`]: a relation-blocked item only ever lands in the local
@@ -3005,10 +3085,14 @@ fn to_pane_item_facts(item: &hummingbird_domain::Item) -> PaneItemFacts {
 fn pane_item_facts(
     frontier: &[hummingbird_domain::Item],
     blocked: &[(hummingbird_domain::Item, Vec<hummingbird_domain::Item>)],
+    triage_inbox: &[hummingbird_domain::Item],
+    grilling: &[hummingbird_domain::Item],
 ) -> Vec<PaneItemFacts> {
     frontier
         .iter()
         .chain(blocked.iter().map(|(item, _blockers)| item))
+        .chain(triage_inbox.iter())
+        .chain(grilling.iter())
         .map(to_pane_item_facts)
         .collect()
 }
@@ -3028,7 +3112,12 @@ fn mobile_pane_inputs(
     pane_reads.insert(waste::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(waste::SOURCE, now_ms)));
     pane_reads.insert(race::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(race::SOURCE, now_ms)));
     let bindings: Vec<BindingFact> = core.bindings().iter().map(to_binding_fact).collect();
-    let items: Vec<PaneItemFacts> = pane_item_facts(&core.frontier(), &core.blocked());
+    let items: Vec<PaneItemFacts> = pane_item_facts(
+        &core.frontier(),
+        &core.blocked(),
+        &core.triage_inbox(),
+        &core.grilling_items(),
+    );
     PaneInputs {
         now_ms,
         // Always `Some`: unlike the web's async table read, `Core::bindings`
@@ -3071,6 +3160,9 @@ fn mobile_pane_facts_of(
     zone: &ZoneFacts,
 ) -> MobilePaneFacts {
     match question {
+        StandingQuestion::Homework => MobilePaneFacts::Homework {
+            resolved: map_homework_resolved(homework::homework_facts(inputs, zone)),
+        },
         StandingQuestion::Waste => MobilePaneFacts::Waste {
             setup: map_waste_setup(waste::waste_setup(inputs)),
             resolved: map_waste_resolved(waste::waste_facts(inputs, zone)),
@@ -5388,7 +5480,7 @@ mod tests {
         );
         assert_eq!(
             meta.suggested_contexts,
-            vec!["@home", "@computer", "@phone", "@errands", "@garden"],
+            vec!["@home", "@computer", "@phone", "@errands", "@garden", "@homework"],
         );
     }
 
@@ -7946,6 +8038,7 @@ mod settings_tests {
     #[test]
     fn every_standing_question_maps_to_a_distinct_mobile_variant() {
         let cases = [
+            (StandingQuestion::Homework, MobileStandingQuestion::Homework),
             (StandingQuestion::Waste, MobileStandingQuestion::Waste),
             (StandingQuestion::Weekend, MobileStandingQuestion::Weekend),
             (StandingQuestion::Vacation, MobileStandingQuestion::Vacation),
@@ -8022,15 +8115,27 @@ mod settings_tests {
     /// uses, kept as this module's own copy since that one is private to
     /// its sibling `mod tests`.
     fn pane_item(id: &str, deadline: Option<&str>, scheduled_date: Option<&str>) -> hummingbird_domain::Item {
+        staged_pane_item(id, deadline, scheduled_date, hummingbird_domain::Stage::Ready, None)
+    }
+
+    /// [`pane_item`] with the two fields #675's homework pane reads —
+    /// its stage and its context — set explicitly.
+    fn staged_pane_item(
+        id: &str,
+        deadline: Option<&str>,
+        scheduled_date: Option<&str>,
+        stage: hummingbird_domain::Stage,
+        context: Option<&str>,
+    ) -> hummingbird_domain::Item {
         hummingbird_domain::Item {
             id: id.to_string(),
             seq: None,
             title: format!("item {id}"),
             description: None,
-            stage: hummingbird_domain::Stage::Ready,
+            stage,
             size: None,
             energy: None,
-            context: None,
+            context: context.map(str::to_string),
             priority: 0,
             project_id: None,
             project_pos: None,
@@ -8058,7 +8163,7 @@ mod settings_tests {
         let blocked =
             vec![(pane_item("b-1", None, Some("2026-08-16")), vec![pane_item("blocker", None, None)])];
 
-        let facts = pane_item_facts(&frontier, &blocked);
+        let facts = pane_item_facts(&frontier, &blocked, &[], &[]);
 
         assert_eq!(facts.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), vec!["f-1", "b-1"]);
         let blocked_fact = facts.iter().find(|f| f.id == "b-1").unwrap();
@@ -8069,31 +8174,140 @@ mod settings_tests {
     fn pane_items_never_include_a_blocked_entrys_own_blockers() {
         let blocked = vec![(pane_item("b-1", None, None), vec![pane_item("blocker-only", None, None)])];
 
-        let facts = pane_item_facts(&[], &blocked);
+        let facts = pane_item_facts(&[], &blocked, &[], &[]);
 
         assert_eq!(facts.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), vec!["b-1"]);
     }
 
     #[tokio::test]
-    async fn a_fresh_device_ranks_the_now_four_as_unbound() {
+    async fn a_fresh_device_ranks_the_now_five_with_only_homework_answered() {
         // Nothing bound (waste/race), no calendar connected (weekend/
-        // vacation) — every Now question is `unbound`, still ranked rather
-        // than vanishing (`panes::mod`'s own "a pane nobody has bound yet
-        // must still be discoverable" rule).
+        // vacation) — those four are `unbound`, still ranked rather than
+        // vanishing (`panes::mod`'s own "a pane nobody has bound yet must
+        // still be discoverable" rule).
+        //
+        // Homework (#675) is the fifth. It has no binding to be unset, so
+        // its own unanswerable state is the zone bridge's gap rather than
+        // `unbound` — this caller resolved nothing, which is the honest
+        // "this host answered no queries" case and not a setup prompt.
         let host = pane_host("panes-now-fresh").await;
         let ranked = host.rank_panes(MobileSurface::Now, 1_000, Vec::new(), MobileSyncFacts::default()).await;
-        assert_eq!(ranked.len(), 4);
-        assert!(ranked.iter().all(|pane| pane.answer.answer_state == MobilePaneAnswerState::Unbound));
+        assert_eq!(ranked.len(), 5);
         let questions: Vec<MobileStandingQuestion> = ranked.iter().map(|pane| pane.standing_question).collect();
         assert_eq!(
             questions,
             vec![
+                MobileStandingQuestion::Homework,
                 MobileStandingQuestion::Waste,
                 MobileStandingQuestion::Weekend,
                 MobileStandingQuestion::Vacation,
                 MobileStandingQuestion::Race,
             ],
         );
+        assert!(ranked
+            .iter()
+            .filter(|pane| pane.standing_question != MobileStandingQuestion::Homework)
+            .all(|pane| pane.answer.answer_state == MobilePaneAnswerState::Unbound));
+        let homework = ranked
+            .iter()
+            .find(|pane| pane.standing_question == MobileStandingQuestion::Homework)
+            .unwrap();
+        assert_eq!(homework.answer.answer_state, MobilePaneAnswerState::BoundButUnacquired);
+    }
+
+    #[test]
+    fn pane_items_include_the_triage_inbox_and_the_grilling_queue() {
+        // The #675 widening, matched to `NowScreen.tsx::realQuestionInputs`.
+        // A captured piece of homework is still homework, and before this
+        // the triage inbox never crossed the seam at all.
+        let facts = pane_item_facts(
+            &[pane_item("f-1", None, None)],
+            &[],
+            &[pane_item("t-1", None, None)],
+            &[pane_item("g-1", None, None)],
+        );
+        assert_eq!(
+            facts.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(),
+            vec!["f-1", "t-1", "g-1"],
+        );
+    }
+
+    #[test]
+    fn an_item_crosses_the_seam_with_the_four_fields_the_homework_pane_reads() {
+        // The seam's own half of the widening: a stage spelled as the wire
+        // spells it (so both hosts hand the core byte-identical strings),
+        // the context, the notes and the created stamp.
+        let mut item = staged_pane_item(
+            "hw",
+            Some("2026-08-24"),
+            None,
+            hummingbird_domain::Stage::Triage,
+            Some(homework::HOMEWORK_CONTEXT),
+        );
+        item.description = Some("read chapter 4".to_string());
+        item.created_at = 1_700;
+
+        let facts = to_pane_item_facts(&item);
+
+        assert_eq!(facts.stage, "triage");
+        assert_eq!(facts.context.as_deref(), Some("@homework"));
+        assert_eq!(facts.description.as_deref(), Some("read chapter 4"));
+        assert_eq!(facts.created_at, 1_700);
+    }
+
+    /// The host half of the zone bridge, in UTC — what `java.time` does on
+    /// device, done here so a test can drive the real `rank_panes` door
+    /// rather than the core function behind it. Built out of `zone.rs`'s
+    /// own calendar arithmetic (which needs no tzdb) rather than a second
+    /// date library in this crate.
+    fn resolve_zone_facts(queries: Vec<MobileZoneQuery>) -> Vec<MobileZoneFact> {
+        const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+        queries
+            .into_iter()
+            .map(|query| {
+                let key = mobile_zone_query_key(query.clone());
+                let value = match query {
+                    MobileZoneQuery::CivilDate { at_ms, .. } => MobileZoneFactValue::Date {
+                        value: add_civil_days("1970-01-01", at_ms.div_euclid(DAY_MS)).unwrap(),
+                    },
+                    MobileZoneQuery::Midnight { date, .. } => MobileZoneFactValue::Instant {
+                        value: civil_days_between("1970-01-01", &date).unwrap() * DAY_MS,
+                    },
+                };
+                MobileZoneFact { key, value }
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_captured_homework_item_answers_the_homework_pane_through_the_real_door() {
+        // Wiring proof end to end on this seam: capture an item with the
+        // `@homework` context, rank the Now surface, and read the winner's
+        // notes off the pane's own facts — the same crossing
+        // `NowPanesExpanded.kt` renders.
+        let host = pane_host("panes-now-homework").await;
+        let mut draft = title_only_draft("Prep for Thursday");
+        draft.context = homework::HOMEWORK_CONTEXT.to_string();
+        draft.description = "read chapter 4".to_string();
+        host.capture(draft, 1_000).await.unwrap();
+
+        let zone = resolve_zone_facts(host.pane_zone_queries(MobileSurface::Now, 1_000).await);
+        let ranked =
+            host.rank_panes(MobileSurface::Now, 1_000, zone, MobileSyncFacts::default()).await;
+        let pane = ranked
+            .iter()
+            .find(|pane| pane.standing_question == MobileStandingQuestion::Homework)
+            .unwrap();
+        assert_eq!(pane.answer.answer_state, MobilePaneAnswerState::Answered);
+        let MobilePaneFacts::Homework { resolved } = &pane.facts else {
+            panic!("the homework pane carried another question's facts");
+        };
+        let MobileHomeworkResolved::Facts { facts } = resolved else {
+            panic!("expected facts, got {resolved:?}");
+        };
+        let winner = facts.winner.as_ref().expect("a captured item is open homework");
+        assert_eq!(winner.title, "Prep for Thursday");
+        assert_eq!(winner.description.as_deref(), Some("read chapter 4"));
     }
 
     #[tokio::test]
@@ -8575,6 +8789,9 @@ mod settings_tests {
             assert!(!ranked.is_empty());
             for pane in ranked {
                 let matches = match pane.standing_question {
+                    MobileStandingQuestion::Homework => {
+                        matches!(pane.facts, MobilePaneFacts::Homework { .. })
+                    }
                     MobileStandingQuestion::Waste => matches!(pane.facts, MobilePaneFacts::Waste { .. }),
                     MobileStandingQuestion::Weekend => matches!(pane.facts, MobilePaneFacts::Weekend { .. }),
                     MobileStandingQuestion::Vacation => matches!(pane.facts, MobilePaneFacts::Vacation { .. }),

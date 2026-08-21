@@ -2301,11 +2301,13 @@ mod tests {
         let inputs = waste_inputs(BODY, bound_page());
         let now: serde_json::Value =
             serde_json::from_str(&rank_panes_json(&inputs, FACTS, "now")).unwrap();
-        // #534 grew Now to four questions (waste/weekend/vacation/race);
-        // this fixture only binds waste's own page, so the other three
-        // rank unbound rather than vanishing (ADR-0017's own rule).
+        // #534 grew Now to four questions (waste/weekend/vacation/race) and
+        // #675 added homework as a fifth; this fixture only binds waste's
+        // own page, so the rest rank unbound (or, for homework, on the zone
+        // bridge's own gap) rather than vanishing — ADR-0017's own rule.
         let now = now.as_array().unwrap();
-        assert_eq!(now.len(), 4);
+        assert_eq!(now.len(), 5);
+        assert!(now.iter().any(|pane| pane["question"] == "homework"));
         let waste = now.iter().find(|pane| pane["question"] == "waste").unwrap();
         assert_eq!(waste["paneKey"], serde_json::json!("waste:collection"));
         // #534 also filled Status with the never-polled sentinel for its
@@ -2361,7 +2363,7 @@ mod tests {
         assert_eq!(pane_band_order_json(), r#"["live","imminent","near","distant","dormant"]"#);
         assert_eq!(
             pane_question_order_json(),
-            r#"["waste","weekend","vacation","race","kimi","github","uptime","reachability"]"#,
+            r#"["homework","waste","weekend","vacation","race","kimi","github","uptime","reachability"]"#,
         );
         let constants: serde_json::Value =
             serde_json::from_str(&waste_constants_json()).unwrap();
