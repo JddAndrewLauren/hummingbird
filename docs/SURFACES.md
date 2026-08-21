@@ -319,15 +319,13 @@ triage and a failed act, and `surfaces.spec.ts` asserts the count rather than
 the first match, which is what caught the second line arriving) — the twelfth
 state, `now-columns-*`, and the reason the count above moved (it has since
 moved several times more: to sixteen for #481's four Recall states below, to
-eighteen for #637's `rules-list-*` and #624's `projects-dossier-*`, and to
-twenty-three for the projects-dossier batch's own three added states
-(`-action-expanded-*`, `-action-no-steps-*` and `-no-actions-*`, #629) plus
-its fourth (`-archive-confirm-*`, #630) — the whole batch went unreviewed by
-anyone reading this file, since `docs/` itself was untouched by any of its
-slices. Not by
-widening the kit world to mount `RealFrontier`, which the rejection below
-still refuses: by a **second demo world**, the
-board, which seeds a real `TaskState` (`src/fixtures/demo-task-state.ts`) and
+eighteen for #637's `rules-list-*` and #624's `projects-dossier-*`, to
+nineteen for #647's `capture-context-list-*`, and to twenty-three for the
+projects-dossier batch's four dossier states — `-action-expanded-*`,
+`-action-no-steps-*` and `-no-actions-*` from #629, and `-archive-confirm-*`
+from #630). Not by widening the kit world to mount `RealFrontier`, which the
+rejection below still refuses: by a **second demo world**, the board, which
+seeds a real `TaskState` (`src/fixtures/demo-task-state.ts`) and
 returns `null` for `DemoData`. `NowScreen` renders `RealFrontier`
 unconditionally since #456 deleted its `demo` prop and the branch it gated;
 the board world is now selected by `demoTaskState()` seeding `task` in
@@ -350,11 +348,18 @@ asserting the grid rendered. Both of that screen's levels are photographed:
 the grid on the per-screen sweep, and the dossier — reachable only by a
 click, since it opens on the screen's own local state — by its own
 `projects-dossier-*` capture, which is what proves the two-column skeleton
-and the back affordance survive the phone form. Still uncovered on this
-surface and still on the disposition: everything reached only by interaction
-— the axis switch, the facet-filter panel, the collapse reflow and the
-selected-card slot — since the capture is one still frame of the default
-view. The popover is a state rather than a screen — it renders
+and the back affordance survive the phone form. **Four more of the dossier's
+own interaction states joined it in the #627–#630 batch**, each reached by a
+click the capture drives itself: `projects-dossier-action-expanded-*` and
+`projects-dossier-action-no-steps-*` (#629's inline Steps checklist, opened
+and opened-onto-nothing), `projects-dossier-no-actions-*` (#629, its own
+`test()` block — the empty action list) and
+`projects-dossier-archive-confirm-*` (#630's confirm dialog, the one state
+that names a live-item count). Still uncovered on this surface and still on
+the disposition: everything reached only by interaction — the axis switch,
+the facet-filter panel, the collapse reflow and the selected-card slot —
+since the per-screen capture is one still frame of the default view. The
+popover is a state rather than a screen — it renders
 over whatever is showing (`shell/CapturePopover.tsx`), so no per-screen
 capture ever contains it, and the scrim covering the whole window plus the
 card fitting inside 768 are only decidable with it open. The default `?demo`
