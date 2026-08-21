@@ -34,6 +34,7 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     search: vi.fn().mockReturnValue('{"kind":"ok","rows":[],"total":0}'),
     done: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     blocked: vi.fn().mockReturnValue('{"kind":"ok","entries":[]}'),
+    externallyBlocked: vi.fn().mockReturnValue('{"kind":"ok","items":[]}'),
     steps: vi.fn().mockReturnValue('{"kind":"ok","steps":[]}'),
     createProject: vi.fn().mockResolvedValue('{"kind":"ok","id":"project-1","error":null}'),
     patchProject: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
@@ -797,6 +798,22 @@ describe("handleTaskRequest", () => {
       blocked: vi.fn().mockReturnValue('{"kind":"busy","entries":[]}'),
     });
     expect(await run({ type: "getBlocked" }, host)).toEqual([]);
+  });
+
+  it("getExternallyBlocked maps every raw item to its camelCase DTO", async () => {
+    const host = fakeHost({
+      externallyBlocked: vi.fn().mockReturnValue(JSON.stringify({ kind: "ok", items: [rawItem] })),
+    });
+    const posted = await run({ type: "getExternallyBlocked" }, host);
+
+    expect(posted).toEqual([{ type: "externallyBlocked", items: [dtoItem] }]);
+  });
+
+  it('getExternallyBlocked posts nothing when the host answers "busy"', async () => {
+    const host = fakeHost({
+      externallyBlocked: vi.fn().mockReturnValue('{"kind":"busy","items":[]}'),
+    });
+    expect(await run({ type: "getExternallyBlocked" }, host)).toEqual([]);
   });
 
   it("getSteps maps every raw step to its camelCase DTO, alongside the requested item id", async () => {

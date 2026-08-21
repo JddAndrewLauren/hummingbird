@@ -193,6 +193,11 @@ export function attachWorkerClient(
           // "Completing offline shows Done immediately").
           requestFrontier(worker);
           requestBlocked(worker);
+          // `ItemAction::Block` is the one act that moves an item INTO the
+          // external-wait list, and Start/Complete/Cancel on an already
+          // blocked item move it out — either way the standing questions'
+          // inputs are stale until this re-reads (#675).
+          requestExternallyBlocked(worker);
           // The row checkmark completes from ANY live stage — Triage rows
           // included — so an act can now remove an item from the triage
           // inbox, the same immediate re-read `triageResult` does.
@@ -355,6 +360,9 @@ export function attachWorkerClient(
         return;
       case "grillingItems":
         store.setTaskState({ grillingItems: message.items });
+        return;
+      case "externallyBlocked":
+        store.setTaskState({ externallyBlocked: message.items });
         return;
       case "ledger":
         store.setTaskState({ ledger: message.rows });
@@ -1044,6 +1052,14 @@ export function requestDone(worker: WorkerLike): void {
 /** Relation-blocked items with the reason visible — S10 (issue #108). */
 export function requestBlocked(worker: WorkerLike): void {
   worker.postMessage({ type: "getBlocked" });
+}
+
+/** Items on an external wait (`Stage::Blocked`) — the last arm of the live
+ * partition, read for the standing questions' inputs and nothing else
+ * (#675). Deliberately not `requestBlocked`'s widening: the two are
+ * different facts and CONTEXT.md keeps them apart. */
+export function requestExternallyBlocked(worker: WorkerLike): void {
+  worker.postMessage({ type: "getExternallyBlocked" });
 }
 
 /** One item's Steps — item detail (issue #96, S10). */

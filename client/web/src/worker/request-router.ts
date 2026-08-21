@@ -45,6 +45,7 @@ const TASK_REQUEST_TYPES: Record<TaskWorkerRequest["type"], true> = {
   search: true,
   getDone: true,
   getBlocked: true,
+  getExternallyBlocked: true,
   getSteps: true,
   getProjects: true,
   createProject: true,

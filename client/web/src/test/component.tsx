@@ -230,6 +230,7 @@ export function taskState(overrides: Partial<TaskState> = {}): TaskState {
     triageInbox: [],
     grillingItems: [],
     blocked: [],
+    externallyBlocked: [],
     stepsByItem: {},
     projects: null,
     archivedProjects: null,

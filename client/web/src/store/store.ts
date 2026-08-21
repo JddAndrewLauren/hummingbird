@@ -245,6 +245,17 @@ export interface TaskState {
    * (issue #108). Populated by `getBlocked`, same "last full answer wins"
    * contract as `frontier`. */
   blocked: BlockedFrontierEntryDTO[];
+  /** Items on an **external wait** — CONTEXT.md's only meaning for the
+   * Blocked stage, and a different fact from `blocked` above, which is a
+   * relation to another item and only ever holds Ready/InProgress ones.
+   * Populated by `getExternallyBlocked`, same "last full answer wins"
+   * contract as `frontier`.
+   *
+   * **No screen reads this.** It exists so `NowScreen.tsx`'s
+   * `realQuestionInputs` can be the whole live partition of the mirror
+   * (#675); a screen that wants to *list* externally blocked items is a
+   * surface nobody has asked for yet. */
+  externallyBlocked: TaskItemDTO[];
   /** Item detail's checklist (issue #96, S10), keyed by item id — only ever
    * grows entries a view actually asked about via `getSteps`, the same
    * "only what was asked for" shape `pending` already uses. */
@@ -477,6 +488,7 @@ const initialTaskState: TaskState = {
   triageInbox: [],
   grillingItems: [],
   blocked: [],
+  externallyBlocked: [],
   stepsByItem: {},
   projects: null,
   archivedProjects: null,

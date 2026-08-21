@@ -3067,10 +3067,16 @@ fn to_pane_item_facts(item: &hummingbird_domain::Item) -> PaneItemFacts {
 /// (never `entry.blockedByTitles`) is the only thing `realQuestionInputs`
 /// reads off each `blocked` entry.
 ///
-/// **#675 added the triage inbox and the grilling queue.** The homework
-/// pane's subject is the operator's own items and its reading of "open"
-/// includes everything not yet triaged — a captured piece of homework is
-/// still homework. The two surfaces must widen together or they answer
+/// **#675 added the triage inbox, the grilling queue and the externally
+/// blocked items.** The homework pane's subject is the operator's own items
+/// and its reading of "open" is everything not `Done` — a captured piece of
+/// homework is still homework, and so is one waiting on a callback. The
+/// four queries beside `frontier` are what make this list the *whole* live
+/// partition of the mirror rather than most of it: `Core::blocked` is
+/// relation-blocked `Ready`/`InProgress` items and never
+/// `Stage::Blocked` ones, so without `Core::externally_blocked` an item on
+/// an external wait was readable from no query here at all and vanished
+/// from the pane. The two surfaces must widen together or they answer
 /// differently about the same mirror, which is the divergence #537's
 /// review was about in the first place. The weekend pane was pinned
 /// against the widening first (`weekend.rs`'s `MERGED_STAGES`); a question
@@ -3087,12 +3093,14 @@ fn pane_item_facts(
     blocked: &[(hummingbird_domain::Item, Vec<hummingbird_domain::Item>)],
     triage_inbox: &[hummingbird_domain::Item],
     grilling: &[hummingbird_domain::Item],
+    externally_blocked: &[hummingbird_domain::Item],
 ) -> Vec<PaneItemFacts> {
     frontier
         .iter()
         .chain(blocked.iter().map(|(item, _blockers)| item))
         .chain(triage_inbox.iter())
         .chain(grilling.iter())
+        .chain(externally_blocked.iter())
         .map(to_pane_item_facts)
         .collect()
 }
@@ -3117,6 +3125,7 @@ fn mobile_pane_inputs(
         &core.blocked(),
         &core.triage_inbox(),
         &core.grilling_items(),
+        &core.externally_blocked(),
     );
     PaneInputs {
         now_ms,
@@ -8163,7 +8172,7 @@ mod settings_tests {
         let blocked =
             vec![(pane_item("b-1", None, Some("2026-08-16")), vec![pane_item("blocker", None, None)])];
 
-        let facts = pane_item_facts(&frontier, &blocked, &[], &[]);
+        let facts = pane_item_facts(&frontier, &blocked, &[], &[], &[]);
 
         assert_eq!(facts.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), vec!["f-1", "b-1"]);
         let blocked_fact = facts.iter().find(|f| f.id == "b-1").unwrap();
@@ -8174,7 +8183,7 @@ mod settings_tests {
     fn pane_items_never_include_a_blocked_entrys_own_blockers() {
         let blocked = vec![(pane_item("b-1", None, None), vec![pane_item("blocker-only", None, None)])];
 
-        let facts = pane_item_facts(&[], &blocked, &[], &[]);
+        let facts = pane_item_facts(&[], &blocked, &[], &[], &[]);
 
         assert_eq!(facts.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), vec!["b-1"]);
     }
@@ -8225,11 +8234,29 @@ mod settings_tests {
             &[],
             &[pane_item("t-1", None, None)],
             &[pane_item("g-1", None, None)],
+            &[],
         );
         assert_eq!(
             facts.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(),
             vec!["f-1", "t-1", "g-1"],
         );
+    }
+
+    #[test]
+    fn pane_items_include_the_externally_blocked_items() {
+        // The last arm of the live partition, and the one the first cut of
+        // #675 missed: `Core::blocked` is relation-blocked Ready/InProgress
+        // items only, so a `Stage::Blocked` item — an external wait — was
+        // reachable from none of the four queries and disappeared from the
+        // homework pane, which counts every stage but `done`.
+        let facts = pane_item_facts(
+            &[pane_item("f-1", None, None)],
+            &[],
+            &[],
+            &[],
+            &[pane_item("x-1", None, None)],
+        );
+        assert_eq!(facts.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), vec!["f-1", "x-1"]);
     }
 
     #[test]

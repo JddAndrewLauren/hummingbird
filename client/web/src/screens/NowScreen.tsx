@@ -109,17 +109,21 @@ export interface NowScreenProps {
  * rather than merely inspecting the store snapshot (#267's review point).
  *
  * `items` (#122, widened at #675) is every live item this device knows
- * about: `task.frontier`, `task.blocked`'s items, `task.triageInbox` and
- * `task.grillingItems`. The first two are `RealFrontier`'s own `allItems`,
- * computed a second time here because that helper is scoped to
- * `RealFrontier`'s render and this function has to stay callable
- * standalone by both `NowScreen` and its own tests.
+ * about: `task.frontier`, `task.blocked`'s items, `task.triageInbox`,
+ * `task.grillingItems` and `task.externallyBlocked`. The first two are
+ * `RealFrontier`'s own `allItems`, computed a second time here because that
+ * helper is scoped to `RealFrontier`'s render and this function has to stay
+ * callable standalone by both `NowScreen` and its own tests.
  *
- * The last two arrived with the homework pane, whose subject is the
- * operator's items and whose reading of "open" includes everything not yet
- * triaged — a captured piece of homework is still homework. `TaskState`
- * already carries all four lists, so this is a wider union of what the
- * screen holds rather than a new core query or a new worker request.
+ * The last three arrived with the homework pane, whose subject is the
+ * operator's items and whose reading of "open" is everything not Done — a
+ * captured piece of homework is still homework, and so is one waiting on a
+ * callback. The first two of the three were already in `TaskState`;
+ * `externallyBlocked` was not, and needed a query of its own
+ * (`Core::externally_blocked`, `getExternallyBlocked`) because
+ * `task.blocked` is the *relation* blockers and holds only Ready/InProgress
+ * items — so a `Stage::Blocked` item was reachable from no list this screen
+ * held and disappeared from the pane, taking the right answer with it.
  *
  * **The weekend pane was pinned against this widening first**
  * (`weekend.rs`'s `MERGED_STAGES`, its own commit): it merges items onto
@@ -147,6 +151,7 @@ export function realQuestionInputs(
       ...task.blocked.map((entry) => entry.item),
       ...task.triageInbox,
       ...task.grillingItems,
+      ...task.externallyBlocked,
     ],
   };
 }

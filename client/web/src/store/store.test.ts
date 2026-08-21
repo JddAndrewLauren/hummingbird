@@ -18,6 +18,7 @@ const initialTask: TaskState = {
   triageInbox: [],
   grillingItems: [],
   blocked: [],
+  externallyBlocked: [],
   stepsByItem: {},
   projects: null,
   archivedProjects: null,

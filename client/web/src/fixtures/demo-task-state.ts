@@ -783,6 +783,10 @@ export function buildDemoTaskState(): TaskState {
     // about the relation rather than a gap in the fixture. `projects` was
     // empty for the same reason and no longer is: see departure 4.
     blocked: [],
+    // #675's pane-input list. Empty for the same kind of reason: the demo
+    // board seeds no item on an external wait, and this list feeds no
+    // rendering of its own — a seeded row would show up nowhere.
+    externallyBlocked: [],
     // #629: item detail's checklist read, reused by the dossier's action
     // checklist. `b-f1` ("Fit the new tap washer", the same row
     // `actionsByProject` below repositions onto "House repairs") carries

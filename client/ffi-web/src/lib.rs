@@ -640,6 +640,18 @@ mod wasm_bindings {
             }
         }
 
+        /// Items on an external wait (`Stage::Blocked`), as JSON: same
+        /// shape as [`TaskHost::frontier`]. Pane inputs only — no screen
+        /// lists these (#675).
+        #[wasm_bindgen(js_name = externallyBlocked)]
+        pub fn externally_blocked(&self) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => serde_json::to_string(&host.externally_blocked())
+                    .expect("ItemListResponse serializes"),
+                None => BUSY_ITEM_LIST.to_string(),
+            }
+        }
+
         /// Relation-blocked items with the reason visible, as JSON:
         /// `{"kind": "ok"|"busy", "entries": [{"item": Item & {"pending": bool}, "blocked_by": [Item & {"pending": bool}]}]}`.
         pub fn blocked(&self) -> String {
