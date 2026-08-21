@@ -102,9 +102,12 @@ def sweep(items=None, steps=None, **over):
 
 
 # A fake `curl` matching the flag shape all three scripts use: `-sS -w
-# '\n%{http_code}' -X METHOD [-H ...] [-d DATA] URL`. Header files passed as
-# `-H @file` are read here so tests can assert the actual header without
-# putting the secret in curl's argv. Every request is
+# '\n%{http_code}' -X METHOD [-H ...] [-d DATA] URL`. `-H @-` is read from
+# stdin, the way real curl reads it and the way every script here passes its
+# bearer — off disk and off argv both, so a signal cannot strand a live
+# credential in a tempfile. (`-H @file` is still honoured: it is the same
+# curl feature, and reading it here is what lets a test assert the actual
+# header without the secret appearing in curl's argv.) Every request is
 # appended to $HB_FAKE_LOG as one JSON line; the response comes from
 # $HB_FAKE_PLAN, a list of {match, status, body} consumed in order for
 # writes, with GET /api/sweep always answering the fixture.
@@ -122,7 +125,9 @@ while i < len(argv):
         data = argv[i + 1]; i += 2
     elif a == "-H":
         header = argv[i + 1]
-        if header.startswith("@"):
+        if header == "@-":
+            header = sys.stdin.read().rstrip("\n")
+        elif header.startswith("@"):
             header = open(header[1:]).read().rstrip("\n")
         headers.append(header); i += 2
     elif a in ("-o", "-w", "--connect-timeout", "--max-time"):

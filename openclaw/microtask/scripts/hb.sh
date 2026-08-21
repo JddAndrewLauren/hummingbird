@@ -71,23 +71,22 @@ token() {
 # NOT assert either — every caller here has its own idea of which statuses
 # are success (a 409 is an outcome, not a failure).
 request() { # method path [json-body]
-  local method=$1 path=$2 data=${3:-} raw auth_token auth_file curl_status
+  local method=$1 path=$2 data=${3:-} raw auth_token curl_status
   auth_token=$(token)
   [[ -n "$auth_token" ]] || die "empty authority token at $TOKEN_PATH — mint a device-scope token against $API_BASE (POST /api/admin/tokens, ADMIN_SECRET) and save it to that path"
-  auth_file=$(mktemp)
-  chmod 600 "$auth_file"
-  printf 'Authorization: Bearer %s\n' "$auth_token" >"$auth_file"
+  # `-H @-` reads the header off stdin, through a pipe: the token reaches
+  # curl without a path anyone can open and without an argv `ps` can read. A
+  # tempfile would satisfy the second and not the first — a signal between
+  # writing it and unlinking it strands a live credential in /tmp.
   local args=(-sS -w '\n%{http_code}' --connect-timeout 10 --max-time 30
-              -X "$method" -H "@$auth_file" "$API_BASE$path")
+              -X "$method" -H @- "$API_BASE$path")
   [[ -n "$data" ]] && args+=(-H 'Content-Type: application/json' -d "$data")
-  if raw=$(curl "${args[@]}"); then
+  if raw=$(printf 'Authorization: Bearer %s\n' "$auth_token" | curl "${args[@]}"); then
     :
   else
     curl_status=$?
-    rm -f "$auth_file"
     return "$curl_status"
   fi
-  rm -f "$auth_file"
   # Split on the last newline (BSD head rejects `head -n -1`).
   BODY=${raw%$'\n'*}
   STATUS=${raw##*$'\n'}

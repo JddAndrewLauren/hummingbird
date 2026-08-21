@@ -198,6 +198,13 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         // only whether the caller may mint, and the `wasm32` shim performs
         // the exchange (or serves its cache) above this dispatch.
         ("POST", ["google", "calendar_token"]) => Ok(calendar_token::verdict()),
+        // The write mint's verdict (ADR-0031). Same shape, one narrowing:
+        // the scope matrix has already said "a device token", and this
+        // says *which* device token — the allowed-holder list, which no
+        // scope can express. 403 for every other device token.
+        ("POST", ["google", "calendar_write_token"]) => {
+            Ok(calendar_token::write_verdict(&principal.id))
+        }
         // A known collection or entity path with the wrong method is a 405;
         // anything else falls through to 404.
         (
@@ -224,7 +231,7 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         // route.
         (_, ["skills", "run"]) => Ok(method_not_allowed()),
         // Same reason as `["skills", "run"]` just above.
-        (_, ["google", "calendar_token"]) => Ok(method_not_allowed()),
+        (_, ["google", "calendar_token" | "calendar_write_token"]) => Ok(method_not_allowed()),
         _ => Ok(error(404, "not_found", "no such route")),
     }
 }
