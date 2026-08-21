@@ -50,12 +50,12 @@ describe("initConnection", () => {
   });
 
   it("flags needsReconnect when the silent re-mint fails", async () => {
-    const tokenClient = fakeTokenClient(() => ({ error: "interaction_required" }));
+    const tokenClient = fakeTokenClient(() => ({ error: "authority_upstream" }));
     const d = deps(tokenClient);
 
     const result = await initConnection(d, true);
 
-    expect(result).toEqual({ connected: true, needsReconnect: true, expiresAtMs: null, error: "interaction_required" });
+    expect(result).toEqual({ connected: true, needsReconnect: true, expiresAtMs: null, error: "authority_upstream" });
     expect(d.pushToken).not.toHaveBeenCalled();
   });
 });
@@ -99,12 +99,12 @@ describe("handleCredentialNeeded", () => {
   });
 
   it("falls back to a re-connect affordance when the silent re-mint fails", async () => {
-    const tokenClient = fakeTokenClient(() => ({ error: "interaction_required" }));
+    const tokenClient = fakeTokenClient(() => ({ error: "authority_upstream" }));
     const d = deps(tokenClient);
 
     const result = await handleCredentialNeeded(d);
 
-    expect(result).toEqual({ connected: true, needsReconnect: true, expiresAtMs: null, error: "interaction_required" });
+    expect(result).toEqual({ connected: true, needsReconnect: true, expiresAtMs: null, error: "authority_upstream" });
     expect(d.pushToken).not.toHaveBeenCalled();
   });
 });
@@ -113,13 +113,13 @@ describe("shouldKeepExistingConnection", () => {
   const failed = { connected: false, needsReconnect: false, expiresAtMs: null, error: null };
   const succeeded = { connected: true, needsReconnect: false, expiresAtMs: 10_000, error: null };
 
-  it("keeps the opt-in when a Reconnect is cancelled or fails", () => {
+  it("keeps the opt-in when a Reconnect fails", () => {
     // The device stays connected-but-needing-reconnect: its last-good tile
-    // and the Reconnect button both survive a cancelled Google popup.
+    // and the Reconnect button both survive a mint the authority refused.
     expect(shouldKeepExistingConnection(true, failed)).toBe(true);
   });
 
-  it("lets a first-time Connect that is declined end disconnected", () => {
+  it("lets a first-time Connect that fails end disconnected", () => {
     expect(shouldKeepExistingConnection(false, failed)).toBe(false);
   });
 

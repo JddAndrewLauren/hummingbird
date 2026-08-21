@@ -317,6 +317,14 @@ against `javascript:` bookmarklets** where Chrome exempts them — so the app's
 own origin cannot be probed by bookmarklet under Safari at all. Use a plain
 secure origin with no CSP, or Safari Web Inspector over a cable.
 
+*Amended 2026-08-20 (#603/#604): the quoted directive is stale.
+`accounts.google.com` was dropped from `script-src` (and from `connect-src`
+and `frame-src`) when the browser stopped talking to Google's OAuth endpoints
+— the authority mints the calendar token server-side under ADR-0028 — so the
+origin now serves `script-src 'self' 'wasm-unsafe-eval'`, per
+`client/web/csp-worker/csp.ts`. The obstacle is unchanged: still no
+`unsafe-inline`, so Safari still refuses a bookmarklet on this origin.*
+
 Probing a different origin is sound for these statics, with one caveat worth
 stating: they are gated on **secure context**, which an insecure attempt
 demonstrated — one iPad run against `about:blank` reported no constructor at
