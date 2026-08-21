@@ -456,18 +456,24 @@ fun ItemDetailPanel(
         // belongs to the rule, not to this file.
         //
         // The project id stands in for an unsynced name: the name is
-        // unsynced, not the project. "ITEM DETAIL" is the floor rather than
-        // a state of its own — the line sits under the title in the pane's
-        // chrome and must never render blank, and an item with no project
-        // has nothing else to put there.
-        val meta = loadedRecord?.projectName
-            ?: loadedRecord?.projectId
-            ?: "ITEM DETAIL"
-        Text(
-            meta,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        // unsynced, not the project.
+        //
+        // **No line at all when there is no project** (operator decision
+        // 2026-08-20, on seeing it): with the ref gone there is nothing
+        // else to put here, and the "ITEM DETAIL" that used to be the
+        // never-blank floor was a placeholder for an unsynced *seq* — kept
+        // after the ref left, it read as a permanent heading under the
+        // title, naming the surface instead of the item. A pane whose item
+        // has no project now spends no vertical space saying so, which is
+        // what the whole compacting pass was for.
+        val meta = loadedRecord?.projectName ?: loadedRecord?.projectId
+        if (meta != null) {
+            Text(
+                meta,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
 
         statusLine?.let {
             Text(

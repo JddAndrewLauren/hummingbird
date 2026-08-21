@@ -481,33 +481,43 @@ class ItemDetailPanelStructuralTest {
         )
     }
 
-    /** The pane's meta line names the project, and never the `HB-<seq>`
-     * ref.
+    /** The pane's meta line names the project, never the `HB-<seq>` ref —
+     * and says nothing at all when there is no project.
      *
      * CLAUDE.md's repo-wide rule: an item is named to the operator by its
      * title, never by that ref — it is a client-side handle onto a uuid, no
      * route accepts it, and a person reading one cannot look the item up in
-     * the app. This pane printed one under the title and was the last client
-     * surface doing it (`client/web/src` contains no `HB-` at all).
+     * the app. This pane printed one under the title until 2026-08-20.
      *
-     * The line must still never render blank, which is the other half of
-     * why this is a pin rather than a deletion: with the ref gone, an item
-     * whose project has not synced (or has none) has nothing to say there,
-     * and "ITEM DETAIL" is the floor. */
+     * It was **not** the last surface doing so, though the change was made
+     * on that belief: `client/web/src/components/domain/ItemPanel.tsx`
+     * renders `HB-${item.seq}` in a `.hb-meta` span to this day, and the
+     * grep that "proved" the web clean had run from a directory where
+     * `client/web/src` does not resolve. Which way that resolves is #661 —
+     * so this pin covers THIS surface only, and is not evidence about the
+     * rule.
+     *
+     * The placeholder went with the ref: "ITEM DETAIL" was the never-blank
+     * floor for an unsynced *seq*, and kept afterwards it read as a heading
+     * naming the surface rather than the item. */
     @Test
     fun `the meta line names the project, never the HB ref`() {
         assertFalse(
-            "no client surface displays seq — the ref is not how an item is named",
+            "this surface must not display seq — the ref is not how an item is named",
             panelSrc.contains("HB-"),
         )
         val flat = functionBody(panelSrc, "ItemDetailPanel").replace(Regex("""\s+"""), " ")
         assertTrue(
-            "the meta line must be the project name, falling back to the id, " +
-                "and must never be blank",
-            flat.contains(
-                "val meta = loadedRecord?.projectName ?: loadedRecord?.projectId " +
-                    "?: \"ITEM DETAIL\"",
-            ),
+            "the meta line must be the project name, falling back to its id",
+            flat.contains("val meta = loadedRecord?.projectName ?: loadedRecord?.projectId"),
+        )
+        assertTrue(
+            "and must not render at all when there is neither",
+            flat.contains("if (meta != null) { Text( meta,"),
+        )
+        assertFalse(
+            "the retired placeholder must not come back — it named the surface, not the item",
+            panelSrc.contains("ITEM DETAIL"),
         )
     }
 
