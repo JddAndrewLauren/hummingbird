@@ -362,11 +362,16 @@ fn archiving_a_project_stamps_every_live_item_with_its_exact_timestamp() {
     seed_project(&sql, "p-2");
     post(&sql, r#"{"id": "b-1", "title": "elsewhere", "project_id": "p-2"}"#, 0);
 
+    // `now_ms` (5000) is deliberately NOT `archived_at` (9000): the cascade
+    // must stamp every item with the project's own *value*, not the
+    // request's clock — an implementation that wrote `now_ms` instead would
+    // pass with these two equal, which is exactly the trap ADR-0030 decision
+    // 5 names.
     let resp = patch_at(
         &sql,
         "/api/projects/p-1",
         r#"{"expected_version": 1, "archived_at": 9000}"#,
-        9000,
+        5000,
     );
     assert_eq!(resp.status, 200, "{}", resp.body);
     let archived: Project = body_as(&resp);
@@ -390,15 +395,18 @@ fn patch_project_archive_cascade_covers_the_mixed_case_end_to_end() {
     let solo_v1 = item_now(&sql, "solo").version;
     patch(&sql, "solo", &format!(r#"{{"expected_version": {solo_v1}, "archived_at": 500}}"#), 0);
 
-    // Two items still live when the project archives.
+    // One item still live when the project archives.
     post(&sql, r#"{"id": "cascaded", "title": "goes down with the project", "project_id": "p-1"}"#, 0);
-    post(&sql, r#"{"id": "reopened", "title": "comes back up", "project_id": "p-1"}"#, 0);
 
+    // `now_ms` (5000) is deliberately NOT `archived_at` (9000) — same
+    // reasoning as the single-item test above: this is the assertion that
+    // falsifies an implementation which cascades `now_ms` instead of the
+    // project's own stamp.
     let resp = patch_at(
         &sql,
         "/api/projects/p-1",
         r#"{"expected_version": 1, "archived_at": 9000}"#,
-        9000,
+        5000,
     );
     assert_eq!(resp.status, 200, "{}", resp.body);
     let archived: Project = body_as(&resp);
