@@ -108,10 +108,28 @@ impl<S: SnapshotStore> CalendarHostCore<S> {
         self.poller.push_token(token);
     }
 
+    /// Drops the Google access token this host is holding — the disconnect
+    /// gesture's other half. Without it "Disconnect" would only stop the
+    /// polling loop while [`Self::list_calendars`] went on making
+    /// authenticated requests on the old credential until it expired.
+    pub fn clear_token(&mut self) {
+        self.poller.clear_token();
+    }
+
     /// The picker's current selection (#121: each entry carries its own poll
     /// horizon). Takes effect on the next poll trigger.
     pub fn set_calendar_selections(&self, selections: Vec<CalendarSelection>) {
         self.poller.fetcher().set_calendar_selections(selections);
+    }
+
+    /// What the next poll will actually query — the read side of
+    /// [`Self::set_calendar_selections`]. A host derives the polled set from
+    /// more than the picker (see
+    /// [`crate::calendar::effective_selection`]), so being able to read back
+    /// what it ended up pushing is the only way to prove the derivation
+    /// without a network.
+    pub fn calendar_selections(&self) -> Vec<CalendarSelection> {
+        self.poller.fetcher().calendar_selections()
     }
 
     pub async fn start(&mut self, now_ms: i64) -> PollOutcome {
@@ -544,6 +562,26 @@ mod tests {
                 calendars: Vec::new(),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn clearing_the_token_takes_the_option_list_back_to_no_credential() {
+        // The disconnect gesture's proof: after it, the auxiliary read the
+        // picker makes cannot go out on the old credential. Without the
+        // clear this would be a live Google request.
+        let mut host = CalendarHostCore::new(MemorySnapshotStore::default(), vec![CalendarSelection::standard("primary")]);
+        host.push_token("token-1".to_string());
+
+        host.clear_token();
+
+        assert_eq!(
+            host.list_calendars().await,
+            CalendarListResponse {
+                kind: "no_credential",
+                calendars: Vec::new(),
+            }
+        );
+        assert_eq!(outcome_name(host.start(1_000).await), "no_credential");
     }
 
     #[tokio::test]

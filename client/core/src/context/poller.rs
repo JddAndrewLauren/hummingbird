@@ -122,6 +122,16 @@ where
         self.credential.push(token.into());
     }
 
+    /// Disposes of the held credential. The host calls this when the
+    /// operator disconnects the source: after it, [`Self::current_token`]
+    /// answers `None`, so neither a poll nor an auxiliary read (the
+    /// calendar's option list) can go out on the old token. **The mirror is
+    /// untouched** — a disconnect drops the credential, not the disposable
+    /// copy of what it once read.
+    pub fn clear_token(&mut self) {
+        self.credential.clear();
+    }
+
     /// The most recently persisted snapshot, with its `as_of`, or `None` if
     /// nothing has been successfully polled yet — the read side of the
     /// same store `attempt` writes through, for a host (#73's context tile)

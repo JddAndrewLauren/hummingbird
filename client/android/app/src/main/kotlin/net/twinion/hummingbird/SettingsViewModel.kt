@@ -109,10 +109,21 @@ class SettingsViewModel(
     }
 
     /** Reloads the picker: the persisted selection first (it renders even
-     * with no credential), then the option list. */
-    suspend fun loadCalendars() {
+     * with no credential), then the option list.
+     *
+     * `keepOptionsOnFailure` is the caller's read of whether the lane is
+     * still armed. A failed list on an armed device (offline, or the
+     * authority unreachable) must leave the options as they stand —
+     * `CalendarHostCore::list_calendars`'s own rule, and what the web does
+     * by posting nothing on a bad answer. A device that has been refused or
+     * disconnected passes `false`, so the options it can no longer read
+     * back do go away. */
+    suspend fun loadCalendars(keepOptionsOnFailure: Boolean) {
         _calendarSelections.value = readSelectionsFn()
-        _calendars.value = listCalendarsFn()
+        val listed = listCalendarsFn()
+        if (listed.kind == "ok" || _calendars.value == null || !keepOptionsOnFailure) {
+            _calendars.value = listed
+        }
     }
 
     /** Adds or removes one calendar from the polled set, persisting it and
@@ -166,10 +177,12 @@ class SettingsViewModel(
                 readSelectionsFn = { CalendarPrefs.readSelections(context.applicationContext) },
                 writeSelectionsFn = { selections ->
                     CalendarPrefs.writeSelections(context.applicationContext, selections)
-                    // The seam is told immediately, not at the next launch:
-                    // the selection takes effect on the next poll trigger,
-                    // and the next trigger may be minutes away.
-                    core().setCalendarSelections(selections)
+                    // The seam is told immediately, not at the next launch,
+                    // and it polls on being told: the next timer tick may be
+                    // fifteen minutes away, and until it lands the panes
+                    // would answer off a snapshot taken over the *previous*
+                    // selection.
+                    core().setCalendarSelections(selections, System.currentTimeMillis())
                 },
             )
         }

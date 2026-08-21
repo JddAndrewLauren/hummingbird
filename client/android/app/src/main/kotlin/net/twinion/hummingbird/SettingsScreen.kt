@@ -62,9 +62,10 @@ import uniffi.hummingbird_ffi_mobile.syncStatusSummary
 
 // The Settings screen (#535/M4): the bindings editor, device-token entry
 // and forget (moved off the debug `ProofScreen`), the sync-status card, the
-// dead-letter rows, a theme preference, and calendar connect's honest
-// "not on this device yet" card — calendar connect itself is out of this
-// plan entirely (#527's "Out of scope").
+// dead-letter rows, a theme preference, and — since #564 — a real Calendar
+// section in place of #535's "not on this device yet" card: Connect,
+// Disconnect, a picker over `list_calendars()`, and one sentence of state
+// per the four Source-connection states.
 //
 // **This file decides nothing about sync status or a binding write's
 // outcome.** `syncSummary`/`SettingsViewModel.deadLetterHeadingText` arrive
@@ -127,8 +128,15 @@ fun SettingsScreen(
     // Re-listed whenever the connection state moves: a device that has just
     // connected has a credential the previous list attempt did not, and one
     // that has just been refused should stop showing options it can no
-    // longer read back.
-    LaunchedEffect(calendarConnection.state) { viewModel.loadCalendars() }
+    // longer read back. A device that merely cannot confirm keeps them —
+    // it is still armed, and its failed list says nothing about what it
+    // could read a minute ago.
+    LaunchedEffect(calendarConnection.state) {
+        viewModel.loadCalendars(
+            keepOptionsOnFailure = calendarConnection.state == MobileCalendarState.CONNECTED ||
+                calendarConnection.state == MobileCalendarState.CANNOT_CONFIRM,
+        )
+    }
 
     LaunchedEffect(Unit) { reload() }
 

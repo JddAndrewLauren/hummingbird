@@ -14,6 +14,7 @@ mod event;
 pub mod google;
 mod host;
 mod query;
+pub mod selection;
 mod snapshot;
 
 pub use event::{EventRecord, EventStatus, EventWhen};
@@ -23,5 +24,6 @@ pub use host::{
 };
 pub(crate) use query::is_actionable;
 pub use google::{CalendarHorizon, CalendarSelection};
+pub use selection::effective_selection;
 pub use query::{current_or_next_event, events_overlapping_interval, CurrentOrNext, Interval};
 pub use snapshot::CalendarSnapshot;
