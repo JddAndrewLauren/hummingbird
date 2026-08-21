@@ -47,11 +47,12 @@ import {
 // `projects`.
 //
 // **The dossier is a shell.** This slice ships the frame, the name, the back
-// affordance and labelled empty regions naming what fills them; fog is
-// #628's, the action list and its inline steps #629's, archive #630's.
-// Properties (#625), links (#626) and now the Route's destination/notes
-// (#627) are real cards — each remaining placeholder still says what is
-// coming, so an operator meets an unbuilt region rather than a broken one.
+// affordance and labelled empty regions naming what fills them; the action
+// list and its inline steps are #629's, archive is #630's. Properties
+// (#625), links (#626), the Route's destination/notes (#627) and now the
+// reading column's fog (#628) are real cards — each remaining placeholder
+// still says what is coming, so an operator meets an unbuilt region rather
+// than a broken one.
 //
 // **The Route card has no optimistic overlay, so it says so.** Same
 // no-overlay contract as every other project-lane write here
@@ -1012,10 +1013,23 @@ function FogCard({
     if (trimmedQuestion === "") {
       return;
     }
-    // Mint the new position past the largest live one, not from the count
-    // — `LinksCard.addLink`'s own reasoning, ported verbatim: resolving
-    // removes a row from this read without renumbering the rest, so live
-    // positions develop gaps a count-minted position would collide with.
+    // Only reachable once the read has answered — Add is disabled while
+    // `sortedFog` is `undefined`, because "no open fog yet" and "not known
+    // yet" would otherwise both mint position 0, and against a project that
+    // does have open fog that 0 duplicates the first row's: the same
+    // collision the count-minted position below is written to avoid,
+    // arrived at from the other direction.
+    // Mint the new position past the largest live one, not from the count —
+    // `LinksCard.addLink`'s own reasoning, ported verbatim: resolving drops
+    // a row out of this read without renumbering the rest (it is a stamp,
+    // not a delete, but `open_fog_for` still stops returning it), so open
+    // positions develop gaps (0,1,2 minus the middle leaves 0,2 with length
+    // 2) and a count-minted position would duplicate a live row's — turning
+    // the next reorder swap into a value-identical no-op patch. Resolved
+    // rows cannot count toward the max (the mirror filters them out before
+    // this card ever sees them), and they need not: a collision with a
+    // resolved row's position is harmless, since only open rows are ever
+    // sorted or swapped.
     const position = sortedFog === undefined || sortedFog.length === 0 ? 0 : sortedFog[sortedFog.length - 1].position + 1;
     onCreateFog(projectId, trimmedQuestion, position);
     setQuestionInput("");
