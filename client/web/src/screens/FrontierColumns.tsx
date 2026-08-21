@@ -1,19 +1,26 @@
-// Now's centre column: the frontier as wrapping columns (#402, ADR-0021), and
-// since the triage section was dissolved into them, the "triage process"
-// queue too (#357: Triage and Grilling together, CONTEXT.md) — same columns,
-// same axis, each item marked with its own stage chip and sorted under the
-// startable actions of whatever column it lands in. This is Now's own
-// rendering of the SAME combined queue the Triage screen shows —
+// The frontier board's columns: the frontier as wrapping columns (#402,
+// ADR-0021), and since the triage section was dissolved into them, the
+// "triage process" queue too (#357: Triage and Grilling together,
+// CONTEXT.md) — same columns, same axis, each item marked with its own stage
+// chip and sorted under the startable actions of whatever column it lands
+// in. This is the board's own rendering of the SAME combined queue the Triage
+// screen shows —
 // `triage-process-order.ts`'s `triageProcessQueue` is the one function
 // deciding membership and order for both, never a `stage ===` check here.
 // Everything decidable lives in `frontier-columns.ts`; this file threads state
 // through it and paints the result — the split every `screens/*` module keeps.
 //
 // The card is local rather than a sixteenth entry in `components/domain/`: it
-// is used by this surface and no other, and `ItemRow` — which four screens
-// share — stays exactly as it is for Triage, Done, Ledger and Now's own
+// is used by this board and no other, and `ItemRow` — which four screens
+// share — stays exactly as it is for Triage, Done, Ledger and the board's own
 // Blocked section. Two components because they have genuinely different
 // densities and affordances, not a variant flag on one.
+//
+// **Two surfaces mount this now**, via `FrontierBoard.tsx`: Now, and one
+// project's dossier with the same board re-sliced to that project's items.
+// What varies between them is exactly two props — `screen` (whose preference
+// keys to use) and `axes` (which switcher buttons to offer). Nothing here
+// knows which surface it is beyond those two.
 
 import { Children, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Badge } from "../components/core/Badge";
@@ -40,6 +47,7 @@ import { laneCountFor, packLanes } from "./frontier-lanes";
 import { orderFrontier } from "./frontier-order";
 import { triageProcessQueue } from "./triage-process-order";
 import {
+  type FrontierPrefsScreen,
   readCollapsedColumns,
   readFrontierAxis,
   writeCollapsedColumns,
@@ -390,6 +398,8 @@ export function FrontierColumns({
   onOpenItem,
   onAct,
   storage,
+  screen,
+  axes = FRONTIER_AXES,
 }: {
   frontier: readonly TaskItemDTO[];
   /** `TaskState.triageInbox` — the captured Triage items, grouped into the
@@ -417,13 +427,24 @@ export function FrontierColumns({
    * section and the ranked region — threaded rather than read here, so the
    * screen has one storage seam and not three. */
   storage?: StorageLike;
+  /** Which key namespace this board's axis and collapsed-column preferences
+   * live under (`frontier-prefs.ts`). Required, not defaulted: a board that
+   * silently shared Now's keys would re-group Now when it was switched. */
+  screen: FrontierPrefsScreen;
+  /** The axes this surface offers, defaulting to the whole vocabulary. The
+   * project board passes every axis but `project`, which is degenerate there —
+   * one column, always. A subset is a *rendering* choice and nothing more: the
+   * vocabulary itself stays the seam's (ADR-0025), `groupFrontier` is called
+   * unchanged, and the stored axis is clamped against this list on read so a
+   * value chosen on a wider board cannot group by a button that is not here. */
+  axes?: readonly FrontierAxis[];
 }) {
   // Seeded from storage on first render, then written on every change. `useState`'s
   // initialiser runs once, which is what makes a reload restore rather than a
   // re-render re-read.
-  const [axis, setAxis] = useState<FrontierAxis>(() => readFrontierAxis(storage));
+  const [axis, setAxis] = useState<FrontierAxis>(() => readFrontierAxis(storage, screen, axes));
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() =>
-    readCollapsedColumns(storage),
+    readCollapsedColumns(storage, screen),
   );
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set<string>());
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -455,14 +476,14 @@ export function FrontierColumns({
 
   const pickAxis = (next: FrontierAxis) => {
     setAxis(next);
-    writeFrontierAxis(storage, next);
+    writeFrontierAxis(storage, screen, next);
     // Both per-column states are keyed by the column's own label, and
     // switching the axis re-labels every column — the old keys would then
     // apply to whatever happened to share a name. Cleared with the switch, the
     // same instinct as ADR-0015 discarding a pane override when its computed
     // band changes.
     setCollapsed(new Set<string>());
-    writeCollapsedColumns(storage, new Set<string>());
+    writeCollapsedColumns(storage, screen, new Set<string>());
     setExpanded(new Set<string>());
   };
 
@@ -502,7 +523,7 @@ export function FrontierColumns({
     // header click is its own React event — two collapses cannot batch into one
     // pass, which is the only case an updater would buy anything for.
     setCollapsed(next);
-    writeCollapsedColumns(storage, next);
+    writeCollapsedColumns(storage, screen, next);
   };
 
   // The board's own width, the one fact `frontier-lanes.ts` cannot derive.
@@ -581,7 +602,7 @@ export function FrontierColumns({
           flexWrap: "wrap",
         }}
       >
-        {FRONTIER_AXES.map((entry) => (
+        {axes.map((entry) => (
           <ControlButton
             key={entry}
             aria-pressed={axis === entry}

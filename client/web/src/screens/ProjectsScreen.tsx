@@ -5,29 +5,28 @@ import { Card } from "../components/core/Card";
 import { Icon } from "../components/core/Icon";
 import { IconButton } from "../components/core/IconButton";
 import { EmptyState } from "../components/feedback/EmptyState";
-import { Checkbox } from "../components/forms/Checkbox";
 import { Input } from "../components/forms/Input";
 import { Switch } from "../components/forms/Switch";
 import { Textarea } from "../components/forms/Textarea";
+import type { MicrotaskWiring } from "../shell/useMicrotaskWiring";
 import type {
-  FogDTO,
   LedgerRowDTO,
   ProjectDTO,
   ProjectLinkDTO,
   RouteDTO,
-  StepDTO,
-  TaskItemDTO,
+  TaskActionName,
 } from "../store/protocol";
 import type {
-  TaskActionReorderResult,
-  TaskFogResult,
   TaskProjectLinkResult,
   TaskProjectResult,
   TaskRouteResult,
   TaskState,
-  TaskStepResult,
 } from "../store/store";
+import type { TriageEdits } from "../store/worker-client";
+import { FrontierBoard } from "./FrontierBoard";
+import { FRONTIER_AXES } from "./frontier-columns";
 import { Aside, Column, TwoColumn } from "./layout";
+import type { StorageLike } from "./storage";
 import {
   awaitingCreate,
   countsMeta,
@@ -59,21 +58,25 @@ import {
 // shown from the moment the enqueue succeeds until the id turns up in
 // `projects`.
 //
-// **The dossier has no placeholders left.** Properties (#625), links
-// (#626), the Route's destination/notes (#627), the reading column's fog
-// (#628), the ordered action list with each action's inline steps (#629)
-// and now the archive affordance (#630, `ArchiveCard`) are all real cards
-// — #630 was the last one `ComingRegion` stood in for, and that component
-// is gone with it.
+// **An open project is the Now board, filtered.** The dossier's centre
+// column is `FrontierBoard.tsx` — the same board Now renders, given only the
+// items whose `projectId` is this project's — because the question a project
+// answers is "what can I do on this, right now" rather than "what records
+// does it hold". The aside keeps the records: Route, Properties, Links,
+// Archive.
 //
-// **The action list's reorder overlays; its Steps don't.** Unlike every
-// other project-lane write on this screen, reordering an Action patches
-// the ordinary item table, which already carries `Core::act`'s overlay
-// (`Core::patch_action_position`'s own doc) — `ActionsCard` shows the new
-// order the instant a reorder is clicked, with no "waiting" state to paint.
-// Steps stay in the no-overlay convention every other card here uses: a
-// tick, a reword, an add or a delete becomes visible once the next
-// completed cycle pulls it back, same as Fog and Links.
+// The action list and the fog card that used to stand in the centre column
+// (#629, #628) are **gone from this screen**, along with their web plumbing.
+// The records themselves are untouched server-side (ADR-0030) and
+// `/to-actions` still writes them; what went is a second rendering of the
+// frontier, ordered by `project_pos`, beside the ranked one. Membership here
+// is `project_id` **alone**: an action assigned to the project but never
+// positioned used to be invisible on this screen, and now is not.
+//
+// **The board's own no-overlay caveat.** Nothing on the board is a
+// project-lane write, so the "waiting" convention below does not reach it:
+// acts and triage carry `Core::act`'s and `Core::triage`'s own overlays,
+// exactly as they do on Now.
 //
 // **The Route card has no optimistic overlay, so it says so.** Same
 // no-overlay contract as every other project-lane write here
@@ -88,6 +91,12 @@ import {
 // (ADR-0030 decision 1), and this card adds no bespoke conflict UI for it.
 
 const WAITING_COPY = "creating — appears when the round trip lands";
+
+/** The axes the project board's switcher offers: the seam's vocabulary minus
+ * `project`, which groups a single-project board into one column. Derived
+ * from `FRONTIER_AXES` rather than written out, so a fifth axis arrives here
+ * automatically — the exclusion is the claim, not the list. */
+const PROJECT_BOARD_AXES = FRONTIER_AXES.filter((axis) => axis !== "project");
 
 export interface ProjectsScreenProps {
   task: TaskState;
@@ -122,36 +131,30 @@ export interface ProjectsScreenProps {
   /** #627: the Route card's edit gesture — `patch` carries only the fields
    * the card actually changed. */
   onPatchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => void;
-  /** #628: the fog card's read — fetches one project's open fog. Same
-   * "the caller's own effect decides when" shape as `onRequestProjectLinks`. */
-  onRequestFog: (projectId: string) => void;
-  /** #628: the fog card's add-a-question gesture. */
-  onCreateFog: (projectId: string, question: string, position: number) => void;
-  /** #628: the fog card's reword/reposition/resolve gesture — `patch`
-   * carries only the fields the card actually changed. */
-  onPatchFog: (
-    current: FogDTO,
-    patch: { question?: string; position?: number; resolvedAt?: number | null },
-  ) => void;
-  /** #629: the action list's read — fetches one project's actions, route
-   * order. Same "the caller's own effect decides when" shape as
-   * `onRequestProjectLinks`. */
-  onRequestActions: (projectId: string) => void;
-  /** #629: the action list's reorder gesture — moves one Action's
-   * `projectPos`. Overlaid immediately (`Core::patch_action_position`'s
-   * own doc), unlike every other project-lane write on this screen. */
-  onReorderAction: (projectId: string, current: TaskItemDTO, position: number) => void;
-  /** #629: an expanded action's checklist read — the same `getSteps` door
-   * item detail's own checklist already uses (issue #96), reused here. */
-  onRequestActionSteps: (itemId: string) => void;
-  /** #629: an expanded action's add-a-step gesture. */
-  onCreateStep: (itemId: string, body: string, position: number) => void;
-  /** #629: an expanded action's tick/reword/reorder/delete gesture —
-   * `patch` carries only the fields the row actually changed. */
-  onPatchStep: (
-    current: StepDTO,
-    patch: { body?: string; done?: boolean; position?: number; deletedAt?: number | null },
-  ) => void;
+  /** The board's clock — `App.tsx`'s `syncNowMs`, the same one Now gets.
+   * One tick for the whole shell, never a second one per screen. */
+  nowMs: number;
+  /** App-global selection (`App.tsx`'s `selectedItemId`), deliberately not
+   * scoped to the open project: an item selected elsewhere simply isn't
+   * found among this project's items, so the slot above the columns does
+   * not render. Nothing is cleared on navigation. */
+  selectedItemId: string | null;
+  onOpenItem: (itemId: string) => void;
+  onCloseItemDetail: () => void;
+  /** The shell's act door, forwarded to the board — the same callback Now
+   * passes, never a second entry point. */
+  onAct: (itemId: string, action: TaskActionName) => void;
+  /** The shell's triage door, for the captures this project's board holds
+   * in its own columns. Optional for the same "no worker, no affordance"
+   * reason it is on Now. */
+  onTriage?: (itemId: string, destination: "ready" | null, edits: TriageEdits) => void;
+  /** Forwarded to the board's open item panel, exactly as Now does. */
+  microtask?: MicrotaskWiring;
+  /** The board's device-local view preferences — the axis and collapsed
+   * columns, under this screen's own `hb.projects.*` keys
+   * (`frontier-prefs.ts`). Injectable for the same reason Now's is; the
+   * `localStorage` fallback is resolved here, once. */
+  storage?: StorageLike;
 }
 
 export function ProjectsScreen({
@@ -163,16 +166,21 @@ export function ProjectsScreen({
   onPatchProjectLink,
   onRequestRoute,
   onPatchRoute,
-  onRequestFog,
-  onCreateFog,
-  onPatchFog,
-  onRequestActions,
-  onReorderAction,
-  onRequestActionSteps,
-  onCreateStep,
-  onPatchStep,
+  nowMs,
+  selectedItemId,
+  onOpenItem,
+  onCloseItemDetail,
+  onAct,
+  onTriage,
+  microtask,
+  storage,
 }: ProjectsScreenProps) {
   const [openId, setOpenId] = useState<string | null>(null);
+  // Resolved once here rather than in the board, the same shape `NowScreen`
+  // uses — every test that mounts this screen without the prop keeps exactly
+  // the storage it had before.
+  const resolvedStorage =
+    storage ?? (typeof localStorage === "undefined" ? undefined : localStorage);
 
   // `null` is "not read yet", not "no projects" (`TaskState.projects`' own
   // doc). An empty grid here would be a claim this device has no standing to
@@ -218,21 +226,17 @@ export function ProjectsScreen({
       lastRouteWrite={task.lastRouteWrite}
       onRequestRoute={onRequestRoute}
       onPatchRoute={onPatchRoute}
-      fog={task.fogByProject[open.project.id]}
-      lastFogWrite={task.lastFogWrite}
-      onRequestFog={onRequestFog}
-      onCreateFog={onCreateFog}
-      onPatchFog={onPatchFog}
-      actions={task.actionsByProject[open.project.id]}
-      lastActionReorder={task.lastActionReorder}
-      onRequestActions={onRequestActions}
-      onReorderAction={onReorderAction}
-      stepsByItem={task.stepsByItem}
-      lastStepWrite={task.lastStepWrite}
-      onRequestActionSteps={onRequestActionSteps}
-      onCreateStep={onCreateStep}
-      onPatchStep={onPatchStep}
       syncOutcomeSeq={task.syncOutcomeSeq}
+      task={task}
+      nowMs={nowMs}
+      selectedItemId={selectedItemId}
+      onOpenItem={onOpenItem}
+      onCloseItemDetail={onCloseItemDetail}
+      onAct={onAct}
+      onTriage={onTriage}
+      onCreateProject={onCreateProject}
+      microtask={microtask}
+      storage={resolvedStorage}
     />
   );
 }
@@ -387,21 +391,17 @@ function Dossier({
   lastRouteWrite,
   onRequestRoute,
   onPatchRoute,
-  fog,
-  lastFogWrite,
-  onRequestFog,
-  onCreateFog,
-  onPatchFog,
-  actions,
-  lastActionReorder,
-  onRequestActions,
-  onReorderAction,
-  stepsByItem,
-  lastStepWrite,
-  onRequestActionSteps,
-  onCreateStep,
-  onPatchStep,
   syncOutcomeSeq,
+  task,
+  nowMs,
+  selectedItemId,
+  onOpenItem,
+  onCloseItemDetail,
+  onAct,
+  onTriage,
+  onCreateProject,
+  microtask,
+  storage,
 }: {
   row: ProjectRow;
   lastProjectWrite: TaskProjectResult | null;
@@ -431,33 +431,20 @@ function Dossier({
   lastRouteWrite: TaskRouteResult | null;
   onRequestRoute: (projectId: string) => void;
   onPatchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => void;
-  /** `undefined` = not read yet (`TaskState.fogByProject`'s own doc),
-   * distinct from `[]` (this project genuinely has no open fog). */
-  fog: FogDTO[] | undefined;
-  lastFogWrite: TaskFogResult | null;
-  onRequestFog: (projectId: string) => void;
-  onCreateFog: (projectId: string, question: string, position: number) => void;
-  onPatchFog: (
-    current: FogDTO,
-    patch: { question?: string; position?: number; resolvedAt?: number | null },
-  ) => void;
-  /** `undefined` = not read yet (`TaskState.actionsByProject`'s own doc),
-   * distinct from `[]` (this project genuinely has no actions). */
-  actions: TaskItemDTO[] | undefined;
-  lastActionReorder: TaskActionReorderResult | null;
-  onRequestActions: (projectId: string) => void;
-  onReorderAction: (projectId: string, current: TaskItemDTO, position: number) => void;
-  /** Item detail's checklist store (issue #96, S10) — the expanded action's
-   * steps read the same map, keyed by item id. */
-  stepsByItem: Record<string, StepDTO[]>;
-  lastStepWrite: TaskStepResult | null;
-  onRequestActionSteps: (itemId: string) => void;
-  onCreateStep: (itemId: string, body: string, position: number) => void;
-  onPatchStep: (
-    current: StepDTO,
-    patch: { body?: string; done?: boolean; position?: number; deletedAt?: number | null },
-  ) => void;
   syncOutcomeSeq: number;
+  /** The whole store, for the board — its four queries get filtered here,
+   * and its broadcast slots (`lastAct`, `lastTriage`, `pending`,
+   * `stepsByItem`, …) are app-wide facts it reads straight off `task`. */
+  task: TaskState;
+  nowMs: number;
+  selectedItemId: string | null;
+  onOpenItem: (itemId: string) => void;
+  onCloseItemDetail: () => void;
+  onAct: (itemId: string, action: TaskActionName) => void;
+  onTriage?: (itemId: string, destination: "ready" | null, edits: TriageEdits) => void;
+  onCreateProject: (name: string) => void;
+  microtask?: MicrotaskWiring;
+  storage?: StorageLike;
 }) {
   const projectId = row.project.id;
 
@@ -473,18 +460,6 @@ function Dossier({
   // #627: same shape, for the Route.
   useEffect(() => {
     onRequestRoute(projectId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, syncOutcomeSeq]);
-
-  // #628: same shape, for the open fog.
-  useEffect(() => {
-    onRequestFog(projectId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, syncOutcomeSeq]);
-
-  // #629: same shape, for the ordered action list.
-  useEffect(() => {
-    onRequestActions(projectId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, syncOutcomeSeq]);
 
@@ -504,33 +479,57 @@ function Dossier({
 
       <TwoColumn>
         <Column>
+          {/* Now's board, re-sliced to this project. The filter is a TS
+              identity comparison against a value the seam already decided
+              (ADR-0025): ordering, grouping and faceting still all happen
+              behind it, unchanged — this narrows the input, it does not
+              re-decide anything.
+
+              Membership is `projectId` and nothing else. `project_pos` is
+              deliberately irrelevant: it ordered the action list this board
+              replaced, and requiring it would hide an action assigned to the
+              project but never positioned — which is most of them, since only
+              `/to-actions` and the list's own reorder ever set it.
+
+              `archivedAt` is deliberately not tested either: the four
+              queries already exclude archived items upstream, so a filter
+              here would be a second, drifting definition of the same thing. */}
+          <FrontierBoard
+            task={task}
+            frontier={task.frontier.filter((item) => item.projectId === projectId)}
+            triage={task.triageInbox.filter((item) => item.projectId === projectId)}
+            grilling={task.grillingItems.filter((item) => item.projectId === projectId)}
+            blocked={task.blocked.filter((entry) => entry.item.projectId === projectId)}
+            nowMs={nowMs}
+            selectedItemId={selectedItemId}
+            onOpenItem={onOpenItem}
+            onCloseItemDetail={onCloseItemDetail}
+            onAct={onAct}
+            onTriage={onTriage}
+            onCreateProject={onCreateProject}
+            microtask={microtask}
+            storage={storage}
+            screen="projects"
+            // The `project` axis is degenerate here — every item on this
+            // board is in one project, so it would group them into a single
+            // column named after the project whose page you are already on.
+            axes={PROJECT_BOARD_AXES}
+            emptyState={{
+              title: "Nothing startable in this project",
+              body: "No actions here are Ready or In Progress right now.",
+            }}
+          />
+        </Column>
+        <Aside label="Project properties">
+          {/* Route first: the destination is what the rest of the aside is
+              about, and it is the one card here a reader consults while
+              looking at the board beside it. */}
           <RouteCard
             projectId={projectId}
             route={route}
             lastRouteWrite={lastRouteWrite}
             onPatchRoute={onPatchRoute}
           />
-          <ActionsCard
-            projectId={projectId}
-            actions={actions}
-            lastActionReorder={lastActionReorder}
-            onReorderAction={onReorderAction}
-            stepsByItem={stepsByItem}
-            lastStepWrite={lastStepWrite}
-            onRequestActionSteps={onRequestActionSteps}
-            onCreateStep={onCreateStep}
-            onPatchStep={onPatchStep}
-            syncOutcomeSeq={syncOutcomeSeq}
-          />
-          <FogCard
-            projectId={projectId}
-            fog={fog}
-            lastFogWrite={lastFogWrite}
-            onCreateFog={onCreateFog}
-            onPatchFog={onPatchFog}
-          />
-        </Column>
-        <Aside label="Project properties">
           <PropertiesCard
             project={row.project}
             lastProjectWrite={lastProjectWrite}
@@ -1079,8 +1078,7 @@ function LinkEditRow({
  *
  * **Confirmation is a two-step reveal within the card, not a modal** — this
  * codebase has no modal primitive (nothing under `components/` is one, and
- * neither `LinksCard` nor `FogCard` uses one for their own destructive
- * gestures), and Cancel is one click away either way. `liveCount` is
+ * `LinksCard` uses none for its own destructive gesture), and Cancel is one click away either way. `liveCount` is
  * `roster.ts`'s `liveItemCount`, off the Ledger this screen already holds
  * app-wide — the same "counts are derived, not read" doctrine `countsMeta`
  * follows, scoped to exactly the predicate the server cascade uses
@@ -1205,565 +1203,5 @@ function ArchiveCard({
         {failure !== null ? <Badge tone="danger">{failure}</Badge> : null}
       </Card>
     </div>
-  );
-}
-
-/** The dossier reading column's action list (#629, ADR-0030 decision 1):
- * renders a project's Actions in route (`projectPos`) order, reorderable
- * with up/down controls that stop at the ends, and each one expanding
- * **inline beneath its own row** — never into the aside, per the brief's
- * one non-negotiable styling detail — to its own steps checklist
- * (`ActionStepsChecklist`) when selected. `actions` is `undefined` while
- * the read is in flight (`TaskState.actionsByProject`'s own doc) — distinct
- * from an empty array, which is a real answer ("this project has no
- * actions yet").
- *
- * **Reordering overlays immediately.** Unlike `FogCard`/`LinksCard`'s own
- * reorder, `onReorderAction` patches the ordinary item table
- * (`Core::patch_action_position`'s own doc), so the swapped rows repaint
- * the instant the click handler returns — no "waiting" state is drawn.
- * Same "swap two adjacent rows, two CAS patches" gesture `FogCard`'s own
- * `moveFog` uses, and for the same reason: an interleaved edit from
- * another device only ever collides with the two rows actually touched. */
-function ActionsCard({
-  projectId,
-  actions,
-  lastActionReorder,
-  onReorderAction,
-  stepsByItem,
-  lastStepWrite,
-  onRequestActionSteps,
-  onCreateStep,
-  onPatchStep,
-  syncOutcomeSeq,
-}: {
-  projectId: string;
-  actions: TaskItemDTO[] | undefined;
-  lastActionReorder: TaskActionReorderResult | null;
-  onReorderAction: (projectId: string, current: TaskItemDTO, position: number) => void;
-  stepsByItem: Record<string, StepDTO[]>;
-  lastStepWrite: TaskStepResult | null;
-  onRequestActionSteps: (itemId: string) => void;
-  onCreateStep: (itemId: string, body: string, position: number) => void;
-  onPatchStep: (
-    current: StepDTO,
-    patch: { body?: string; done?: boolean; position?: number; deletedAt?: number | null },
-  ) => void;
-  syncOutcomeSeq: number;
-}) {
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-
-  // Fetches the expanded action's steps the moment it is selected, and
-  // again on every completed cycle it stays selected for — same "the
-  // caller's own effect decides when" shape `Dossier`'s own `onRequestFog`
-  // effect uses.
-  useEffect(() => {
-    if (expandedId !== null) {
-      onRequestActionSteps(expandedId);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expandedId, syncOutcomeSeq]);
-
-  // Gated on `projectId`, same reasoning `FogCard`'s own failure read
-  // carries: `lastActionReorder` is one broadcast slot shared by every open
-  // dossier, so an unguarded read would paint a stranger's failure into
-  // this card.
-  const failure =
-    lastActionReorder !== null && lastActionReorder.projectId === projectId && lastActionReorder.kind !== "ok"
-      ? lastActionReorder.error ?? "That reorder did not go through."
-      : null;
-
-  const sortedActions =
-    actions === undefined ? undefined : [...actions].sort((a, b) => (a.projectPos ?? 0) - (b.projectPos ?? 0));
-
-  function moveAction(index: number, direction: -1 | 1) {
-    if (sortedActions === undefined) {
-      return;
-    }
-    const swapIndex = index + direction;
-    if (swapIndex < 0 || swapIndex >= sortedActions.length) {
-      return;
-    }
-    const current = sortedActions[index];
-    const other = sortedActions[swapIndex];
-    onReorderAction(projectId, current, other.projectPos ?? swapIndex);
-    onReorderAction(projectId, other, current.projectPos ?? index);
-  }
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-      <span className="hb-meta">actions</span>
-      <Card padding="var(--space-5)" style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
-        {sortedActions === undefined ? (
-          <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
-            Reading actions…
-          </span>
-        ) : sortedActions.length === 0 ? (
-          <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
-            No actions on this Route yet.
-          </span>
-        ) : (
-          <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-            {sortedActions.map((action, index) => (
-              <li key={action.id} style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-                  <button
-                    type="button"
-                    onClick={() => setExpandedId(expandedId === action.id ? null : action.id)}
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      textAlign: "left",
-                      background: "none",
-                      border: "none",
-                      padding: 0,
-                      cursor: "pointer",
-                      font: "var(--type-body-sm)",
-                      color: "var(--text-primary)",
-                    }}
-                  >
-                    {action.title}
-                  </button>
-                  {action.pending ? <Badge mono>pending</Badge> : null}
-                  <IconButton
-                    icon="chevron-down"
-                    label="Move up"
-                    size="sm"
-                    style={{ transform: "rotate(180deg)" }}
-                    disabled={index === 0}
-                    onClick={() => moveAction(index, -1)}
-                  />
-                  <IconButton
-                    icon="chevron-down"
-                    label="Move down"
-                    size="sm"
-                    disabled={index === sortedActions.length - 1}
-                    onClick={() => moveAction(index, 1)}
-                  />
-                </div>
-                {expandedId === action.id ? (
-                  <ActionStepsChecklist
-                    itemId={action.id}
-                    steps={stepsByItem[action.id]}
-                    lastStepWrite={lastStepWrite}
-                    onCreateStep={onCreateStep}
-                    onPatchStep={onPatchStep}
-                  />
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        )}
-        {failure !== null ? <Badge tone="danger">{failure}</Badge> : null}
-      </Card>
-    </div>
-  );
-}
-
-/** One expanded action's steps checklist (#629) — rendered inline beneath
- * its row by `ActionsCard`, never in the aside. Ticking, rewording,
- * reordering and adding a Step all share the no-overlay convention every
- * other project-lane write on this screen uses (`Core::patch_step`'s own
- * doc): a change becomes visible once the next completed cycle pulls it
- * back. Deleting a step flags it (ADR-0020) rather than erasing it — the
- * flagged row simply stops appearing here, since a deleted Step demotes to
- * `Presence::Absent` in the mirror (`sync::mirror`'s own `apply_tables`,
- * unlike Fog's `resolved_at`), so there is no client-side "hide it" logic
- * to get wrong. `steps` is `undefined` while the read is in flight
- * (`TaskState.stepsByItem`'s own doc), distinct from an empty array (this
- * action genuinely has no steps yet). */
-function ActionStepsChecklist({
-  itemId,
-  steps,
-  lastStepWrite,
-  onCreateStep,
-  onPatchStep,
-}: {
-  itemId: string;
-  steps: StepDTO[] | undefined;
-  lastStepWrite: TaskStepResult | null;
-  onCreateStep: (itemId: string, body: string, position: number) => void;
-  onPatchStep: (
-    current: StepDTO,
-    patch: { body?: string; done?: boolean; position?: number; deletedAt?: number | null },
-  ) => void;
-}) {
-  const [bodyInput, setBodyInput] = useState("");
-  const [editingId, setEditingId] = useState<string | null>(null);
-
-  // Gated on `itemId`, same reasoning `ActionsCard`'s own failure read
-  // carries: `lastStepWrite` is one broadcast slot shared by every
-  // expanded checklist on every open dossier.
-  const failure =
-    lastStepWrite !== null && lastStepWrite.itemId === itemId
-      ? (lastStepWrite.kind === "ok" ? null : lastStepWrite.error ?? "That step write did not go through.")
-      : null;
-
-  const sortedSteps = steps === undefined ? undefined : [...steps].sort((a, b) => a.position - b.position);
-
-  function addStep() {
-    const trimmedBody = bodyInput.trim();
-    if (trimmedBody === "") {
-      return;
-    }
-    // Mint the new position past the largest live one, not from the count
-    // — `FogCard.addFog`'s own reasoning, ported verbatim: a deleted step
-    // drops out of this read without renumbering the rest, so a
-    // count-minted position could duplicate a live row's.
-    const position = sortedSteps === undefined || sortedSteps.length === 0 ? 0 : sortedSteps[sortedSteps.length - 1].position + 1;
-    onCreateStep(itemId, trimmedBody, position);
-    setBodyInput("");
-  }
-
-  function moveStep(index: number, direction: -1 | 1) {
-    if (sortedSteps === undefined) {
-      return;
-    }
-    const swapIndex = index + direction;
-    if (swapIndex < 0 || swapIndex >= sortedSteps.length) {
-      return;
-    }
-    const step = sortedSteps[index];
-    const other = sortedSteps[swapIndex];
-    onPatchStep(step, { position: other.position });
-    onPatchStep(other, { position: step.position });
-  }
-
-  return (
-    <div style={{ marginLeft: "var(--space-6)", display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-      {sortedSteps === undefined ? (
-        <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>Reading steps…</span>
-      ) : sortedSteps.length === 0 ? (
-        <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
-          No steps on this action yet.
-        </span>
-      ) : (
-        <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-          {sortedSteps.map((step, index) =>
-            editingId === step.id ? (
-              <StepEditRow
-                key={step.id}
-                step={step}
-                onSave={(body) => {
-                  onPatchStep(step, { body });
-                  setEditingId(null);
-                }}
-                onCancel={() => setEditingId(null)}
-              />
-            ) : (
-              <li key={step.id} style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-                <Checkbox
-                  checked={step.done}
-                  onChange={() => onPatchStep(step, { done: !step.done })}
-                  aria-label={step.body}
-                />
-                <span
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    font: "var(--type-body-sm)",
-                    color: step.done ? "var(--text-secondary)" : "var(--text-primary)",
-                    textDecoration: step.done ? "line-through" : "none",
-                  }}
-                >
-                  {step.body}
-                </span>
-                <IconButton
-                  icon="chevron-down"
-                  label="Move up"
-                  size="sm"
-                  style={{ transform: "rotate(180deg)" }}
-                  disabled={index === 0}
-                  onClick={() => moveStep(index, -1)}
-                />
-                <IconButton
-                  icon="chevron-down"
-                  label="Move down"
-                  size="sm"
-                  disabled={index === sortedSteps.length - 1}
-                  onClick={() => moveStep(index, 1)}
-                />
-                <Button variant="ghost" size="sm" onClick={() => setEditingId(step.id)}>
-                  Edit
-                </Button>
-                <IconButton
-                  icon="trash-2"
-                  label="Delete"
-                  size="sm"
-                  onClick={() => onPatchStep(step, { deletedAt: Date.now() })}
-                />
-              </li>
-            ),
-          )}
-        </ul>
-      )}
-
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          addStep();
-        }}
-        style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}
-      >
-        <Input
-          label="New step"
-          placeholder="A ~2–5 minute concrete physical step"
-          value={bodyInput}
-          onChange={(event) => setBodyInput(event.target.value)}
-        />
-        {failure !== null ? <Badge tone="danger">{failure}</Badge> : null}
-        <Button type="submit" size="sm" disabled={bodyInput.trim() === "" || sortedSteps === undefined}>
-          Add step
-        </Button>
-      </form>
-    </div>
-  );
-}
-
-/** One step's inline reword form — swapped in for its display row
- * (`ActionStepsChecklist`'s own `editingId`), the same "click to reveal the
- * fields" shape `FogEditRow` uses. */
-function StepEditRow({
-  step,
-  onSave,
-  onCancel,
-}: {
-  step: StepDTO;
-  onSave: (body: string) => void;
-  onCancel: () => void;
-}) {
-  const [bodyInput, setBodyInput] = useState(step.body);
-
-  function save() {
-    const trimmedBody = bodyInput.trim();
-    if (trimmedBody === "") {
-      return;
-    }
-    onSave(trimmedBody);
-  }
-
-  return (
-    <li style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-      <Input label="Step" value={bodyInput} onChange={(event) => setBodyInput(event.target.value)} />
-      <div style={{ display: "flex", gap: "var(--space-3)" }}>
-        <Button size="sm" onClick={save} disabled={bodyInput.trim() === ""}>
-          Save
-        </Button>
-        <Button variant="ghost" size="sm" onClick={onCancel}>
-          Cancel
-        </Button>
-      </div>
-    </li>
-  );
-}
-
-/** The dossier reading column's fog card (#628, ADR-0030 decision 1): lists
- * a project's **open** fog in position order, and adds, edits, reorders and
- * resolves it. `fog` is `undefined` while the read is in flight
- * (`TaskState.fogByProject`'s own doc) — distinct from an empty array,
- * which is a real answer ("this project has no open fog right now").
- * Resolving is a stamp, never a delete (`Core::patch_fog`'s own doc): the
- * mirror's own `open_fog_for` already filters resolved rows out, so a
- * resolved segment simply stops appearing here — there is no client-side
- * "hide it" logic to get wrong, and no reopen affordance either, since
- * nothing in this slice's brief asks for one.
- *
- * Reordering swaps two adjacent rows' `position` in one gesture — two CAS
- * patches, one per row — same discipline `LinksCard`'s own `moveLink`
- * follows, and for the same reason: an interleaved edit from another
- * device only ever collides with the two rows actually touched. */
-function FogCard({
-  projectId,
-  fog,
-  lastFogWrite,
-  onCreateFog,
-  onPatchFog,
-}: {
-  projectId: string;
-  fog: FogDTO[] | undefined;
-  lastFogWrite: TaskFogResult | null;
-  onCreateFog: (projectId: string, question: string, position: number) => void;
-  onPatchFog: (
-    current: FogDTO,
-    patch: { question?: string; position?: number; resolvedAt?: number | null },
-  ) => void;
-}) {
-  const [questionInput, setQuestionInput] = useState("");
-  const [editingId, setEditingId] = useState<string | null>(null);
-
-  // Gated on `projectId`, same reasoning `LinksCard`'s own failure read
-  // carries: `lastFogWrite` is one broadcast slot shared by every open
-  // dossier, so an unguarded read would paint a stranger's failure into
-  // this card.
-  const failure =
-    lastFogWrite !== null && lastFogWrite.projectId === projectId
-      ? (lastFogWrite.kind === "ok" ? null : lastFogWrite.error ?? "That fog write did not go through.")
-      : null;
-
-  const sortedFog = fog === undefined ? undefined : [...fog].sort((a, b) => a.position - b.position);
-
-  function addFog() {
-    const trimmedQuestion = questionInput.trim();
-    if (trimmedQuestion === "") {
-      return;
-    }
-    // Only reachable once the read has answered — Add is disabled while
-    // `sortedFog` is `undefined`, because "no open fog yet" and "not known
-    // yet" would otherwise both mint position 0, and against a project that
-    // does have open fog that 0 duplicates the first row's: the same
-    // collision the count-minted position below is written to avoid,
-    // arrived at from the other direction.
-    // Mint the new position past the largest live one, not from the count —
-    // `LinksCard.addLink`'s own reasoning, ported verbatim: resolving drops
-    // a row out of this read without renumbering the rest (it is a stamp,
-    // not a delete, but `open_fog_for` still stops returning it), so open
-    // positions develop gaps (0,1,2 minus the middle leaves 0,2 with length
-    // 2) and a count-minted position would duplicate a live row's — turning
-    // the next reorder swap into a value-identical no-op patch. Resolved
-    // rows cannot count toward the max (the mirror filters them out before
-    // this card ever sees them), and they need not: a collision with a
-    // resolved row's position is harmless, since only open rows are ever
-    // sorted or swapped.
-    const position = sortedFog === undefined || sortedFog.length === 0 ? 0 : sortedFog[sortedFog.length - 1].position + 1;
-    onCreateFog(projectId, trimmedQuestion, position);
-    setQuestionInput("");
-  }
-
-  function moveFog(index: number, direction: -1 | 1) {
-    if (sortedFog === undefined) {
-      return;
-    }
-    const swapIndex = index + direction;
-    if (swapIndex < 0 || swapIndex >= sortedFog.length) {
-      return;
-    }
-    const segment = sortedFog[index];
-    const other = sortedFog[swapIndex];
-    onPatchFog(segment, { position: other.position });
-    onPatchFog(other, { position: segment.position });
-  }
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-      <span className="hb-meta">fog</span>
-      <Card padding="var(--space-5)" style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
-        {sortedFog === undefined ? (
-          <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>Reading fog…</span>
-        ) : sortedFog.length === 0 ? (
-          <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
-            No open fog on this Route.
-          </span>
-        ) : (
-          <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-            {sortedFog.map((segment, index) =>
-              editingId === segment.id ? (
-                <FogEditRow
-                  key={segment.id}
-                  fog={segment}
-                  onSave={(question) => {
-                    onPatchFog(segment, { question });
-                    setEditingId(null);
-                  }}
-                  onCancel={() => setEditingId(null)}
-                />
-              ) : (
-                <li key={segment.id} style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-                  <span
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      font: "var(--type-body-sm)",
-                      color: "var(--text-primary)",
-                    }}
-                  >
-                    {segment.question}
-                  </span>
-                  <IconButton
-                    icon="chevron-down"
-                    label="Move up"
-                    size="sm"
-                    style={{ transform: "rotate(180deg)" }}
-                    disabled={index === 0}
-                    onClick={() => moveFog(index, -1)}
-                  />
-                  <IconButton
-                    icon="chevron-down"
-                    label="Move down"
-                    size="sm"
-                    disabled={index === sortedFog.length - 1}
-                    onClick={() => moveFog(index, 1)}
-                  />
-                  <Button variant="ghost" size="sm" onClick={() => setEditingId(segment.id)}>
-                    Edit
-                  </Button>
-                  <IconButton
-                    icon="check"
-                    label="Resolve"
-                    size="sm"
-                    onClick={() => onPatchFog(segment, { resolvedAt: Date.now() })}
-                  />
-                </li>
-              ),
-            )}
-          </ul>
-        )}
-
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            addFog();
-          }}
-          style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}
-        >
-          <Input
-            label="Open question"
-            placeholder="What blocks this from being an action?"
-            value={questionInput}
-            onChange={(event) => setQuestionInput(event.target.value)}
-          />
-          {failure !== null ? <Badge tone="danger">{failure}</Badge> : null}
-          <Button type="submit" size="sm" disabled={questionInput.trim() === "" || sortedFog === undefined}>
-            Add fog
-          </Button>
-        </form>
-      </Card>
-    </div>
-  );
-}
-
-/** One fog segment's inline reword form — swapped in for its display row
- * (`FogCard`'s own `editingId`), the same "click to reveal the fields"
- * shape `LinkEditRow` uses. */
-function FogEditRow({
-  fog,
-  onSave,
-  onCancel,
-}: {
-  fog: FogDTO;
-  onSave: (question: string) => void;
-  onCancel: () => void;
-}) {
-  const [questionInput, setQuestionInput] = useState(fog.question);
-
-  function save() {
-    const trimmedQuestion = questionInput.trim();
-    if (trimmedQuestion === "") {
-      return;
-    }
-    onSave(trimmedQuestion);
-  }
-
-  return (
-    <li style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-      <Input label="Open question" value={questionInput} onChange={(event) => setQuestionInput(event.target.value)} />
-      <div style={{ display: "flex", gap: "var(--space-3)" }}>
-        <Button size="sm" onClick={save} disabled={questionInput.trim() === ""}>
-          Save
-        </Button>
-        <Button variant="ghost" size="sm" onClick={onCancel}>
-          Cancel
-        </Button>
-      </div>
-    </li>
   );
 }
