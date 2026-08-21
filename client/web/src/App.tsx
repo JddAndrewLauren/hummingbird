@@ -213,6 +213,16 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     requestProjectLinks: handleRequestProjectLinks,
     createProjectLink: handleCreateProjectLink,
     patchProjectLink: handlePatchProjectLink,
+    requestRoute: handleRequestRoute,
+    patchRoute: handlePatchRoute,
+    requestFog: handleRequestFog,
+    createFog: handleCreateFog,
+    patchFog: handlePatchFog,
+    requestActions: handleRequestActions,
+    reorderAction: handleReorderAction,
+    requestSteps: handleRequestActionSteps,
+    createStep: handleCreateStep,
+    patchStep: handlePatchStep,
   } = useProjectsWiring(worker);
   // #245: every source the registered standing questions need, refreshed on
   // the same per-cycle signal as the bindings they depend on.
@@ -580,9 +590,13 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               calendarConnected={calendar.connected}
               onSetScheduledDate={handleSetScheduledDate}
               microtask={microtaskWiring}
-              // The same two callbacks the Triage screen gets below: Now is a
+              // The same three callbacks the Triage screen gets below: Now is a
               // second view of one inbox, never a second entry point into it.
               onTriage={handleTriage}
+              // #652: the same inline "new project" affordance Triage's own
+              // rows get (#631) — one write door, reached from a second
+              // surface.
+              onCreateProject={handleCreateProject}
               asideCollapsed={asideCollapsed}
               // #359: the SAME `grillTakeover` instance the Triage screen gets
               // below — one interview session for the whole app, not a second
@@ -616,6 +630,16 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               onRequestProjectLinks={handleRequestProjectLinks}
               onCreateProjectLink={handleCreateProjectLink}
               onPatchProjectLink={handlePatchProjectLink}
+              onRequestRoute={handleRequestRoute}
+              onPatchRoute={handlePatchRoute}
+              onRequestFog={handleRequestFog}
+              onCreateFog={handleCreateFog}
+              onPatchFog={handlePatchFog}
+              onRequestActions={handleRequestActions}
+              onReorderAction={handleReorderAction}
+              onRequestActionSteps={handleRequestActionSteps}
+              onCreateStep={handleCreateStep}
+              onPatchStep={handlePatchStep}
             />
           )}
           {screen === "alerts" && <AlertsScreen />}

@@ -5,6 +5,7 @@ import {
   awaitingCreate,
   countsMeta,
   githubRepoUrl,
+  liveItemCount,
   projectRoster,
   rosterSummary,
   visibleRows,
@@ -24,7 +25,12 @@ function project(id: string, name: string, archived = false): ProjectDTO {
   };
 }
 
-function row(id: string, projectId: string | null, stage: TaskItemDTO["stage"]): LedgerRowDTO {
+function row(
+  id: string,
+  projectId: string | null,
+  stage: TaskItemDTO["stage"],
+  archivedAt: number | null = null,
+): LedgerRowDTO {
   return {
     id,
     seq: 1,
@@ -42,7 +48,7 @@ function row(id: string, projectId: string | null, stage: TaskItemDTO["stage"]):
     source: null,
     sourceKey: null,
     sourceUrl: null,
-    archivedAt: null,
+    archivedAt,
     createdAt: 1,
     updatedAt: 1,
     version: 1,
@@ -159,5 +165,26 @@ describe("githubRepoUrl", () => {
   it("is null when the project names no repo", () => {
     expect(githubRepoUrl(null)).toBeNull();
     expect(githubRepoUrl("")).toBeNull();
+  });
+});
+
+describe("liveItemCount", () => {
+  it("counts a project's live items, done included, archived excluded", () => {
+    const ledger = [
+      row("i-1", "p-1", "ready"),
+      row("i-2", "p-1", "done"),
+      row("i-3", "p-1", "ready", 9_000),
+      row("i-4", "p-2", "ready"),
+    ];
+    expect(liveItemCount(ledger, "p-1")).toBe(2);
+  });
+
+  it("is zero, not null, for a project the ledger has answered for with none live", () => {
+    expect(liveItemCount([row("i-1", "p-1", "ready", 9_000)], "p-1")).toBe(0);
+    expect(liveItemCount([], "p-1")).toBe(0);
+  });
+
+  it("is null while the ledger has not answered — never claims 0 early", () => {
+    expect(liveItemCount(null, "p-1")).toBeNull();
   });
 });

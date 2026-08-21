@@ -1,11 +1,21 @@
-import type { ProjectDTO, ProjectLinkDTO } from "../store/protocol";
+import type { FogDTO, ProjectDTO, ProjectLinkDTO, RouteDTO, StepDTO, TaskItemDTO } from "../store/protocol";
 import type { WorkerLike } from "../store/worker-client";
 import {
+  createFog,
   createProject,
   createProjectLink,
+  createStep,
+  patchFog,
   patchProject,
   patchProjectLink,
+  patchRoute,
+  patchStep,
+  reorderAction,
+  requestActions,
+  requestFog,
   requestProjectLinks,
+  requestRoute,
+  requestSteps,
 } from "../store/worker-client";
 
 // #624's projects wiring: the Projects screen's one write.
@@ -22,21 +32,38 @@ import {
 // appears in `TaskState.projects` only when a completed cycle pulls it back
 // (`Core::create_project`'s own doc). The caller says it is waiting in the
 // meantime, keyed on the *minted id* in `lastProjectWrite` — not on the seed,
-// which this hook mints and drops. `lastProjectWrite` is one broadcast slot
-// shared by every connected view (`protocol.ts`), so a second tab's create
-// briefly moves this tab's waiting line; that is `RulesScreen`'s behaviour
-// too (`lastRuleWrite`), and closing the gap is a change to both surfaces at
-// once rather than a private one here.
+// which this hook mints and (for `createProject`) drops. `lastProjectWrite`
+// is one broadcast slot shared by every connected view (`protocol.ts`), so a
+// second tab's create briefly moves this tab's waiting line; that is
+// `RulesScreen`'s behaviour too (`lastRuleWrite`), and closing the gap is a
+// change to both surfaces at once rather than a private one here.
+// `patchProject` is the one exception: it RETURNS its minted seed (batch
+// review, projects-dossier #668), because unlike a create — which only ever
+// has one caller mounted at a time (`NewProjectCard`) — a patch on an open
+// dossier can be issued by either of two sibling cards patching the same
+// `project.id` (`PropertiesCard`, `ArchiveCard`), and `projectId` alone
+// cannot tell them apart in the shared broadcast slot. See `patchProject`'s
+// own doc on this interface.
 
 export interface ProjectsWiring {
   createProject: (name: string) => void;
-  /** #625's properties-card write: `patch` carries only the fields the card
-   * actually changed, `undefined` for the rest — [`patchProject`]'s own
-   * "leave this alone" contract, unchanged across this hook. */
+  /** #625's properties-card write, widened by #630's archive/unarchive
+   * gesture: `patch` carries only the fields the caller actually changed,
+   * `undefined` for the rest — [`patchProject`]'s own "leave this alone"
+   * contract, unchanged across this hook. `archivedAt` triggers ADR-0030
+   * decision 5's cascade server-side; this hook enqueues the project's own
+   * field change only, same as every other field here. **Returns the
+   * minted seed** (batch review, projects-dossier #668): `lastProjectWrite`
+   * is one broadcast slot shared by every card mounted on the same
+   * dossier (`PropertiesCard` and `ArchiveCard` both patch the same
+   * `project.id`), so `projectId` alone cannot tell a caller its OWN write
+   * apart from a sibling card's. A caller that needs to react only to its
+   * own outstanding write (`ArchiveCard`'s `pending` gate) holds this seed
+   * and compares it against `lastProjectWrite.seed`. */
   patchProject: (
     current: ProjectDTO,
-    patch: { githubRepo?: string | null; defaultContext?: string | null },
-  ) => void;
+    patch: { githubRepo?: string | null; defaultContext?: string | null; archivedAt?: number | null },
+  ) => string;
   /** #626's per-project link read. Unlike `createProject`/`patchProject`
    * above, this is a read door, not a write — but it stays here rather than
    * joining `useFrontierWiring`'s app-wide refresh because it is scoped to
@@ -56,6 +83,48 @@ export interface ProjectsWiring {
     current: ProjectLinkDTO,
     patch: { url?: string; label?: string | null; position?: number; removedAt?: number | null },
   ) => void;
+  /** #627's per-project Route read — same "scoped to one open dossier, the
+   * caller's own effect decides when" shape as `requestProjectLinks`. */
+  requestRoute: (projectId: string) => void;
+  /** #627's route patch: the dossier's reading column edits
+   * destination/notes, `patch` carrying only the fields the card actually
+   * changed — same "leave this alone" contract `patchProject` carries. */
+  patchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => void;
+  /** #628's per-project open-fog read — same "scoped to one open dossier,
+   * the caller's own effect decides when" shape as `requestProjectLinks`. */
+  requestFog: (projectId: string) => void;
+  /** #628's fog create: the dossier reading column's add-a-question
+   * gesture. `position` is the caller's to compute (append to the end of
+   * the list it already has) — this hook mints no ordering of its own. */
+  createFog: (projectId: string, question: string, position: number) => void;
+  /** #628's fog patch: rewording, repositioning and resolving/reopening a
+   * segment, all through this one entry point. */
+  patchFog: (
+    current: FogDTO,
+    patch: { question?: string; position?: number; resolvedAt?: number | null },
+  ) => void;
+  /** #629's per-project Action read — same "scoped to one open dossier,
+   * the caller's own effect decides when" shape as `requestFog`. */
+  requestActions: (projectId: string) => void;
+  /** #629's reorder control — moves one Action's `projectPos`. Swapping
+   * two adjacent rows is the caller's own gesture (two calls, one per
+   * changed row) — this hook mints no ordering of its own, same
+   * "position is the caller's to compute" contract `createFog` carries. */
+  reorderAction: (projectId: string, current: TaskItemDTO, position: number) => void;
+  /** Item detail's checklist read (issue #96, S10), reused here for the
+   * dossier's own expanded-action checklist — same read, same door, no
+   * second one invented for this caller. */
+  requestSteps: (itemId: string) => void;
+  /** #629's step create: an expanded action's add-a-step gesture.
+   * `position` is the caller's to compute (append to the end of the list
+   * it already has) — this hook mints no ordering of its own. */
+  createStep: (itemId: string, body: string, position: number) => void;
+  /** #629's step patch: ticking, rewording, repositioning, or
+   * flagging/clearing a Step's deletion, all through this one entry point. */
+  patchStep: (
+    current: StepDTO,
+    patch: { body?: string; done?: boolean; position?: number; deletedAt?: number | null },
+  ) => void;
 }
 
 export function useProjectsWiring(worker: WorkerLike): ProjectsWiring {
@@ -65,7 +134,9 @@ export function useProjectsWiring(worker: WorkerLike): ProjectsWiring {
     },
     patchProject: (current, patch) => {
       const nowMs = Date.now();
-      patchProject(worker, mintProjectPatchSeed(current.id, nowMs), current, patch, nowMs);
+      const seed = mintProjectPatchSeed(current.id, nowMs);
+      patchProject(worker, seed, current, patch, nowMs);
+      return seed;
     },
     requestProjectLinks: (projectId) => {
       requestProjectLinks(worker, projectId);
@@ -77,6 +148,42 @@ export function useProjectsWiring(worker: WorkerLike): ProjectsWiring {
     patchProjectLink: (current, patch) => {
       const nowMs = Date.now();
       patchProjectLink(worker, mintProjectLinkPatchSeed(current.id, nowMs), current, patch, nowMs);
+    },
+    requestRoute: (projectId) => {
+      requestRoute(worker, projectId);
+    },
+    patchRoute: (current, patch) => {
+      const nowMs = Date.now();
+      patchRoute(worker, mintRoutePatchSeed(current.projectId, nowMs), current, patch, nowMs);
+    },
+    requestFog: (projectId) => {
+      requestFog(worker, projectId);
+    },
+    createFog: (projectId, question, position) => {
+      const nowMs = Date.now();
+      createFog(worker, mintFogCreateSeed(), projectId, question, position, nowMs);
+    },
+    patchFog: (current, patch) => {
+      const nowMs = Date.now();
+      patchFog(worker, mintFogPatchSeed(current.id, nowMs), current, patch, nowMs);
+    },
+    requestActions: (projectId) => {
+      requestActions(worker, projectId);
+    },
+    reorderAction: (projectId, current, position) => {
+      const nowMs = Date.now();
+      reorderAction(worker, mintActionReorderSeed(current.id, nowMs), projectId, current, position, nowMs);
+    },
+    requestSteps: (itemId) => {
+      requestSteps(worker, itemId);
+    },
+    createStep: (itemId, body, position) => {
+      const nowMs = Date.now();
+      createStep(worker, mintStepCreateSeed(), itemId, body, position, nowMs);
+    },
+    patchStep: (current, patch) => {
+      const nowMs = Date.now();
+      patchStep(worker, mintStepPatchSeed(current.id, nowMs), current, patch, nowMs);
     },
   };
 }
@@ -116,4 +223,55 @@ export function mintProjectLinkCreateSeed(): string {
  * identical queue entry rather than enqueue a second one. */
 export function mintProjectLinkPatchSeed(linkId: string, nowMs: number): string {
   return `${linkId}:patch:${nowMs}`;
+}
+
+/** Mints one Route patch's seed (#627). Deterministic, same
+ * [`mintProjectPatchSeed`] reasoning: a patch touches the Route
+ * `projectId` itself names (its own key, not a separate id), so retrying
+ * the identical intent must reproduce the identical queue entry rather
+ * than enqueue a second one. */
+export function mintRoutePatchSeed(projectId: string, nowMs: number): string {
+  return `${projectId}:route:patch:${nowMs}`;
+}
+
+/** Mints a fresh, non-deterministic seed for a fog create (#628) — same
+ * "creates a new entity" reasoning as [`mintProjectLinkCreateSeed`]. */
+export function mintFogCreateSeed(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `fog-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/** Mints one fog patch's seed (#628). Deterministic, same
+ * [`mintProjectLinkPatchSeed`] reasoning: a patch touches the segment
+ * `fogId` itself names, so retrying the identical intent must reproduce
+ * the identical queue entry rather than enqueue a second one. */
+export function mintFogPatchSeed(fogId: string, nowMs: number): string {
+  return `${fogId}:patch:${nowMs}`;
+}
+
+/** Mints one Action reorder's seed (#629). Deterministic, same
+ * [`mintFogPatchSeed`] reasoning: a reorder touches the item `itemId`
+ * itself names, so retrying the identical intent must reproduce the
+ * identical queue entry rather than enqueue a second one. */
+export function mintActionReorderSeed(itemId: string, nowMs: number): string {
+  return `${itemId}:reorder:${nowMs}`;
+}
+
+/** Mints a fresh, non-deterministic seed for a step create (#629) — same
+ * "creates a new entity" reasoning as [`mintFogCreateSeed`]. */
+export function mintStepCreateSeed(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `step-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/** Mints one step patch's seed (#629). Deterministic, same
+ * [`mintFogPatchSeed`] reasoning: a patch touches the step `stepId` itself
+ * names, so retrying the identical intent must reproduce the identical
+ * queue entry rather than enqueue a second one. */
+export function mintStepPatchSeed(stepId: string, nowMs: number): string {
+  return `${stepId}:patch:${nowMs}`;
 }

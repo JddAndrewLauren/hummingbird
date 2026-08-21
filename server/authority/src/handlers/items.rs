@@ -230,6 +230,67 @@ pub(super) fn item_exists(sql: &dyn Sql, id: &str) -> Result<bool, SqlError> {
     Ok(select_item(sql, id)?.is_some())
 }
 
+/// ADR-0030 decision 5: the timestamp-matched archive cascade a project
+/// patch drives. Archiving (`old` is `None`, `new` is `Some`) stamps every
+/// *live* item in the project (`archived_at IS NULL`) with the project's
+/// own new `archived_at`. Unarchiving (`old` is `Some`, `new` is `None`)
+/// clears the stamp only on items whose `archived_at` still equals `old` —
+/// an item the human archived individually before the project was carries
+/// a stamp from that earlier gesture, not this one, so it is left alone
+/// and stays archived through the round trip. Any other transition (an
+/// edit from one explicit timestamp to another) is not a gesture the UI
+/// offers and cascades nothing.
+///
+/// Steps are never touched here: a step is reachable only through its
+/// item, so it cascades implicitly, and this function never writes
+/// `steps.deleted_at` — deleting and archiving are different verbs.
+///
+/// Returns the running meta version after every touched item's own bump,
+/// so the caller folds the cascade into the project's write under one
+/// counter. The dialog that names the consequence before the human commits
+/// counts the same "live items in this project" client-side, off the
+/// Ledger it already holds — this function's own predicates are the source
+/// of truth that count must match, not a second server-side tally.
+pub(super) fn cascade_archive_for_project(
+    sql: &dyn Sql,
+    project_id: &str,
+    old: Option<i64>,
+    new: Option<i64>,
+    now_ms: i64,
+    mut version: i64,
+) -> Result<i64, SqlError> {
+    let rows = match (old, new) {
+        (None, Some(_)) => sql.exec(
+            "SELECT id FROM items WHERE project_id = ? AND archived_at IS NULL",
+            &[SqlValue::Text(project_id.to_string())],
+        )?,
+        (Some(matched), None) => sql.exec(
+            "SELECT id FROM items WHERE project_id = ? AND archived_at = ?",
+            &[SqlValue::Text(project_id.to_string()), SqlValue::Integer(matched)],
+        )?,
+        _ => return Ok(version),
+    };
+
+    let ids: Vec<String> = rows
+        .iter()
+        .filter_map(|r| r.get("id").and_then(SqlValue::as_text).map(str::to_string))
+        .collect();
+
+    for id in ids {
+        version += 1;
+        sql.exec(
+            "UPDATE items SET archived_at = ?, updated_at = ?, version = ? WHERE id = ?",
+            &[
+                SqlValue::from_opt_i64(new),
+                SqlValue::Integer(now_ms),
+                SqlValue::Integer(version),
+                SqlValue::Text(id),
+            ],
+        )?;
+    }
+    Ok(version)
+}
+
 fn select_item(sql: &dyn Sql, id: &str) -> Result<Option<Row>, SqlError> {
     Ok(sql
         .exec(

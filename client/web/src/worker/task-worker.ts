@@ -5,6 +5,7 @@ import type {
   ConditionDTO,
   DeadLetterEntryDTO,
   FieldTypeName,
+  FogDTO,
   GrillDraftTurnDTO,
   KindEntryDTO,
   KindRegistryDTO,
@@ -15,6 +16,7 @@ import type {
   ProjectLinkDTO,
   RecallGroup,
   RecallRowDTO,
+  RouteDTO,
   RuleDTO,
   StepDTO,
   TaskEventDTO,
@@ -234,6 +236,99 @@ export interface TaskHostLike {
     removedAt: number | null,
     nowMs: number,
   ): Promise<string>;
+  /** #627's per-project Route read. Mirrors `TaskHost::route`, resolved to
+   * JSON: `{"kind": "ok"|"busy", "route": Route|null}`. */
+  route(projectId: string): string;
+  /** #627's route patch — the dossier's reading column edits
+   * destination/notes. Mirrors `TaskHost::patchRoute`, resolved to JSON:
+   * `{"kind": "ok"|"failed"|"busy", "error": string|null}`. `currentJson`
+   * is the caller's own last-known `Route`, as JSON — the CAS `base` a 409
+   * is diffed against. Each `*Touched` flag distinguishes "leave this
+   * field alone" (`false`) from "set it, possibly to `null`" (`true`, with
+   * the paired value carrying the new value or `null`). */
+  patchRoute(
+    seed: string,
+    currentJson: string,
+    destinationTouched: boolean,
+    destination: string | null,
+    notesTouched: boolean,
+    notes: string | null,
+    nowMs: number,
+  ): Promise<string>;
+  /** #628's per-project open-fog read. Mirrors `TaskHost::openFog`,
+   * resolved to JSON: `{"kind": "ok"|"busy", "fog": [Fog]}`. */
+  openFog(projectId: string): string;
+  /** #628's fog create. Mirrors `TaskHost::createFog`, resolved to JSON:
+   * `{"kind": "ok"|"failed"|"busy", "id": string|null,
+   * "error": string|null}`. The question is trimmed and an empty one
+   * refused at the seam, before `Core`. */
+  createFog(
+    seed: string,
+    projectId: string,
+    question: string,
+    position: number,
+    nowMs: number,
+  ): Promise<string>;
+  /** #628's fog patch — rewording, repositioning and resolving/reopening a
+   * segment. Mirrors `TaskHost::patchFog`, resolved to JSON: `{"kind":
+   * "ok"|"failed"|"busy", "error": string|null}`. `currentJson` is the
+   * caller's own last-known `Fog`, as JSON — the CAS `base` a 409 is
+   * diffed against. `resolvedAtTouched` distinguishes "leave this field
+   * alone" (`false`) from "set it, possibly to `null`" (`true`, with the
+   * paired value carrying the new value or `null`). */
+  patchFog(
+    seed: string,
+    currentJson: string,
+    question: string | null,
+    position: number | null,
+    resolvedAtTouched: boolean,
+    resolvedAt: number | null,
+    nowMs: number,
+  ): Promise<string>;
+  /** #629's per-project Action read. Mirrors `TaskHost::projectActions`,
+   * resolved to JSON: `{"kind": "ok"|"busy", "items": [Item & {"pending":
+   * bool}]}` — the same `ItemListResponse` shape `frontier`/`triageInbox`
+   * carry. */
+  projectActions(projectId: string): string;
+  /** #629's reorder control. Mirrors `TaskHost::patchActionPosition`,
+   * resolved to JSON: `{"kind": "ok"|"failed"|"busy", "error":
+   * string|null}`. `currentJson` is the caller's own last-known `Item`, as
+   * JSON — the CAS `base` a 409 is diffed against. */
+  patchActionPosition(
+    seed: string,
+    currentJson: string,
+    position: number,
+    nowMs: number,
+  ): Promise<string>;
+  /** #629's step create. Mirrors `TaskHost::createStep`, resolved to JSON:
+   * `{"kind": "ok"|"failed"|"busy", "id": string|null,
+   * "error": string|null}`. The body is trimmed and an empty one refused
+   * at the seam, before `Core`. */
+  createStep(
+    seed: string,
+    itemId: string,
+    body: string,
+    position: number,
+    nowMs: number,
+  ): Promise<string>;
+  /** #629's step patch — ticking, rewording, repositioning, or
+   * flagging/clearing a Step's deletion. Mirrors `TaskHost::patchStep`,
+   * resolved to JSON: `{"kind": "ok"|"failed"|"busy", "error":
+   * string|null}`. `currentJson` is the caller's own last-known `Step`, as
+   * JSON — the CAS `base` a 409 is diffed against. `deletedAtTouched`
+   * distinguishes "leave this field alone" (`false`) from "set it,
+   * possibly to `null`" (`true`, with the paired value carrying the new
+   * value or `null`). */
+  patchStep(
+    seed: string,
+    currentJson: string,
+    body: string | null,
+    done: boolean | null,
+    position: number | null,
+    deletedAtTouched: boolean,
+    deletedAt: number | null,
+    nowMs: number,
+  ): Promise<string>;
   isPending(itemId: string): string;
   takeEvents(): string;
   runSync(
@@ -442,6 +537,65 @@ interface RawCreateProjectLinkResponse {
 }
 
 interface RawPatchProjectLinkResponse {
+  kind: "ok" | "failed" | "busy";
+  error: string | null;
+}
+
+interface RawRoute {
+  project_id: string;
+  destination: string | null;
+  notes: string | null;
+  updated_at: number;
+  version: number;
+}
+
+interface RawRouteResponse {
+  kind: "ok" | "busy";
+  route: RawRoute | null;
+}
+
+interface RawPatchRouteResponse {
+  kind: "ok" | "failed" | "busy";
+  error: string | null;
+}
+
+interface RawFog {
+  id: string;
+  project_id: string;
+  question: string;
+  position: number;
+  resolved_at: number | null;
+  version: number;
+}
+
+interface RawFogListResponse {
+  kind: "ok" | "busy";
+  fog: RawFog[];
+}
+
+interface RawCreateFogResponse {
+  kind: "ok" | "failed" | "busy";
+  id: string | null;
+  error: string | null;
+}
+
+interface RawPatchFogResponse {
+  kind: "ok" | "failed" | "busy";
+  error: string | null;
+}
+
+interface RawPatchActionPositionResponse {
+  kind: "ok" | "failed" | "busy";
+  error: string | null;
+}
+
+interface RawCreateStepResponse {
+  kind: "ok" | "failed" | "busy";
+  id: string | null;
+  error: string | null;
+}
+
+interface RawPatchStepResponse {
   kind: "ok" | "failed" | "busy";
   error: string | null;
 }
@@ -736,6 +890,27 @@ function mapProjectLink(raw: RawProjectLink): ProjectLinkDTO {
     label: raw.label,
     position: raw.position,
     removedAt: raw.removed_at,
+    version: raw.version,
+  };
+}
+
+function mapRoute(raw: RawRoute): RouteDTO {
+  return {
+    projectId: raw.project_id,
+    destination: raw.destination,
+    notes: raw.notes,
+    updatedAt: raw.updated_at,
+    version: raw.version,
+  };
+}
+
+function mapFog(raw: RawFog): FogDTO {
+  return {
+    id: raw.id,
+    projectId: raw.project_id,
+    question: raw.question,
+    position: raw.position,
+    resolvedAt: raw.resolved_at,
     version: raw.version,
   };
 }
@@ -1304,6 +1479,175 @@ export async function handleTaskRequest(
         type: "patchProjectLinkResult",
         seed: request.seed,
         projectId: request.current.projectId,
+        kind: raw.kind,
+        error: raw.error,
+      });
+      return;
+    }
+    case "getRoute": {
+      const raw = JSON.parse(host.route(request.projectId)) as RawRouteResponse;
+      if (raw.kind === "busy" || raw.route === null) {
+        return;
+      }
+      post({ type: "route", projectId: request.projectId, route: mapRoute(raw.route) });
+      return;
+    }
+    case "patchRoute": {
+      const raw = JSON.parse(
+        await host.patchRoute(
+          request.seed,
+          JSON.stringify({
+            project_id: request.current.projectId,
+            destination: request.current.destination,
+            notes: request.current.notes,
+            updated_at: request.current.updatedAt,
+            version: request.current.version,
+          }),
+          request.destinationTouched,
+          request.destination,
+          request.notesTouched,
+          request.notes,
+          request.nowMs,
+        ),
+      ) as RawPatchRouteResponse;
+      post({
+        type: "patchRouteResult",
+        seed: request.seed,
+        projectId: request.current.projectId,
+        kind: raw.kind,
+        error: raw.error,
+      });
+      return;
+    }
+    case "getFog": {
+      const raw = JSON.parse(host.openFog(request.projectId)) as RawFogListResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "fog", projectId: request.projectId, fog: raw.fog.map(mapFog) });
+      return;
+    }
+    case "createFog": {
+      const raw = JSON.parse(
+        await host.createFog(request.seed, request.projectId, request.question, request.position, request.nowMs),
+      ) as RawCreateFogResponse;
+      post({
+        type: "createFogResult",
+        seed: request.seed,
+        projectId: request.projectId,
+        kind: raw.kind,
+        id: raw.id,
+        error: raw.error,
+      });
+      return;
+    }
+    case "patchFog": {
+      const raw = JSON.parse(
+        await host.patchFog(
+          request.seed,
+          JSON.stringify({
+            id: request.current.id,
+            project_id: request.current.projectId,
+            question: request.current.question,
+            position: request.current.position,
+            resolved_at: request.current.resolvedAt,
+            version: request.current.version,
+          }),
+          request.question,
+          request.position,
+          request.resolvedAtTouched,
+          request.resolvedAt,
+          request.nowMs,
+        ),
+      ) as RawPatchFogResponse;
+      post({
+        type: "patchFogResult",
+        seed: request.seed,
+        projectId: request.current.projectId,
+        kind: raw.kind,
+        error: raw.error,
+      });
+      return;
+    }
+    case "getActions": {
+      const raw = JSON.parse(host.projectActions(request.projectId)) as RawItemListResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "actions", projectId: request.projectId, actions: raw.items.map(mapItem) });
+      return;
+    }
+    case "reorderAction": {
+      const raw = JSON.parse(
+        await host.patchActionPosition(
+          request.seed,
+          JSON.stringify({
+            id: request.current.id,
+            seq: request.current.seq,
+            title: request.current.title,
+            description: request.current.description,
+            stage: request.current.stage,
+            size: request.current.size,
+            energy: request.current.energy,
+            context: request.current.context,
+            priority: request.current.priority,
+            project_id: request.current.projectId,
+            project_pos: request.current.projectPos,
+            deadline: request.current.deadline,
+            scheduled_date: request.current.scheduledDate,
+            source: request.current.source,
+            source_key: request.current.sourceKey,
+            source_url: request.current.sourceUrl,
+            archived_at: request.current.archivedAt,
+            created_at: request.current.createdAt,
+            updated_at: request.current.updatedAt,
+            version: request.current.version,
+          }),
+          request.position,
+          request.nowMs,
+        ),
+      ) as RawPatchActionPositionResponse;
+      post({
+        type: "reorderActionResult",
+        seed: request.seed,
+        projectId: request.projectId,
+        itemId: request.current.id,
+        kind: raw.kind,
+        error: raw.error,
+      });
+      return;
+    }
+    case "createStep": {
+      const raw = JSON.parse(
+        await host.createStep(request.seed, request.itemId, request.body, request.position, request.nowMs),
+      ) as RawCreateStepResponse;
+      post({
+        type: "createStepResult",
+        seed: request.seed,
+        itemId: request.itemId,
+        kind: raw.kind,
+        id: raw.id,
+        error: raw.error,
+      });
+      return;
+    }
+    case "patchStep": {
+      const raw = JSON.parse(
+        await host.patchStep(
+          request.seed,
+          JSON.stringify(unmapStep(request.current)),
+          request.body,
+          request.done,
+          request.position,
+          request.deletedAtTouched,
+          request.deletedAt,
+          request.nowMs,
+        ),
+      ) as RawPatchStepResponse;
+      post({
+        type: "patchStepResult",
+        seed: request.seed,
+        itemId: request.current.itemId,
         kind: raw.kind,
         error: raw.error,
       });

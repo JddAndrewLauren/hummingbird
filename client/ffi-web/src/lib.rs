@@ -484,6 +484,28 @@ mod wasm_bindings {
     const BUSY_CREATE_PROJECT_LINK: &str = r#"{"kind":"busy","id":null,"error":null}"#;
     // #626: same shape as BUSY_PATCH_PROJECT.
     const BUSY_PATCH_PROJECT_LINK: &str = r#"{"kind":"busy","error":null}"#;
+    // #627: `route: null` here means the same thing it means when the
+    // mirror simply hasn't pulled the row yet ([`RouteResponse`]'s own
+    // doc) — a busy answer is one more reason this device cannot say.
+    const BUSY_ROUTE: &str = r#"{"kind":"busy","route":null}"#;
+    // #627: same shape as BUSY_PATCH_PROJECT.
+    const BUSY_PATCH_ROUTE: &str = r#"{"kind":"busy","error":null}"#;
+    // #628: same three-way shape as BUSY_PROJECT_LINK_LIST above.
+    const BUSY_FOG_LIST: &str = r#"{"kind":"busy","fog":[]}"#;
+    // #628: same shape as BUSY_CREATE_PROJECT_LINK — busy is "no answer",
+    // distinct from a create this seam refused (an empty question).
+    const BUSY_CREATE_FOG: &str = r#"{"kind":"busy","id":null,"error":null}"#;
+    // #628: same shape as BUSY_PATCH_PROJECT_LINK.
+    const BUSY_PATCH_FOG: &str = r#"{"kind":"busy","error":null}"#;
+    // #629: [`TaskHostCore::project_actions`] carries the same `ItemListResponse`
+    // shape as `frontier`/`triageInbox`, so it reuses BUSY_ITEM_LIST rather
+    // than minting a second identical constant.
+    // #629: same shape as BUSY_PATCH_PROJECT.
+    const BUSY_PATCH_ACTION_POSITION: &str = r#"{"kind":"busy","error":null}"#;
+    // #629: same shape as BUSY_CREATE_PROJECT_LINK.
+    const BUSY_CREATE_STEP: &str = r#"{"kind":"busy","id":null,"error":null}"#;
+    // #629: same shape as BUSY_PATCH_PROJECT_LINK.
+    const BUSY_PATCH_STEP: &str = r#"{"kind":"busy","error":null}"#;
     const BUSY_IS_PENDING: &str = r#"{"kind":"busy","pending":false}"#;
     // #118: an empty binding list would read as "nothing is bound", which
     // is an answer — and the wrong one. Busy says nothing at all.
@@ -837,6 +859,319 @@ mod wasm_bindings {
                 inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("PatchProjectLinkResponse serializes"),
+                ))
+            })
+        }
+
+        /// One project's Route, as JSON: `{"kind": "ok"|"busy", "route":
+        /// Route|null}` — the dossier's reading column's read (#627,
+        /// ADR-0030 decision 1). `route: null` means "not read yet" both
+        /// when `"ok"` and when `"busy"`: every project has exactly one
+        /// Route, created structurally by [`TaskHost::createProject`].
+        pub fn route(&self, project_id: String) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => {
+                    serde_json::to_string(&host.route(&project_id)).expect("RouteResponse serializes")
+                }
+                None => BUSY_ROUTE.to_string(),
+            }
+        }
+
+        /// Patches a project's Route (#627, ADR-0030 decision 1) — the
+        /// dossier's reading column, editing `destination`/`notes` through
+        /// this one entry point. Resolves to JSON: `{"kind":
+        /// "ok"|"failed"|"busy", "error": string|null}`. `current_json` is
+        /// the caller's own last-known [`hummingbird_domain::Route`] (from
+        /// [`TaskHost::route`]), as JSON — the `base` a 409's rebase diffs
+        /// against. `destination_touched`/`notes_touched` each distinguish
+        /// "leave this field alone" (`false`) from "set it, possibly to
+        /// `null`" (`true`, with the paired value carrying the new value or
+        /// `None`) — the same double-`Option`
+        /// [`hummingbird_domain::RoutePatch`] itself carries, flattened for
+        /// the wasm boundary exactly like [`TaskHost::patchProject`]'s
+        /// touched-flag shape. A 409 here is an ordinary outcome (ADR-0030
+        /// decision 1: the route's content is shared-owned with
+        /// `/to-actions`), handled by the same rebase-and-retry machinery
+        /// and dead-letter journal every other CAS write here uses — this
+        /// seam adds no bespoke conflict surface.
+        #[wasm_bindgen(js_name = patchRoute)]
+        #[allow(clippy::too_many_arguments)]
+        pub fn patch_route(
+            &self,
+            seed: String,
+            current_json: String,
+            destination_touched: bool,
+            destination: Option<String>,
+            notes_touched: bool,
+            notes: Option<String>,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let current: hummingbird_domain::Route = match serde_json::from_str(&current_json) {
+                    Ok(route) => route,
+                    Err(error) => {
+                        return Ok(JsValue::from_str(&format!(
+                            r#"{{"kind":"failed","error":"malformed route: {error}"}}"#
+                        )))
+                    }
+                };
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_PATCH_ROUTE));
+                };
+                let response = host
+                    .patch_route(
+                        &seed,
+                        &current,
+                        destination_touched,
+                        destination,
+                        notes_touched,
+                        notes,
+                        now_ms as i64,
+                    )
+                    .await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("PatchRouteResponse serializes"),
+                ))
+            })
+        }
+
+        /// Every open Fog segment on one project, as JSON: `{"kind":
+        /// "ok"|"busy", "fog": [Fog]}` — the dossier reading column's read
+        /// (#628, ADR-0030 decision 1). A resolved row is retained but
+        /// never appears here ([`Core::open_fog_for`]'s own doc).
+        #[wasm_bindgen(js_name = openFog)]
+        pub fn open_fog(&self, project_id: String) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => {
+                    serde_json::to_string(&host.open_fog(&project_id)).expect("FogListResponse serializes")
+                }
+                None => BUSY_FOG_LIST.to_string(),
+            }
+        }
+
+        /// Creates a Fog segment (#628). Resolves to JSON: `{"kind":
+        /// "ok"|"failed"|"busy", "id": string|null, "error": string|null}`.
+        /// The question is trimmed and an empty one refused before `Core`
+        /// is reached ([`TaskHostCore::create_fog`]). `"ok"` means
+        /// *enqueued*, not *saved* — no optimistic overlay, so `openFog()`
+        /// keeps answering the old list until a cycle completes.
+        #[wasm_bindgen(js_name = createFog)]
+        pub fn create_fog(
+            &self,
+            seed: String,
+            project_id: String,
+            question: String,
+            position: f64,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_CREATE_FOG));
+                };
+                let response = host
+                    .create_fog(&seed, &project_id, &question, position as i64, now_ms as i64)
+                    .await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("CreateFogResponse serializes"),
+                ))
+            })
+        }
+
+        /// Patches a Fog segment (#628) — rewording its question,
+        /// repositioning it, or resolving/reopening it, all through this
+        /// one entry point. Resolves to JSON: `{"kind":
+        /// "ok"|"failed"|"busy", "error": string|null}`. `current_json` is
+        /// the caller's own last-known [`hummingbird_domain::Fog`] (from
+        /// [`TaskHost::openFog`]), as JSON — the `base` a 409's rebase
+        /// diffs against. `resolved_at_touched` distinguishes "leave this
+        /// field alone" (`false`) from "set it, possibly to `null`"
+        /// (`true`, with the paired value carrying the new value or
+        /// `None`) — the same double-`Option`
+        /// [`hummingbird_domain::FogPatch`] itself carries, flattened for
+        /// the wasm boundary exactly like [`TaskHost::patchProjectLink`]'s
+        /// `removed_at_touched`.
+        #[wasm_bindgen(js_name = patchFog)]
+        #[allow(clippy::too_many_arguments)]
+        pub fn patch_fog(
+            &self,
+            seed: String,
+            current_json: String,
+            question: Option<String>,
+            position: Option<f64>,
+            resolved_at_touched: bool,
+            resolved_at: Option<f64>,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let current: hummingbird_domain::Fog = match serde_json::from_str(&current_json) {
+                    Ok(fog) => fog,
+                    Err(error) => {
+                        return Ok(JsValue::from_str(&format!(
+                            r#"{{"kind":"failed","error":"malformed fog: {error}"}}"#
+                        )))
+                    }
+                };
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_PATCH_FOG));
+                };
+                let response = host
+                    .patch_fog(
+                        &seed,
+                        &current,
+                        question,
+                        position.map(|v| v as i64),
+                        resolved_at_touched,
+                        resolved_at.map(|v| v as i64),
+                        now_ms as i64,
+                    )
+                    .await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("PatchFogResponse serializes"),
+                ))
+            })
+        }
+
+        /// Every live Action on a project, as JSON: `{"kind": "ok"|"busy",
+        /// "items": [Item & {"pending": bool}]}` — the dossier's ordered
+        /// action list (#629). Same shape as [`TaskHost::frontier`]: an
+        /// Action is an ordinary item, so it carries the same pending flag.
+        #[wasm_bindgen(js_name = projectActions)]
+        pub fn project_actions(&self, project_id: String) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => serde_json::to_string(&host.project_actions(&project_id))
+                    .expect("ItemListResponse serializes"),
+                None => BUSY_ITEM_LIST.to_string(),
+            }
+        }
+
+        /// Moves one Action's `project_pos` (#629) — the dossier's reorder
+        /// control. Resolves to JSON: `{"kind": "ok"|"failed"|"busy",
+        /// "error": string|null}`. `current_json` is the caller's own
+        /// last-known [`hummingbird_domain::Item`] (from
+        /// [`TaskHost::projectActions`]), as JSON — the `base` a 409's
+        /// rebase diffs against. A 409 here is an ordinary outcome
+        /// (ADR-0030 decision 1: `project_pos` is shared-owned with
+        /// `/to-actions`), handled by the same rebase-and-retry machinery
+        /// and dead-letter journal every other CAS write here uses.
+        #[wasm_bindgen(js_name = patchActionPosition)]
+        pub fn patch_action_position(
+            &self,
+            seed: String,
+            current_json: String,
+            position: f64,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let current: hummingbird_domain::Item = match serde_json::from_str(&current_json) {
+                    Ok(item) => item,
+                    Err(error) => {
+                        return Ok(JsValue::from_str(&format!(
+                            r#"{{"kind":"failed","error":"malformed item: {error}"}}"#
+                        )))
+                    }
+                };
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_PATCH_ACTION_POSITION));
+                };
+                let response = host
+                    .patch_action_position(&seed, &current, position as i64, now_ms as i64)
+                    .await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("PatchActionPositionResponse serializes"),
+                ))
+            })
+        }
+
+        /// Creates a Step on an item's checklist (#629). Resolves to JSON:
+        /// `{"kind": "ok"|"failed"|"busy", "id": string|null,
+        /// "error": string|null}`. The body is trimmed and an empty one
+        /// refused before `Core` is reached
+        /// ([`TaskHostCore::create_step`]). `"ok"` means *enqueued*, not
+        /// *saved* — no optimistic overlay, so `steps()` keeps answering
+        /// the old checklist until a cycle completes.
+        #[wasm_bindgen(js_name = createStep)]
+        pub fn create_step(
+            &self,
+            seed: String,
+            item_id: String,
+            body: String,
+            position: f64,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_CREATE_STEP));
+                };
+                let response = host.create_step(&seed, &item_id, &body, position as i64, now_ms as i64).await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("CreateStepResponse serializes"),
+                ))
+            })
+        }
+
+        /// Patches a Step (#629) — ticking, rewording, repositioning, or
+        /// flagging/clearing its deletion, all through this one entry
+        /// point. Resolves to JSON: `{"kind": "ok"|"failed"|"busy",
+        /// "error": string|null}`. `current_json` is the caller's own
+        /// last-known [`hummingbird_domain::Step`] (from
+        /// [`TaskHost::steps`]), as JSON — the `base` a 409's rebase diffs
+        /// against. `deleted_at_touched` distinguishes "leave this field
+        /// alone" (`false`) from "set it, possibly to `null`" (`true`,
+        /// with the paired value carrying the new value or `None`) — the
+        /// same double-`Option` [`hummingbird_domain::StepPatch::deleted_at`]
+        /// itself carries, flattened for the wasm boundary exactly like
+        /// [`TaskHost::patchFog`]'s `resolved_at_touched`.
+        #[wasm_bindgen(js_name = patchStep)]
+        #[allow(clippy::too_many_arguments)]
+        pub fn patch_step(
+            &self,
+            seed: String,
+            current_json: String,
+            body: Option<String>,
+            done: Option<bool>,
+            position: Option<f64>,
+            deleted_at_touched: bool,
+            deleted_at: Option<f64>,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let current: hummingbird_domain::Step = match serde_json::from_str(&current_json) {
+                    Ok(step) => step,
+                    Err(error) => {
+                        return Ok(JsValue::from_str(&format!(
+                            r#"{{"kind":"failed","error":"malformed step: {error}"}}"#
+                        )))
+                    }
+                };
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_PATCH_STEP));
+                };
+                let response = host
+                    .patch_step(
+                        &seed,
+                        &current,
+                        body,
+                        done,
+                        position.map(|v| v as i64),
+                        deleted_at_touched,
+                        deleted_at.map(|v| v as i64),
+                        now_ms as i64,
+                    )
+                    .await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("PatchStepResponse serializes"),
                 ))
             })
         }

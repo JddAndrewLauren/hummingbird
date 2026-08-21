@@ -1,9 +1,24 @@
 //! Projects and their 1:1 Routes: create births both rows under one
 //! version stamp; routes are PATCH-only.
 
-use hummingbird_domain::{ConflictResponse, Project, Route};
+use hummingbird_domain::{ChangesResponse, ConflictResponse, Item, Project, Route};
 
 use crate::rig::*;
+
+// ---------------------------------------------- archive cascade (#630)
+
+/// Reads one item's current row via a full sweep — the cascade bumps a
+/// row's own `version` on every write, so guessing at a CAS-friendly
+/// `expected_version` to read it back through PATCH is the wrong tool;
+/// `GET /api/changes` is a plain, side-effect-free read.
+fn item_now(sql: &dyn Sql, id: &str) -> Item {
+    let parsed: ChangesResponse = body_as(&changes(sql, "since=0"));
+    parsed
+        .items
+        .into_iter()
+        .find(|item| item.id == id)
+        .unwrap_or_else(|| panic!("no such item: {id}"))
+}
 
 #[test]
 fn create_project_returns_201_and_births_the_route_row() {
@@ -331,4 +346,124 @@ fn patch_route_mixing_changed_and_unchanged_fields_bumps_once() {
     assert_eq!(updated.destination.as_deref(), Some("car sold"), "unchanged field kept");
     assert_eq!(updated.notes.as_deref(), Some("list it, then sell"), "changed field written");
     assert_eq!(updated.version, 3, "a mixed patch still bumps");
+}
+
+// -------------------------------------------------------- archive cascade
+
+/// ADR-0030 decision 5's whole mechanism: archiving stamps every live item
+/// with the project's *exact* `archived_at`, not a generic "now".
+#[test]
+fn archiving_a_project_stamps_every_live_item_with_its_exact_timestamp() {
+    let sql = RusqliteSql::new();
+    seed_project(&sql, "p-1"); // version 1
+    post(&sql, r#"{"id": "a-1", "title": "one", "project_id": "p-1"}"#, 0);
+    post(&sql, r#"{"id": "a-2", "title": "two", "project_id": "p-1"}"#, 0);
+    // A different project's item must never be touched.
+    seed_project(&sql, "p-2");
+    post(&sql, r#"{"id": "b-1", "title": "elsewhere", "project_id": "p-2"}"#, 0);
+
+    // `now_ms` (5000) is deliberately NOT `archived_at` (9000): the cascade
+    // must stamp every item with the project's own *value*, not the
+    // request's clock — an implementation that wrote `now_ms` instead would
+    // pass with these two equal, which is exactly the trap ADR-0030 decision
+    // 5 names.
+    let resp = patch_at(
+        &sql,
+        "/api/projects/p-1",
+        r#"{"expected_version": 1, "archived_at": 9000}"#,
+        5000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let archived: Project = body_as(&resp);
+    assert_eq!(archived.archived_at, Some(9000));
+
+    assert_eq!(item_now(&sql, "a-1").archived_at, Some(9000), "cascaded to the project's exact stamp");
+    assert_eq!(item_now(&sql, "a-2").archived_at, Some(9000));
+    assert_eq!(item_now(&sql, "b-1").archived_at, None, "a different project's item is untouched");
+}
+
+/// The whole point of the matched timestamp: an item archived individually
+/// *before* the project was survives the project's own archive/unarchive
+/// round trip, while an item the cascade itself archived comes back.
+#[test]
+fn patch_project_archive_cascade_covers_the_mixed_case_end_to_end() {
+    let sql = RusqliteSql::new();
+    seed_project(&sql, "p-1"); // version 1
+
+    // An item archived individually before the project's own archive.
+    post(&sql, r#"{"id": "solo", "title": "archived on its own", "project_id": "p-1"}"#, 0);
+    let solo_v1 = item_now(&sql, "solo").version;
+    patch(&sql, "solo", &format!(r#"{{"expected_version": {solo_v1}, "archived_at": 500}}"#), 0);
+
+    // One item still live when the project archives.
+    post(&sql, r#"{"id": "cascaded", "title": "goes down with the project", "project_id": "p-1"}"#, 0);
+
+    // `now_ms` (5000) is deliberately NOT `archived_at` (9000) — same
+    // reasoning as the single-item test above: this is the assertion that
+    // falsifies an implementation which cascades `now_ms` instead of the
+    // project's own stamp.
+    let resp = patch_at(
+        &sql,
+        "/api/projects/p-1",
+        r#"{"expected_version": 1, "archived_at": 9000}"#,
+        5000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let archived: Project = body_as(&resp);
+
+    assert_eq!(item_now(&sql, "cascaded").archived_at, Some(9000), "archived by the cascade");
+    assert_eq!(
+        item_now(&sql, "solo").archived_at,
+        Some(500),
+        "the pre-existing individual archive is untouched by the cascade"
+    );
+
+    // Unarchive the project. The global version counter has moved on past
+    // the small numbers the seed steps above might suggest — every write to
+    // any table shares it — so the CAS `expected_version` here is the
+    // archive response's own `version`, not a guessed literal.
+    let resp = patch_at(
+        &sql,
+        "/api/projects/p-1",
+        &format!(r#"{{"expected_version": {}, "archived_at": null}}"#, archived.version),
+        0,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let unarchived: Project = body_as(&resp);
+    assert_eq!(unarchived.archived_at, None);
+
+    assert_eq!(item_now(&sql, "cascaded").archived_at, None, "the cascade-archived item comes back up");
+    assert_eq!(
+        item_now(&sql, "solo").archived_at,
+        Some(500),
+        "the individually-archived item stays archived through the round trip \
+         (a blanket clear-all would silently resurrect it)"
+    );
+}
+
+/// Steps cascade implicitly through their item — the cascade must never
+/// stamp `steps.deleted_at`.
+#[test]
+fn patch_project_archive_cascade_never_writes_a_steps_delete_flag() {
+    let sql = RusqliteSql::new();
+    seed_project(&sql, "p-1"); // version 1
+    post(&sql, r#"{"id": "a-1", "title": "has steps", "project_id": "p-1"}"#, 0);
+    post_to(&sql, "/api/steps", r#"{"id": "s-1", "item_id": "a-1", "body": "do it", "position": 0}"#, 0);
+
+    patch_at(&sql, "/api/projects/p-1", r#"{"expected_version": 1, "archived_at": 9000}"#, 9000);
+
+    let rows = sql.exec("SELECT deleted_at FROM steps WHERE id = 's-1'", &[]).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("deleted_at").unwrap().as_i64(), None, "the cascade never flags a step deleted");
+}
+
+/// A project archive/unarchive with no items in it cascades nothing and
+/// bumps only the project's own version.
+#[test]
+fn patch_project_archive_cascade_is_a_noop_with_no_items() {
+    let sql = RusqliteSql::new();
+    seed_project(&sql, "p-1"); // version 1
+    let resp = patch_at(&sql, "/api/projects/p-1", r#"{"expected_version": 1, "archived_at": 9000}"#, 0);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    assert_eq!(meta_version(&sql), 2, "only the project's own bump");
 }

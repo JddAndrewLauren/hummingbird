@@ -7,16 +7,26 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   fireEvent,
+  fogDTO,
+  itemDTO,
   ledgerRowDTO,
   projectDTO,
   projectLinkDTO,
   render,
+  routeDTO,
   screen,
+  stepDTO,
   taskState,
+  within,
 } from "../test/component";
 import { ProjectsScreen, type ProjectsScreenProps } from "./ProjectsScreen";
 
 const noop = () => {};
+/** `onPatchProject` returns its minted seed (batch review, projects-dossier
+ * #668) — `ArchiveCard` needs it to recognise its own write. Tests that do
+ * not care what the seed is (most of this file) pass this default rather
+ * than `noop`, which cannot satisfy the `=> string` return type. */
+const noopPatchProject = (): string => "unused-seed";
 
 /** #626 added three more required props (the links card's read/write doors)
  * — every call site here cares only about the
@@ -27,10 +37,20 @@ function renderProjectsScreen(props: Partial<ProjectsScreenProps> & Pick<Project
   const element = (next: Partial<ProjectsScreenProps> & Pick<ProjectsScreenProps, "task">) => (
     <ProjectsScreen
       onCreateProject={noop}
-      onPatchProject={noop}
+      onPatchProject={noopPatchProject}
       onRequestProjectLinks={noop}
       onCreateProjectLink={noop}
       onPatchProjectLink={noop}
+      onRequestRoute={noop}
+      onPatchRoute={noop}
+      onRequestFog={noop}
+      onCreateFog={noop}
+      onPatchFog={noop}
+      onRequestActions={noop}
+      onReorderAction={noop}
+      onRequestActionSteps={noop}
+      onCreateStep={noop}
+      onPatchStep={noop}
       {...next}
     />
   );
@@ -46,14 +66,14 @@ function renderProjectsScreen(props: Partial<ProjectsScreenProps> & Pick<Project
 
 describe("ProjectsScreen", () => {
   it("holds rather than claiming 'no projects' while the read has not answered", () => {
-    renderProjectsScreen({ task: taskState(), onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: taskState(), onCreateProject: noop, onPatchProject: noopPatchProject });
 
     expect(screen.getByText("Reading projects…")).toBeTruthy();
     expect(screen.queryByText("No projects yet")).toBeNull();
   });
 
   it("renders the empty state only for a real, empty answer", () => {
-    renderProjectsScreen({ task: taskState({ projects: [] }), onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: taskState({ projects: [] }), onCreateProject: noop, onPatchProject: noopPatchProject });
 
     expect(screen.getByText("No projects yet")).toBeTruthy();
   });
@@ -66,7 +86,7 @@ describe("ProjectsScreen", () => {
         ledgerRowDTO({ id: "i-2", projectId: "p-1", stage: "done" }),
       ],
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
 
     expect(screen.getByRole("heading", { level: 3, name: "House repairs" })).toBeTruthy();
     expect(screen.getByText("1 action · 1 done")).toBeTruthy();
@@ -83,7 +103,7 @@ describe("ProjectsScreen", () => {
       archivedProjects: [projectDTO({ id: "p-9", name: "Old bike", archivedAt: 5_000 })],
       ledger: [],
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
 
     expect(screen.getByText("1 live · 1 archived")).toBeTruthy();
     expect(screen.queryByRole("heading", { level: 3, name: "Old bike" })).toBeNull();
@@ -96,7 +116,7 @@ describe("ProjectsScreen", () => {
 
   it("sends the trimmed name to onCreateProject and refuses a blank one", () => {
     const onCreateProject = vi.fn();
-    renderProjectsScreen({ task: taskState({ projects: [], ledger: [] }), onCreateProject: onCreateProject, onPatchProject: noop });
+    renderProjectsScreen({ task: taskState({ projects: [], ledger: [] }), onCreateProject: onCreateProject, onPatchProject: noopPatchProject });
 
     const create = screen.getByRole("button", { name: "Create" });
     expect(create.hasAttribute("disabled")).toBe(true);
@@ -117,7 +137,7 @@ describe("ProjectsScreen", () => {
       ledger: [],
       lastProjectWrite: { seed: "s-1", projectId: "p-new", kind: "ok", error: null },
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
 
     expect(screen.getByText("creating — appears when the round trip lands")).toBeTruthy();
   });
@@ -128,7 +148,7 @@ describe("ProjectsScreen", () => {
       ledger: [],
       lastProjectWrite: { seed: "s-1", projectId: "p-new", kind: "ok", error: null },
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
 
     expect(screen.queryByText("creating — appears when the round trip lands")).toBeNull();
     expect(screen.getByRole("heading", { level: 3, name: "Rebuild the deck" })).toBeTruthy();
@@ -145,7 +165,7 @@ describe("ProjectsScreen", () => {
         error: "name must be non-empty",
       },
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
 
     expect(screen.getByText("name must be non-empty")).toBeTruthy();
   });
@@ -160,7 +180,7 @@ describe("ProjectsScreen", () => {
       ledger: [],
       lastProjectWrite: { seed: "s-1", projectId: null, kind: "busy", error: null },
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
 
     expect(screen.getByText("That project write did not go through.")).toBeTruthy();
     expect(screen.queryByText("creating — appears when the round trip lands")).toBeNull();
@@ -171,7 +191,7 @@ describe("ProjectsScreen", () => {
       projects: [projectDTO({ id: "p-1", name: "House repairs" })],
       ledger: [],
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
 
     fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
 
@@ -179,7 +199,8 @@ describe("ProjectsScreen", () => {
     // The unbuilt regions are labelled rather than absent, so an operator
     // meets a region that is coming, not one that is broken.
     expect(screen.getByText("route · destination")).toBeTruthy();
-    expect(screen.getByText("The open questions on this Route land here.")).toBeTruthy();
+    // Fog is a real card now (#628), not the unbuilt-region placeholder.
+    expect(screen.getByText("Reading fog…")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "All projects" }));
 
@@ -194,7 +215,7 @@ describe("ProjectsScreen", () => {
       ],
       ledger: [],
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
 
     fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
 
@@ -242,7 +263,7 @@ describe("ProjectsScreen", () => {
       ledger: [],
       lastProjectWrite: { seed: "s-1", projectId: "p-2", kind: "failed", error: "no can do" },
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
 
     fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
 
@@ -254,7 +275,7 @@ describe("ProjectsScreen", () => {
       projects: [projectDTO({ id: "p-1", name: "House repairs" })],
       ledger: [],
     });
-    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noop });
+    renderProjectsScreen({ task: task, onCreateProject: noop, onPatchProject: noopPatchProject });
     fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
 
     expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
@@ -294,6 +315,152 @@ describe("ProjectsScreen", () => {
     rerenderWith({ task: { ...task, projects: [landed] } });
 
     expect((screen.getByLabelText("Default context") as HTMLInputElement).value).toBe("@errands");
+  });
+
+  // #630: the archive card — the dossier's last placeholder.
+  describe("the archive card", () => {
+    it("names the live item count before the human commits to archiving", () => {
+      const project = projectDTO({ id: "p-1", name: "House repairs" });
+      const task = taskState({
+        projects: [project],
+        ledger: [
+          ledgerRowDTO({ id: "i-1", projectId: "p-1" }),
+          ledgerRowDTO({ id: "i-2", projectId: "p-1" }),
+          ledgerRowDTO({ id: "i-3", projectId: "p-2" }),
+        ],
+      });
+      renderProjectsScreen({ task });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+
+      expect(screen.getByText("Archiving takes 2 live items down with it.")).toBeTruthy();
+    });
+
+    it("names a project with no live items honestly, rather than claiming a live count", () => {
+      const project = projectDTO({ id: "p-1", name: "House repairs" });
+      const task = taskState({ projects: [project], ledger: [] });
+      renderProjectsScreen({ task });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+
+      expect(
+        screen.getByText("This project has no live items — archiving takes down the project alone."),
+      ).toBeTruthy();
+    });
+
+    it("archives only on confirm, and cancel dismisses with no write", () => {
+      const onPatchProject = vi.fn();
+      const project = projectDTO({ id: "p-1", name: "House repairs" });
+      const task = taskState({ projects: [project], ledger: [] });
+      renderProjectsScreen({ task, onPatchProject });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+      expect(onPatchProject).not.toHaveBeenCalled();
+      expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+      fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+
+      expect(onPatchProject).toHaveBeenCalledWith(project, { archivedAt: expect.any(Number) });
+    });
+
+    it("offers Unarchive on an archived project, with no confirm step", () => {
+      const onPatchProject = vi.fn();
+      const project = projectDTO({ id: "p-1", name: "House repairs", archivedAt: 9_000 });
+      const task = taskState({ projects: [], archivedProjects: [project], ledger: [] });
+      renderProjectsScreen({ task, onPatchProject });
+      fireEvent.click(screen.getByRole("switch", { name: "Show archived" }));
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      expect(screen.queryByRole("button", { name: "Archive project" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Unarchive" }));
+
+      expect(onPatchProject).toHaveBeenCalledWith(project, { archivedAt: null });
+    });
+
+    it("clears the pending flag and shows the failure on a dropped write, not a silent stall", () => {
+      const project = projectDTO({ id: "p-1", name: "House repairs" });
+      const task = taskState({ projects: [project], ledger: [] });
+      // Must return the seed the simulated broadcast below carries — since
+      // #668's fix, `ArchiveCard` only reacts to a `lastProjectWrite` whose
+      // `seed` matches the one its own write minted.
+      const { rerenderWith } = renderProjectsScreen({ task, onPatchProject: () => "s-1" });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+      fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+
+      rerenderWith({
+        task: {
+          ...task,
+          lastProjectWrite: { seed: "s-1", projectId: "p-1", kind: "failed", error: "no can do" },
+        },
+        onPatchProject: () => "s-1",
+      });
+
+      // `lastProjectWrite` is one broadcast slot shared by every card that
+      // writes a project field (`PropertiesCard`'s own doc) — both it and
+      // this card read the same failed write, so `getAllByText` rather than
+      // `getByText`, same as the properties card's own failure test does
+      // not need to because only one card existed when it was written.
+      expect(screen.getAllByText("no can do").length).toBeGreaterThan(0);
+      expect(screen.getByRole("button", { name: "Archive project" }).hasAttribute("disabled")).toBe(false);
+    });
+
+    it("does not paint another project's failed write into this dossier", () => {
+      const project = projectDTO({ id: "p-1", name: "House repairs" });
+      const task = taskState({
+        projects: [project, projectDTO({ id: "p-2", name: "Garden" })],
+        ledger: [],
+        lastProjectWrite: { seed: "s-1", projectId: "p-2", kind: "failed", error: "no can do" },
+      });
+      renderProjectsScreen({ task });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      expect(screen.queryByText("no can do")).toBeNull();
+    });
+
+    // Batch review, projects-dossier #668 (FINAL-GATE finding 2): a failed
+    // *properties* write used to satisfy this card's `failedHere` on
+    // `projectId` alone — both cards share the one `lastProjectWrite`
+    // broadcast slot for the same project — clearing `pending` while this
+    // card's own archive write was still queued. `confirming` was never
+    // touched by that path, so the confirm dialog stayed open over a
+    // re-enabled "Archive project" button while the real write was still
+    // in flight: a double-submit that 409s into the dead-letter journal.
+    it("does not let a failed properties write clear this card's pending or re-arm its button", () => {
+      const project = projectDTO({ id: "p-1", name: "House repairs" });
+      const task = taskState({ projects: [project], ledger: [] });
+      // The archive write's own seed — distinct from the properties write's
+      // seed simulated below, so a correct fix must tell them apart.
+      const { rerenderWith } = renderProjectsScreen({ task, onPatchProject: () => "archive-seed" });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+      fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+      expect(screen.getByRole("button", { name: "Archiving…" }).hasAttribute("disabled")).toBe(true);
+
+      // A sibling `PropertiesCard` write on the SAME project fails and
+      // broadcasts, with a different seed — this card issued no such write.
+      rerenderWith({
+        task: {
+          ...task,
+          lastProjectWrite: { seed: "properties-seed", projectId: "p-1", kind: "failed", error: "no can do" },
+        },
+        onPatchProject: () => "archive-seed",
+      });
+
+      // Still pending, still confirming — the archive write this card
+      // issued is still queued, so the button must stay disabled and the
+      // confirm dialog must not re-arm a second submit.
+      expect(screen.getByRole("button", { name: "Archiving…" }).hasAttribute("disabled")).toBe(true);
+      expect(screen.queryByRole("button", { name: "Archive project" })).toBeNull();
+    });
   });
 
   // #626: the links card.
@@ -345,10 +512,20 @@ describe("ProjectsScreen", () => {
         <ProjectsScreen
           task={{ ...task, syncOutcomeSeq: 2 }}
           onCreateProject={noop}
-          onPatchProject={noop}
+          onPatchProject={noopPatchProject}
           onRequestProjectLinks={onRequestProjectLinks}
           onCreateProjectLink={noop}
           onPatchProjectLink={noop}
+          onRequestRoute={noop}
+          onPatchRoute={noop}
+          onRequestFog={noop}
+          onCreateFog={noop}
+          onPatchFog={noop}
+          onRequestActions={noop}
+          onReorderAction={noop}
+          onRequestActionSteps={noop}
+          onCreateStep={noop}
+          onPatchStep={noop}
         />,
       );
 
@@ -493,6 +670,607 @@ describe("ProjectsScreen", () => {
       openDossier({
         linksByProject: { "p-1": [] },
         lastProjectLinkWrite: { seed: "s-1", projectId: "p-2", kind: "failed", error: "no can do" },
+      });
+
+      expect(screen.queryByText("no can do")).toBeNull();
+    });
+  });
+
+  // #628: the fog card.
+  describe("the fog card", () => {
+    function openDossier(
+      overrides: {
+        fogByProject?: ReturnType<typeof taskState>["fogByProject"];
+        lastFogWrite?: ReturnType<typeof taskState>["lastFogWrite"];
+        onRequestFog?: ProjectsScreenProps["onRequestFog"];
+        onCreateFog?: ProjectsScreenProps["onCreateFog"];
+        onPatchFog?: ProjectsScreenProps["onPatchFog"];
+      } = {},
+    ) {
+      const task = taskState({
+        projects: [projectDTO({ id: "p-1", name: "House repairs" })],
+        ledger: [],
+        fogByProject: overrides.fogByProject ?? {},
+        lastFogWrite: overrides.lastFogWrite ?? null,
+      });
+      renderProjectsScreen({
+        task,
+        onRequestFog: overrides.onRequestFog ?? noop,
+        onCreateFog: overrides.onCreateFog ?? noop,
+        onPatchFog: overrides.onPatchFog ?? noop,
+      });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+      return task;
+    }
+
+    it("requests this project's open fog the moment the dossier opens", () => {
+      const onRequestFog = vi.fn();
+      openDossier({ onRequestFog });
+
+      expect(onRequestFog).toHaveBeenCalledWith("p-1");
+    });
+
+    it("holds rather than claiming 'no open fog' while the read has not answered", () => {
+      openDossier();
+
+      expect(screen.getByText("Reading fog…")).toBeTruthy();
+      expect(screen.queryByText("No open fog on this Route.")).toBeNull();
+    });
+
+    it("renders the empty state only for a real, empty answer", () => {
+      openDossier({ fogByProject: { "p-1": [] } });
+
+      expect(screen.getByText("No open fog on this Route.")).toBeTruthy();
+    });
+
+    it("renders every open segment, position-ordered", () => {
+      openDossier({
+        fogByProject: {
+          "p-1": [
+            fogDTO({ id: "f-2", question: "Second question", position: 2 }),
+            fogDTO({ id: "f-1", question: "First question", position: 1 }),
+          ],
+        },
+      });
+
+      const list = screen.getByRole("list");
+      const questions = list.querySelectorAll("li > span");
+      expect(Array.from(questions).map((el) => el.textContent)).toEqual(["First question", "Second question"]);
+    });
+
+    it("sends the trimmed question and next position to onCreateFog", () => {
+      const onCreateFog = vi.fn();
+      openDossier({
+        fogByProject: { "p-1": [fogDTO({ id: "f-1", position: 1 })] },
+        onCreateFog,
+      });
+
+      fireEvent.change(screen.getByLabelText("Open question"), {
+        target: { value: "  What permit does this need?  " },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Add fog" }));
+
+      expect(onCreateFog).toHaveBeenCalledWith("p-1", "What permit does this need?", 2);
+    });
+
+    it("refuses to add before the read has answered, so no position is minted blind", () => {
+      openDossier();
+
+      fireEvent.change(screen.getByLabelText("Open question"), { target: { value: "Anything?" } });
+
+      expect(screen.getByRole("button", { name: "Add fog" }).hasAttribute("disabled")).toBe(true);
+    });
+
+    it("refuses a blank question", () => {
+      openDossier({ fogByProject: { "p-1": [] } });
+
+      expect(screen.getByRole("button", { name: "Add fog" }).hasAttribute("disabled")).toBe(true);
+    });
+
+    it("rewords a segment in place and sends only the question to onPatchFog", () => {
+      const onPatchFog = vi.fn();
+      const segment = fogDTO({ id: "f-1", question: "Old question" });
+      openDossier({ fogByProject: { "p-1": [segment] }, onPatchFog });
+
+      fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+      // The edit row renders before the card's own add-fog form, so its
+      // "Open question" input is the first of the two.
+      const questionInputs = screen.getAllByLabelText("Open question");
+      fireEvent.change(questionInputs[0], { target: { value: "New question" } });
+      // Unlike the links card (in the Aside, after the properties card's own
+      // "Save"), the fog card sits in the reading column, *before* the
+      // properties card — so its edit row's "Save" is the first one on
+      // screen here, not the last (the Route card renders none: `route` is
+      // unset in this dossier, so it shows "Reading Route…" with no form
+      // button at all).
+      const saveButtons = screen.getAllByRole("button", { name: "Save" });
+      fireEvent.click(saveButtons[0]);
+
+      expect(onPatchFog).toHaveBeenCalledWith(segment, { question: "New question" });
+    });
+
+    it("swaps the positions of the two adjacent rows on a move gesture", () => {
+      const onPatchFog = vi.fn();
+      const first = fogDTO({ id: "f-1", position: 1 });
+      const second = fogDTO({ id: "f-2", position: 2 });
+      openDossier({ fogByProject: { "p-1": [first, second] }, onPatchFog });
+
+      fireEvent.click(screen.getAllByRole("button", { name: "Move down" })[0]);
+
+      expect(onPatchFog).toHaveBeenCalledWith(first, { position: 2 });
+      expect(onPatchFog).toHaveBeenCalledWith(second, { position: 1 });
+    });
+
+    it("resolves a segment with a timestamp rather than deleting it from the store", () => {
+      const onPatchFog = vi.fn();
+      const segment = fogDTO({ id: "f-1" });
+      openDossier({ fogByProject: { "p-1": [segment] }, onPatchFog });
+
+      fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
+
+      expect(onPatchFog).toHaveBeenCalledWith(segment, { resolvedAt: expect.any(Number) });
+    });
+
+    it("renders a failed fog write's own message, scoped to this project", () => {
+      openDossier({
+        fogByProject: { "p-1": [] },
+        lastFogWrite: { seed: "s-1", projectId: "p-1", kind: "failed", error: "question must be non-empty" },
+      });
+
+      expect(screen.getByText("question must be non-empty")).toBeTruthy();
+    });
+
+    it("does not paint another project's failed fog write into this dossier", () => {
+      openDossier({
+        fogByProject: { "p-1": [] },
+        lastFogWrite: { seed: "s-1", projectId: "p-2", kind: "failed", error: "no can do" },
+      });
+
+      expect(screen.queryByText("no can do")).toBeNull();
+    });
+  });
+
+  // #629: the action list, and each action's inline steps.
+  describe("the action list", () => {
+    function openDossier(
+      overrides: {
+        actionsByProject?: ReturnType<typeof taskState>["actionsByProject"];
+        lastActionReorder?: ReturnType<typeof taskState>["lastActionReorder"];
+        stepsByItem?: ReturnType<typeof taskState>["stepsByItem"];
+        lastStepWrite?: ReturnType<typeof taskState>["lastStepWrite"];
+        onRequestActions?: ProjectsScreenProps["onRequestActions"];
+        onReorderAction?: ProjectsScreenProps["onReorderAction"];
+        onRequestActionSteps?: ProjectsScreenProps["onRequestActionSteps"];
+        onCreateStep?: ProjectsScreenProps["onCreateStep"];
+        onPatchStep?: ProjectsScreenProps["onPatchStep"];
+      } = {},
+    ) {
+      const task = taskState({
+        projects: [projectDTO({ id: "p-1", name: "House repairs" })],
+        ledger: [],
+        actionsByProject: overrides.actionsByProject ?? {},
+        lastActionReorder: overrides.lastActionReorder ?? null,
+        stepsByItem: overrides.stepsByItem ?? {},
+        lastStepWrite: overrides.lastStepWrite ?? null,
+      });
+      renderProjectsScreen({
+        task,
+        onRequestActions: overrides.onRequestActions ?? noop,
+        onReorderAction: overrides.onReorderAction ?? noop,
+        onRequestActionSteps: overrides.onRequestActionSteps ?? noop,
+        onCreateStep: overrides.onCreateStep ?? noop,
+        onPatchStep: overrides.onPatchStep ?? noop,
+      });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+      return task;
+    }
+
+    it("requests this project's actions the moment the dossier opens", () => {
+      const onRequestActions = vi.fn();
+      openDossier({ onRequestActions });
+
+      expect(onRequestActions).toHaveBeenCalledWith("p-1");
+    });
+
+    it("holds rather than claiming 'no actions' while the read has not answered", () => {
+      openDossier();
+
+      expect(screen.getByText("Reading actions…")).toBeTruthy();
+      expect(screen.queryByText("No actions on this Route yet.")).toBeNull();
+    });
+
+    it("renders the empty state only for a real, empty answer — a project with no actions", () => {
+      openDossier({ actionsByProject: { "p-1": [] } });
+
+      expect(screen.getByText("No actions on this Route yet.")).toBeTruthy();
+    });
+
+    it("renders every action, project-position ordered", () => {
+      openDossier({
+        actionsByProject: {
+          "p-1": [
+            itemDTO({ id: "a-2", title: "Second action", projectPos: 2 }),
+            itemDTO({ id: "a-1", title: "First action", projectPos: 1 }),
+          ],
+        },
+      });
+
+      const buttons = screen.getAllByRole("button", { name: /action$/ });
+      expect(buttons.map((el) => el.textContent)).toEqual(["First action", "Second action"]);
+    });
+
+    it("swaps the positions of the two adjacent rows on a move gesture, and stops at the ends", () => {
+      const onReorderAction = vi.fn();
+      const first = itemDTO({ id: "a-1", title: "First action", projectPos: 1 });
+      const second = itemDTO({ id: "a-2", title: "Second action", projectPos: 2 });
+      openDossier({ actionsByProject: { "p-1": [first, second] }, onReorderAction });
+
+      const moveUpButtons = screen.getAllByRole("button", { name: "Move up" });
+      const moveDownButtons = screen.getAllByRole("button", { name: "Move down" });
+      // The first row cannot move up; the last cannot move down.
+      expect(moveUpButtons[0].hasAttribute("disabled")).toBe(true);
+      expect(moveDownButtons[1].hasAttribute("disabled")).toBe(true);
+
+      fireEvent.click(moveDownButtons[0]);
+
+      expect(onReorderAction).toHaveBeenCalledWith("p-1", first, 2);
+      expect(onReorderAction).toHaveBeenCalledWith("p-1", second, 1);
+    });
+
+    it("renders a failed reorder's own message, scoped to this project", () => {
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1" })] },
+        lastActionReorder: {
+          seed: "s-1",
+          projectId: "p-1",
+          itemId: "a-1",
+          kind: "failed",
+          error: "version conflict",
+        },
+      });
+
+      expect(screen.getByText("version conflict")).toBeTruthy();
+    });
+
+    it("does not paint another project's failed reorder into this dossier", () => {
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1" })] },
+        lastActionReorder: {
+          seed: "s-1",
+          projectId: "p-2",
+          itemId: "a-9",
+          kind: "failed",
+          error: "no can do",
+        },
+      });
+
+      expect(screen.queryByText("no can do")).toBeNull();
+    });
+
+    it("expands an action's checklist inline beneath its row on selection", () => {
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
+        stepsByItem: { "a-1": [stepDTO({ id: "s-1", itemId: "a-1", body: "put on music" })] },
+      });
+
+      expect(screen.queryByText("put on music")).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "An action" }));
+
+      expect(screen.getByText("put on music")).toBeTruthy();
+    });
+
+    it("requests the expanded action's steps the moment it is selected", () => {
+      const onRequestActionSteps = vi.fn();
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
+        onRequestActionSteps,
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "An action" }));
+
+      expect(onRequestActionSteps).toHaveBeenCalledWith("a-1");
+    });
+
+    it("holds rather than claiming 'no steps' while the checklist read has not answered", () => {
+      openDossier({ actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] } });
+      fireEvent.click(screen.getByRole("button", { name: "An action" }));
+
+      expect(screen.getByText("Reading steps…")).toBeTruthy();
+    });
+
+    it("renders the empty state only for a real, empty answer — an action with no steps", () => {
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
+        stepsByItem: { "a-1": [] },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "An action" }));
+
+      expect(screen.getByText("No steps on this action yet.")).toBeTruthy();
+    });
+
+    it("ticks a step by sending only done to onPatchStep", () => {
+      const onPatchStep = vi.fn();
+      const step = stepDTO({ id: "s-1", itemId: "a-1", body: "put on music", done: false });
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
+        stepsByItem: { "a-1": [step] },
+        onPatchStep,
+      });
+      fireEvent.click(screen.getByRole("button", { name: "An action" }));
+
+      fireEvent.click(screen.getByRole("checkbox"));
+
+      expect(onPatchStep).toHaveBeenCalledWith(step, { done: true });
+    });
+
+    it("sends the trimmed body and next position to onCreateStep", () => {
+      const onCreateStep = vi.fn();
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
+        stepsByItem: { "a-1": [stepDTO({ id: "s-1", itemId: "a-1", position: 1 })] },
+        onCreateStep,
+      });
+      fireEvent.click(screen.getByRole("button", { name: "An action" }));
+
+      fireEvent.change(screen.getByLabelText("New step"), {
+        target: { value: "  buy a washer  " },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Add step" }));
+
+      expect(onCreateStep).toHaveBeenCalledWith("a-1", "buy a washer", 2);
+    });
+
+    it("rewords a step in place and sends only the body to onPatchStep", () => {
+      const onPatchStep = vi.fn();
+      const step = stepDTO({ id: "s-1", itemId: "a-1", body: "Old body" });
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
+        stepsByItem: { "a-1": [step] },
+        onPatchStep,
+      });
+      fireEvent.click(screen.getByRole("button", { name: "An action" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+      fireEvent.change(screen.getByLabelText("Step"), { target: { value: "New body" } });
+      // The action list sits in the reading Column, before the aside's own
+      // properties card — whose "Save" is always on screen too (disabled
+      // when its own fields are untouched) — so this row's "Save" is the
+      // first of the two, same disambiguation `FogCard`'s own reword test
+      // uses.
+      fireEvent.click(screen.getAllByRole("button", { name: "Save" })[0]);
+
+      expect(onPatchStep).toHaveBeenCalledWith(step, { body: "New body" });
+    });
+
+    it("swaps the positions of two adjacent steps on a move gesture", () => {
+      const onPatchStep = vi.fn();
+      const first = stepDTO({ id: "s-1", itemId: "a-1", body: "First step", position: 1 });
+      const second = stepDTO({ id: "s-2", itemId: "a-1", body: "Second step", position: 2 });
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
+        stepsByItem: { "a-1": [first, second] },
+        onPatchStep,
+      });
+      fireEvent.click(screen.getByRole("button", { name: "An action" }));
+
+      // Two "Move down" controls exist once expanded: the action row's own
+      // (disabled — this dossier has only the one action) and the first
+      // step's. `within` the steps list scopes past the action row's.
+      const stepsList = screen.getAllByRole("list")[1];
+      fireEvent.click(within(stepsList).getAllByRole("button", { name: "Move down" })[0]);
+
+      expect(onPatchStep).toHaveBeenCalledWith(first, { position: 2 });
+      expect(onPatchStep).toHaveBeenCalledWith(second, { position: 1 });
+    });
+
+    it("flags a step's deletion with a timestamp rather than erasing it (ADR-0020)", () => {
+      const onPatchStep = vi.fn();
+      const step = stepDTO({ id: "s-1", itemId: "a-1", body: "put on music" });
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
+        stepsByItem: { "a-1": [step] },
+        onPatchStep,
+      });
+      fireEvent.click(screen.getByRole("button", { name: "An action" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+      expect(onPatchStep).toHaveBeenCalledWith(step, { deletedAt: expect.any(Number) });
+    });
+  });
+
+  // #627: the Route card.
+  describe("the route card", () => {
+    function openDossier(
+      overrides: {
+        routeByProject?: ReturnType<typeof taskState>["routeByProject"];
+        lastRouteWrite?: ReturnType<typeof taskState>["lastRouteWrite"];
+        onRequestRoute?: ProjectsScreenProps["onRequestRoute"];
+        onPatchRoute?: ProjectsScreenProps["onPatchRoute"];
+      } = {},
+    ) {
+      const task = taskState({
+        projects: [projectDTO({ id: "p-1", name: "House repairs" })],
+        ledger: [],
+        routeByProject: overrides.routeByProject ?? {},
+        lastRouteWrite: overrides.lastRouteWrite ?? null,
+      });
+      renderProjectsScreen({
+        task,
+        onRequestRoute: overrides.onRequestRoute ?? noop,
+        onPatchRoute: overrides.onPatchRoute ?? noop,
+      });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+      return task;
+    }
+
+    // The Route card and the properties card both carry a "Save" button —
+    // the Route card's is first in document order (the reading column
+    // renders before the aside), so this is always index 0.
+    function routeSaveButton(): HTMLElement {
+      return screen.getAllByRole("button", { name: "Save" })[0];
+    }
+
+    it("requests this project's Route the moment the dossier opens", () => {
+      const onRequestRoute = vi.fn();
+      openDossier({ onRequestRoute });
+
+      expect(onRequestRoute).toHaveBeenCalledWith("p-1");
+    });
+
+    it("holds rather than claiming anything while the read has not answered", () => {
+      openDossier();
+
+      expect(screen.getByText("Reading Route…")).toBeTruthy();
+      expect(screen.queryByLabelText("Destination")).toBeNull();
+    });
+
+    it("renders the stored destination and notes once read", () => {
+      openDossier({
+        routeByProject: {
+          "p-1": routeDTO({ destination: "Ship the deck", notes: "Ask the neighbour" }),
+        },
+      });
+
+      expect((screen.getByLabelText("Destination") as HTMLTextAreaElement).value).toBe("Ship the deck");
+      expect((screen.getByLabelText("Notes") as HTMLTextAreaElement).value).toBe("Ask the neighbour");
+    });
+
+    it("sends only the changed field to onPatchRoute", () => {
+      const onPatchRoute = vi.fn();
+      const route = routeDTO({ projectId: "p-1" });
+      openDossier({ routeByProject: { "p-1": route }, onPatchRoute });
+
+      fireEvent.change(screen.getByLabelText("Destination"), { target: { value: "Ship the deck" } });
+      fireEvent.click(routeSaveButton());
+
+      expect(onPatchRoute).toHaveBeenCalledWith(route, { destination: "Ship the deck" });
+    });
+
+    it("clears a field by saving it empty", () => {
+      const onPatchRoute = vi.fn();
+      const route = routeDTO({ projectId: "p-1", notes: "Ask the neighbour" });
+      openDossier({ routeByProject: { "p-1": route }, onPatchRoute });
+
+      fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "" } });
+      fireEvent.click(routeSaveButton());
+
+      expect(onPatchRoute).toHaveBeenCalledWith(route, { notes: null });
+    });
+
+    it("disables Save until a field actually changes", () => {
+      openDossier({ routeByProject: { "p-1": routeDTO({ projectId: "p-1" }) } });
+
+      expect(routeSaveButton().hasAttribute("disabled")).toBe(true);
+
+      fireEvent.change(screen.getByLabelText("Destination"), { target: { value: "Ship the deck" } });
+
+      expect(routeSaveButton().hasAttribute("disabled")).toBe(false);
+    });
+
+    // The card has no optimistic overlay (`Core::patch_route`'s own doc), so
+    // this is its whole visible consequence: "Saving…" from the click until
+    // the row's version actually moves, then "Saved" — the explicit state
+    // this slice's brief asks for, unlike the properties card's silent
+    // re-sync.
+    it("says Saving… after Save, then Saved once the row's version lands", () => {
+      const route = routeDTO({ projectId: "p-1", version: 1 });
+      const task = taskState({
+        projects: [projectDTO({ id: "p-1", name: "House repairs" })],
+        ledger: [],
+        routeByProject: { "p-1": route },
+      });
+      const { rerenderWith } = renderProjectsScreen({ task, onPatchRoute: noop });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      fireEvent.change(screen.getByLabelText("Destination"), { target: { value: "Ship the deck" } });
+      fireEvent.click(routeSaveButton());
+
+      expect(screen.getByText("Saving…")).toBeTruthy();
+
+      const landed = { ...route, destination: "Ship the deck", version: 2 };
+      rerenderWith({ task: { ...task, routeByProject: { "p-1": landed } } });
+
+      expect(screen.queryByText("Saving…")).toBeNull();
+      expect(screen.getByText("Saved")).toBeTruthy();
+    });
+
+    // Regression: a write that never reaches the queue (a durability
+    // failure, or the wasm host busy mid sync-cycle at click time) never
+    // produces a version bump, so the only other resolution path
+    // (`route.version !== synced.version`) never fires either. `saving`
+    // must clear on the write result itself, or "Saving…" renders forever
+    // beside the danger badge painted from the same `lastRouteWrite` —
+    // contradictory UI.
+    it.each([
+      ["failed", "no can do"],
+      ["busy", null],
+    ] as const)("clears Saving… when the write result is %s, not stuck beside the failure badge", (kind, error) => {
+      const route = routeDTO({ projectId: "p-1", version: 1 });
+      const task = taskState({
+        projects: [projectDTO({ id: "p-1", name: "House repairs" })],
+        ledger: [],
+        routeByProject: { "p-1": route },
+      });
+      const { rerenderWith } = renderProjectsScreen({ task, onPatchRoute: noop });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      fireEvent.change(screen.getByLabelText("Destination"), { target: { value: "Ship the deck" } });
+      fireEvent.click(routeSaveButton());
+
+      expect(screen.getByText("Saving…")).toBeTruthy();
+
+      rerenderWith({
+        task: {
+          ...task,
+          lastRouteWrite: { seed: "s-1", projectId: "p-1", kind, error },
+        },
+      });
+
+      expect(screen.queryByText("Saving…")).toBeNull();
+      expect(screen.queryByText("Saved")).toBeNull();
+      expect(screen.getByText(error ?? "That route write did not go through.")).toBeTruthy();
+    });
+
+    it("keeps a field typed while another field's write was in flight", () => {
+      // Both fields share one Save and one version, so the destination's
+      // write landing moves the version while notes is half-typed. The
+      // re-seed must skip the field being edited, or the typing is lost —
+      // `PropertiesCard`'s own guarantee, ported.
+      const route = routeDTO({ projectId: "p-1" });
+      const task = taskState({
+        projects: [projectDTO({ id: "p-1", name: "House repairs" })],
+        ledger: [],
+        routeByProject: { "p-1": route },
+      });
+      const { rerenderWith } = renderProjectsScreen({ task, onPatchRoute: noop });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      fireEvent.change(screen.getByLabelText("Destination"), { target: { value: "Ship the deck" } });
+      fireEvent.click(routeSaveButton());
+      fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "Ask the neighbour" } });
+
+      const landed = { ...route, destination: "Ship the deck", version: 2 };
+      rerenderWith({ task: { ...task, routeByProject: { "p-1": landed } } });
+
+      expect((screen.getByLabelText("Notes") as HTMLTextAreaElement).value).toBe("Ask the neighbour");
+      expect((screen.getByLabelText("Destination") as HTMLTextAreaElement).value).toBe("Ship the deck");
+    });
+
+    it("renders a failed route write's own message, scoped to this project", () => {
+      openDossier({
+        routeByProject: { "p-1": routeDTO({ projectId: "p-1" }) },
+        lastRouteWrite: { seed: "s-1", projectId: "p-1", kind: "failed", error: "no can do" },
+      });
+
+      expect(screen.getByText("no can do")).toBeTruthy();
+    });
+
+    it("does not paint another project's failed route write into this dossier", () => {
+      openDossier({
+        routeByProject: { "p-1": routeDTO({ projectId: "p-1" }) },
+        lastRouteWrite: { seed: "s-1", projectId: "p-2", kind: "failed", error: "no can do" },
       });
 
       expect(screen.queryByText("no can do")).toBeNull();

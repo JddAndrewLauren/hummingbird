@@ -4,15 +4,34 @@ import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
 import { IconButton } from "../components/core/IconButton";
 import { EmptyState } from "../components/feedback/EmptyState";
+import { Checkbox } from "../components/forms/Checkbox";
 import { Input } from "../components/forms/Input";
 import { Switch } from "../components/forms/Switch";
-import type { ProjectDTO, ProjectLinkDTO } from "../store/protocol";
-import type { TaskProjectLinkResult, TaskProjectResult, TaskState } from "../store/store";
+import { Textarea } from "../components/forms/Textarea";
+import type {
+  FogDTO,
+  LedgerRowDTO,
+  ProjectDTO,
+  ProjectLinkDTO,
+  RouteDTO,
+  StepDTO,
+  TaskItemDTO,
+} from "../store/protocol";
+import type {
+  TaskActionReorderResult,
+  TaskFogResult,
+  TaskProjectLinkResult,
+  TaskProjectResult,
+  TaskRouteResult,
+  TaskState,
+  TaskStepResult,
+} from "../store/store";
 import { Aside, Column, TwoColumn } from "./layout";
 import {
   awaitingCreate,
   countsMeta,
   githubRepoUrl,
+  liveItemCount,
   projectRoster,
   rosterSummary,
   visibleRows,
@@ -39,24 +58,51 @@ import {
 // shown from the moment the enqueue succeeds until the id turns up in
 // `projects`.
 //
-// **The dossier is a shell.** This slice ships the frame, the name, the back
-// affordance and labelled empty regions naming what fills them; route
-// destination and notes are #627's, fog #628's, the action list and its
-// inline steps #629's, archive #630's. Properties (#625) and links (#626)
-// are both real cards now — each remaining placeholder still says what is
-// coming, so an operator meets an unbuilt region rather than a broken one.
+// **The dossier has no placeholders left.** Properties (#625), links
+// (#626), the Route's destination/notes (#627), the reading column's fog
+// (#628), the ordered action list with each action's inline steps (#629)
+// and now the archive affordance (#630, `ArchiveCard`) are all real cards
+// — #630 was the last one `ComingRegion` stood in for, and that component
+// is gone with it.
+//
+// **The action list's reorder overlays; its Steps don't.** Unlike every
+// other project-lane write on this screen, reordering an Action patches
+// the ordinary item table, which already carries `Core::act`'s overlay
+// (`Core::patch_action_position`'s own doc) — `ActionsCard` shows the new
+// order the instant a reorder is clicked, with no "waiting" state to paint.
+// Steps stay in the no-overlay convention every other card here uses: a
+// tick, a reword, an add or a delete becomes visible once the next
+// completed cycle pulls it back, same as Fog and Links.
+//
+// **The Route card has no optimistic overlay, so it says so.** Same
+// no-overlay contract as every other project-lane write here
+// (`Core::patch_route`'s own doc) — a saved destination or notes edit is
+// only confirmed once the next completed cycle pulls the row's bumped
+// `version` back. `RouteCard` below tracks its own in-flight save
+// explicitly (`saving`/`justSaved` local state) rather than staying silent
+// about it the way the properties card does, because ADR-0030's brief for
+// this slice asks for a visible saving/saved state where the properties
+// card's own slice did not. A conflict is not surfaced here at all — it
+// lands in the ordinary dead-letter journal like every other CAS write
+// (ADR-0030 decision 1), and this card adds no bespoke conflict UI for it.
 
 const WAITING_COPY = "creating — appears when the round trip lands";
 
 export interface ProjectsScreenProps {
   task: TaskState;
   onCreateProject: (name: string) => void;
-  /** #625: the dossier's properties card write — `patch` carries only the
-   * fields the card actually changed. */
+  /** #625: the dossier's properties card write, widened by #630's archive
+   * card — `patch` carries only the fields the caller actually changed.
+   * `archivedAt` drives ADR-0030 decision 5's server-side cascade onto the
+   * project's live items; this prop itself enqueues the project's own
+   * field change only. Returns the write's minted seed — `ArchiveCard`
+   * holds it to recognise its OWN resolution in `lastProjectWrite`, the one
+   * broadcast slot it shares with `PropertiesCard` for the same
+   * `project.id` (batch review, projects-dossier #668). */
   onPatchProject: (
     current: ProjectDTO,
-    patch: { githubRepo?: string | null; defaultContext?: string | null },
-  ) => void;
+    patch: { githubRepo?: string | null; defaultContext?: string | null; archivedAt?: number | null },
+  ) => string;
   /** #626: the links card's read — fetches one project's links. The caller
    * (this component's own effect) decides when: on open, and again on
    * every completed cycle it is still open for. */
@@ -69,6 +115,42 @@ export interface ProjectsScreenProps {
     current: ProjectLinkDTO,
     patch: { url?: string; label?: string | null; position?: number; removedAt?: number | null },
   ) => void;
+  /** #627: the Route card's read — fetches one project's Route. Same
+   * "the caller's own effect decides when" shape as `onRequestProjectLinks`. */
+  onRequestRoute: (projectId: string) => void;
+  /** #627: the Route card's edit gesture — `patch` carries only the fields
+   * the card actually changed. */
+  onPatchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => void;
+  /** #628: the fog card's read — fetches one project's open fog. Same
+   * "the caller's own effect decides when" shape as `onRequestProjectLinks`. */
+  onRequestFog: (projectId: string) => void;
+  /** #628: the fog card's add-a-question gesture. */
+  onCreateFog: (projectId: string, question: string, position: number) => void;
+  /** #628: the fog card's reword/reposition/resolve gesture — `patch`
+   * carries only the fields the card actually changed. */
+  onPatchFog: (
+    current: FogDTO,
+    patch: { question?: string; position?: number; resolvedAt?: number | null },
+  ) => void;
+  /** #629: the action list's read — fetches one project's actions, route
+   * order. Same "the caller's own effect decides when" shape as
+   * `onRequestProjectLinks`. */
+  onRequestActions: (projectId: string) => void;
+  /** #629: the action list's reorder gesture — moves one Action's
+   * `projectPos`. Overlaid immediately (`Core::patch_action_position`'s
+   * own doc), unlike every other project-lane write on this screen. */
+  onReorderAction: (projectId: string, current: TaskItemDTO, position: number) => void;
+  /** #629: an expanded action's checklist read — the same `getSteps` door
+   * item detail's own checklist already uses (issue #96), reused here. */
+  onRequestActionSteps: (itemId: string) => void;
+  /** #629: an expanded action's add-a-step gesture. */
+  onCreateStep: (itemId: string, body: string, position: number) => void;
+  /** #629: an expanded action's tick/reword/reorder/delete gesture —
+   * `patch` carries only the fields the row actually changed. */
+  onPatchStep: (
+    current: StepDTO,
+    patch: { body?: string; done?: boolean; position?: number; deletedAt?: number | null },
+  ) => void;
 }
 
 export function ProjectsScreen({
@@ -78,6 +160,16 @@ export function ProjectsScreen({
   onRequestProjectLinks,
   onCreateProjectLink,
   onPatchProjectLink,
+  onRequestRoute,
+  onPatchRoute,
+  onRequestFog,
+  onCreateFog,
+  onPatchFog,
+  onRequestActions,
+  onReorderAction,
+  onRequestActionSteps,
+  onCreateStep,
+  onPatchStep,
 }: ProjectsScreenProps) {
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -115,11 +207,30 @@ export function ProjectsScreen({
       lastProjectWrite={task.lastProjectWrite}
       onBack={() => setOpenId(null)}
       onPatchProject={onPatchProject}
+      ledger={task.ledger}
       links={task.linksByProject[open.project.id]}
       lastProjectLinkWrite={task.lastProjectLinkWrite}
       onRequestProjectLinks={onRequestProjectLinks}
       onCreateProjectLink={onCreateProjectLink}
       onPatchProjectLink={onPatchProjectLink}
+      route={task.routeByProject[open.project.id]}
+      lastRouteWrite={task.lastRouteWrite}
+      onRequestRoute={onRequestRoute}
+      onPatchRoute={onPatchRoute}
+      fog={task.fogByProject[open.project.id]}
+      lastFogWrite={task.lastFogWrite}
+      onRequestFog={onRequestFog}
+      onCreateFog={onCreateFog}
+      onPatchFog={onPatchFog}
+      actions={task.actionsByProject[open.project.id]}
+      lastActionReorder={task.lastActionReorder}
+      onRequestActions={onRequestActions}
+      onReorderAction={onReorderAction}
+      stepsByItem={task.stepsByItem}
+      lastStepWrite={task.lastStepWrite}
+      onRequestActionSteps={onRequestActionSteps}
+      onCreateStep={onCreateStep}
+      onPatchStep={onPatchStep}
       syncOutcomeSeq={task.syncOutcomeSeq}
     />
   );
@@ -260,29 +371,35 @@ function NewProjectCard({
   );
 }
 
-/** One region of the dossier that a later slice fills. Named and labelled so
- * the operator meets an unbuilt region rather than a broken one. */
-function ComingRegion({ label, body }: { label: string; body: string }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-      <span className="hb-meta">{label}</span>
-      <Card padding="var(--space-5)">
-        <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>{body}</p>
-      </Card>
-    </div>
-  );
-}
-
 function Dossier({
   row,
   lastProjectWrite,
   onBack,
   onPatchProject,
+  ledger,
   links,
   lastProjectLinkWrite,
   onRequestProjectLinks,
   onCreateProjectLink,
   onPatchProjectLink,
+  route,
+  lastRouteWrite,
+  onRequestRoute,
+  onPatchRoute,
+  fog,
+  lastFogWrite,
+  onRequestFog,
+  onCreateFog,
+  onPatchFog,
+  actions,
+  lastActionReorder,
+  onRequestActions,
+  onReorderAction,
+  stepsByItem,
+  lastStepWrite,
+  onRequestActionSteps,
+  onCreateStep,
+  onPatchStep,
   syncOutcomeSeq,
 }: {
   row: ProjectRow;
@@ -290,8 +407,12 @@ function Dossier({
   onBack: () => void;
   onPatchProject: (
     current: ProjectDTO,
-    patch: { githubRepo?: string | null; defaultContext?: string | null },
-  ) => void;
+    patch: { githubRepo?: string | null; defaultContext?: string | null; archivedAt?: number | null },
+  ) => string;
+  /** The Ledger (#630's `ArchiveCard`'s own read) — already app-wide state,
+   * the same "counts are derived, not read" doctrine `roster.ts` states for
+   * the grid's own counts. `null` while it has not answered yet. */
+  ledger: LedgerRowDTO[] | null;
   /** `undefined` = not read yet (`TaskState.linksByProject`'s own doc),
    * distinct from `[]` (this project genuinely has none). */
   links: ProjectLinkDTO[] | undefined;
@@ -301,6 +422,39 @@ function Dossier({
   onPatchProjectLink: (
     current: ProjectLinkDTO,
     patch: { url?: string; label?: string | null; position?: number; removedAt?: number | null },
+  ) => void;
+  /** `undefined` = not read yet (`TaskState.routeByProject`'s own doc) —
+   * every project has exactly one Route, so there is no "this project has
+   * none" to distinguish it from, unlike `links`. */
+  route: RouteDTO | undefined;
+  lastRouteWrite: TaskRouteResult | null;
+  onRequestRoute: (projectId: string) => void;
+  onPatchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => void;
+  /** `undefined` = not read yet (`TaskState.fogByProject`'s own doc),
+   * distinct from `[]` (this project genuinely has no open fog). */
+  fog: FogDTO[] | undefined;
+  lastFogWrite: TaskFogResult | null;
+  onRequestFog: (projectId: string) => void;
+  onCreateFog: (projectId: string, question: string, position: number) => void;
+  onPatchFog: (
+    current: FogDTO,
+    patch: { question?: string; position?: number; resolvedAt?: number | null },
+  ) => void;
+  /** `undefined` = not read yet (`TaskState.actionsByProject`'s own doc),
+   * distinct from `[]` (this project genuinely has no actions). */
+  actions: TaskItemDTO[] | undefined;
+  lastActionReorder: TaskActionReorderResult | null;
+  onRequestActions: (projectId: string) => void;
+  onReorderAction: (projectId: string, current: TaskItemDTO, position: number) => void;
+  /** Item detail's checklist store (issue #96, S10) — the expanded action's
+   * steps read the same map, keyed by item id. */
+  stepsByItem: Record<string, StepDTO[]>;
+  lastStepWrite: TaskStepResult | null;
+  onRequestActionSteps: (itemId: string) => void;
+  onCreateStep: (itemId: string, body: string, position: number) => void;
+  onPatchStep: (
+    current: StepDTO,
+    patch: { body?: string; done?: boolean; position?: number; deletedAt?: number | null },
   ) => void;
   syncOutcomeSeq: number;
 }) {
@@ -312,6 +466,24 @@ function Dossier({
   // uses for item detail's checklist.
   useEffect(() => {
     onRequestProjectLinks(projectId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, syncOutcomeSeq]);
+
+  // #627: same shape, for the Route.
+  useEffect(() => {
+    onRequestRoute(projectId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, syncOutcomeSeq]);
+
+  // #628: same shape, for the open fog.
+  useEffect(() => {
+    onRequestFog(projectId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, syncOutcomeSeq]);
+
+  // #629: same shape, for the ordered action list.
+  useEffect(() => {
+    onRequestActions(projectId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, syncOutcomeSeq]);
 
@@ -331,15 +503,31 @@ function Dossier({
 
       <TwoColumn>
         <Column>
-          <ComingRegion
-            label="route · destination"
-            body="The Route's destination and notes land here."
+          <RouteCard
+            projectId={projectId}
+            route={route}
+            lastRouteWrite={lastRouteWrite}
+            onPatchRoute={onPatchRoute}
           />
-          <ComingRegion
-            label="actions"
-            body="This project's ordered actions land here, each expanding to its own steps."
+          <ActionsCard
+            projectId={projectId}
+            actions={actions}
+            lastActionReorder={lastActionReorder}
+            onReorderAction={onReorderAction}
+            stepsByItem={stepsByItem}
+            lastStepWrite={lastStepWrite}
+            onRequestActionSteps={onRequestActionSteps}
+            onCreateStep={onCreateStep}
+            onPatchStep={onPatchStep}
+            syncOutcomeSeq={syncOutcomeSeq}
           />
-          <ComingRegion label="fog" body="The open questions on this Route land here." />
+          <FogCard
+            projectId={projectId}
+            fog={fog}
+            lastFogWrite={lastFogWrite}
+            onCreateFog={onCreateFog}
+            onPatchFog={onPatchFog}
+          />
         </Column>
         <Aside label="Project properties">
           <PropertiesCard
@@ -354,7 +542,12 @@ function Dossier({
             onCreateProjectLink={onCreateProjectLink}
             onPatchProjectLink={onPatchProjectLink}
           />
-          <ComingRegion label="archive" body="Archiving this project lands here." />
+          <ArchiveCard
+            project={row.project}
+            liveCount={liveItemCount(ledger, projectId)}
+            lastProjectWrite={lastProjectWrite}
+            onPatchProject={onPatchProject}
+          />
         </Aside>
       </TwoColumn>
     </div>
@@ -478,6 +671,159 @@ function PropertiesCard({
         <Button type="submit" size="sm" disabled={!dirty}>
           Save
         </Button>
+      </Card>
+    </div>
+  );
+}
+
+/** The dossier reading column's Route card (#627, ADR-0030 decision 1):
+ * edits `destination`/`notes`, the two fields `CONTEXT.md`'s Route entry
+ * names. `route` is `undefined` while the read is in flight
+ * (`TaskState.routeByProject`'s own doc) — every project has exactly one
+ * Route, so there is no "none yet" state to distinguish, unlike the links
+ * card. The re-seed-on-version-bump logic is `PropertiesCard`'s own,
+ * ported verbatim: only a field nobody has typed in since the last seed is
+ * re-seeded, so a save of one field never throws away in-flight typing in
+ * the other.
+ *
+ * **The saving/saved state is explicit here**, unlike `PropertiesCard`'s own
+ * silent re-sync — this slice's brief asks for it, since there is no
+ * optimistic overlay to imply it visually. `saving` flips true the moment
+ * Save is clicked, and resolves one of two ways: it flips false (to
+ * `justSaved`) once the row's `version` actually moves — which is also how
+ * a 409 that this write lost would show up: `version` still moves (to
+ * whatever won), so this card cannot tell its own write apart from a
+ * concurrent one and does not try to — or, if the write never reached the
+ * queue at all (`lastRouteWrite.kind` `"failed"`/`"busy"`, e.g. a sync cycle
+ * holding the host at click time), it flips false with no `justSaved`, so
+ * `Saving…` cannot outlive the failure badge painted from that same
+ * `lastRouteWrite`. A genuine 409 conflict is never surfaced here; it lands
+ * in the ordinary dead-letter journal like every other CAS write (ADR-0030
+ * decision 1) — this card adds no bespoke conflict UI. */
+function RouteCard({
+  projectId,
+  route,
+  lastRouteWrite,
+  onPatchRoute,
+}: {
+  projectId: string;
+  route: RouteDTO | undefined;
+  lastRouteWrite: TaskRouteResult | null;
+  onPatchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => void;
+}) {
+  const [destinationInput, setDestinationInput] = useState(route?.destination ?? "");
+  const [notesInput, setNotesInput] = useState(route?.notes ?? "");
+  const [synced, setSynced] = useState({
+    version: route?.version ?? null,
+    destination: route?.destination ?? "",
+    notes: route?.notes ?? "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
+
+  if (route !== undefined && route.version !== synced.version) {
+    if (destinationInput === synced.destination) {
+      setDestinationInput(route.destination ?? "");
+    }
+    if (notesInput === synced.notes) {
+      setNotesInput(route.notes ?? "");
+    }
+    setSynced({ version: route.version, destination: route.destination ?? "", notes: route.notes ?? "" });
+    if (saving) {
+      setSaving(false);
+      setJustSaved(true);
+    }
+  }
+
+  // Gated on `projectId`, same reasoning `PropertiesCard`'s own failure read
+  // carries: `lastRouteWrite` is one broadcast slot shared by every open
+  // dossier.
+  const failedHere =
+    lastRouteWrite !== null && lastRouteWrite.projectId === projectId && lastRouteWrite.kind !== "ok";
+
+  // The write never reached the queue at all — no `version` bump is ever
+  // coming to clear `saving` for us (the branch above only fires on a real
+  // version move), so a `"failed"`/`"busy"` result clears it directly. No
+  // `justSaved` here: the failure badge below is the visible resolution,
+  // not a silent "Saved".
+  if (saving && failedHere) {
+    setSaving(false);
+  }
+
+  const trimmedDestination = destinationInput.trim();
+  const trimmedNotes = notesInput.trim();
+  const destinationChanged = trimmedDestination !== (route?.destination ?? "");
+  const notesChanged = trimmedNotes !== (route?.notes ?? "");
+  const dirty = destinationChanged || notesChanged;
+  const failure =
+    failedHere && lastRouteWrite !== null
+      ? lastRouteWrite.error ?? "That route write did not go through."
+      : null;
+
+  function save() {
+    if (route === undefined) {
+      return;
+    }
+    const patch: { destination?: string | null; notes?: string | null } = {};
+    if (destinationChanged) {
+      patch.destination = trimmedDestination === "" ? null : trimmedDestination;
+    }
+    if (notesChanged) {
+      patch.notes = trimmedNotes === "" ? null : trimmedNotes;
+    }
+    onPatchRoute(route, patch);
+    setSaving(true);
+    setJustSaved(false);
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      <span className="hb-meta">route · destination</span>
+      <Card
+        as="form"
+        padding="var(--space-5)"
+        onSubmit={(event) => {
+          event.preventDefault();
+          save();
+        }}
+        style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
+      >
+        {route === undefined ? (
+          <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+            Reading Route…
+          </span>
+        ) : (
+          <>
+            <Textarea
+              label="Destination"
+              placeholder="What does done look like, in your own terms?"
+              value={destinationInput}
+              onChange={(event) => {
+                setDestinationInput(event.target.value);
+                setJustSaved(false);
+              }}
+            />
+            <Textarea
+              label="Notes"
+              value={notesInput}
+              onChange={(event) => {
+                setNotesInput(event.target.value);
+                setJustSaved(false);
+              }}
+            />
+            {failure !== null ? <Badge tone="danger">{failure}</Badge> : null}
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-4)" }}>
+              <Button type="submit" size="sm" disabled={!dirty}>
+                Save
+              </Button>
+              {saving ? (
+                <span className="hb-meta">Saving…</span>
+              ) : justSaved ? (
+                <span className="hb-meta">Saved</span>
+              ) : null}
+            </div>
+          </>
+        )}
       </Card>
     </div>
   );
@@ -703,6 +1049,704 @@ function LinkEditRow({
       <Input label="Label" placeholder="optional" value={labelInput} onChange={(event) => setLabelInput(event.target.value)} />
       <div style={{ display: "flex", gap: "var(--space-3)" }}>
         <Button size="sm" onClick={save} disabled={urlInput.trim() === ""}>
+          Save
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </li>
+  );
+}
+
+/** The dossier aside's archive affordance (#630, ADR-0030 decision 5) — the
+ * project lane's last placeholder, replacing `ComingRegion`. Archiving
+ * cascades onto the project's live items server-side, a timestamp-matched
+ * stamp (`projects.rs`'s own doc, `cascade_archive_for_project`'s own
+ * mechanism); this card's job is naming that consequence concretely before
+ * the human commits to it, and offering the reverse gesture once archived.
+ *
+ * **Confirmation is a two-step reveal within the card, not a modal** — this
+ * codebase has no modal primitive (nothing under `components/` is one, and
+ * neither `LinksCard` nor `FogCard` uses one for their own destructive
+ * gestures), and Cancel is one click away either way. `liveCount` is
+ * `roster.ts`'s `liveItemCount`, off the Ledger this screen already holds
+ * app-wide — the same "counts are derived, not read" doctrine `countsMeta`
+ * follows, scoped to exactly the predicate the server cascade uses
+ * (`project_id = ? AND archived_at IS NULL`, `done` included), so the
+ * number named here is the number that will move. `null` renders as prose,
+ * never `0` — a count this device has no standing to claim yet.
+ *
+ * No optimistic overlay (`Core::patch_project`'s own doc): `pending` flips
+ * true on click and resolves either when the project's own `version` moves
+ * (success — the archived/unarchived state repaints from `project` itself)
+ * or when `lastProjectWrite.kind !== "ok"` (failure, which clears `pending`
+ * directly since no version bump is ever coming to do it) — `RouteCard`'s
+ * own pattern, adapted rather than ported verbatim: `RouteCard` is the only
+ * card patching its own broadcast slot (`lastRouteWrite`), where this card
+ * shares `lastProjectWrite` with `PropertiesCard`, mounted alongside it on
+ * the same dossier and patching the same `project.id`. Gating the failure
+ * read on `projectId` alone let a **failed properties write** satisfy this
+ * card's `failedHere` and clear `pending` mid-flight while its own archive
+ * write was still queued — `confirming` stayed true, re-arming "Archive
+ * project" over a write already in the queue, a double-submit that 409s
+ * into the dead-letter journal (batch review, projects-dossier #668). The
+ * fix: this card also holds the **seed its own write minted**
+ * (`onPatchProject`'s return, since a card cannot otherwise know which
+ * broadcast result is its own) and requires `lastProjectWrite.seed` to
+ * match it before treating a result as its own — same discrimination
+ * `TaskRuleResult`/`TaskProjectResult`'s own doc calls "matched back by
+ * seed" for every other CAS write in this codebase, just not previously
+ * threaded out to a caller that needed it. Unarchiving carries no
+ * confirmation step of its own: ADR-0030's brief asks the dialog to name
+ * archiving's consequence, not unarchiving's, and unarchiving is the
+ * reversing gesture, not a destructive one. */
+function ArchiveCard({
+  project,
+  liveCount,
+  lastProjectWrite,
+  onPatchProject,
+}: {
+  project: ProjectDTO;
+  liveCount: number | null;
+  lastProjectWrite: TaskProjectResult | null;
+  onPatchProject: (current: ProjectDTO, patch: { archivedAt?: number | null }) => string;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [issuedSeed, setIssuedSeed] = useState<string | null>(null);
+  const [syncedVersion, setSyncedVersion] = useState(project.version);
+
+  if (project.version !== syncedVersion) {
+    setSyncedVersion(project.version);
+    if (pending) {
+      setPending(false);
+      setConfirming(false);
+    }
+  }
+
+  // Scoped to THIS card's own outstanding write, not merely to `project.id`:
+  // `lastProjectWrite` is one broadcast slot shared with `PropertiesCard`,
+  // mounted alongside this card on the same dossier and patching the same
+  // project — a `projectId`-only gate let a failed properties write clear
+  // this card's `pending` while its own archive write was still queued (see
+  // this function's own doc). `issuedSeed` is `null` whenever this card has
+  // no write outstanding, so a stray broadcast never matches by accident.
+  const failedHere =
+    issuedSeed !== null &&
+    lastProjectWrite !== null &&
+    lastProjectWrite.projectId === project.id &&
+    lastProjectWrite.seed === issuedSeed &&
+    lastProjectWrite.kind !== "ok";
+  if (pending && failedHere) {
+    setPending(false);
+  }
+  const failure = failedHere ? writeFailureMessage(lastProjectWrite) : null;
+
+  const archived = project.archivedAt !== null;
+
+  function archive() {
+    setIssuedSeed(onPatchProject(project, { archivedAt: Date.now() }));
+    setPending(true);
+  }
+
+  function unarchive() {
+    setIssuedSeed(onPatchProject(project, { archivedAt: null }));
+    setPending(true);
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      <span className="hb-meta">archive</span>
+      <Card padding="var(--space-5)" style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+        {archived ? (
+          <>
+            <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+              Archived. Unarchiving restores exactly the items this archive took down.
+            </p>
+            <Button variant="secondary" size="sm" onClick={unarchive} disabled={pending}>
+              {pending ? "Unarchiving…" : "Unarchive"}
+            </Button>
+          </>
+        ) : confirming ? (
+          <>
+            <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+              {liveCount === null
+                ? "Archiving takes every live item in this project down with it."
+                : liveCount === 0
+                  ? "This project has no live items — archiving takes down the project alone."
+                  : `Archiving takes ${liveCount} live ${liveCount === 1 ? "item" : "items"} down with it.`}
+            </p>
+            <div style={{ display: "flex", gap: "var(--space-3)" }}>
+              <Button variant="danger" size="sm" onClick={archive} disabled={pending}>
+                {pending ? "Archiving…" : "Archive project"}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setConfirming(false)} disabled={pending}>
+                Cancel
+              </Button>
+            </div>
+          </>
+        ) : (
+          <Button variant="secondary" size="sm" onClick={() => setConfirming(true)}>
+            Archive project
+          </Button>
+        )}
+        {failure !== null ? <Badge tone="danger">{failure}</Badge> : null}
+      </Card>
+    </div>
+  );
+}
+
+/** The dossier reading column's action list (#629, ADR-0030 decision 1):
+ * renders a project's Actions in route (`projectPos`) order, reorderable
+ * with up/down controls that stop at the ends, and each one expanding
+ * **inline beneath its own row** — never into the aside, per the brief's
+ * one non-negotiable styling detail — to its own steps checklist
+ * (`ActionStepsChecklist`) when selected. `actions` is `undefined` while
+ * the read is in flight (`TaskState.actionsByProject`'s own doc) — distinct
+ * from an empty array, which is a real answer ("this project has no
+ * actions yet").
+ *
+ * **Reordering overlays immediately.** Unlike `FogCard`/`LinksCard`'s own
+ * reorder, `onReorderAction` patches the ordinary item table
+ * (`Core::patch_action_position`'s own doc), so the swapped rows repaint
+ * the instant the click handler returns — no "waiting" state is drawn.
+ * Same "swap two adjacent rows, two CAS patches" gesture `FogCard`'s own
+ * `moveFog` uses, and for the same reason: an interleaved edit from
+ * another device only ever collides with the two rows actually touched. */
+function ActionsCard({
+  projectId,
+  actions,
+  lastActionReorder,
+  onReorderAction,
+  stepsByItem,
+  lastStepWrite,
+  onRequestActionSteps,
+  onCreateStep,
+  onPatchStep,
+  syncOutcomeSeq,
+}: {
+  projectId: string;
+  actions: TaskItemDTO[] | undefined;
+  lastActionReorder: TaskActionReorderResult | null;
+  onReorderAction: (projectId: string, current: TaskItemDTO, position: number) => void;
+  stepsByItem: Record<string, StepDTO[]>;
+  lastStepWrite: TaskStepResult | null;
+  onRequestActionSteps: (itemId: string) => void;
+  onCreateStep: (itemId: string, body: string, position: number) => void;
+  onPatchStep: (
+    current: StepDTO,
+    patch: { body?: string; done?: boolean; position?: number; deletedAt?: number | null },
+  ) => void;
+  syncOutcomeSeq: number;
+}) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  // Fetches the expanded action's steps the moment it is selected, and
+  // again on every completed cycle it stays selected for — same "the
+  // caller's own effect decides when" shape `Dossier`'s own `onRequestFog`
+  // effect uses.
+  useEffect(() => {
+    if (expandedId !== null) {
+      onRequestActionSteps(expandedId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expandedId, syncOutcomeSeq]);
+
+  // Gated on `projectId`, same reasoning `FogCard`'s own failure read
+  // carries: `lastActionReorder` is one broadcast slot shared by every open
+  // dossier, so an unguarded read would paint a stranger's failure into
+  // this card.
+  const failure =
+    lastActionReorder !== null && lastActionReorder.projectId === projectId && lastActionReorder.kind !== "ok"
+      ? lastActionReorder.error ?? "That reorder did not go through."
+      : null;
+
+  const sortedActions =
+    actions === undefined ? undefined : [...actions].sort((a, b) => (a.projectPos ?? 0) - (b.projectPos ?? 0));
+
+  function moveAction(index: number, direction: -1 | 1) {
+    if (sortedActions === undefined) {
+      return;
+    }
+    const swapIndex = index + direction;
+    if (swapIndex < 0 || swapIndex >= sortedActions.length) {
+      return;
+    }
+    const current = sortedActions[index];
+    const other = sortedActions[swapIndex];
+    onReorderAction(projectId, current, other.projectPos ?? swapIndex);
+    onReorderAction(projectId, other, current.projectPos ?? index);
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      <span className="hb-meta">actions</span>
+      <Card padding="var(--space-5)" style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+        {sortedActions === undefined ? (
+          <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+            Reading actions…
+          </span>
+        ) : sortedActions.length === 0 ? (
+          <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+            No actions on this Route yet.
+          </span>
+        ) : (
+          <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+            {sortedActions.map((action, index) => (
+              <li key={action.id} style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                  <button
+                    type="button"
+                    onClick={() => setExpandedId(expandedId === action.id ? null : action.id)}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      textAlign: "left",
+                      background: "none",
+                      border: "none",
+                      padding: 0,
+                      cursor: "pointer",
+                      font: "var(--type-body-sm)",
+                      color: "var(--text-primary)",
+                    }}
+                  >
+                    {action.title}
+                  </button>
+                  {action.pending ? <Badge mono>pending</Badge> : null}
+                  <IconButton
+                    icon="chevron-down"
+                    label="Move up"
+                    size="sm"
+                    style={{ transform: "rotate(180deg)" }}
+                    disabled={index === 0}
+                    onClick={() => moveAction(index, -1)}
+                  />
+                  <IconButton
+                    icon="chevron-down"
+                    label="Move down"
+                    size="sm"
+                    disabled={index === sortedActions.length - 1}
+                    onClick={() => moveAction(index, 1)}
+                  />
+                </div>
+                {expandedId === action.id ? (
+                  <ActionStepsChecklist
+                    itemId={action.id}
+                    steps={stepsByItem[action.id]}
+                    lastStepWrite={lastStepWrite}
+                    onCreateStep={onCreateStep}
+                    onPatchStep={onPatchStep}
+                  />
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+        {failure !== null ? <Badge tone="danger">{failure}</Badge> : null}
+      </Card>
+    </div>
+  );
+}
+
+/** One expanded action's steps checklist (#629) — rendered inline beneath
+ * its row by `ActionsCard`, never in the aside. Ticking, rewording,
+ * reordering and adding a Step all share the no-overlay convention every
+ * other project-lane write on this screen uses (`Core::patch_step`'s own
+ * doc): a change becomes visible once the next completed cycle pulls it
+ * back. Deleting a step flags it (ADR-0020) rather than erasing it — the
+ * flagged row simply stops appearing here, since a deleted Step demotes to
+ * `Presence::Absent` in the mirror (`sync::mirror`'s own `apply_tables`,
+ * unlike Fog's `resolved_at`), so there is no client-side "hide it" logic
+ * to get wrong. `steps` is `undefined` while the read is in flight
+ * (`TaskState.stepsByItem`'s own doc), distinct from an empty array (this
+ * action genuinely has no steps yet). */
+function ActionStepsChecklist({
+  itemId,
+  steps,
+  lastStepWrite,
+  onCreateStep,
+  onPatchStep,
+}: {
+  itemId: string;
+  steps: StepDTO[] | undefined;
+  lastStepWrite: TaskStepResult | null;
+  onCreateStep: (itemId: string, body: string, position: number) => void;
+  onPatchStep: (
+    current: StepDTO,
+    patch: { body?: string; done?: boolean; position?: number; deletedAt?: number | null },
+  ) => void;
+}) {
+  const [bodyInput, setBodyInput] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  // Gated on `itemId`, same reasoning `ActionsCard`'s own failure read
+  // carries: `lastStepWrite` is one broadcast slot shared by every
+  // expanded checklist on every open dossier.
+  const failure =
+    lastStepWrite !== null && lastStepWrite.itemId === itemId
+      ? (lastStepWrite.kind === "ok" ? null : lastStepWrite.error ?? "That step write did not go through.")
+      : null;
+
+  const sortedSteps = steps === undefined ? undefined : [...steps].sort((a, b) => a.position - b.position);
+
+  function addStep() {
+    const trimmedBody = bodyInput.trim();
+    if (trimmedBody === "") {
+      return;
+    }
+    // Mint the new position past the largest live one, not from the count
+    // — `FogCard.addFog`'s own reasoning, ported verbatim: a deleted step
+    // drops out of this read without renumbering the rest, so a
+    // count-minted position could duplicate a live row's.
+    const position = sortedSteps === undefined || sortedSteps.length === 0 ? 0 : sortedSteps[sortedSteps.length - 1].position + 1;
+    onCreateStep(itemId, trimmedBody, position);
+    setBodyInput("");
+  }
+
+  function moveStep(index: number, direction: -1 | 1) {
+    if (sortedSteps === undefined) {
+      return;
+    }
+    const swapIndex = index + direction;
+    if (swapIndex < 0 || swapIndex >= sortedSteps.length) {
+      return;
+    }
+    const step = sortedSteps[index];
+    const other = sortedSteps[swapIndex];
+    onPatchStep(step, { position: other.position });
+    onPatchStep(other, { position: step.position });
+  }
+
+  return (
+    <div style={{ marginLeft: "var(--space-6)", display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      {sortedSteps === undefined ? (
+        <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>Reading steps…</span>
+      ) : sortedSteps.length === 0 ? (
+        <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+          No steps on this action yet.
+        </span>
+      ) : (
+        <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+          {sortedSteps.map((step, index) =>
+            editingId === step.id ? (
+              <StepEditRow
+                key={step.id}
+                step={step}
+                onSave={(body) => {
+                  onPatchStep(step, { body });
+                  setEditingId(null);
+                }}
+                onCancel={() => setEditingId(null)}
+              />
+            ) : (
+              <li key={step.id} style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                <Checkbox
+                  checked={step.done}
+                  onChange={() => onPatchStep(step, { done: !step.done })}
+                  aria-label={step.body}
+                />
+                <span
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    font: "var(--type-body-sm)",
+                    color: step.done ? "var(--text-secondary)" : "var(--text-primary)",
+                    textDecoration: step.done ? "line-through" : "none",
+                  }}
+                >
+                  {step.body}
+                </span>
+                <IconButton
+                  icon="chevron-down"
+                  label="Move up"
+                  size="sm"
+                  style={{ transform: "rotate(180deg)" }}
+                  disabled={index === 0}
+                  onClick={() => moveStep(index, -1)}
+                />
+                <IconButton
+                  icon="chevron-down"
+                  label="Move down"
+                  size="sm"
+                  disabled={index === sortedSteps.length - 1}
+                  onClick={() => moveStep(index, 1)}
+                />
+                <Button variant="ghost" size="sm" onClick={() => setEditingId(step.id)}>
+                  Edit
+                </Button>
+                <IconButton
+                  icon="trash-2"
+                  label="Delete"
+                  size="sm"
+                  onClick={() => onPatchStep(step, { deletedAt: Date.now() })}
+                />
+              </li>
+            ),
+          )}
+        </ul>
+      )}
+
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          addStep();
+        }}
+        style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}
+      >
+        <Input
+          label="New step"
+          placeholder="A ~2–5 minute concrete physical step"
+          value={bodyInput}
+          onChange={(event) => setBodyInput(event.target.value)}
+        />
+        {failure !== null ? <Badge tone="danger">{failure}</Badge> : null}
+        <Button type="submit" size="sm" disabled={bodyInput.trim() === "" || sortedSteps === undefined}>
+          Add step
+        </Button>
+      </form>
+    </div>
+  );
+}
+
+/** One step's inline reword form — swapped in for its display row
+ * (`ActionStepsChecklist`'s own `editingId`), the same "click to reveal the
+ * fields" shape `FogEditRow` uses. */
+function StepEditRow({
+  step,
+  onSave,
+  onCancel,
+}: {
+  step: StepDTO;
+  onSave: (body: string) => void;
+  onCancel: () => void;
+}) {
+  const [bodyInput, setBodyInput] = useState(step.body);
+
+  function save() {
+    const trimmedBody = bodyInput.trim();
+    if (trimmedBody === "") {
+      return;
+    }
+    onSave(trimmedBody);
+  }
+
+  return (
+    <li style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      <Input label="Step" value={bodyInput} onChange={(event) => setBodyInput(event.target.value)} />
+      <div style={{ display: "flex", gap: "var(--space-3)" }}>
+        <Button size="sm" onClick={save} disabled={bodyInput.trim() === ""}>
+          Save
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </li>
+  );
+}
+
+/** The dossier reading column's fog card (#628, ADR-0030 decision 1): lists
+ * a project's **open** fog in position order, and adds, edits, reorders and
+ * resolves it. `fog` is `undefined` while the read is in flight
+ * (`TaskState.fogByProject`'s own doc) — distinct from an empty array,
+ * which is a real answer ("this project has no open fog right now").
+ * Resolving is a stamp, never a delete (`Core::patch_fog`'s own doc): the
+ * mirror's own `open_fog_for` already filters resolved rows out, so a
+ * resolved segment simply stops appearing here — there is no client-side
+ * "hide it" logic to get wrong, and no reopen affordance either, since
+ * nothing in this slice's brief asks for one.
+ *
+ * Reordering swaps two adjacent rows' `position` in one gesture — two CAS
+ * patches, one per row — same discipline `LinksCard`'s own `moveLink`
+ * follows, and for the same reason: an interleaved edit from another
+ * device only ever collides with the two rows actually touched. */
+function FogCard({
+  projectId,
+  fog,
+  lastFogWrite,
+  onCreateFog,
+  onPatchFog,
+}: {
+  projectId: string;
+  fog: FogDTO[] | undefined;
+  lastFogWrite: TaskFogResult | null;
+  onCreateFog: (projectId: string, question: string, position: number) => void;
+  onPatchFog: (
+    current: FogDTO,
+    patch: { question?: string; position?: number; resolvedAt?: number | null },
+  ) => void;
+}) {
+  const [questionInput, setQuestionInput] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  // Gated on `projectId`, same reasoning `LinksCard`'s own failure read
+  // carries: `lastFogWrite` is one broadcast slot shared by every open
+  // dossier, so an unguarded read would paint a stranger's failure into
+  // this card.
+  const failure =
+    lastFogWrite !== null && lastFogWrite.projectId === projectId
+      ? (lastFogWrite.kind === "ok" ? null : lastFogWrite.error ?? "That fog write did not go through.")
+      : null;
+
+  const sortedFog = fog === undefined ? undefined : [...fog].sort((a, b) => a.position - b.position);
+
+  function addFog() {
+    const trimmedQuestion = questionInput.trim();
+    if (trimmedQuestion === "") {
+      return;
+    }
+    // Only reachable once the read has answered — Add is disabled while
+    // `sortedFog` is `undefined`, because "no open fog yet" and "not known
+    // yet" would otherwise both mint position 0, and against a project that
+    // does have open fog that 0 duplicates the first row's: the same
+    // collision the count-minted position below is written to avoid,
+    // arrived at from the other direction.
+    // Mint the new position past the largest live one, not from the count —
+    // `LinksCard.addLink`'s own reasoning, ported verbatim: resolving drops
+    // a row out of this read without renumbering the rest (it is a stamp,
+    // not a delete, but `open_fog_for` still stops returning it), so open
+    // positions develop gaps (0,1,2 minus the middle leaves 0,2 with length
+    // 2) and a count-minted position would duplicate a live row's — turning
+    // the next reorder swap into a value-identical no-op patch. Resolved
+    // rows cannot count toward the max (the mirror filters them out before
+    // this card ever sees them), and they need not: a collision with a
+    // resolved row's position is harmless, since only open rows are ever
+    // sorted or swapped.
+    const position = sortedFog === undefined || sortedFog.length === 0 ? 0 : sortedFog[sortedFog.length - 1].position + 1;
+    onCreateFog(projectId, trimmedQuestion, position);
+    setQuestionInput("");
+  }
+
+  function moveFog(index: number, direction: -1 | 1) {
+    if (sortedFog === undefined) {
+      return;
+    }
+    const swapIndex = index + direction;
+    if (swapIndex < 0 || swapIndex >= sortedFog.length) {
+      return;
+    }
+    const segment = sortedFog[index];
+    const other = sortedFog[swapIndex];
+    onPatchFog(segment, { position: other.position });
+    onPatchFog(other, { position: segment.position });
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      <span className="hb-meta">fog</span>
+      <Card padding="var(--space-5)" style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+        {sortedFog === undefined ? (
+          <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>Reading fog…</span>
+        ) : sortedFog.length === 0 ? (
+          <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+            No open fog on this Route.
+          </span>
+        ) : (
+          <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+            {sortedFog.map((segment, index) =>
+              editingId === segment.id ? (
+                <FogEditRow
+                  key={segment.id}
+                  fog={segment}
+                  onSave={(question) => {
+                    onPatchFog(segment, { question });
+                    setEditingId(null);
+                  }}
+                  onCancel={() => setEditingId(null)}
+                />
+              ) : (
+                <li key={segment.id} style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                  <span
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      font: "var(--type-body-sm)",
+                      color: "var(--text-primary)",
+                    }}
+                  >
+                    {segment.question}
+                  </span>
+                  <IconButton
+                    icon="chevron-down"
+                    label="Move up"
+                    size="sm"
+                    style={{ transform: "rotate(180deg)" }}
+                    disabled={index === 0}
+                    onClick={() => moveFog(index, -1)}
+                  />
+                  <IconButton
+                    icon="chevron-down"
+                    label="Move down"
+                    size="sm"
+                    disabled={index === sortedFog.length - 1}
+                    onClick={() => moveFog(index, 1)}
+                  />
+                  <Button variant="ghost" size="sm" onClick={() => setEditingId(segment.id)}>
+                    Edit
+                  </Button>
+                  <IconButton
+                    icon="check"
+                    label="Resolve"
+                    size="sm"
+                    onClick={() => onPatchFog(segment, { resolvedAt: Date.now() })}
+                  />
+                </li>
+              ),
+            )}
+          </ul>
+        )}
+
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            addFog();
+          }}
+          style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}
+        >
+          <Input
+            label="Open question"
+            placeholder="What blocks this from being an action?"
+            value={questionInput}
+            onChange={(event) => setQuestionInput(event.target.value)}
+          />
+          {failure !== null ? <Badge tone="danger">{failure}</Badge> : null}
+          <Button type="submit" size="sm" disabled={questionInput.trim() === "" || sortedFog === undefined}>
+            Add fog
+          </Button>
+        </form>
+      </Card>
+    </div>
+  );
+}
+
+/** One fog segment's inline reword form — swapped in for its display row
+ * (`FogCard`'s own `editingId`), the same "click to reveal the fields"
+ * shape `LinkEditRow` uses. */
+function FogEditRow({
+  fog,
+  onSave,
+  onCancel,
+}: {
+  fog: FogDTO;
+  onSave: (question: string) => void;
+  onCancel: () => void;
+}) {
+  const [questionInput, setQuestionInput] = useState(fog.question);
+
+  function save() {
+    const trimmedQuestion = questionInput.trim();
+    if (trimmedQuestion === "") {
+      return;
+    }
+    onSave(trimmedQuestion);
+  }
+
+  return (
+    <li style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      <Input label="Open question" value={questionInput} onChange={(event) => setQuestionInput(event.target.value)} />
+      <div style={{ display: "flex", gap: "var(--space-3)" }}>
+        <Button size="sm" onClick={save} disabled={questionInput.trim() === ""}>
           Save
         </Button>
         <Button variant="ghost" size="sm" onClick={onCancel}>

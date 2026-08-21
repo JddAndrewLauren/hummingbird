@@ -22,8 +22,8 @@ use hummingbird_core::{
 };
 use hummingbird_domain::{
     core_field_type, is_valid_deadline, is_valid_github_repo, Alert, Condition, Energy,
-    EventKindEntry, FieldType, Item, Project, ProjectLink, Rule, Size, Stage, Step, Tier,
-    CORE_FIELDS, EVENT_KINDS, GrillVerdict,
+    EventKindEntry, FieldType, Fog, Item, Project, ProjectLink, Route, Rule, Size, Stage, Step,
+    Tier, CORE_FIELDS, EVENT_KINDS, GrillVerdict,
 };
 
 // The real, target-specific store `Core::init` resolves to internally is a
@@ -425,6 +425,103 @@ pub struct CreateProjectLinkResponse {
 /// shape as [`PatchProjectResponse`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PatchProjectLinkResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
+/// The wrapper around [`TaskHostCore::route`]'s answer — the dossier's
+/// reading column's read (#627, ADR-0030 decision 1). Same `"busy"`
+/// contract as [`ProjectLinkListResponse`]. `route` is `None` both when the
+/// mirror has not pulled this project's Route yet and when `busy` — the two
+/// share a JSON shape by design, since [`Core::route`]'s own doc makes the
+/// same "not read yet" claim, not "this project has none" (every project
+/// has exactly one Route, created structurally by
+/// [`hummingbird_core::Core::create_project`]).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RouteResponse {
+    pub kind: &'static str,
+    pub route: Option<Route>,
+}
+
+/// What [`TaskHostCore::patch_route`] resolves to (#627) — the dossier's
+/// reading column edits destination and notes through this one entry
+/// point. Same shape as [`PatchProjectResponse`]: `"failed"` is a
+/// durability failure enqueueing the write; a 409 is handled, not
+/// swallowed, through the ordinary CAS path (ADR-0030 decision 1 — the
+/// route's content is shared-owned with `/to-actions`, so this is an
+/// ordinary outcome, not a bespoke conflict).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PatchRouteResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
+/// The wrapper around [`TaskHostCore::open_fog`]'s answer — the dossier
+/// reading column's read (#628, ADR-0030 decision 1). Same `"busy"`
+/// contract as [`ProjectLinkListResponse`]; `fog` carries only **open**
+/// rows, position order — a resolved one is retained but never answers
+/// here ([`Core::open_fog_for`]'s own doc).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct FogListResponse {
+    pub kind: &'static str,
+    pub fog: Vec<Fog>,
+}
+
+/// What [`TaskHostCore::create_fog`] resolves to (#628). Same three-way
+/// split as [`CreateProjectLinkResponse`]: `"ok"` carries the minted id,
+/// `"failed"` is either a question this seam refused outright or a
+/// durability failure enqueueing the create, and `"busy"` is the core
+/// answering nothing at all. An `"ok"` means *enqueued*, not *saved* —
+/// there is no optimistic overlay ([`Core::create_fog`]), so the segment
+/// appears in [`TaskHostCore::open_fog`] only after a completed cycle
+/// pulls it back.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CreateFogResponse {
+    pub kind: &'static str,
+    pub id: Option<String>,
+    pub error: Option<String>,
+}
+
+/// What [`TaskHostCore::patch_fog`] resolves to (#628) — rewording,
+/// repositioning and resolving/reopening a segment all share this one
+/// entry point. Same shape as [`PatchProjectLinkResponse`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PatchFogResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
+/// What [`TaskHostCore::patch_action_position`] resolves to (#629) — the
+/// dossier's reorder control. Same shape as [`PatchProjectResponse`]:
+/// `"failed"` is a durability failure enqueueing the write; a 409 is
+/// handled, not swallowed, through the ordinary CAS path (ADR-0030
+/// decision 1 — `project_pos` is shared-owned with `/to-actions`, so this
+/// is an ordinary outcome, not a bespoke conflict).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PatchActionPositionResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
+/// What [`TaskHostCore::create_step`] resolves to (#629). Same three-way
+/// split as [`CreateFogResponse`]: `"ok"` carries the minted id, `"failed"`
+/// is either a body this seam refused outright or a durability failure
+/// enqueueing the create, and `"busy"` is the core answering nothing at
+/// all. An `"ok"` means *enqueued*, not *saved* — there is no optimistic
+/// overlay ([`Core::create_step`]), so the Step appears in
+/// [`TaskHostCore::steps`] only after a completed cycle pulls it back.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CreateStepResponse {
+    pub kind: &'static str,
+    pub id: Option<String>,
+    pub error: Option<String>,
+}
+
+/// What [`TaskHostCore::patch_step`] resolves to (#629) — ticking,
+/// rewording, repositioning, or flagging/clearing a Step's deletion all
+/// share this one entry point. Same shape as [`PatchFogResponse`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PatchStepResponse {
     pub kind: &'static str,
     pub error: Option<String>,
 }
@@ -1302,6 +1399,239 @@ impl TaskHostCore {
         {
             Ok(()) => PatchProjectLinkResponse { kind: "ok", error: None },
             Err(error) => PatchProjectLinkResponse {
+                kind: "failed",
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// One project's Route, per [`Core::route`] (#627) — the dossier's
+    /// reading column's read.
+    pub fn route(&self, project_id: &str) -> RouteResponse {
+        RouteResponse {
+            kind: "ok",
+            route: self.core.route(project_id),
+        }
+    }
+
+    /// Patches a project's Route, per [`Core::patch_route`] (#627) — the
+    /// dossier's reading column, editing `destination`/`notes` through this
+    /// one entry point. `current` is the caller's own last-known copy of
+    /// the row (from [`TaskHostCore::route`]), the same "caller supplies
+    /// `base`" contract every other CAS write here follows.
+    /// `destination_touched`+`destination`/`notes_touched`+`notes` mirror
+    /// [`TaskHostCore::patch_project`]'s touched-flag shape: `wasm_bindgen`
+    /// has no `Option<Option<T>>` argument shape, so each nullable field
+    /// arrives as a touched flag plus a value.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn patch_route(
+        &mut self,
+        seed: &str,
+        current: &Route,
+        destination_touched: bool,
+        destination: Option<String>,
+        notes_touched: bool,
+        notes: Option<String>,
+        now_ms: i64,
+    ) -> PatchRouteResponse {
+        let destination = destination_touched.then_some(destination);
+        let notes = notes_touched.then_some(notes);
+        match self.core.patch_route(seed, current, destination, notes, now_ms).await {
+            Ok(()) => PatchRouteResponse { kind: "ok", error: None },
+            Err(error) => PatchRouteResponse {
+                kind: "failed",
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Every open Fog segment on one project, per [`Core::open_fog_for`]
+    /// (#628) — the dossier reading column's read.
+    pub fn open_fog(&self, project_id: &str) -> FogListResponse {
+        FogListResponse {
+            kind: "ok",
+            fog: self.core.open_fog_for(project_id),
+        }
+    }
+
+    /// Creates a Fog segment, per [`Core::create_fog`] (#628). The question
+    /// is trimmed and an empty one is refused **before `Core` is
+    /// reached** — the authority answers 400 on `question.is_empty()`
+    /// (`server/authority/src/handlers/fog.rs`), same discipline
+    /// [`TaskHostCore::create_project_link`] follows for `url`.
+    pub async fn create_fog(
+        &mut self,
+        seed: &str,
+        project_id: &str,
+        question: &str,
+        position: i64,
+        now_ms: i64,
+    ) -> CreateFogResponse {
+        let question = question.trim();
+        if question.is_empty() {
+            return CreateFogResponse {
+                kind: "failed",
+                id: None,
+                error: Some("question must be non-empty".to_string()),
+            };
+        }
+        match self.core.create_fog(seed, project_id, question, position, now_ms).await {
+            Ok(id) => CreateFogResponse { kind: "ok", id: Some(id), error: None },
+            Err(error) => CreateFogResponse {
+                kind: "failed",
+                id: None,
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Patches a Fog segment, per [`Core::patch_fog`] (#628) — rewording
+    /// its question, repositioning it, or resolving/reopening it, all
+    /// through this one entry point. `current` is the caller's own
+    /// last-known copy of the row (from [`TaskHostCore::open_fog`]), the
+    /// same "caller supplies `base`" contract every other CAS write here
+    /// follows. `question`/`position`/`resolved_at_touched`+`resolved_at`
+    /// mirror [`TaskHostCore::patch_project_link`]'s touched-flag shape:
+    /// `wasm_bindgen` has no `Option<Option<T>>` argument shape, so the
+    /// nullable field arrives as a touched flag plus a value.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn patch_fog(
+        &mut self,
+        seed: &str,
+        current: &Fog,
+        question: Option<String>,
+        position: Option<i64>,
+        resolved_at_touched: bool,
+        resolved_at: Option<i64>,
+        now_ms: i64,
+    ) -> PatchFogResponse {
+        if let Some(question) = &question {
+            if question.trim().is_empty() {
+                return PatchFogResponse {
+                    kind: "failed",
+                    error: Some("question must be non-empty".to_string()),
+                };
+            }
+        }
+        let resolved_at = resolved_at_touched.then_some(resolved_at);
+        match self.core.patch_fog(seed, current, question, position, resolved_at, now_ms).await {
+            Ok(()) => PatchFogResponse { kind: "ok", error: None },
+            Err(error) => PatchFogResponse {
+                kind: "failed",
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Every live Action on a project, per [`Core::actions_for`] (#629) —
+    /// the dossier's ordered action list. An Action is an ordinary item, so
+    /// this carries the same pending-flag-stamped shape every other item
+    /// list here does ([`TaskHostCore::with_pending`]), unlike
+    /// [`TaskHostCore::project_links`]/[`TaskHostCore::open_fog`], whose
+    /// rows carry no such flag.
+    pub fn project_actions(&self, project_id: &str) -> ItemListResponse {
+        ItemListResponse {
+            kind: "ok",
+            items: self
+                .core
+                .actions_for(project_id)
+                .into_iter()
+                .map(|item| self.with_pending(item))
+                .collect(),
+        }
+    }
+
+    /// Moves one Action's `project_pos`, per [`Core::patch_action_position`]
+    /// (#629) — the dossier's reorder control. `current` is the caller's
+    /// own last-known copy of the row (from
+    /// [`TaskHostCore::project_actions`]), the same "caller supplies
+    /// `base`" contract every other CAS write here follows. A 409 here is
+    /// an ordinary outcome (ADR-0030 decision 1: `project_pos` is
+    /// shared-owned with `/to-actions`), handled by the same
+    /// rebase-and-retry machinery and dead-letter journal every other CAS
+    /// write here uses.
+    pub async fn patch_action_position(
+        &mut self,
+        seed: &str,
+        current: &Item,
+        position: i64,
+        now_ms: i64,
+    ) -> PatchActionPositionResponse {
+        match self.core.patch_action_position(seed, current, position, now_ms).await {
+            Ok(()) => PatchActionPositionResponse { kind: "ok", error: None },
+            Err(error) => PatchActionPositionResponse {
+                kind: "failed",
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Creates a Step on an item's checklist, per [`Core::create_step`]
+    /// (#629). The body is trimmed and an empty one is refused **before
+    /// `Core` is reached** — the authority answers 400 on
+    /// `body.is_empty()` (`server/authority/src/handlers/steps.rs`), same
+    /// discipline [`TaskHostCore::create_fog`] follows for `question`.
+    pub async fn create_step(
+        &mut self,
+        seed: &str,
+        item_id: &str,
+        body: &str,
+        position: i64,
+        now_ms: i64,
+    ) -> CreateStepResponse {
+        let body = body.trim();
+        if body.is_empty() {
+            return CreateStepResponse {
+                kind: "failed",
+                id: None,
+                error: Some("body must be non-empty".to_string()),
+            };
+        }
+        match self.core.create_step(seed, item_id, body, position, now_ms).await {
+            Ok(id) => CreateStepResponse { kind: "ok", id: Some(id), error: None },
+            Err(error) => CreateStepResponse {
+                kind: "failed",
+                id: None,
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Patches a Step, per [`Core::patch_step`] (#629) — ticking, rewording,
+    /// repositioning, or flagging/clearing its deletion (ADR-0020), all
+    /// through this one entry point. `current` is the caller's own
+    /// last-known copy of the row (from [`TaskHostCore::steps`]), the same
+    /// "caller supplies `base`" contract every other CAS write here
+    /// follows. `deleted_at_touched` distinguishes "leave this field
+    /// alone" (`false`) from "set it, possibly to `null`" (`true`, with
+    /// the paired value carrying the new value or `None`) — the same
+    /// double-`Option` [`hummingbird_domain::StepPatch::deleted_at`]
+    /// itself carries, flattened for the wasm boundary exactly like
+    /// [`TaskHostCore::patch_fog`]'s `resolved_at_touched`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn patch_step(
+        &mut self,
+        seed: &str,
+        current: &Step,
+        body: Option<String>,
+        done: Option<bool>,
+        position: Option<i64>,
+        deleted_at_touched: bool,
+        deleted_at: Option<i64>,
+        now_ms: i64,
+    ) -> PatchStepResponse {
+        if let Some(body) = &body {
+            if body.trim().is_empty() {
+                return PatchStepResponse {
+                    kind: "failed",
+                    error: Some("body must be non-empty".to_string()),
+                };
+            }
+        }
+        let deleted_at = deleted_at_touched.then_some(deleted_at);
+        match self.core.patch_step(seed, current, body, done, position, deleted_at, now_ms).await {
+            Ok(()) => PatchStepResponse { kind: "ok", error: None },
+            Err(error) => PatchStepResponse {
                 kind: "failed",
                 error: Some(error.to_string()),
             },
@@ -4377,6 +4707,224 @@ mod project_link_tests {
         let response = host
             .patch_project_link("seed-2", &link, None, false, None, None, true, None, 3_000)
             .await;
+        assert_eq!(response.kind, "ok");
+
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 2 });
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::*;
+
+    /// #627: an unread project's Route answers `None`, not a standing "no
+    /// Route" claim — [`Core::route`]'s own doc.
+    #[tokio::test]
+    async fn an_unread_route_answers_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-route-unread");
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        assert_eq!(host.route("p-1"), RouteResponse { kind: "ok", route: None });
+    }
+
+    fn fixture_route() -> hummingbird_domain::Route {
+        hummingbird_domain::Route {
+            project_id: "p-1".to_string(),
+            destination: None,
+            notes: None,
+            updated_at: 1,
+            version: 3,
+        }
+    }
+
+    /// #627: the dossier's destination/notes edit enqueues one CAS patch.
+    #[tokio::test]
+    async fn patching_a_routes_destination_and_notes_enqueues_one_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-route");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let route = fixture_route();
+
+        let response = host
+            .patch_route(
+                "seed-1",
+                &route,
+                true,
+                Some("Ship the deck".to_string()),
+                true,
+                Some("Ask the neighbour".to_string()),
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+    }
+
+    /// The clearing half: touched-but-`None` sends an explicit clear, same
+    /// discipline `patching_clears_repo_and_context_without_validation_tripping`
+    /// follows for the properties card.
+    #[tokio::test]
+    async fn patching_clears_destination_and_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-route-clear");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let route = fixture_route();
+
+        let response = host.patch_route("seed-1", &route, true, None, true, None, 2_000).await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+    }
+
+    /// Only `destination` is touched when `notes_touched` is `false` — the
+    /// wasm-seam half of the "leave this field alone" contract
+    /// [`Core::patch_route`] itself carries.
+    #[tokio::test]
+    async fn leaving_notes_untouched_mints_no_extra_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-route-partial");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let route = fixture_route();
+
+        let response = host
+            .patch_route("seed-1", &route, true, Some("Ship the deck".to_string()), false, None, 2_000)
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+    }
+}
+
+#[cfg(test)]
+mod fog_tests {
+    use super::*;
+
+    /// #628: an unread project's fog answers empty, not "busy" — same
+    /// contract [`TaskHostCore::project_links`] carries.
+    #[tokio::test]
+    async fn an_unread_projects_fog_answers_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-fog-unread");
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        assert_eq!(host.open_fog("p-1"), FogListResponse { kind: "ok", fog: Vec::new() });
+    }
+
+    /// #628: the authority 400s on an empty question, so this seam refuses
+    /// one — blank and whitespace-only alike — before `Core::create_fog` is
+    /// reached, and mints no queue entry. Same discipline
+    /// `creating_a_link_rejects_an_empty_url_before_reaching_core` carries
+    /// for a link's url.
+    #[tokio::test]
+    async fn creating_fog_rejects_an_empty_question_before_reaching_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-create-fog-empty");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        for question in ["", "   ", "\t\n"] {
+            let response = host.create_fog("seed-1", "p-1", question, 0, 1_000).await;
+            assert_eq!(response.kind, "failed", "{question:?} is refused");
+            assert!(response.id.is_none());
+            assert_eq!(
+                host.queue_depth(),
+                QueueDepthResponse { kind: "ok", depth: 0 },
+                "{question:?} minted no queue entry"
+            );
+        }
+    }
+
+    /// A good question enqueues exactly one create, and the segment is
+    /// still absent from the read, since there is no optimistic overlay —
+    /// same "ok means enqueued, not saved" contract
+    /// `creating_a_link_enqueues_it_and_overlays_nothing` carries.
+    #[tokio::test]
+    async fn creating_fog_enqueues_it_and_overlays_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-create-fog-ok");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        let response = host
+            .create_fog("seed-1", "p-1", "  What permit does this need?  ", 0, 1_000)
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert!(response.id.is_some());
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+        assert_eq!(
+            host.open_fog("p-1"),
+            FogListResponse { kind: "ok", fog: Vec::new() },
+            "no overlay: the segment appears only once a cycle pulls it back"
+        );
+    }
+
+    fn fixture_fog() -> hummingbird_domain::Fog {
+        hummingbird_domain::Fog {
+            id: "f-1".to_string(),
+            project_id: "p-1".to_string(),
+            question: "What permit does this need?".to_string(),
+            position: 0,
+            resolved_at: None,
+            version: 3,
+        }
+    }
+
+    /// Rewording and repositioning enqueue one CAS patch.
+    #[tokio::test]
+    async fn patching_fogs_question_and_position_enqueues_one_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-fog");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let fog = fixture_fog();
+
+        let response = host
+            .patch_fog(
+                "seed-1",
+                &fog,
+                Some("What permit does this actually need?".to_string()),
+                Some(1),
+                false,
+                None,
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+    }
+
+    /// `question` is checked for emptiness before `Core::patch_fog` is
+    /// reached — same discipline `patching_a_link_to_a_blank_url_never_
+    /// reaches_core` follows for a link's url.
+    #[tokio::test]
+    async fn patching_fog_to_a_blank_question_never_reaches_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-fog-bad-question");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let fog = fixture_fog();
+
+        let response = host.patch_fog("seed-1", &fog, Some("   ".to_string()), None, false, None, 2_000).await;
+
+        assert_eq!(response.kind, "failed");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 0 });
+    }
+
+    /// The resolve gesture: `resolvedAtTouched` true with a value stamps
+    /// it, and an explicit clear (touched, `None`) reopens it — same
+    /// touched-flag contract `removing_and_un_removing_a_link_each_
+    /// enqueue_one_patch` carries for a link's removal.
+    #[tokio::test]
+    async fn resolving_and_reopening_fog_each_enqueue_one_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-fog-resolve");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let fog = fixture_fog();
+
+        let response = host.patch_fog("seed-1", &fog, None, None, true, Some(9_000), 2_000).await;
+        assert_eq!(response.kind, "ok");
+
+        let response = host.patch_fog("seed-2", &fog, None, None, true, None, 3_000).await;
         assert_eq!(response.kind, "ok");
 
         assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 2 });

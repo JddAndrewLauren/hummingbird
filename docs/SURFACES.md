@@ -62,7 +62,7 @@ already photographs.
 
 ### Matrix
 
-Four widths × two themes × nineteen screen states, per run.
+Four widths × two themes × twenty-three screen states, per run.
 
 | Project | Width | What it proves |
 | --- | --- | --- |
@@ -318,8 +318,13 @@ alerts ARE photographed** (both of them — the board fixture seeds a failed
 triage and a failed act, and `surfaces.spec.ts` asserts the count rather than
 the first match, which is what caught the second line arriving) — the twelfth
 state, `now-columns-*`, and the reason the count above moved (it has since
-moved again twice: to sixteen for #481's four Recall states below, and to
-eighteen for #637's `rules-list-*` and #624's `projects-dossier-*`). Not by
+moved several times more: to sixteen for #481's four Recall states below, to
+eighteen for #637's `rules-list-*` and #624's `projects-dossier-*`, and to
+twenty-three for the projects-dossier batch's own three added states
+(`-action-expanded-*`, `-action-no-steps-*` and `-no-actions-*`, #629) plus
+its fourth (`-archive-confirm-*`, #630) — the whole batch went unreviewed by
+anyone reading this file, since `docs/` itself was untouched by any of its
+slices. Not by
 widening the kit world to mount `RealFrontier`, which the rejection below
 still refuses: by a **second demo world**, the
 board, which seeds a real `TaskState` (`src/fixtures/demo-task-state.ts`) and
