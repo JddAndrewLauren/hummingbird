@@ -6,6 +6,13 @@
 //! [`is_valid_github_repo`] — the handler half of "validate at the handler
 //! **and** the wasm seam" the brief asks for; `default_context` carries no
 //! validation of its own, same as `items.context`'s free vocabulary.
+//!
+//! `archived_at` (#630, ADR-0030 decision 5) drives the timestamp-matched
+//! archive cascade onto the project's live items —
+//! [`super::items::cascade_archive_for_project`]'s own doc has the
+//! mechanism. `patch` folds every item's version bump into the same
+//! running `meta` counter as the project's own write, so one HTTP write is
+//! still one delta the client's next pull sees as a whole.
 
 use hummingbird_domain::{is_url_safe_id, is_valid_github_repo, CreateProject, Project, ProjectPatch};
 
@@ -127,22 +134,38 @@ pub fn patch(
             sets.set("default_context", SqlValue::from_opt_text(default_context.as_deref()));
         }
     }
+    // The archive cascade (ADR-0030 decision 5) keys off this transition,
+    // not just whether the field is in `sets` — `archive_transition` is
+    // `Some((old, new))` only when `archived_at` actually changes value.
+    let mut archive_transition: Option<(Option<i64>, Option<i64>)> = None;
     if let Some(archived_at) = patch.archived_at {
         if archived_at != current.archived_at {
             sets.set("archived_at", SqlValue::from_opt_i64(archived_at));
+            archive_transition = Some((current.archived_at, archived_at));
         }
     }
     if sets.is_empty() {
         return Ok(json(200, &current));
     }
 
-    let version = read_meta_version(sql)? + 1;
+    let mut version = read_meta_version(sql)? + 1;
     sets.set("updated_at", SqlValue::Integer(now_ms));
     sets.set("version", SqlValue::Integer(version));
     let update = sets.update_sql("projects", "id = ?");
     let mut params = sets.into_params();
     params.push(SqlValue::Text(id.to_string()));
     sql.exec(&update, &params)?;
+
+    // Cascade onto the project's live items (ADR-0030 decision 5) before
+    // the meta version is written back, so every item's bump — one per
+    // touched row — is folded into the same running counter as the
+    // project's own write. Steps are never touched: they cascade
+    // implicitly through their item ([`super::items::cascade_archive_for_project`]'s
+    // own doc).
+    if let Some((old, new)) = archive_transition {
+        version = super::items::cascade_archive_for_project(sql, id, old, new, now_ms, version)?;
+    }
+
     write_meta_version(sql, version)?;
 
     let row = select_project(sql, id)?.ok_or_else(|| SqlError {

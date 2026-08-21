@@ -1226,16 +1226,15 @@ where
     /// follows — this method itself trusts its caller, exactly as
     /// [`Core::patch_rule`] trusts `tier`/`event_kind` to already be parsed.
     ///
-    /// **`archived_at` here is the project row alone.** ADR-0030 decision 5
-    /// makes archiving a timestamp-matched cascade onto the project's live
-    /// items, and none of that exists yet — the authority's PATCH handler
-    /// writes `projects.archived_at` and stops (#630 owns the cascade and
-    /// the warning that names it). So a caller passing it today archives a
-    /// project and leaves its items live. No client surface does: the
-    /// dossier's archive region is still a placeholder. The parameter is
-    /// carried rather than withheld because the field is part of
-    /// [`ProjectPatch`]'s existing contract and the route already accepts
-    /// it; what is missing is the cascade, not this seam.
+    /// **`archived_at` here is the project row alone — the cascade is the
+    /// authority's job, not this seam's.** ADR-0030 decision 5's
+    /// timestamp-matched cascade onto the project's live items runs
+    /// server-side, inside the same `PATCH /api/projects/:id` this method
+    /// enqueues (`server/authority/src/handlers/projects.rs`'s own doc has
+    /// the mechanism, #630). This method's contract is unchanged by that:
+    /// it enqueues the project's own field change and nothing else, exactly
+    /// as before — the cascade is a consequence of the write reaching the
+    /// authority, not a second write this method issues.
     #[allow(clippy::too_many_arguments)]
     pub async fn patch_project(
         &mut self,

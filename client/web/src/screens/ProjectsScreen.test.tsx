@@ -312,6 +312,111 @@ describe("ProjectsScreen", () => {
     expect((screen.getByLabelText("Default context") as HTMLInputElement).value).toBe("@errands");
   });
 
+  // #630: the archive card — the dossier's last placeholder.
+  describe("the archive card", () => {
+    it("names the live item count before the human commits to archiving", () => {
+      const project = projectDTO({ id: "p-1", name: "House repairs" });
+      const task = taskState({
+        projects: [project],
+        ledger: [
+          ledgerRowDTO({ id: "i-1", projectId: "p-1" }),
+          ledgerRowDTO({ id: "i-2", projectId: "p-1" }),
+          ledgerRowDTO({ id: "i-3", projectId: "p-2" }),
+        ],
+      });
+      renderProjectsScreen({ task });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+
+      expect(screen.getByText("Archiving takes 2 live items down with it.")).toBeTruthy();
+    });
+
+    it("names a project with no live items honestly, rather than claiming a live count", () => {
+      const project = projectDTO({ id: "p-1", name: "House repairs" });
+      const task = taskState({ projects: [project], ledger: [] });
+      renderProjectsScreen({ task });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+
+      expect(
+        screen.getByText("This project has no live items — archiving takes down the project alone."),
+      ).toBeTruthy();
+    });
+
+    it("archives only on confirm, and cancel dismisses with no write", () => {
+      const onPatchProject = vi.fn();
+      const project = projectDTO({ id: "p-1", name: "House repairs" });
+      const task = taskState({ projects: [project], ledger: [] });
+      renderProjectsScreen({ task, onPatchProject });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+      expect(onPatchProject).not.toHaveBeenCalled();
+      expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+      fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+
+      expect(onPatchProject).toHaveBeenCalledWith(project, { archivedAt: expect.any(Number) });
+    });
+
+    it("offers Unarchive on an archived project, with no confirm step", () => {
+      const onPatchProject = vi.fn();
+      const project = projectDTO({ id: "p-1", name: "House repairs", archivedAt: 9_000 });
+      const task = taskState({ projects: [], archivedProjects: [project], ledger: [] });
+      renderProjectsScreen({ task, onPatchProject });
+      fireEvent.click(screen.getByRole("switch", { name: "Show archived" }));
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      expect(screen.queryByRole("button", { name: "Archive project" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Unarchive" }));
+
+      expect(onPatchProject).toHaveBeenCalledWith(project, { archivedAt: null });
+    });
+
+    it("clears the pending flag and shows the failure on a dropped write, not a silent stall", () => {
+      const project = projectDTO({ id: "p-1", name: "House repairs" });
+      const task = taskState({ projects: [project], ledger: [] });
+      const { rerenderWith } = renderProjectsScreen({ task });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+      fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+
+      rerenderWith({
+        task: {
+          ...task,
+          lastProjectWrite: { seed: "s-1", projectId: "p-1", kind: "failed", error: "no can do" },
+        },
+      });
+
+      // `lastProjectWrite` is one broadcast slot shared by every card that
+      // writes a project field (`PropertiesCard`'s own doc) — both it and
+      // this card read the same failed write, so `getAllByText` rather than
+      // `getByText`, same as the properties card's own failure test does
+      // not need to because only one card existed when it was written.
+      expect(screen.getAllByText("no can do").length).toBeGreaterThan(0);
+      expect(screen.getByRole("button", { name: "Archive project" }).hasAttribute("disabled")).toBe(false);
+    });
+
+    it("does not paint another project's failed write into this dossier", () => {
+      const project = projectDTO({ id: "p-1", name: "House repairs" });
+      const task = taskState({
+        projects: [project, projectDTO({ id: "p-2", name: "Garden" })],
+        ledger: [],
+        lastProjectWrite: { seed: "s-1", projectId: "p-2", kind: "failed", error: "no can do" },
+      });
+      renderProjectsScreen({ task });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      expect(screen.queryByText("no can do")).toBeNull();
+    });
+  });
+
   // #626: the links card.
   describe("the links card", () => {
     function openDossier(

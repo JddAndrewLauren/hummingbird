@@ -121,6 +121,28 @@ export function writeFailureMessage(lastProjectWrite: TaskProjectResult | null):
   return lastProjectWrite.error ?? "That project write did not go through.";
 }
 
+/** How many of a project's items are currently live (#630, ADR-0030
+ * decision 5) — the number the archive dialog names before the human
+ * commits. `null` while the Ledger has not answered, same "cannot claim a
+ * count early" doctrine [`countsMeta`]'s own doc states; the dialog must
+ * render that as prose, not `0`.
+ *
+ * Deliberately **not** `ProjectCounts.live`: that tally excludes `done`
+ * rows but keeps archived ones (its own doc says so — "archived rows
+ * included"), because it counts *actions the project has ever had*. The
+ * archive cascade's scope is different: every item this project still
+ * holds with no `archivedAt` of its own, `done` included, since a done-but-
+ * live item still archives with the rest
+ * (`server/authority/src/handlers/items.rs`'s `cascade_archive_for_project`
+ * is the source of truth this mirrors — `project_id = ? AND archived_at IS
+ * NULL`, no stage filter). */
+export function liveItemCount(ledger: LedgerRowDTO[] | null, projectId: string): number | null {
+  if (ledger === null) {
+    return null;
+  }
+  return ledger.filter((row) => row.projectId === projectId && row.archivedAt === null).length;
+}
+
 /** The derived display link for a project's `githubRepo` (#625, ADR-0030
  * decision 2) — computed here, never stored: `github_repo` holds only the
  * `owner/repo` slug, so there is one spelling to compare and no half-typed

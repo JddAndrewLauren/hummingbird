@@ -40,12 +40,15 @@ import {
 
 export interface ProjectsWiring {
   createProject: (name: string) => void;
-  /** #625's properties-card write: `patch` carries only the fields the card
-   * actually changed, `undefined` for the rest — [`patchProject`]'s own
-   * "leave this alone" contract, unchanged across this hook. */
+  /** #625's properties-card write, widened by #630's archive/unarchive
+   * gesture: `patch` carries only the fields the caller actually changed,
+   * `undefined` for the rest — [`patchProject`]'s own "leave this alone"
+   * contract, unchanged across this hook. `archivedAt` triggers ADR-0030
+   * decision 5's cascade server-side; this hook enqueues the project's own
+   * field change only, same as every other field here. */
   patchProject: (
     current: ProjectDTO,
-    patch: { githubRepo?: string | null; defaultContext?: string | null },
+    patch: { githubRepo?: string | null; defaultContext?: string | null; archivedAt?: number | null },
   ) => void;
   /** #626's per-project link read. Unlike `createProject`/`patchProject`
    * above, this is a read door, not a write — but it stays here rather than

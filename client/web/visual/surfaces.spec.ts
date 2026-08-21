@@ -519,7 +519,9 @@ for (const theme of THEMES) {
       // questions onto the same project. Since #629, so does the action
       // list — two actions, route order, one carrying steps and one
       // carrying none, so both an expanded action's populated checklist
-      // and its empty-checklist sibling ship photographed.
+      // and its empty-checklist sibling ship photographed. Since #630, the
+      // aside's last placeholder is real too — the archive card's confirm
+      // step, opened below and photographed on its own.
       await openApp(page, theme, "board");
       await show(page, "Projects", testInfo.project.name);
       await page.getByRole("heading", { level: 3, name: "House repairs" }).click();
@@ -567,6 +569,18 @@ for (const theme of THEMES) {
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
         path: `visual/.captures/projects-dossier-action-no-steps-${testInfo.project.name}-${theme}.png`,
+        fullPage: false,
+      });
+
+      // #630: the archive card's confirm dialog — the last placeholder this
+      // aside carried. "House repairs" holds live items in the fixture's own
+      // Ledger seed, so the count named here is non-zero, not the honest-
+      // but-untested "no live items" branch.
+      await page.getByRole("button", { name: "Archive project" }).click();
+      await expect(page.getByText(/Archiving takes \d+ live items? down with it\./)).toBeVisible();
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({
+        path: `visual/.captures/projects-dossier-archive-confirm-${testInfo.project.name}-${theme}.png`,
         fullPage: false,
       });
     });
