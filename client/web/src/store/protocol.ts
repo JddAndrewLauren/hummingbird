@@ -550,6 +550,20 @@ export interface ProjectDTO {
   version: number;
 }
 
+/** One `project_links` row (#626, ADR-0030 decision 4), as the web host's
+ * JSON/DTO shape — a 1:1 field mirror of `hummingbird_domain::ProjectLink`,
+ * camelCased. The dossier aside's read: an ordered URL on a project,
+ * removed by flagging (`removedAt`), never deleted. */
+export interface ProjectLinkDTO {
+  id: string;
+  projectId: string;
+  url: string;
+  label: string | null;
+  position: number;
+  removedAt: number | null;
+  version: number;
+}
+
 /** One drained `CoreEvent` (`client/core/src/lib.rs`), as the web host's
  * JSON shape. `"credential_needed"` is the only kind `Core` produces today. */
 export interface TaskEventDTO {
@@ -859,6 +873,43 @@ export type TaskWorkerRequest =
       archivedAt: number | null;
       nowMs: number;
     }
+  /** #626's per-project link read — the dossier aside's `stepsByItem`-style
+   * "only what a view actually asked about" fetch. */
+  | { type: "getProjectLinks"; projectId: string }
+  /** #626's link create: one `POST /api/project_links`, enqueued durably
+   * like every other mutation (ADR-0030 decision 4). `url` is trimmed and
+   * an empty one refused in `client/ffi-web/src/task_host.rs`'s
+   * `create_project_link` before it can reach `Core` — the authority 400s
+   * on an empty url. Same caller-mints-`seed` contract as `createProject`:
+   * this seed's hash becomes the link's id. */
+  | {
+      type: "createProjectLink";
+      seed: string;
+      projectId: string;
+      url: string;
+      label: string | null;
+      position: number;
+      nowMs: number;
+    }
+  /** #626's link patch — editing, reordering and removing a link all share
+   * this one message. `current` is the caller's own last-known copy of the
+   * row (from the `projectLinks` push) — the CAS `base` a 409 is diffed
+   * against. `labelTouched`/`removedAtTouched` each distinguish "leave this
+   * field alone" from "set it, possibly to `null`" — the same
+   * double-`Option` `ProjectLinkPatch` itself carries, flattened for the
+   * wire exactly like `patchProject`'s `githubRepoTouched`. */
+  | {
+      type: "patchProjectLink";
+      seed: string;
+      current: ProjectLinkDTO;
+      url: string | null;
+      labelTouched: boolean;
+      label: string | null;
+      position: number | null;
+      removedAtTouched: boolean;
+      removedAt: number | null;
+      nowMs: number;
+    }
   | { type: "isPending"; itemId: string }
   | {
       type: "runSync";
@@ -1093,6 +1144,30 @@ export type TaskWorkerResponse =
    * both a `githubRepo` this seam refused and a durability failure. */
   | {
       type: "patchProjectResult";
+      seed: string;
+      projectId: string;
+      kind: "ok" | "failed" | "busy";
+      error: string | null;
+    }
+  /** Answers `getProjectLinks` (#626) — the `stepsByItem`-style per-project
+   * read, keyed by the requested `projectId`. */
+  | { type: "projectLinks"; projectId: string; links: ProjectLinkDTO[] }
+  /** #626's link create result, matched back by `seed`. Same
+   * broadcast-not-reply, enqueued-not-saved contract as
+   * `createProjectResult`. */
+  | {
+      type: "createProjectLinkResult";
+      seed: string;
+      projectId: string;
+      kind: "ok" | "failed" | "busy";
+      id: string | null;
+      error: string | null;
+    }
+  /** #626's link patch result (editing, reordering, removing), matched back
+   * by `seed`. Same handled-not-swallowed 409 contract as
+   * `patchProjectResult`. */
+  | {
+      type: "patchProjectLinkResult";
       seed: string;
       projectId: string;
       kind: "ok" | "failed" | "busy";

@@ -64,8 +64,8 @@ pub mod task;
 use bindings::{Binding, BindingKey, BindingValue};
 use hummingbird_domain::{
     resulting_stage, Alert, AlertPatch, Condition, CreateGrill, CreateItem, CreateProject,
-    CreateRule, Energy, GrillVerdict, Item, Project, ProjectPatch, Rule, RulePatch, Setting,
-    Size, Stage, Step, Tier,
+    CreateProjectLink, CreateRule, Energy, GrillVerdict, Item, Project, ProjectLink,
+    ProjectLinkPatch, ProjectPatch, Rule, RulePatch, Setting, Size, Stage, Step, Tier,
 };
 
 use serde::{Deserialize, Serialize};
@@ -1260,6 +1260,101 @@ where
                 method: HttpMethod::Patch,
                 base,
                 base_updated_at: current.updated_at,
+                patch_fields,
+                rebase_fields: None,
+            },
+        };
+        self.cycle.enqueue(entry, now_ms).await?;
+        Ok(())
+    }
+
+    /// Every live Link on one project, position order — the dossier
+    /// aside's read (#626, ADR-0030 decision 4).
+    pub fn links_for(&self, project_id: &str) -> Vec<ProjectLink> {
+        let mut links: Vec<ProjectLink> =
+            self.cycle.mirror().links_for_project(project_id).cloned().collect();
+        links.sort_by_key(|link| link.position);
+        links
+    }
+
+    /// Creates a project Link (#626, ADR-0030 decision 4): enqueues a
+    /// `POST /api/project_links` create, durably, exactly
+    /// [`Core::create_project`]'s own shape. `seed` mints the deterministic
+    /// id. Returns the minted id.
+    ///
+    /// No optimistic overlay, same reasoning as [`Core::create_project`]'s
+    /// own doc: the new link becomes visible once the next completed cycle
+    /// pulls it back.
+    pub async fn create_project_link(
+        &mut self,
+        seed: &str,
+        project_id: &str,
+        url: impl Into<String>,
+        label: Option<String>,
+        position: i64,
+        now_ms: i64,
+    ) -> Result<String, SnapshotError<QS::Error>> {
+        let id = sync::write::deterministic_id(seed);
+        let create = CreateProjectLink {
+            id: id.clone(),
+            project_id: project_id.to_string(),
+            url: url.into(),
+            label,
+            position,
+        };
+        let body = serde_json::to_value(&create).expect("CreateProjectLink always serializes");
+        let entry = QueueEntry {
+            id: id.clone(),
+            intent: MutationIntent::Create { path: sync::write::paths::project_links(), body },
+        };
+        self.cycle.enqueue(entry, now_ms).await?;
+        Ok(id)
+    }
+
+    /// Patches a project Link (#626) — editing its url/label, reordering
+    /// it, or flagging/clearing its removal, all through this one entry
+    /// point. Same contract as [`Core::patch_project`]: every `Some` field
+    /// is touched, absolute-set; `None` means "leave this field alone."
+    /// `url`/`position` are single-`Option` (`NOT NULL`, cannot be
+    /// cleared); `label`/`removed_at` are double-`Option` —
+    /// [`ProjectLinkPatch`]'s own contract, unchanged across this seam.
+    pub async fn patch_project_link(
+        &mut self,
+        seed: &str,
+        current: &ProjectLink,
+        url: Option<String>,
+        label: Option<Option<String>>,
+        position: Option<i64>,
+        removed_at: Option<Option<i64>>,
+        now_ms: i64,
+    ) -> Result<(), SnapshotError<QS::Error>> {
+        let base = serde_json::to_value(current).expect("ProjectLink always serializes");
+        let patch = ProjectLinkPatch {
+            expected_version: current.version,
+            url,
+            label,
+            position,
+            removed_at,
+        };
+
+        let mut patch_fields =
+            serde_json::to_value(&patch).expect("ProjectLinkPatch always serializes");
+        if let serde_json::Value::Object(map) = &mut patch_fields {
+            map.remove("expected_version");
+        }
+
+        let entry = QueueEntry {
+            id: sync::write::deterministic_id(seed),
+            intent: MutationIntent::Patch {
+                path: sync::write::paths::project_link(&current.id),
+                method: HttpMethod::Patch,
+                base,
+                // `ProjectLink` carries no `updated_at` column — unlike
+                // `Project`, this table has no separate touch timestamp, so
+                // the rebase compares against the row's own last-seen
+                // `version` alone, same as `Fog`'s own patch (which has no
+                // `updated_at` either).
+                base_updated_at: 0,
                 patch_fields,
                 rebase_fields: None,
             },

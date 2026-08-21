@@ -22,8 +22,8 @@ use hummingbird_core::{
 };
 use hummingbird_domain::{
     core_field_type, is_valid_deadline, is_valid_github_repo, Alert, Condition, Energy,
-    EventKindEntry, FieldType, Item, Project, Rule, Size, Stage, Step, Tier, CORE_FIELDS,
-    EVENT_KINDS, GrillVerdict,
+    EventKindEntry, FieldType, Item, Project, ProjectLink, Rule, Size, Stage, Step, Tier,
+    CORE_FIELDS, EVENT_KINDS, GrillVerdict,
 };
 
 // The real, target-specific store `Core::init` resolves to internally is a
@@ -392,6 +392,39 @@ pub struct CreateProjectResponse {
 /// ordinary CAS path.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PatchProjectResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
+/// The wrapper around [`TaskHostCore::projectLinks`]'s answer — the
+/// dossier aside's read (#626, ADR-0030 decision 4). Same `"busy"`
+/// contract as [`ItemListResponse`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ProjectLinkListResponse {
+    pub kind: &'static str,
+    pub links: Vec<ProjectLink>,
+}
+
+/// What [`TaskHostCore::create_project_link`] resolves to (#626). Same
+/// three-way split as [`CreateProjectResponse`]: `"ok"` carries the minted
+/// id, `"failed"` is either a url this seam refused outright or a
+/// durability failure enqueueing the create, and `"busy"` is the core
+/// answering nothing at all. An `"ok"` means *enqueued*, not *saved* —
+/// there is no optimistic overlay ([`Core::create_project_link`]), so the
+/// link appears in [`TaskHostCore::project_links`] only after a completed
+/// cycle pulls it back.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CreateProjectLinkResponse {
+    pub kind: &'static str,
+    pub id: Option<String>,
+    pub error: Option<String>,
+}
+
+/// What [`TaskHostCore::patch_project_link`] resolves to (#626) — editing,
+/// reordering and removing a link all share this one entry point. Same
+/// shape as [`PatchProjectResponse`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PatchProjectLinkResponse {
     pub kind: &'static str,
     pub error: Option<String>,
 }
@@ -1176,6 +1209,99 @@ impl TaskHostCore {
         {
             Ok(()) => PatchProjectResponse { kind: "ok", error: None },
             Err(error) => PatchProjectResponse {
+                kind: "failed",
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Every live Link on one project, per [`Core::links_for`] (#626) — the
+    /// dossier aside's read.
+    pub fn project_links(&self, project_id: &str) -> ProjectLinkListResponse {
+        ProjectLinkListResponse {
+            kind: "ok",
+            links: self.core.links_for(project_id),
+        }
+    }
+
+    /// Creates a project Link, per [`Core::create_project_link`] (#626).
+    /// The url is trimmed and an empty one is refused **before `Core` is
+    /// reached** — the authority answers 400 on `url.is_empty()`
+    /// (`server/authority/src/handlers/project_links.rs`), same discipline
+    /// [`TaskHostCore::create_project`] follows for `name`. `label`, when
+    /// present, is trimmed to `None` if it comes out empty.
+    pub async fn create_project_link(
+        &mut self,
+        seed: &str,
+        project_id: &str,
+        url: &str,
+        label: Option<String>,
+        position: i64,
+        now_ms: i64,
+    ) -> CreateProjectLinkResponse {
+        let url = url.trim();
+        if url.is_empty() {
+            return CreateProjectLinkResponse {
+                kind: "failed",
+                id: None,
+                error: Some("url must be non-empty".to_string()),
+            };
+        }
+        let label = label.map(|l| l.trim().to_string()).filter(|l| !l.is_empty());
+        match self
+            .core
+            .create_project_link(seed, project_id, url, label, position, now_ms)
+            .await
+        {
+            Ok(id) => CreateProjectLinkResponse { kind: "ok", id: Some(id), error: None },
+            Err(error) => CreateProjectLinkResponse {
+                kind: "failed",
+                id: None,
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Patches a project Link, per [`Core::patch_project_link`] (#626) —
+    /// editing its url/label, reordering it, or flagging/clearing its
+    /// removal, all through this one entry point. `current` is the
+    /// caller's own last-known copy of the row (from
+    /// [`TaskHostCore::project_links`]), the same "caller supplies `base`"
+    /// contract every other CAS write here follows.
+    /// `url`/`labelTouched`+`label`/`position`/`removedAtTouched`+
+    /// `removedAt` mirror [`TaskHostCore::patch_project`]'s touched-flag
+    /// shape: `wasm_bindgen` has no `Option<Option<T>>` argument shape, so
+    /// each nullable field arrives as a touched flag plus a value.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn patch_project_link(
+        &mut self,
+        seed: &str,
+        current: &ProjectLink,
+        url: Option<String>,
+        label_touched: bool,
+        label: Option<String>,
+        position: Option<i64>,
+        removed_at_touched: bool,
+        removed_at: Option<i64>,
+        now_ms: i64,
+    ) -> PatchProjectLinkResponse {
+        if let Some(url) = &url {
+            if url.trim().is_empty() {
+                return PatchProjectLinkResponse {
+                    kind: "failed",
+                    error: Some("url must be non-empty".to_string()),
+                };
+            }
+        }
+        let label = label_touched.then_some(label);
+        let removed_at = removed_at_touched.then_some(removed_at);
+        match self
+            .core
+            .patch_project_link(seed, current, url, label, position, removed_at, now_ms)
+            .await
+        {
+            Ok(()) => PatchProjectLinkResponse { kind: "ok", error: None },
+            Err(error) => PatchProjectLinkResponse {
                 kind: "failed",
                 error: Some(error.to_string()),
             },
@@ -4105,5 +4231,154 @@ mod project_tests {
 
         assert_eq!(response.kind, "ok");
         assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+    }
+}
+
+#[cfg(test)]
+mod project_link_tests {
+    use super::*;
+
+    /// #626: the authority 400s on an empty url, so this seam refuses one —
+    /// blank and whitespace-only alike — before `Core::create_project_link`
+    /// is reached, and mints no queue entry. Same discipline
+    /// `creating_a_project_rejects_an_empty_name_before_reaching_core`
+    /// carries for the project name.
+    #[tokio::test]
+    async fn creating_a_link_rejects_an_empty_url_before_reaching_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-create-link-empty");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        for url in ["", "   ", "\t\n"] {
+            let response = host
+                .create_project_link("seed-1", "p-1", url, None, 1, 1_000)
+                .await;
+            assert_eq!(response.kind, "failed", "{url:?} is refused");
+            assert!(response.id.is_none());
+            assert_eq!(
+                host.queue_depth(),
+                QueueDepthResponse { kind: "ok", depth: 0 },
+                "{url:?} minted no queue entry"
+            );
+        }
+    }
+
+    /// A good url enqueues exactly one create, and the link is still absent
+    /// from the read, since there is no optimistic overlay — same "ok means
+    /// enqueued, not saved" contract `creating_a_project_enqueues_it_and_
+    /// overlays_nothing` carries.
+    #[tokio::test]
+    async fn creating_a_link_enqueues_it_and_overlays_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-create-link-ok");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        let response = host
+            .create_project_link("seed-1", "p-1", "  https://example.com  ", Some("  Docs  ".to_string()), 1, 1_000)
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert!(response.id.is_some());
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+        assert_eq!(
+            host.project_links("p-1"),
+            ProjectLinkListResponse { kind: "ok", links: Vec::new() },
+            "no overlay: the link appears only once a cycle pulls it back"
+        );
+    }
+
+    /// A whitespace-only label trims to `None`, same as the url trims.
+    #[tokio::test]
+    async fn creating_a_link_trims_a_blank_label_to_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-create-link-blank-label");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        let response = host
+            .create_project_link("seed-1", "p-1", "https://example.com", Some("   ".to_string()), 1, 1_000)
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+    }
+
+    fn fixture_link() -> hummingbird_domain::ProjectLink {
+        hummingbird_domain::ProjectLink {
+            id: "l-1".to_string(),
+            project_id: "p-1".to_string(),
+            url: "https://example.com".to_string(),
+            label: Some("Example".to_string()),
+            position: 1,
+            removed_at: None,
+            version: 3,
+        }
+    }
+
+    /// Editing, reordering and removing all enqueue one CAS patch each.
+    #[tokio::test]
+    async fn patching_a_links_url_label_and_position_enqueues_one_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-link");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let link = fixture_link();
+
+        let response = host
+            .patch_project_link(
+                "seed-1",
+                &link,
+                Some("https://example.com/docs".to_string()),
+                true,
+                Some("Docs".to_string()),
+                Some(2),
+                false,
+                None,
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+    }
+
+    /// `url` is checked for emptiness before `Core::patch_project_link` is
+    /// reached — the wasm-seam half of "validate at the handler and the
+    /// wasm seam," same discipline `patching_a_malformed_github_repo_never_
+    /// reaches_core_patch_project` follows for `github_repo`.
+    #[tokio::test]
+    async fn patching_a_link_to_a_blank_url_never_reaches_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-link-bad-url");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let link = fixture_link();
+
+        let response = host
+            .patch_project_link("seed-1", &link, Some("   ".to_string()), false, None, None, false, None, 2_000)
+            .await;
+
+        assert_eq!(response.kind, "failed");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 0 });
+    }
+
+    /// The removal gesture: `removedAtTouched` true with a value flags it,
+    /// and an explicit clear (touched, `None`) un-removes it — same
+    /// touched-flag contract the properties card's clearing test proves.
+    #[tokio::test]
+    async fn removing_and_un_removing_a_link_each_enqueue_one_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-patch-link-remove");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let link = fixture_link();
+
+        let response = host
+            .patch_project_link("seed-1", &link, None, false, None, None, true, Some(9_000), 2_000)
+            .await;
+        assert_eq!(response.kind, "ok");
+
+        let response = host
+            .patch_project_link("seed-2", &link, None, false, None, None, true, None, 3_000)
+            .await;
+        assert_eq!(response.kind, "ok");
+
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 2 });
     }
 }

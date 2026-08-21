@@ -15,6 +15,7 @@ import type {
   PaneReadDTO,
   PollOutcomeName,
   ProjectDTO,
+  ProjectLinkDTO,
   RecallRowDTO,
   RuleDTO,
   StepDTO,
@@ -167,6 +168,17 @@ export interface TaskProjectResult {
   error: string | null;
 }
 
+/** The result of the most recent project Link create or patch request this
+ * view issued (#626, ADR-0030 decision 4). Same "one broadcast slot" shape
+ * as [`TaskProjectResult`] — `null` until the first one resolves, and
+ * shared across every open dossier, not scoped to one project's link. */
+export interface TaskProjectLinkResult {
+  seed: string;
+  projectId: string;
+  kind: "ok" | "failed" | "busy";
+  error: string | null;
+}
+
 /** Issue #105/S7's task read-model slice: the owned-schema counterpart to
  * [`CalendarState`], fed by `worker/task-worker.ts`'s broadcasts. */
 export interface TaskState {
@@ -202,6 +214,13 @@ export interface TaskState {
    * not-read-yet contract as `projects`, and never non-`null` while
    * `projects` is `null` — one answer sets both. */
   archivedProjects: ProjectDTO[] | null;
+  /** The dossier aside's links, keyed by project id (#626) — only ever
+   * grows entries a view actually asked about via `getProjectLinks`, the
+   * same `stepsByItem` shape. A missing entry means "not read yet". */
+  linksByProject: Record<string, ProjectLinkDTO[]>;
+  /** The result of the most recent link create/patch request this view
+   * issued (#626) — `null` until the first one resolves. */
+  lastProjectLinkWrite: TaskProjectLinkResult | null;
   /** The complete retained roster — every item the mirror has ever known,
    * archived rows included and labelled (`getLedger`). `null` until the
    * first `ledger` answer arrives, for `bindings`'s own reason: an empty
@@ -377,6 +396,8 @@ const initialTaskState: TaskState = {
   stepsByItem: {},
   projects: null,
   archivedProjects: null,
+  linksByProject: {},
+  lastProjectLinkWrite: null,
   ledger: null,
   search: null,
   done: null,
@@ -459,6 +480,11 @@ export function createCoreStore() {
     setTaskState({ stepsByItem: { ...state.task.stepsByItem, [itemId]: steps } });
   }
 
+  // Same idea for `linksByProject` (the dossier aside, #626).
+  function setTaskProjectLinks(projectId: string, links: ProjectLinkDTO[]): void {
+    setTaskState({ linksByProject: { ...state.task.linksByProject, [projectId]: links } });
+  }
+
   // And for `paneReads` (#245), keyed by source rather than item id.
   function setTaskPaneRead(source: string, read: PaneReadDTO): void {
     setTaskState({ paneReads: { ...state.task.paneReads, [source]: read } });
@@ -488,6 +514,7 @@ export function createCoreStore() {
     setTaskState,
     setTaskPending,
     setTaskSteps,
+    setTaskProjectLinks,
     setTaskPaneRead,
     setTaskGrillDraft,
     subscribe,

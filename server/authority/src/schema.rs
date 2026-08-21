@@ -2,7 +2,7 @@
 //! (`scheduled_date`, `settings`), plus the notification lane's three
 //! tables (ADR-0012, amended by ADR-0013) landed here in their own slice
 //! (#131), plus the Grill interview's `grills` table (ADR-0023, #353).
-//! Fifteen tables and eight indexes; `tokens` gained a `source` column in
+//! Sixteen tables and ten indexes; `tokens` gained a `source` column in
 //! #145.
 
 use hummingbird_domain::is_url_safe_id;
@@ -66,7 +66,13 @@ use crate::sql::{Sql, SqlError, SqlValue};
 /// same as `items.agent` (4→5) and unlike `alerts.subject_key` (which had a
 /// trailing `UNIQUE` to splice ahead of) — verified against a real migrated
 /// store's `sqlite_master`, not reasoned out.
-pub const SCHEMA_VERSION: i64 = 8;
+///
+/// 9 adds `project_links` (#626, ADR-0030 decision 4). Back to the 1→2 /
+/// 2→3 / 5→6 shape — a purely additive new table, which `CREATE TABLE IF
+/// NOT EXISTS` grows for free — not another [`add_missing_columns`] arm.
+/// References `projects`, not `items`, so it is not part of
+/// [`FK_CHILDREN`].
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// meta: the workspace version counter (one row), bumped by every write.
 /// Every mutated row stamps its `version` from this counter; the delta pull
@@ -110,6 +116,19 @@ CREATE TABLE IF NOT EXISTS fog (
   question    TEXT NOT NULL,
   position    INTEGER NOT NULL,
   resolved_at INTEGER,
+  version     INTEGER NOT NULL
+)";
+
+/// Project Links (#626, ADR-0030 decision 4): one ordered URL per project,
+/// removed by flagging like every other table here.
+pub const CREATE_PROJECT_LINKS: &str = "\
+CREATE TABLE IF NOT EXISTS project_links (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES projects(id),
+  url         TEXT NOT NULL,
+  label       TEXT,
+  position    INTEGER NOT NULL,
+  removed_at  INTEGER,
   version     INTEGER NOT NULL
 )";
 
@@ -333,7 +352,7 @@ CREATE TABLE IF NOT EXISTS grills (
   version         INTEGER NOT NULL
 )";
 
-const CREATE_INDEXES: [&str; 8] = [
+const CREATE_INDEXES: [&str; 10] = [
     "CREATE INDEX IF NOT EXISTS idx_items_version ON items(version)",
     "CREATE INDEX IF NOT EXISTS idx_steps_version ON steps(version)",
     "CREATE INDEX IF NOT EXISTS idx_items_live    ON items(stage) WHERE archived_at IS NULL",
@@ -342,16 +361,19 @@ const CREATE_INDEXES: [&str; 8] = [
     "CREATE INDEX IF NOT EXISTS idx_rules_version ON rules(version)",
     "CREATE INDEX IF NOT EXISTS idx_grills_version ON grills(version)",
     "CREATE INDEX IF NOT EXISTS idx_grills_item    ON grills(item_id)",
+    "CREATE INDEX IF NOT EXISTS idx_project_links_version ON project_links(version)",
+    "CREATE INDEX IF NOT EXISTS idx_project_links_project ON project_links(project_id)",
 ];
 
-/// Every table, parents before children (routes/fog reference projects,
-/// steps/blocked_by/grills reference items, deliveries references
+/// Every table, parents before children (routes/fog/project_links reference
+/// projects, steps/blocked_by/grills reference items, deliveries references
 /// alerts/rules).
-const CREATE_TABLES: [&str; 15] = [
+const CREATE_TABLES: [&str; 16] = [
     CREATE_META,
     CREATE_PROJECTS,
     CREATE_ROUTES,
     CREATE_FOG,
+    CREATE_PROJECT_LINKS,
     CREATE_ITEMS,
     CREATE_STEPS,
     CREATE_BLOCKED_BY,

@@ -29,8 +29,9 @@ mod token;
 pub use api::{
     AlertIngest, AlertPatch, ApiError, BlockedByPatch, CalendarTokenResponse, ChangesResponse,
     ConflictResponse, CreateBlockedBy, CreateFog, CreateGrill, CreateItem, CreateProject,
-    CreatePushTarget, CreateRule, CreateStep, FogPatch, ItemPatch, MintToken, ProjectPatch,
-    PutSetting, RoutePatch, RulePatch, SnapshotIngest, StepPatch, VERSION_CONFLICT,
+    CreateProjectLink, CreatePushTarget, CreateRule, CreateStep, FogPatch, ItemPatch, MintToken,
+    ProjectLinkPatch, ProjectPatch, PutSetting, RoutePatch, RulePatch, SnapshotIngest, StepPatch,
+    VERSION_CONFLICT,
 };
 pub use context::{Alert, ContextSnapshot, EnvelopeProblem, Setting, SnapshotEnvelope};
 pub use deadline::{
@@ -46,7 +47,7 @@ pub use grill::{resulting_stage, Grill, GrillOnDoneItem, GrillVerdict, GrillWith
 pub use id::is_url_safe_id;
 pub use item::{Energy, Item, Size, Stage};
 pub use live::{is_live, settled_at};
-pub use project::{Fog, Project, Route};
+pub use project::{Fog, Project, ProjectLink, Route};
 pub use rule::{Condition, Delivery, Platform, PushTarget, Rule, Tier};
 pub use severity::{higher_severity, severity_rank, SEVERITIES};
 pub use sources::{

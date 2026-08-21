@@ -29,6 +29,7 @@ import type {
   PaneReadDTO,
   PaneSnapshotDTO,
   ProjectDTO,
+  ProjectLinkDTO,
   StepDTO,
   TaskItemDTO,
 } from "../store/protocol";
@@ -173,6 +174,19 @@ export function projectDTO(overrides: Partial<ProjectDTO> = {}): ProjectDTO {
   };
 }
 
+export function projectLinkDTO(overrides: Partial<ProjectLinkDTO> = {}): ProjectLinkDTO {
+  return {
+    id: "link-1",
+    projectId: "project-1",
+    url: "https://example.com",
+    label: null,
+    position: 1,
+    removedAt: null,
+    version: 1,
+    ...overrides,
+  };
+}
+
 export function blockedEntryDTO(
   item: TaskItemDTO,
   blockedBy: TaskItemDTO[],
@@ -202,6 +216,8 @@ export function taskState(overrides: Partial<TaskState> = {}): TaskState {
     rules: null,
     lastRuleWrite: null,
     lastProjectWrite: null,
+    linksByProject: {},
+    lastProjectLinkWrite: null,
     paneReads: {},
     pending: {},
     lastCapture: null,

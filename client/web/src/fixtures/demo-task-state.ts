@@ -764,6 +764,8 @@ export function buildDemoTaskState(): TaskState {
     rules: DEMO_DATA.ruleDetails,
     lastRuleWrite: null,
     lastProjectWrite: null,
+    linksByProject: {},
+    lastProjectLinkWrite: null,
     // Piece 3: every standing question's read, built by `demo-pane-reads.ts`
     // — the kit world's own `demoQuestionInputs` called the same functions
     // before #452 folded its content into this seed and #455 deleted that

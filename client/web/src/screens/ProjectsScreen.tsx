@@ -1,12 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
+import { IconButton } from "../components/core/IconButton";
 import { EmptyState } from "../components/feedback/EmptyState";
 import { Input } from "../components/forms/Input";
 import { Switch } from "../components/forms/Switch";
-import type { ProjectDTO } from "../store/protocol";
-import type { TaskProjectResult, TaskState } from "../store/store";
+import type { ProjectDTO, ProjectLinkDTO } from "../store/protocol";
+import type { TaskProjectLinkResult, TaskProjectResult, TaskState } from "../store/store";
 import { Aside, Column, TwoColumn } from "./layout";
 import {
   awaitingCreate,
@@ -41,9 +42,9 @@ import {
 // **The dossier is a shell.** This slice ships the frame, the name, the back
 // affordance and labelled empty regions naming what fills them; route
 // destination and notes are #627's, fog #628's, the action list and its
-// inline steps #629's, properties #625's, links #626's, archive #630's. Each
-// placeholder says what is coming, so an operator meets an unbuilt region
-// rather than a broken one.
+// inline steps #629's, archive #630's. Properties (#625) and links (#626)
+// are both real cards now — each remaining placeholder still says what is
+// coming, so an operator meets an unbuilt region rather than a broken one.
 
 const WAITING_COPY = "creating — appears when the round trip lands";
 
@@ -56,9 +57,32 @@ export interface ProjectsScreenProps {
     current: ProjectDTO,
     patch: { githubRepo?: string | null; defaultContext?: string | null },
   ) => void;
+  /** #626: the links card's read — fetches one project's links. The caller
+   * (this component's own effect) decides when: on open, and again on
+   * every completed cycle it is still open for. */
+  onRequestProjectLinks: (projectId: string) => void;
+  /** #626: the links card's add gesture. */
+  onCreateProjectLink: (projectId: string, url: string, label: string | null, position: number) => void;
+  /** #626: the links card's edit/reorder/remove gesture — `patch` carries
+   * only the fields the card actually changed. */
+  onPatchProjectLink: (
+    current: ProjectLinkDTO,
+    patch: { url?: string; label?: string | null; position?: number; removedAt?: number | null },
+  ) => void;
+  /** Keys the links card's per-cycle refetch — see `onRequestProjectLinks`'s
+   * own doc. */
+  syncOutcomeSeq: number;
 }
 
-export function ProjectsScreen({ task, onCreateProject, onPatchProject }: ProjectsScreenProps) {
+export function ProjectsScreen({
+  task,
+  onCreateProject,
+  onPatchProject,
+  onRequestProjectLinks,
+  onCreateProjectLink,
+  onPatchProjectLink,
+  syncOutcomeSeq,
+}: ProjectsScreenProps) {
   const [openId, setOpenId] = useState<string | null>(null);
 
   // `null` is "not read yet", not "no projects" (`TaskState.projects`' own
@@ -95,6 +119,12 @@ export function ProjectsScreen({ task, onCreateProject, onPatchProject }: Projec
       lastProjectWrite={task.lastProjectWrite}
       onBack={() => setOpenId(null)}
       onPatchProject={onPatchProject}
+      links={task.linksByProject[open.project.id]}
+      lastProjectLinkWrite={task.lastProjectLinkWrite}
+      onRequestProjectLinks={onRequestProjectLinks}
+      onCreateProjectLink={onCreateProjectLink}
+      onPatchProjectLink={onPatchProjectLink}
+      syncOutcomeSeq={syncOutcomeSeq}
     />
   );
 }
@@ -252,6 +282,12 @@ function Dossier({
   lastProjectWrite,
   onBack,
   onPatchProject,
+  links,
+  lastProjectLinkWrite,
+  onRequestProjectLinks,
+  onCreateProjectLink,
+  onPatchProjectLink,
+  syncOutcomeSeq,
 }: {
   row: ProjectRow;
   lastProjectWrite: TaskProjectResult | null;
@@ -260,7 +296,29 @@ function Dossier({
     current: ProjectDTO,
     patch: { githubRepo?: string | null; defaultContext?: string | null },
   ) => void;
+  /** `undefined` = not read yet (`TaskState.linksByProject`'s own doc),
+   * distinct from `[]` (this project genuinely has none). */
+  links: ProjectLinkDTO[] | undefined;
+  lastProjectLinkWrite: TaskProjectLinkResult | null;
+  onRequestProjectLinks: (projectId: string) => void;
+  onCreateProjectLink: (projectId: string, url: string, label: string | null, position: number) => void;
+  onPatchProjectLink: (
+    current: ProjectLinkDTO,
+    patch: { url?: string; label?: string | null; position?: number; removedAt?: number | null },
+  ) => void;
+  syncOutcomeSeq: number;
 }) {
+  const projectId = row.project.id;
+
+  // #626: fetches this dossier's links the moment it opens, and again on
+  // every completed cycle it stays open for — same "the caller's own
+  // effect decides when" shape `useItemDetailWiring.ts`'s `getSteps` effect
+  // uses for item detail's checklist.
+  useEffect(() => {
+    onRequestProjectLinks(projectId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, syncOutcomeSeq]);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "var(--space-5)", flexWrap: "wrap" }}>
@@ -293,7 +351,13 @@ function Dossier({
             lastProjectWrite={lastProjectWrite}
             onPatchProject={onPatchProject}
           />
-          <ComingRegion label="links" body="This project's links land here." />
+          <LinksCard
+            projectId={projectId}
+            links={links}
+            lastProjectLinkWrite={lastProjectLinkWrite}
+            onCreateProjectLink={onCreateProjectLink}
+            onPatchProjectLink={onPatchProjectLink}
+          />
           <ComingRegion label="archive" body="Archiving this project lands here." />
         </Aside>
       </TwoColumn>
@@ -397,5 +461,221 @@ function PropertiesCard({
         </Button>
       </Card>
     </div>
+  );
+}
+
+/** The dossier aside's links card (#626, ADR-0030 decision 4): adds, edits,
+ * reorders and removes this project's Links. `links` is `undefined` while
+ * the read is in flight (`TaskState.linksByProject`'s own "only what a view
+ * asked about" doc) — distinct from an empty array, which is a real answer
+ * ("this project has none"). A removed link is flagged server-side
+ * (`removedAt`), never erased — the mirror's own `links_for_project`
+ * already filters to live rows, so a removed link simply stops appearing
+ * here; there is no client-side filter to get wrong.
+ *
+ * Reordering swaps two adjacent rows' `position` in one gesture — two CAS
+ * patches, one per row — rather than renumbering the whole list, so an
+ * interleaved edit from another device only ever collides with the two
+ * rows actually touched. */
+function LinksCard({
+  projectId,
+  links,
+  lastProjectLinkWrite,
+  onCreateProjectLink,
+  onPatchProjectLink,
+}: {
+  projectId: string;
+  links: ProjectLinkDTO[] | undefined;
+  lastProjectLinkWrite: TaskProjectLinkResult | null;
+  onCreateProjectLink: (projectId: string, url: string, label: string | null, position: number) => void;
+  onPatchProjectLink: (
+    current: ProjectLinkDTO,
+    patch: { url?: string; label?: string | null; position?: number; removedAt?: number | null },
+  ) => void;
+}) {
+  const [urlInput, setUrlInput] = useState("");
+  const [labelInput, setLabelInput] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  // Gated on `projectId`, same reasoning `PropertiesCard`'s own failure
+  // read carries: `lastProjectLinkWrite` is one broadcast slot shared by
+  // every open dossier, so an unguarded read would paint a stranger's
+  // failure into this card.
+  const failure =
+    lastProjectLinkWrite !== null && lastProjectLinkWrite.projectId === projectId
+      ? (lastProjectLinkWrite.kind === "ok" ? null : lastProjectLinkWrite.error ?? "That link write did not go through.")
+      : null;
+
+  const sortedLinks = links === undefined ? undefined : [...links].sort((a, b) => a.position - b.position);
+
+  function addLink() {
+    const trimmedUrl = urlInput.trim();
+    if (trimmedUrl === "") {
+      return;
+    }
+    const trimmedLabel = labelInput.trim();
+    const position = sortedLinks?.length ?? 0;
+    onCreateProjectLink(projectId, trimmedUrl, trimmedLabel === "" ? null : trimmedLabel, position);
+    setUrlInput("");
+    setLabelInput("");
+  }
+
+  function moveLink(index: number, direction: -1 | 1) {
+    if (sortedLinks === undefined) {
+      return;
+    }
+    const swapIndex = index + direction;
+    if (swapIndex < 0 || swapIndex >= sortedLinks.length) {
+      return;
+    }
+    const link = sortedLinks[index];
+    const other = sortedLinks[swapIndex];
+    onPatchProjectLink(link, { position: other.position });
+    onPatchProjectLink(other, { position: link.position });
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      <span className="hb-meta">links</span>
+      <Card padding="var(--space-5)" style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+        {sortedLinks === undefined ? (
+          <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>Reading links…</span>
+        ) : sortedLinks.length === 0 ? (
+          <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>No links yet.</span>
+        ) : (
+          <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+            {sortedLinks.map((link, index) =>
+              editingId === link.id ? (
+                <LinkEditRow
+                  key={link.id}
+                  link={link}
+                  onSave={(url, label) => {
+                    onPatchProjectLink(link, { url, label });
+                    setEditingId(null);
+                  }}
+                  onCancel={() => setEditingId(null)}
+                />
+              ) : (
+                <li key={link.id} style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                  <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+                    <a
+                      href={link.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{
+                        font: "var(--type-body-sm)",
+                        color: "var(--accent)",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {link.label ?? link.url}
+                    </a>
+                    {link.label !== null ? (
+                      <span
+                        className="hb-meta"
+                        style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                      >
+                        {link.url}
+                      </span>
+                    ) : null}
+                  </div>
+                  <IconButton
+                    icon="chevron-down"
+                    label="Move up"
+                    size="sm"
+                    style={{ transform: "rotate(180deg)" }}
+                    disabled={index === 0}
+                    onClick={() => moveLink(index, -1)}
+                  />
+                  <IconButton
+                    icon="chevron-down"
+                    label="Move down"
+                    size="sm"
+                    disabled={index === sortedLinks.length - 1}
+                    onClick={() => moveLink(index, 1)}
+                  />
+                  <Button variant="ghost" size="sm" onClick={() => setEditingId(link.id)}>
+                    Edit
+                  </Button>
+                  <IconButton
+                    icon="trash-2"
+                    label="Remove link"
+                    size="sm"
+                    onClick={() => onPatchProjectLink(link, { removedAt: Date.now() })}
+                  />
+                </li>
+              ),
+            )}
+          </ul>
+        )}
+
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            addLink();
+          }}
+          style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}
+        >
+          <Input
+            label="URL"
+            placeholder="https://…"
+            value={urlInput}
+            onChange={(event) => setUrlInput(event.target.value)}
+          />
+          <Input
+            label="Label"
+            placeholder="optional"
+            value={labelInput}
+            onChange={(event) => setLabelInput(event.target.value)}
+          />
+          {failure !== null ? <Badge tone="danger">{failure}</Badge> : null}
+          <Button type="submit" size="sm" disabled={urlInput.trim() === ""}>
+            Add link
+          </Button>
+        </form>
+      </Card>
+    </div>
+  );
+}
+
+/** One link's inline edit form — swapped in for its display row
+ * (`LinksCard`'s own `editingId`), the same "click to reveal the fields"
+ * shape the rest of this app uses rather than a modal. */
+function LinkEditRow({
+  link,
+  onSave,
+  onCancel,
+}: {
+  link: ProjectLinkDTO;
+  onSave: (url: string, label: string | null) => void;
+  onCancel: () => void;
+}) {
+  const [urlInput, setUrlInput] = useState(link.url);
+  const [labelInput, setLabelInput] = useState(link.label ?? "");
+
+  function save() {
+    const trimmedUrl = urlInput.trim();
+    if (trimmedUrl === "") {
+      return;
+    }
+    const trimmedLabel = labelInput.trim();
+    onSave(trimmedUrl, trimmedLabel === "" ? null : trimmedLabel);
+  }
+
+  return (
+    <li style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      <Input label="URL" value={urlInput} onChange={(event) => setUrlInput(event.target.value)} />
+      <Input label="Label" placeholder="optional" value={labelInput} onChange={(event) => setLabelInput(event.target.value)} />
+      <div style={{ display: "flex", gap: "var(--space-3)" }}>
+        <Button size="sm" onClick={save} disabled={urlInput.trim() === ""}>
+          Save
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </li>
   );
 }
