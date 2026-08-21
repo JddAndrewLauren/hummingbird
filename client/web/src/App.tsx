@@ -213,6 +213,8 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     requestProjectLinks: handleRequestProjectLinks,
     createProjectLink: handleCreateProjectLink,
     patchProjectLink: handlePatchProjectLink,
+    requestRoute: handleRequestRoute,
+    patchRoute: handlePatchRoute,
   } = useProjectsWiring(worker);
   // #245: every source the registered standing questions need, refreshed on
   // the same per-cycle signal as the bindings they depend on.
@@ -620,6 +622,8 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               onRequestProjectLinks={handleRequestProjectLinks}
               onCreateProjectLink={handleCreateProjectLink}
               onPatchProjectLink={handlePatchProjectLink}
+              onRequestRoute={handleRequestRoute}
+              onPatchRoute={handlePatchRoute}
             />
           )}
           {screen === "alerts" && <AlertsScreen />}

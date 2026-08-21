@@ -11,6 +11,7 @@ import {
   projectDTO,
   projectLinkDTO,
   render,
+  routeDTO,
   screen,
   taskState,
 } from "../test/component";
@@ -31,6 +32,8 @@ function renderProjectsScreen(props: Partial<ProjectsScreenProps> & Pick<Project
       onRequestProjectLinks={noop}
       onCreateProjectLink={noop}
       onPatchProjectLink={noop}
+      onRequestRoute={noop}
+      onPatchRoute={noop}
       {...next}
     />
   );
@@ -349,6 +352,8 @@ describe("ProjectsScreen", () => {
           onRequestProjectLinks={onRequestProjectLinks}
           onCreateProjectLink={noop}
           onPatchProjectLink={noop}
+          onRequestRoute={noop}
+          onPatchRoute={noop}
         />,
       );
 
@@ -493,6 +498,203 @@ describe("ProjectsScreen", () => {
       openDossier({
         linksByProject: { "p-1": [] },
         lastProjectLinkWrite: { seed: "s-1", projectId: "p-2", kind: "failed", error: "no can do" },
+      });
+
+      expect(screen.queryByText("no can do")).toBeNull();
+    });
+  });
+
+  // #627: the Route card.
+  describe("the route card", () => {
+    function openDossier(
+      overrides: {
+        routeByProject?: ReturnType<typeof taskState>["routeByProject"];
+        lastRouteWrite?: ReturnType<typeof taskState>["lastRouteWrite"];
+        onRequestRoute?: ProjectsScreenProps["onRequestRoute"];
+        onPatchRoute?: ProjectsScreenProps["onPatchRoute"];
+      } = {},
+    ) {
+      const task = taskState({
+        projects: [projectDTO({ id: "p-1", name: "House repairs" })],
+        ledger: [],
+        routeByProject: overrides.routeByProject ?? {},
+        lastRouteWrite: overrides.lastRouteWrite ?? null,
+      });
+      renderProjectsScreen({
+        task,
+        onRequestRoute: overrides.onRequestRoute ?? noop,
+        onPatchRoute: overrides.onPatchRoute ?? noop,
+      });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+      return task;
+    }
+
+    // The Route card and the properties card both carry a "Save" button —
+    // the Route card's is first in document order (the reading column
+    // renders before the aside), so this is always index 0.
+    function routeSaveButton(): HTMLElement {
+      return screen.getAllByRole("button", { name: "Save" })[0];
+    }
+
+    it("requests this project's Route the moment the dossier opens", () => {
+      const onRequestRoute = vi.fn();
+      openDossier({ onRequestRoute });
+
+      expect(onRequestRoute).toHaveBeenCalledWith("p-1");
+    });
+
+    it("holds rather than claiming anything while the read has not answered", () => {
+      openDossier();
+
+      expect(screen.getByText("Reading Route…")).toBeTruthy();
+      expect(screen.queryByLabelText("Destination")).toBeNull();
+    });
+
+    it("renders the stored destination and notes once read", () => {
+      openDossier({
+        routeByProject: {
+          "p-1": routeDTO({ destination: "Ship the deck", notes: "Ask the neighbour" }),
+        },
+      });
+
+      expect((screen.getByLabelText("Destination") as HTMLTextAreaElement).value).toBe("Ship the deck");
+      expect((screen.getByLabelText("Notes") as HTMLTextAreaElement).value).toBe("Ask the neighbour");
+    });
+
+    it("sends only the changed field to onPatchRoute", () => {
+      const onPatchRoute = vi.fn();
+      const route = routeDTO({ projectId: "p-1" });
+      openDossier({ routeByProject: { "p-1": route }, onPatchRoute });
+
+      fireEvent.change(screen.getByLabelText("Destination"), { target: { value: "Ship the deck" } });
+      fireEvent.click(routeSaveButton());
+
+      expect(onPatchRoute).toHaveBeenCalledWith(route, { destination: "Ship the deck" });
+    });
+
+    it("clears a field by saving it empty", () => {
+      const onPatchRoute = vi.fn();
+      const route = routeDTO({ projectId: "p-1", notes: "Ask the neighbour" });
+      openDossier({ routeByProject: { "p-1": route }, onPatchRoute });
+
+      fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "" } });
+      fireEvent.click(routeSaveButton());
+
+      expect(onPatchRoute).toHaveBeenCalledWith(route, { notes: null });
+    });
+
+    it("disables Save until a field actually changes", () => {
+      openDossier({ routeByProject: { "p-1": routeDTO({ projectId: "p-1" }) } });
+
+      expect(routeSaveButton().hasAttribute("disabled")).toBe(true);
+
+      fireEvent.change(screen.getByLabelText("Destination"), { target: { value: "Ship the deck" } });
+
+      expect(routeSaveButton().hasAttribute("disabled")).toBe(false);
+    });
+
+    // The card has no optimistic overlay (`Core::patch_route`'s own doc), so
+    // this is its whole visible consequence: "Saving…" from the click until
+    // the row's version actually moves, then "Saved" — the explicit state
+    // this slice's brief asks for, unlike the properties card's silent
+    // re-sync.
+    it("says Saving… after Save, then Saved once the row's version lands", () => {
+      const route = routeDTO({ projectId: "p-1", version: 1 });
+      const task = taskState({
+        projects: [projectDTO({ id: "p-1", name: "House repairs" })],
+        ledger: [],
+        routeByProject: { "p-1": route },
+      });
+      const { rerenderWith } = renderProjectsScreen({ task, onPatchRoute: noop });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      fireEvent.change(screen.getByLabelText("Destination"), { target: { value: "Ship the deck" } });
+      fireEvent.click(routeSaveButton());
+
+      expect(screen.getByText("Saving…")).toBeTruthy();
+
+      const landed = { ...route, destination: "Ship the deck", version: 2 };
+      rerenderWith({ task: { ...task, routeByProject: { "p-1": landed } } });
+
+      expect(screen.queryByText("Saving…")).toBeNull();
+      expect(screen.getByText("Saved")).toBeTruthy();
+    });
+
+    // Regression: a write that never reaches the queue (a durability
+    // failure, or the wasm host busy mid sync-cycle at click time) never
+    // produces a version bump, so the only other resolution path
+    // (`route.version !== synced.version`) never fires either. `saving`
+    // must clear on the write result itself, or "Saving…" renders forever
+    // beside the danger badge painted from the same `lastRouteWrite` —
+    // contradictory UI.
+    it.each([
+      ["failed", "no can do"],
+      ["busy", null],
+    ] as const)("clears Saving… when the write result is %s, not stuck beside the failure badge", (kind, error) => {
+      const route = routeDTO({ projectId: "p-1", version: 1 });
+      const task = taskState({
+        projects: [projectDTO({ id: "p-1", name: "House repairs" })],
+        ledger: [],
+        routeByProject: { "p-1": route },
+      });
+      const { rerenderWith } = renderProjectsScreen({ task, onPatchRoute: noop });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      fireEvent.change(screen.getByLabelText("Destination"), { target: { value: "Ship the deck" } });
+      fireEvent.click(routeSaveButton());
+
+      expect(screen.getByText("Saving…")).toBeTruthy();
+
+      rerenderWith({
+        task: {
+          ...task,
+          lastRouteWrite: { seed: "s-1", projectId: "p-1", kind, error },
+        },
+      });
+
+      expect(screen.queryByText("Saving…")).toBeNull();
+      expect(screen.queryByText("Saved")).toBeNull();
+      expect(screen.getByText(error ?? "That route write did not go through.")).toBeTruthy();
+    });
+
+    it("keeps a field typed while another field's write was in flight", () => {
+      // Both fields share one Save and one version, so the destination's
+      // write landing moves the version while notes is half-typed. The
+      // re-seed must skip the field being edited, or the typing is lost —
+      // `PropertiesCard`'s own guarantee, ported.
+      const route = routeDTO({ projectId: "p-1" });
+      const task = taskState({
+        projects: [projectDTO({ id: "p-1", name: "House repairs" })],
+        ledger: [],
+        routeByProject: { "p-1": route },
+      });
+      const { rerenderWith } = renderProjectsScreen({ task, onPatchRoute: noop });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+      fireEvent.change(screen.getByLabelText("Destination"), { target: { value: "Ship the deck" } });
+      fireEvent.click(routeSaveButton());
+      fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "Ask the neighbour" } });
+
+      const landed = { ...route, destination: "Ship the deck", version: 2 };
+      rerenderWith({ task: { ...task, routeByProject: { "p-1": landed } } });
+
+      expect((screen.getByLabelText("Notes") as HTMLTextAreaElement).value).toBe("Ask the neighbour");
+      expect((screen.getByLabelText("Destination") as HTMLTextAreaElement).value).toBe("Ship the deck");
+    });
+
+    it("renders a failed route write's own message, scoped to this project", () => {
+      openDossier({
+        routeByProject: { "p-1": routeDTO({ projectId: "p-1" }) },
+        lastRouteWrite: { seed: "s-1", projectId: "p-1", kind: "failed", error: "no can do" },
+      });
+
+      expect(screen.getByText("no can do")).toBeTruthy();
+    });
+
+    it("does not paint another project's failed route write into this dossier", () => {
+      openDossier({
+        routeByProject: { "p-1": routeDTO({ projectId: "p-1" }) },
+        lastRouteWrite: { seed: "s-1", projectId: "p-2", kind: "failed", error: "no can do" },
       });
 
       expect(screen.queryByText("no can do")).toBeNull();

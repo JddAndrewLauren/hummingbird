@@ -6,8 +6,9 @@ import { IconButton } from "../components/core/IconButton";
 import { EmptyState } from "../components/feedback/EmptyState";
 import { Input } from "../components/forms/Input";
 import { Switch } from "../components/forms/Switch";
-import type { ProjectDTO, ProjectLinkDTO } from "../store/protocol";
-import type { TaskProjectLinkResult, TaskProjectResult, TaskState } from "../store/store";
+import { Textarea } from "../components/forms/Textarea";
+import type { ProjectDTO, ProjectLinkDTO, RouteDTO } from "../store/protocol";
+import type { TaskProjectLinkResult, TaskProjectResult, TaskRouteResult, TaskState } from "../store/store";
 import { Aside, Column, TwoColumn } from "./layout";
 import {
   awaitingCreate,
@@ -40,11 +41,23 @@ import {
 // `projects`.
 //
 // **The dossier is a shell.** This slice ships the frame, the name, the back
-// affordance and labelled empty regions naming what fills them; route
-// destination and notes are #627's, fog #628's, the action list and its
-// inline steps #629's, archive #630's. Properties (#625) and links (#626)
-// are both real cards now — each remaining placeholder still says what is
+// affordance and labelled empty regions naming what fills them; fog is
+// #628's, the action list and its inline steps #629's, archive #630's.
+// Properties (#625), links (#626) and now the Route's destination/notes
+// (#627) are real cards — each remaining placeholder still says what is
 // coming, so an operator meets an unbuilt region rather than a broken one.
+//
+// **The Route card has no optimistic overlay, so it says so.** Same
+// no-overlay contract as every other project-lane write here
+// (`Core::patch_route`'s own doc) — a saved destination or notes edit is
+// only confirmed once the next completed cycle pulls the row's bumped
+// `version` back. `RouteCard` below tracks its own in-flight save
+// explicitly (`saving`/`justSaved` local state) rather than staying silent
+// about it the way the properties card does, because ADR-0030's brief for
+// this slice asks for a visible saving/saved state where the properties
+// card's own slice did not. A conflict is not surfaced here at all — it
+// lands in the ordinary dead-letter journal like every other CAS write
+// (ADR-0030 decision 1), and this card adds no bespoke conflict UI for it.
 
 const WAITING_COPY = "creating — appears when the round trip lands";
 
@@ -69,6 +82,12 @@ export interface ProjectsScreenProps {
     current: ProjectLinkDTO,
     patch: { url?: string; label?: string | null; position?: number; removedAt?: number | null },
   ) => void;
+  /** #627: the Route card's read — fetches one project's Route. Same
+   * "the caller's own effect decides when" shape as `onRequestProjectLinks`. */
+  onRequestRoute: (projectId: string) => void;
+  /** #627: the Route card's edit gesture — `patch` carries only the fields
+   * the card actually changed. */
+  onPatchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => void;
 }
 
 export function ProjectsScreen({
@@ -78,6 +97,8 @@ export function ProjectsScreen({
   onRequestProjectLinks,
   onCreateProjectLink,
   onPatchProjectLink,
+  onRequestRoute,
+  onPatchRoute,
 }: ProjectsScreenProps) {
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -120,6 +141,10 @@ export function ProjectsScreen({
       onRequestProjectLinks={onRequestProjectLinks}
       onCreateProjectLink={onCreateProjectLink}
       onPatchProjectLink={onPatchProjectLink}
+      route={task.routeByProject[open.project.id]}
+      lastRouteWrite={task.lastRouteWrite}
+      onRequestRoute={onRequestRoute}
+      onPatchRoute={onPatchRoute}
       syncOutcomeSeq={task.syncOutcomeSeq}
     />
   );
@@ -283,6 +308,10 @@ function Dossier({
   onRequestProjectLinks,
   onCreateProjectLink,
   onPatchProjectLink,
+  route,
+  lastRouteWrite,
+  onRequestRoute,
+  onPatchRoute,
   syncOutcomeSeq,
 }: {
   row: ProjectRow;
@@ -302,6 +331,13 @@ function Dossier({
     current: ProjectLinkDTO,
     patch: { url?: string; label?: string | null; position?: number; removedAt?: number | null },
   ) => void;
+  /** `undefined` = not read yet (`TaskState.routeByProject`'s own doc) —
+   * every project has exactly one Route, so there is no "this project has
+   * none" to distinguish it from, unlike `links`. */
+  route: RouteDTO | undefined;
+  lastRouteWrite: TaskRouteResult | null;
+  onRequestRoute: (projectId: string) => void;
+  onPatchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => void;
   syncOutcomeSeq: number;
 }) {
   const projectId = row.project.id;
@@ -312,6 +348,12 @@ function Dossier({
   // uses for item detail's checklist.
   useEffect(() => {
     onRequestProjectLinks(projectId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, syncOutcomeSeq]);
+
+  // #627: same shape, for the Route.
+  useEffect(() => {
+    onRequestRoute(projectId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, syncOutcomeSeq]);
 
@@ -331,9 +373,11 @@ function Dossier({
 
       <TwoColumn>
         <Column>
-          <ComingRegion
-            label="route · destination"
-            body="The Route's destination and notes land here."
+          <RouteCard
+            projectId={projectId}
+            route={route}
+            lastRouteWrite={lastRouteWrite}
+            onPatchRoute={onPatchRoute}
           />
           <ComingRegion
             label="actions"
@@ -478,6 +522,159 @@ function PropertiesCard({
         <Button type="submit" size="sm" disabled={!dirty}>
           Save
         </Button>
+      </Card>
+    </div>
+  );
+}
+
+/** The dossier reading column's Route card (#627, ADR-0030 decision 1):
+ * edits `destination`/`notes`, the two fields `CONTEXT.md`'s Route entry
+ * names. `route` is `undefined` while the read is in flight
+ * (`TaskState.routeByProject`'s own doc) — every project has exactly one
+ * Route, so there is no "none yet" state to distinguish, unlike the links
+ * card. The re-seed-on-version-bump logic is `PropertiesCard`'s own,
+ * ported verbatim: only a field nobody has typed in since the last seed is
+ * re-seeded, so a save of one field never throws away in-flight typing in
+ * the other.
+ *
+ * **The saving/saved state is explicit here**, unlike `PropertiesCard`'s own
+ * silent re-sync — this slice's brief asks for it, since there is no
+ * optimistic overlay to imply it visually. `saving` flips true the moment
+ * Save is clicked, and resolves one of two ways: it flips false (to
+ * `justSaved`) once the row's `version` actually moves — which is also how
+ * a 409 that this write lost would show up: `version` still moves (to
+ * whatever won), so this card cannot tell its own write apart from a
+ * concurrent one and does not try to — or, if the write never reached the
+ * queue at all (`lastRouteWrite.kind` `"failed"`/`"busy"`, e.g. a sync cycle
+ * holding the host at click time), it flips false with no `justSaved`, so
+ * `Saving…` cannot outlive the failure badge painted from that same
+ * `lastRouteWrite`. A genuine 409 conflict is never surfaced here; it lands
+ * in the ordinary dead-letter journal like every other CAS write (ADR-0030
+ * decision 1) — this card adds no bespoke conflict UI. */
+function RouteCard({
+  projectId,
+  route,
+  lastRouteWrite,
+  onPatchRoute,
+}: {
+  projectId: string;
+  route: RouteDTO | undefined;
+  lastRouteWrite: TaskRouteResult | null;
+  onPatchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => void;
+}) {
+  const [destinationInput, setDestinationInput] = useState(route?.destination ?? "");
+  const [notesInput, setNotesInput] = useState(route?.notes ?? "");
+  const [synced, setSynced] = useState({
+    version: route?.version ?? null,
+    destination: route?.destination ?? "",
+    notes: route?.notes ?? "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
+
+  if (route !== undefined && route.version !== synced.version) {
+    if (destinationInput === synced.destination) {
+      setDestinationInput(route.destination ?? "");
+    }
+    if (notesInput === synced.notes) {
+      setNotesInput(route.notes ?? "");
+    }
+    setSynced({ version: route.version, destination: route.destination ?? "", notes: route.notes ?? "" });
+    if (saving) {
+      setSaving(false);
+      setJustSaved(true);
+    }
+  }
+
+  // Gated on `projectId`, same reasoning `PropertiesCard`'s own failure read
+  // carries: `lastRouteWrite` is one broadcast slot shared by every open
+  // dossier.
+  const failedHere =
+    lastRouteWrite !== null && lastRouteWrite.projectId === projectId && lastRouteWrite.kind !== "ok";
+
+  // The write never reached the queue at all — no `version` bump is ever
+  // coming to clear `saving` for us (the branch above only fires on a real
+  // version move), so a `"failed"`/`"busy"` result clears it directly. No
+  // `justSaved` here: the failure badge below is the visible resolution,
+  // not a silent "Saved".
+  if (saving && failedHere) {
+    setSaving(false);
+  }
+
+  const trimmedDestination = destinationInput.trim();
+  const trimmedNotes = notesInput.trim();
+  const destinationChanged = trimmedDestination !== (route?.destination ?? "");
+  const notesChanged = trimmedNotes !== (route?.notes ?? "");
+  const dirty = destinationChanged || notesChanged;
+  const failure =
+    failedHere && lastRouteWrite !== null
+      ? lastRouteWrite.error ?? "That route write did not go through."
+      : null;
+
+  function save() {
+    if (route === undefined) {
+      return;
+    }
+    const patch: { destination?: string | null; notes?: string | null } = {};
+    if (destinationChanged) {
+      patch.destination = trimmedDestination === "" ? null : trimmedDestination;
+    }
+    if (notesChanged) {
+      patch.notes = trimmedNotes === "" ? null : trimmedNotes;
+    }
+    onPatchRoute(route, patch);
+    setSaving(true);
+    setJustSaved(false);
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      <span className="hb-meta">route · destination</span>
+      <Card
+        as="form"
+        padding="var(--space-5)"
+        onSubmit={(event) => {
+          event.preventDefault();
+          save();
+        }}
+        style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
+      >
+        {route === undefined ? (
+          <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+            Reading Route…
+          </span>
+        ) : (
+          <>
+            <Textarea
+              label="Destination"
+              placeholder="What does done look like, in your own terms?"
+              value={destinationInput}
+              onChange={(event) => {
+                setDestinationInput(event.target.value);
+                setJustSaved(false);
+              }}
+            />
+            <Textarea
+              label="Notes"
+              value={notesInput}
+              onChange={(event) => {
+                setNotesInput(event.target.value);
+                setJustSaved(false);
+              }}
+            />
+            {failure !== null ? <Badge tone="danger">{failure}</Badge> : null}
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--space-4)" }}>
+              <Button type="submit" size="sm" disabled={!dirty}>
+                Save
+              </Button>
+              {saving ? (
+                <span className="hb-meta">Saving…</span>
+              ) : justSaved ? (
+                <span className="hb-meta">Saved</span>
+              ) : null}
+            </div>
+          </>
+        )}
       </Card>
     </div>
   );

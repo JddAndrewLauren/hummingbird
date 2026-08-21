@@ -52,6 +52,8 @@ const TASK_REQUEST_TYPES: Record<TaskWorkerRequest["type"], true> = {
   getProjectLinks: true,
   createProjectLink: true,
   patchProjectLink: true,
+  getRoute: true,
+  patchRoute: true,
   isPending: true,
   runSync: true,
   getQueueDepth: true,

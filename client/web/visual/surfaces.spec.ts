@@ -512,7 +512,9 @@ for (const theme of THEMES) {
       // POPULATED links card does too: the fixture seeds real links onto
       // "House repairs", so the row layout (ellipsised URL, the move pair,
       // Edit, Remove, all inside the narrow `Aside`) is in every capture
-      // rather than a "Reading links…" placeholder.
+      // rather than a "Reading links…" placeholder. Since #627, the reading
+      // column's POPULATED Route card does too — the fixture seeds a real
+      // destination/notes pair onto the same project.
       await openApp(page, theme, "board");
       await show(page, "Projects", testInfo.project.name);
       await page.getByRole("heading", { level: 3, name: "House repairs" }).click();
@@ -522,6 +524,10 @@ for (const theme of THEMES) {
       // back to the unanswered-read placeholder would otherwise photograph
       // an empty region and still pass.
       await expect(page.getByRole("link", { name: "Repo" })).toBeVisible();
+      // Same guarantee for the Route card (#627).
+      await expect(page.getByLabel("Destination")).toHaveValue(
+        "The deck is rebuilt, permitted and passes inspection.",
+      );
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
         path: `visual/.captures/projects-dossier-${testInfo.project.name}-${theme}.png`,
