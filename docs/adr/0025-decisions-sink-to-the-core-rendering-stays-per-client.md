@@ -352,6 +352,61 @@ vitest instantiates the module in both `node` and `jsdom` from one
 Later M1 briefs quote their row. A verdict of "stays" here is scoped to M1,
 not permanent — it is where the line fell for the capture/Now slice.
 
+*Amended 2026-08-21 ([#564](https://github.com/JddAndrewLauren/hummingbird/issues/564)):
+**four of the calendar rows below were reasoned against a mechanism Android
+no longer runs, and one more row is added.** #564 was scoped on 2026-08-18
+around a native `AuthorizationClient` grant; the operator's 2026-08-21
+decision replaced it with ADR-0028's authority-minted route, on the grounds
+that two mechanisms for one operator's one calendar is a maintenance tax
+with no matching risk reduction. The corrections, each named by the row it
+corrects:*
+
+- *`msUntilRotation` — **now sunk in spirit, ported in fact, and it does
+  have an Android caller.** The row's argument was that Android
+  re-authorizes on demand and keeps no rotation schedule; under ADR-0028 the
+  phone holds a ~1-hour Google access token exactly as a browser does and
+  must rotate ahead of it. The 5-minute margin is ported into
+  `ffi-mobile/src/calendar_token.rs` rather than sunk, for a reason the
+  original row would have accepted: what it is coupled to is the
+  **authority's** `CACHE_REMINT_MARGIN_MS`, which is not a client decision
+  at all, and both copies pin themselves against that constant's own source
+  text. The "exactly one caller" clause is what is stale, not the verdict.*
+- *`shouldKeepExistingConnection` — verdict unchanged (sunk in effect on
+  both clients), reasoning corrected: the Android case is not "cannot reach
+  Play Services to confirm a grant it still holds" but "cannot reach the
+  **authority** to mint". Same rule, same cost of getting it wrong, a
+  different unreachable party.*
+- *`persistence.ts` — verdict unchanged (storage mechanism), corollary
+  corrected: the phone still persists strictly less than the browser, and
+  still never a credential, but the reason is that the access token is
+  **held in Rust for its lifetime and re-minted at the authority**, not that
+  Play Services re-mints it silently. `CalendarPrefs.kt` carries a source
+  gate against anything token-shaped appearing in it.*
+- *`remint-health.ts` — **the deferral survives, for a different reason.**
+  Not "Android's `AuthorizationClient` failure vocabulary is unseen"; the
+  phone's vocabulary is the authority's, and it is the same seven codes the
+  web already has. What defers it is that #419 Phase 9's degradation is an
+  ITP-specific remedy with no Android counterpart, so the *question* is
+  shared while the *remedy* is not. #564 answers the shared half in
+  `calendar_token::connection_state`, which decides which of four
+  Source-connection states each code puts the device in — that function is
+  the phone's `remint-health.ts`, and a later slice may sink the pair.*
+- *`connect-error.ts` — verdict unchanged (display copy), with the note that
+  four of its nine arms are now unreachable on **both** clients, not just on
+  Android: `gis.ts` is deleted, so `popup_failed_to_open`, `popup_closed`,
+  `gis_script_load_failed` and `gis_unavailable` can no longer occur
+  anywhere. That is #577's residue, not this ADR's, and it is a cleanup for
+  whichever slice next touches that file.*
+
+*And one row is added, from #564's own work — the first row in this table
+to sink something that was left unsunk by an **earlier** ruling and reversed
+on the tie-breaker rather than on a new argument:*
+
+| Module | Verdict |
+|---|---|
+| `weekend.ts`'s `mergeWindow` per-day entries (sunk at #564/#621) | sunk to `decisions::panes::weekend`'s `merge_window`/`count_kinds` — **reversing #534's own verdict**, which folded the merge straight to a `WindowCounts` tally on the grounds that no decision read an entry's `id`/`title`/`at_ms`/`anchor`. That was right with one client. Android's expanded weekend card is the second caller ADR-0025's tie-breaker asks for, and what would have been duplicated is #122's due-beats-scheduled dedupe and both its residues (`also_scheduled_on`, `deadline_outside_window`) — a rule two hand-written merges would each have to get right, where the one that got it wrong would look entirely plausible. The counts are now tallied **from** the entries, so they can no longer disagree with the list they describe. What still does not cross is the DTOs: an entry carries a `source_id` and each host re-attaches its own event or item |
+
+
 | Module | Verdict |
 |---|---|
 | `size-energy.ts` | rendering; re-imports vocabulary via the shim |
