@@ -6,7 +6,7 @@
 // failure mode `src/test/component.tsx`'s header exists for.
 
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, itemDTO, render, screen, stepDTO } from "../../test/component";
+import { fireEvent, itemDTO, projectDTO, render, screen, stepDTO } from "../../test/component";
 import { IDLE, reduceRun, type SkillEvent, type SkillRunState } from "../../skills/run-state";
 import type { TaskItemDTO } from "../../store/protocol";
 import { ItemPanel } from "./ItemPanel";
@@ -593,5 +593,43 @@ describe("size and energy on the detail panel", () => {
     expect(energy?.textContent).toBe("energy:HIGH");
     expect(size?.style.color).toBe("var(--urgency-soon)");
     expect(energy?.style.color).toBe("var(--urgency-now)");
+  });
+});
+
+// #631, ADR-0030 decision 3, entry point 1: the copy is decided in
+// `triage-form.ts` but the *promotion* half of the gate is knowledge only
+// this panel has — the stage change leaves no trace in the field diff — so
+// what is proved here is that the promote button actually passes it.
+describe("ItemPanel — promotion's copy-at-mint wiring", () => {
+  const project = projectDTO({ id: "p1", name: "House repairs", defaultContext: "@computer" });
+
+  function triage(item: TaskItemDTO) {
+    const onTriage = vi.fn();
+    render(
+      <ItemPanel
+        mode="triage"
+        item={item}
+        projects={[project]}
+        steps={[]}
+        onTriage={onTriage}
+      />,
+    );
+    return onTriage;
+  }
+
+  it("copies the project's default onto a capture that arrived already tagged with it", () => {
+    const onTriage = triage(itemDTO({ id: "item-9", projectId: "p1", context: null }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Promote to ready" }));
+
+    expect(onTriage).toHaveBeenCalledWith("item-9", "ready", { context: "@computer" });
+  });
+
+  it("leaves a context the item already carries alone", () => {
+    const onTriage = triage(itemDTO({ id: "item-9", projectId: "p1", context: "@errands" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Promote to ready" }));
+
+    expect(onTriage).toHaveBeenCalledWith("item-9", "ready", {});
   });
 });

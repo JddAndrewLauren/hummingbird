@@ -21,6 +21,12 @@
 /// `-`, `_`, `.`, and may not be `.` or `..` — the same dot-segment
 /// exclusion `is_url_safe_id` makes, since a repo slug also rides inside a
 /// derived URL path segment.
+///
+/// A trailing `.git` is rejected outright: `owner/repo.git` is what a clone
+/// URL spells, and GitHub itself refuses to name a repository that way, so
+/// accepting it would store a second spelling of one identity — exactly the
+/// thing decision 2 keeps out by storing the slug alone. The dot charset
+/// above would otherwise let it through.
 pub fn is_valid_github_repo(s: &str) -> bool {
     let Some((owner, repo)) = s.split_once('/') else {
         return false;
@@ -42,6 +48,7 @@ fn is_valid_repo(repo: &str) -> bool {
     !repo.is_empty()
         && repo != "."
         && repo != ".."
+        && !repo.ends_with(".git")
         && repo
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
@@ -87,6 +94,15 @@ mod tests {
     fn rejects_a_dot_segment_repo() {
         assert!(!is_valid_github_repo("owner/."));
         assert!(!is_valid_github_repo("owner/.."));
+    }
+
+    #[test]
+    fn rejects_a_clone_style_git_suffix() {
+        assert!(!is_valid_github_repo("owner/repo.git"));
+        assert!(!is_valid_github_repo("owner/.git"));
+        // Only the suffix — a dot elsewhere is still an ordinary repo name.
+        assert!(is_valid_github_repo("owner/repo.github.io"));
+        assert!(is_valid_github_repo("owner/git"));
     }
 
     #[test]

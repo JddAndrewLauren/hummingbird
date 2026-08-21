@@ -142,14 +142,22 @@ export function hasTriageEdits(draft: TriageDraft, item: TaskItemDTO): boolean {
  *
  * `project`, since #631, is whatever `ProjectDTO` `draft.projectId` currently
  * resolves to (`null` when it resolves to none). It exists for ADR-0030
- * decision 3's copy-at-mint: when this call assigns the item into a project
- * it was not already in — `item.projectId !== project.id`, the "promotion"
- * moment the decision names — and the draft's own `context` is empty, the
+ * decision 3's copy-at-mint: when the draft's own `context` is empty, the
  * project's `defaultContext` (when it has one) is copied onto `edits.context`
- * as the item's own value, exactly as if the human had typed it. Gated on the
- * transition (not merely "context empty, project selected") so a later save
- * that touches neither field never re-copies anything into an item already
- * sitting in the project — the acceptance's "nothing retroactive". A context
+ * as the item's own value, exactly as if the human had typed it.
+ *
+ * Two gestures copy, and they are the two the decision names as entry points
+ * 1 and 3. **Assigning** the item into a project it was not already in
+ * (`item.projectId !== project.id`) is entry point 3. **Promoting** it out of
+ * triage with a project selected — `promoting`, which the caller knows and
+ * this function cannot infer, since a stage change leaves no trace in the
+ * field diff — is entry point 1, and it copies even when the project is
+ * unchanged: a capture can be minted already carrying a project (the capture
+ * box has its own picker, on web and on Android) and no context, and that
+ * item reaches promotion having never once crossed the assignment gate. Any
+ * other save copies nothing, which is the acceptance's "nothing retroactive":
+ * a later edit touching neither field never re-copies into an item already
+ * sitting in the project. A context
  * the human DID type always wins: `context.length === 0` is false the moment
  * they have, so nothing here ever overwrites it. An explicit CLEAR wins too —
  * gated on `!("context" in edits)` — so a human who empties a seeded context
@@ -165,6 +173,7 @@ export function buildTriageEdits(
   draft: TriageDraft,
   item: TaskItemDTO,
   project: ProjectDTO | null = null,
+  promoting = false,
 ): TriageEdits {
   const edits: TriageEdits = {};
 
@@ -198,9 +207,9 @@ export function buildTriageEdits(
   }
 
   // ADR-0030 decision 3's copy-at-mint — see this function's own doc for the
-  // transition gate and why it cannot fire on an untouched save. Also gated
-  // on `!("context" in edits)`: when the block above already recorded an
-  // explicit clear (the human emptied a seeded context in this same save),
+  // two gestures that copy and why an ordinary save is not one of them. Also
+  // gated on `!("context" in edits)`: when the block above already recorded
+  // an explicit clear (the human emptied a seeded context in this same save),
   // that clear is human-typed and wins — never overwritten by the default,
   // matching the sibling copy-at-mint path merged in #632.
   if (
@@ -208,7 +217,7 @@ export function buildTriageEdits(
     !("context" in edits) &&
     project !== null &&
     project.defaultContext !== null &&
-    item.projectId !== project.id
+    (promoting || item.projectId !== project.id)
   ) {
     edits.context = project.defaultContext;
   }

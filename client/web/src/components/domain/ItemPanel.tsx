@@ -452,7 +452,10 @@ export function ItemPanel({
             variant="primary"
             iconLeft="check"
             disabled={item.pending || blocked}
-            onClick={() => onTriage?.(item.id, "ready", buildTriageEdits(draft, item, selectedProject))}
+            // `promoting` — ADR-0030 decision 3's entry point 1. This is the
+            // only call site that passes it: the stage change is what makes
+            // the copy due, and only the caller knows a stage is changing.
+            onClick={() => onTriage?.(item.id, "ready", buildTriageEdits(draft, item, selectedProject, true))}
           >
             Promote to ready
           </Button>

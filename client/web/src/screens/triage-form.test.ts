@@ -226,6 +226,35 @@ describe("buildTriageEdits", () => {
       });
     });
 
+    it("copies at promotion onto an item that entered triage already carrying the project", () => {
+      // The capture box has its own project picker and its own context
+      // field, both optional, so an item can reach triage tagged `p1` with
+      // no context — never having crossed the assignment gate. Promotion is
+      // ADR-0030 decision 3's entry point 1, and it is the only copy point
+      // this item will ever meet.
+      const tagged = itemDTO({ id: "i4", projectId: "p1", context: null });
+      const draft = draftFromItem(tagged);
+      expect(buildTriageEdits(draft, tagged, withDefault, true)).toEqual({
+        context: "@computer",
+      });
+    });
+
+    it("copies nothing at promotion when the item already carries a context", () => {
+      const tagged = itemDTO({ id: "i5", projectId: "p1", context: "@errands" });
+      expect(buildTriageEdits(draftFromItem(tagged), tagged, withDefault, true)).toEqual({});
+    });
+
+    it("copies nothing on an ordinary save of that same item — only promotion counts", () => {
+      const tagged = itemDTO({ id: "i4", projectId: "p1", context: null });
+      expect(buildTriageEdits(draftFromItem(tagged), tagged, withDefault)).toEqual({});
+    });
+
+    it("keeps an explicit clear at promotion too", () => {
+      const tagged = itemDTO({ id: "i6", projectId: "p1", context: "@errands" });
+      const draft = { ...draftFromItem(tagged), context: "" };
+      expect(buildTriageEdits(draft, tagged, withDefault, true)).toEqual({ context: null });
+    });
+
     it("does nothing extra when no project is passed at all", () => {
       const draft = { ...draftFromItem(item), projectId: "p1" };
       expect(buildTriageEdits(draft, item, null)).toEqual({

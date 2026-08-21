@@ -368,7 +368,10 @@ function Dossier({
  * `project` whenever its `version` moves, which is what lets a patch this
  * card just sent (no optimistic overlay) settle into the fields once the
  * next completed cycle pulls it back, rather than being clobbered by the
- * stale value already on screen. */
+ * stale value already on screen — but **per field**, and only where the
+ * field still holds what the last seed put there. The two fields share one
+ * Save and one version, so a re-seed of both would let the repo's write
+ * landing discard a default context typed while it was in flight. */
 function PropertiesCard({
   project,
   lastProjectWrite,
@@ -383,12 +386,32 @@ function PropertiesCard({
 }) {
   const [repoInput, setRepoInput] = useState(project.githubRepo ?? "");
   const [contextInput, setContextInput] = useState(project.defaultContext ?? "");
-  const [syncedVersion, setSyncedVersion] = useState(project.version);
+  const [synced, setSynced] = useState({
+    version: project.version,
+    repo: project.githubRepo ?? "",
+    context: project.defaultContext ?? "",
+  });
 
-  if (project.version !== syncedVersion) {
-    setSyncedVersion(project.version);
-    setRepoInput(project.githubRepo ?? "");
-    setContextInput(project.defaultContext ?? "");
+  if (project.version !== synced.version) {
+    // Only a field nobody has typed in since the last seed is re-seeded. A
+    // version can move for a reason that has nothing to do with the field
+    // being edited — saving the repo bumps it while a default context is
+    // half-typed — and re-seeding both would throw that typing away, the
+    // one thing an editor must not do (`triage-form.ts`'s `effectiveDraft`
+    // makes the same guarantee structurally, by keeping only touched fields
+    // in state). "Untouched" is the input still holding exactly what the
+    // last seed put there.
+    if (repoInput === synced.repo) {
+      setRepoInput(project.githubRepo ?? "");
+    }
+    if (contextInput === synced.context) {
+      setContextInput(project.defaultContext ?? "");
+    }
+    setSynced({
+      version: project.version,
+      repo: project.githubRepo ?? "",
+      context: project.defaultContext ?? "",
+    });
   }
 
   const trimmedRepo = repoInput.trim();
@@ -510,6 +533,12 @@ function LinksCard({
       return;
     }
     const trimmedLabel = labelInput.trim();
+    // Only reachable once the read has answered — Add is disabled while
+    // `sortedLinks` is `undefined`, because "no links yet" and "not known
+    // yet" would otherwise both mint position 0, and against a project that
+    // does have links that 0 duplicates the first row's: the same collision
+    // the count-minted position below is written to avoid, arrived at from
+    // the other direction.
     // Mint the new position past the largest live one, not from the count:
     // removal is a soft flag, so live positions develop gaps (0,1,2 minus
     // the middle leaves 0,2 with length 2) and a count-minted position
@@ -635,7 +664,7 @@ function LinksCard({
             onChange={(event) => setLabelInput(event.target.value)}
           />
           {failure !== null ? <Badge tone="danger">{failure}</Badge> : null}
-          <Button type="submit" size="sm" disabled={urlInput.trim() === ""}>
+          <Button type="submit" size="sm" disabled={urlInput.trim() === "" || sortedLinks === undefined}>
             Add link
           </Button>
         </form>

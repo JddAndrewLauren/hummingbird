@@ -24,16 +24,24 @@ const noop = () => {};
  * supplies the new ones' defaults once rather than repeating them at every
  * `render` call. The refetch key rides `task.syncOutcomeSeq`, not a prop. */
 function renderProjectsScreen(props: Partial<ProjectsScreenProps> & Pick<ProjectsScreenProps, "task">) {
-  return render(
+  const element = (next: Partial<ProjectsScreenProps> & Pick<ProjectsScreenProps, "task">) => (
     <ProjectsScreen
       onCreateProject={noop}
       onPatchProject={noop}
       onRequestProjectLinks={noop}
       onCreateProjectLink={noop}
       onPatchProjectLink={noop}
-      {...props}
-    />,
+      {...next}
+    />
   );
+  const result = render(element(props));
+  return {
+    ...result,
+    /** The same render with new props — a completed cycle landing on an open
+     * dossier, which is when the properties card decides what to re-seed. */
+    rerenderWith: (next: Partial<ProjectsScreenProps> & Pick<ProjectsScreenProps, "task">) =>
+      result.rerender(element(next)),
+  };
 }
 
 describe("ProjectsScreen", () => {
@@ -256,6 +264,38 @@ describe("ProjectsScreen", () => {
     expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false);
   });
 
+  it("keeps a field typed while another field's write was in flight", () => {
+    // Both properties share one Save and one version, so the repo's write
+    // landing moves the version while a default context is half-typed. The
+    // re-seed must skip the field being edited, or the typing is lost.
+    const project = projectDTO({ id: "p-1", name: "House repairs" });
+    const task = taskState({ projects: [project], ledger: [] });
+    const { rerenderWith } = renderProjectsScreen({ task });
+    fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+    fireEvent.change(screen.getByLabelText("GitHub repo"), { target: { value: "a/b" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.change(screen.getByLabelText("Default context"), { target: { value: "@computer" } });
+
+    const landed = { ...project, githubRepo: "a/b", version: 2 };
+    rerenderWith({ task: { ...task, projects: [landed] } });
+
+    expect((screen.getByLabelText("Default context") as HTMLInputElement).value).toBe("@computer");
+    expect((screen.getByLabelText("GitHub repo") as HTMLInputElement).value).toBe("a/b");
+  });
+
+  it("re-seeds an untouched field from a write another device made", () => {
+    const project = projectDTO({ id: "p-1", name: "House repairs" });
+    const task = taskState({ projects: [project], ledger: [] });
+    const { rerenderWith } = renderProjectsScreen({ task });
+    fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+
+    const landed = { ...project, defaultContext: "@errands", version: 2 };
+    rerenderWith({ task: { ...task, projects: [landed] } });
+
+    expect((screen.getByLabelText("Default context") as HTMLInputElement).value).toBe("@errands");
+  });
+
   // #626: the links card.
   describe("the links card", () => {
     function openDossier(
@@ -378,6 +418,18 @@ describe("ProjectsScreen", () => {
       fireEvent.click(screen.getByRole("button", { name: "Add link" }));
 
       expect(onCreateProjectLink).toHaveBeenCalledWith("p-1", "https://d.example", null, 3);
+    });
+
+    it("refuses to add before the read has answered, so no position is minted blind", () => {
+      // "No links yet" and "not known yet" would both mint position 0, and
+      // against a project that does have links that duplicates the first
+      // row's — the same collision the max-minted position avoids.
+      openDossier();
+
+      fireEvent.change(screen.getByLabelText("URL"), { target: { value: "https://d.example" } });
+
+      expect(screen.getByText("Reading links…")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Add link" }).hasAttribute("disabled")).toBe(true);
     });
 
     it("refuses a blank url", () => {
