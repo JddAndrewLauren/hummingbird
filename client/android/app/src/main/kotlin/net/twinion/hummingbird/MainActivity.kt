@@ -84,8 +84,11 @@ import net.twinion.hummingbird.theme.ThemeStore
 import net.twinion.hummingbird.theme.resolveDarkTheme
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 import net.twinion.hummingbird.ui.theme.LocalHbDark
+import uniffi.hummingbird_ffi_mobile.MobileCalendarConnection
+import uniffi.hummingbird_ffi_mobile.MobileCalendarState
 import uniffi.hummingbird_ffi_mobile.MobileTapTarget
 import uniffi.hummingbird_ffi_mobile.MobileTaskHost
+import uniffi.hummingbird_ffi_mobile.calendarPollIntervalMs
 import uniffi.hummingbird_ffi_mobile.isInformativeSyncOutcome
 import uniffi.hummingbird_ffi_mobile.notificationTapTarget
 
@@ -370,6 +373,20 @@ private fun AppRoot(
     // `"skipped"`/`"busy"` tick must never read as a fresh "Synced".
     var lastSyncOutcomeKind by remember { mutableStateOf<String?>(null) }
     var lastSyncAtMs by remember { mutableStateOf<Long?>(null) }
+    // #564's calendar lane. Held here for the same reason the sync card's
+    // state is: the cadence that maintains it runs above the `NavHost`, and
+    // a `SettingsViewModel`-scoped copy would reset to "never connected" on
+    // every visit however long the lane had actually been polling. The
+    // connection *state* is the seam's answer, never re-derived here.
+    var calendarConnection by remember {
+        mutableStateOf(
+            MobileCalendarConnection(
+                state = MobileCalendarState.NEVER_CONNECTED,
+                expiresAtMs = null,
+                error = null,
+            ),
+        )
+    }
 
     suspend fun sync(trigger: String) {
         val host = core ?: return
@@ -430,6 +447,36 @@ private fun AppRoot(
         val host = CoreHolder.get(context)
         core = host
         needsToken = TokenStore.load(context) == null
+        // Re-arm the calendar from what this device persisted: the opt-in
+        // flag and the picked calendars, both preferences, neither a
+        // credential (`CalendarPrefs.kt`'s own header). An opted-in device
+        // mints once here, so a launch that is online is already connected
+        // by the time Settings can be reached.
+        calendarConnection = host.initCalendar(
+            CalendarPrefs.readConnected(context),
+            CalendarPrefs.readSelections(context),
+        )
+    }
+
+    suspend fun connectCalendar() {
+        val host = core ?: return
+        calendarConnection = host.connectCalendar()
+        // Persist the opt-in only once the seam says the device is opted
+        // in — a first attempt that failed leaves the flag off, so the
+        // Connect affordance is still there after a restart.
+        CalendarPrefs.writeConnected(
+            context,
+            calendarConnection.state != MobileCalendarState.NEVER_CONNECTED,
+        )
+    }
+
+    suspend fun disconnectCalendar() {
+        val host = core ?: return
+        calendarConnection = host.disconnectCalendar()
+        CalendarPrefs.writeConnected(context, false)
+        // The picked calendars survive a disconnect deliberately:
+        // reconnecting should not make the operator re-pick, and nothing
+        // polls them while the flag is off.
     }
 
     NotificationPermissionRequest()
@@ -469,6 +516,34 @@ private fun AppRoot(
                 while (true) {
                     delay(60_000)
                     sync("timer")
+                }
+            }
+        }
+        onPauseOrDispose { resumed.cancel() }
+    }
+
+    // #564's calendar cadence, and the only clock that owns it. Not a
+    // competing clock under issue #8: sync and calendar are different
+    // cadences for different data (`sync-cadence.ts:16-19` records the same
+    // case for the web's two timers), and each has exactly one owner.
+    //
+    // **The interval is read through the seam**, so Android adds zero new
+    // places the 15 minutes is written down — `calendar_poll_interval_ms()`
+    // is `hummingbird_core::calendar::CALENDAR_POLL_INTERVAL_MS` and
+    // nothing else. Foreground-only, like the sync loop: a background
+    // calendar poll would spend the operator's battery mirroring events
+    // nothing is on screen to read.
+    //
+    // Keyed on the connection state as well as the core, so connecting
+    // arms the loop immediately rather than at the next resume.
+    LifecycleResumeEffect(core, calendarConnection.state) {
+        val resumed = scope.launch {
+            val host = core
+            if (host != null && calendarConnection.state != MobileCalendarState.NEVER_CONNECTED) {
+                while (true) {
+                    calendarConnection =
+                        host.calendarOnTimer(System.currentTimeMillis()).connection
+                    delay(calendarPollIntervalMs())
                 }
             }
         }
@@ -710,6 +785,9 @@ private fun AppRoot(
                         lastSyncOutcomeKind = lastSyncOutcomeKind,
                         lastSyncAtMs = lastSyncAtMs,
                         onSync = { scope.launch { sync("user") } },
+                        calendarConnection = calendarConnection,
+                        onConnectCalendar = { scope.launch { connectCalendar() } },
+                        onDisconnectCalendar = { scope.launch { disconnectCalendar() } },
                         onBack = { navController.popBackStack() },
                     )
                 }

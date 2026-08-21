@@ -13,6 +13,7 @@ import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -28,6 +29,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -47,6 +49,10 @@ import net.twinion.hummingbird.ui.theme.StatusDoneFgDark
 import net.twinion.hummingbird.ui.theme.StatusWarnFgDark
 import uniffi.hummingbird_ffi_mobile.MobileBindingRecord
 import uniffi.hummingbird_ffi_mobile.MobileBindingValue
+import uniffi.hummingbird_ffi_mobile.MobileCalendarConnection
+import uniffi.hummingbird_ffi_mobile.MobileCalendarList
+import uniffi.hummingbird_ffi_mobile.MobileCalendarSelection
+import uniffi.hummingbird_ffi_mobile.MobileCalendarState
 import uniffi.hummingbird_ffi_mobile.MobileDeadLetterReason
 import uniffi.hummingbird_ffi_mobile.MobileDeadLetterRecord
 import uniffi.hummingbird_ffi_mobile.MobileSyncStatusInput
@@ -95,6 +101,15 @@ fun SettingsScreen(
     lastSyncOutcomeKind: String?,
     lastSyncAtMs: Long?,
     onSync: () -> Unit,
+    /** #564's calendar lane. The connection is `AppRoot`'s state for the
+     * same reason the sync card's is (this file's own doc above): the
+     * cadence that maintains it runs above the `NavHost`, and a
+     * screen-scoped copy would read "never connected" on every visit. The
+     * picker underneath it is this screen's own — it is a preference
+     * editor, not a cadence. */
+    calendarConnection: MobileCalendarConnection,
+    onConnectCalendar: () -> Unit,
+    onDisconnectCalendar: () -> Unit,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -104,8 +119,16 @@ fun SettingsScreen(
     val deadLetters by viewModel.deadLetters.collectAsState()
     val queueDepth by viewModel.queueDepth.collectAsState()
     val bindingError by viewModel.bindingError.collectAsState()
+    val calendars by viewModel.calendars.collectAsState()
+    val calendarSelections by viewModel.calendarSelections.collectAsState()
 
     suspend fun reload() = viewModel.load()
+
+    // Re-listed whenever the connection state moves: a device that has just
+    // connected has a credential the previous list attempt did not, and one
+    // that has just been refused should stop showing options it can no
+    // longer read back.
+    LaunchedEffect(calendarConnection.state) { viewModel.loadCalendars() }
 
     LaunchedEffect(Unit) { reload() }
 
@@ -226,11 +249,13 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             ) {
-                Text(
-                    "Calendar context isn't available on this device yet.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(16.dp),
+                CalendarSection(
+                    connection = calendarConnection,
+                    calendars = calendars,
+                    selections = calendarSelections,
+                    onConnect = onConnectCalendar,
+                    onDisconnect = onDisconnectCalendar,
+                    onToggleCalendar = { id -> scope.launch { viewModel.toggleCalendar(id) } },
                 )
             }
 
@@ -516,3 +541,99 @@ private fun bindingValueLabel(value: MobileBindingValue): String = when (value) 
 
 private fun sameBindingText(value: MobileBindingValue, draft: String): Boolean =
     value is MobileBindingValue.Text && value.text == draft
+
+// -------------------------------------------------------- calendar (#564)
+// The Calendar section: one Connect/Disconnect control, a picker over the
+// calendars this device's credential can read, and one sentence of state.
+//
+// **This section decides nothing.** Which of the four Source-connection
+// states the device is in arrives applied as a [MobileCalendarState] from
+// `ffi-mobile`'s `calendar_token::connection_state`; the `when` below only
+// picks words for it. There is no Kotlin test of an error code anywhere in
+// this file — the codes never reach it, only the state does.
+//
+// **No token is rendered, held or logged here**, and none can be: the
+// Google access token never crosses the seam at all (`ffi-mobile`'s
+// calendar section header), and the device token is `TokenStore`'s.
+
+/** Whether Connect is on offer. **Only `NEVER_CONNECTED`** — the whole
+ * point of the *cannot confirm* state is that an offline or
+ * authority-down device reads as connected and keeps showing its mirror,
+ * so re-offering Connect there would invite the operator to "fix"
+ * something no tap can fix. A refusal offers its own remedy instead
+ * (below), which is the token control or nothing. */
+private fun offersConnect(state: MobileCalendarState): Boolean =
+    state == MobileCalendarState.NEVER_CONNECTED
+
+/** One sentence per state — never shared between two of them, which is
+ * #564's own acceptance criterion: *never connected* and *refused* reading
+ * the same way is exactly how a broken lane hides as an un-set-up one. */
+private fun calendarStateSentence(state: MobileCalendarState): String = when (state) {
+    MobileCalendarState.NEVER_CONNECTED ->
+        "Not connected. Connecting lets the weekend and vacation questions read your calendar."
+    MobileCalendarState.CONNECTED ->
+        "Connected. Your calendar is read in the background every so often."
+    MobileCalendarState.CANNOT_CONFIRM ->
+        "Still connected, but this device can't reach the server right now — " +
+            "what's shown may be out of date."
+    MobileCalendarState.REFUSED_DEVICE_TOKEN ->
+        "The server wouldn't accept this device's token. Set a fresh one under Device token below."
+    MobileCalendarState.REFUSED_SERVER_LANE ->
+        "The server can't hand out calendar access at the moment. Nothing to fix on this device."
+}
+
+@Composable
+private fun CalendarSection(
+    connection: MobileCalendarConnection,
+    calendars: MobileCalendarList?,
+    selections: List<MobileCalendarSelection>,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+    onToggleCalendar: (String) -> Unit,
+) {
+    Column(
+        modifier = Modifier.padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            calendarStateSentence(connection.state),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        if (offersConnect(connection.state)) {
+            Button(onClick = onConnect) { Text("Connect calendar") }
+        } else {
+            OutlinedButton(onClick = onDisconnect) { Text("Disconnect calendar") }
+        }
+
+        // The picker. A list that could not be read leaves whatever is
+        // already selected alone rather than clearing it — the same rule
+        // `CalendarHostCore::list_calendars` states for its own answer.
+        val options = calendars?.takeIf { it.kind == "ok" }?.calendars.orEmpty()
+        if (options.isNotEmpty()) {
+            Text("Calendars to read", style = MaterialTheme.typography.titleSmall)
+            for (entry in options) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics { contentDescription = "calendar ${entry.summary}" },
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Checkbox(
+                        checked = selections.any { it.id == entry.id },
+                        onCheckedChange = { onToggleCalendar(entry.id) },
+                    )
+                    Text(entry.summary, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        } else if (connection.state == MobileCalendarState.CONNECTED) {
+            Text(
+                "No calendars came back to choose from.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}

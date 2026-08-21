@@ -91,6 +91,66 @@ class SettingsScreenStructuralTest {
         )
     }
 
+    /** #564's calendar lane, held to the same rule. The seven mint error
+     * codes are `ffi-mobile`'s `calendar_token::code` vocabulary, and which
+     * of the four Source-connection states each one puts the device in is
+     * decided there, once. A Kotlin `when` over a code would be a second
+     * copy of that table — and it would agree with the first one for
+     * exactly as long as nobody touched either. */
+    @Test
+    fun `no settings surface matches on a calendar mint error code`() {
+        for ((name, src) in both) {
+            for (code in listOf(
+                "no_device_token",
+                "authority_rejected_device_token",
+                "authority_unconfigured",
+                "authority_upstream",
+                "authority_unreachable",
+                "bad_token_response",
+                "no_access_token",
+            )) {
+                assertFalse("$name must not name the mint code $code", src.contains(code))
+            }
+        }
+    }
+
+    /** The four states must each get their own sentence, and the `when`
+     * that picks them must carry no `else ->` — a fifth state added to the
+     * core's enum is then a Kotlin compile error, not a state that silently
+     * renders as another one's words. */
+    @Test
+    fun `the calendar state sentence is exhaustive over the four states`() {
+        val sentences = Regex(
+            """fun calendarStateSentence\(state: MobileCalendarState\): String = when \(state\)\s*\{([\s\S]*?)
+\}""",
+        ).find(screenSrc)?.groupValues?.get(1)
+            ?: error("calendarStateSentence not found — has it been renamed?")
+        assertFalse("the calendar state when must be exhaustive", sentences.contains("else ->"))
+        for (state in listOf(
+            "NEVER_CONNECTED",
+            "CONNECTED",
+            "CANNOT_CONFIRM",
+            "REFUSED_DEVICE_TOKEN",
+            "REFUSED_SERVER_LANE",
+        )) {
+            assertTrue("$state needs its own sentence", sentences.contains(state))
+        }
+    }
+
+    /** *Cannot confirm* must never offer Connect — an offline or
+     * authority-down device is still connected, and a Connect button there
+     * invites the operator to "fix" something no tap can fix. Only
+     * `NEVER_CONNECTED` offers it. */
+    @Test
+    fun `connect is offered in exactly one state`() {
+        assertTrue(
+            "offersConnect must be NEVER_CONNECTED alone",
+            Regex(
+                """fun offersConnect\(state: MobileCalendarState\): Boolean =\s*state == MobileCalendarState\.NEVER_CONNECTED""",
+            ).containsMatchIn(screenSrc),
+        )
+    }
+
     @Test
     fun `the screen renders every dead-letter reason through an exhaustive when`() {
         // The `when` over `MobileDeadLetterReason` in `SettingsScreen.kt`
