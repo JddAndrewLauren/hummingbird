@@ -64,6 +64,34 @@
 //! about are carried on the items themselves, so
 //! [`homework_zone_queries`] can name them exactly.
 //!
+//! # The standing link
+//!
+//! The pane also offers a **standing session link** —
+//! [`homework_link`] — a meeting URL that is one tap away from the pane in
+//! every state it has, including "No open homework" and the zone gap. It is
+//! standing, so it survives the arms in which there is no answer.
+//!
+//! **It is a binding, not a literal beside [`HOMEWORK_CONTEXT`].** The
+//! value is a meeting URL carrying its passcode in a `pwd=` parameter and
+//! this repo is public, so hardcoding it would publish a joinable meeting
+//! into git history forever. A binding
+//! ([`crate::bindings::BindingKey::HomeworkLink`]) is one `settings` row on
+//! the operator's own authority, set once in Settings and synced by the
+//! ordinary delta pull — never in git.
+//!
+//! **Deliberately outside [`HomeworkResolved`].** The gap arm carries no
+//! facts and the link must survive the gap, so a `link` field on
+//! [`HomeworkFacts`] could not answer in the arm that most needs it. It is
+//! also the honest shape: "what is the standing link" is a different
+//! question from "what is the homework answer", and it needs neither the
+//! zone bridge nor the items.
+//!
+//! **The scheme filter is a decision, not defensiveness.** The value is
+//! operator-typed free text and the web renderer hands it to
+//! `window.open`, so a `javascript:` value would execute. Only `http://`
+//! and `https://` answer `Some`, decided once here rather than twice in two
+//! renderers.
+//!
 //! # What does not cross
 //!
 //! The headline. `Homework due in 3 days` is a sentence, and ADR-0025 is
@@ -76,7 +104,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::contract::{AnswerState, Band, PaneAnswerCore};
-use super::inputs::{PaneInputs, PaneItemFacts};
+use super::inputs::{BindingValueFact, PaneInputs, PaneItemFacts};
 use super::zone::{civil_days_between, CivilDate, ZoneFacts, ZoneQuery, DEVICE_ZONE};
 
 use hummingbird_domain::deadline_sort_key;
@@ -97,6 +125,11 @@ pub const SUBJECT_KEY: &str = "homework";
 /// stopped finding the items the form told the operator to file is a test
 /// failure rather than a silent one.
 pub const HOMEWORK_CONTEXT: &str = "@homework";
+
+/// The `settings` key the standing session link is held under —
+/// [`crate::bindings::BindingKey::HomeworkLink`]'s own spelling, named once
+/// here for the same reason [`HOMEWORK_CONTEXT`] is.
+pub const HOMEWORK_LINK_BINDING_KEY: &str = "homework-link";
 
 /// Beyond `today` but within this many whole civil days reads as `near`;
 /// beyond it, `distant`. Beside the band function, ADR-0015's own
@@ -310,6 +343,30 @@ pub fn homework_facts(inputs: &PaneInputs, facts: &ZoneFacts) -> HomeworkResolve
     })
 }
 
+/// The standing session link, when one is bound and usable.
+///
+/// `Some` only for a [`BindingValueFact::Text`] that is non-empty after a
+/// trim and begins `http://` or `https://` (ASCII-case-insensitively).
+/// Everything else — an unread table, an unset row, a row holding something
+/// that is not text, a blank string, a `javascript:` URL — is `None`, which
+/// both clients render as "no button" rather than as a broken one. See the
+/// module header for why the scheme filter is decided here rather than in
+/// each renderer.
+pub fn homework_link(inputs: &PaneInputs) -> Option<String> {
+    let BindingValueFact::Text { text } = &inputs.binding(HOMEWORK_LINK_BINDING_KEY)?.value else {
+        return None;
+    };
+    let trimmed = text.trim();
+    // Compared as bytes rather than by slicing the `str`: an operator-typed
+    // value can begin with a multi-byte character, and `trimmed[..7]` would
+    // panic on one rather than answering `None`.
+    let is_web = ["http://", "https://"].iter().any(|scheme| {
+        trimmed.len() > scheme.len()
+            && trimmed.as_bytes()[..scheme.len()].eq_ignore_ascii_case(scheme.as_bytes())
+    });
+    is_web.then(|| trimmed.to_string())
+}
+
 /// Which band `days_away` reads as — `None` is "the winner carries no
 /// deadline", which is [`Band::Distant`] rather than dormant: there *is*
 /// homework, it just has no date on it, and a dormant pane says the
@@ -337,7 +394,9 @@ pub fn homework_answer(inputs: &PaneInputs, facts: &ZoneFacts) -> PaneAnswerCore
     let resolved = match homework_facts(inputs, facts) {
         // Not `Unbound`: nobody binds this question — the context is
         // hardcoded — so there is no setup prompt to route anyone to, and
-        // `unbound` would render one.
+        // `unbound` would render one. `homework-link` does not change that:
+        // it binds a display affordance, not the question, and an unset one
+        // is not an unanswered question.
         HomeworkResolved::Gap { .. } => {
             return PaneAnswerCore {
                 answer_state: AnswerState::BoundButUnacquired,
@@ -367,6 +426,7 @@ pub fn homework_answer(inputs: &PaneInputs, facts: &ZoneFacts) -> PaneAnswerCore
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decisions::panes::inputs::BindingFact;
     use crate::decisions::panes::zone::{add_civil_days, ZoneFact};
 
     /// A fixed device zone, UTC-7 (like `America/Los_Angeles` in August) —
@@ -684,6 +744,105 @@ mod tests {
         assert_eq!(winner.description.as_deref(), Some("first notes"));
         assert_eq!(facts.others[0].title, "second title");
         assert_eq!(facts.others[0].description, None);
+    }
+
+    // ------------------------------------------------------ the standing link
+
+    fn with_link(value: Option<BindingValueFact>) -> PaneInputs {
+        PaneInputs {
+            now_ms: at(2026, 8, 21, 9, 0),
+            bindings: value.map(|value| {
+                vec![BindingFact {
+                    key: HOMEWORK_LINK_BINDING_KEY.to_string(),
+                    value,
+                }]
+            }),
+            ..PaneInputs::default()
+        }
+    }
+
+    fn text(value: &str) -> Option<BindingValueFact> {
+        Some(BindingValueFact::Text {
+            text: value.to_string(),
+        })
+    }
+
+    #[test]
+    fn the_link_key_is_the_binding_vocabulary_s_own_spelling() {
+        assert_eq!(
+            HOMEWORK_LINK_BINDING_KEY,
+            crate::bindings::BindingKey::HomeworkLink.as_str()
+        );
+    }
+
+    #[test]
+    fn offers_a_bound_http_link_trimmed() {
+        assert_eq!(
+            homework_link(&with_link(text("  https://example.com/j/000000000?pwd=x  "))),
+            Some("https://example.com/j/000000000?pwd=x".to_string()),
+        );
+        assert_eq!(
+            homework_link(&with_link(text("http://example.com/j/1"))),
+            Some("http://example.com/j/1".to_string()),
+        );
+        // The scheme is matched case-insensitively — an operator typing it
+        // by hand is not answering a different question in capitals.
+        assert_eq!(
+            homework_link(&with_link(text("HTTPS://example.com/j/1"))),
+            Some("HTTPS://example.com/j/1".to_string()),
+        );
+    }
+
+    #[test]
+    fn offers_nothing_for_anything_that_is_not_a_web_url() {
+        // An unread table and an unset row are both "no button", and so is
+        // a row holding something that is not text.
+        assert_eq!(homework_link(&with_link(None)), None);
+        assert_eq!(homework_link(&with_link(Some(BindingValueFact::Unset))), None);
+        assert_eq!(homework_link(&with_link(Some(BindingValueFact::Other))), None);
+        for value in [
+            "",
+            "   ",
+            // The reason the filter exists: web hands this to `window.open`.
+            "javascript:alert(1)",
+            "zoommtg://zoom.us/join",
+            "example.com/j/1",
+            // A scheme with nothing after it names no meeting.
+            "https://",
+            // A multi-byte first character must answer `None`, not panic.
+            "…https://example.com",
+        ] {
+            assert_eq!(homework_link(&with_link(text(value))), None, "{value}");
+        }
+    }
+
+    #[test]
+    fn the_link_survives_every_arm_the_answer_has() {
+        // The whole point of "standing": the dormant arm and the zone gap
+        // both still offer it, which a field on `HomeworkFacts` could not
+        // do — the gap arm carries no facts at all.
+        let url = "https://example.com/j/000000000";
+        let mut dormant = with_link(text(url));
+        dormant.items = vec![item("hw", Some(HOMEWORK_CONTEXT), "done", None)];
+        let (answer, facts) = answered(&dormant);
+        assert_eq!(answer.band, Band::Dormant);
+        assert_eq!(facts.winner, None);
+        assert_eq!(homework_link(&dormant), Some(url.to_string()));
+
+        let mut gapped = with_link(text(url));
+        gapped.items = vec![homework("hw", Some("2026-08-22"))];
+        assert_eq!(
+            homework_facts(&gapped, &ZoneFacts::default()),
+            HomeworkResolved::Gap {
+                gap: HomeworkGap::UnresolvableZone
+            },
+        );
+        assert_eq!(homework_link(&gapped), Some(url.to_string()));
+        // And it is still not a setup prompt.
+        assert_eq!(
+            homework_answer(&gapped, &ZoneFacts::default()).answer_state,
+            AnswerState::BoundButUnacquired,
+        );
     }
 
     // ---------------------------------------------------------- the queries

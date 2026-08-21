@@ -6210,7 +6210,7 @@ mod tests {
         let bindings = core.bindings();
         assert_eq!(
             bindings.iter().map(|b| b.key.as_str()).collect::<Vec<_>>(),
-            vec!["race-series", "trips-calendar", "city-waste-page"],
+            vec!["race-series", "trips-calendar", "city-waste-page", "homework-link"],
         );
         assert_eq!(binding(&bindings, "race-series").value, BindingValue::Unset);
         assert_eq!(binding(&bindings, "city-waste-page").value, BindingValue::Unset);
@@ -6248,6 +6248,7 @@ mod tests {
                 "race-series",
                 "trips-calendar",
                 "city-waste-page",
+                "homework-link",
                 "a-non-string-one",
                 "some-future-binding",
             ],

@@ -2932,6 +2932,10 @@ fn map_homework_resolved(resolved: homework::HomeworkResolved) -> MobileHomework
 /// question always resolves — to facts or to a gap KIND (a sentinel
 /// subject resolves to its own honest `NotFetched`).
 ///
+/// `Homework` carries its standing session `link` beside the resolved facts
+/// for a related reason: the link is standing, so it has to reach the host
+/// in the Gap arm too, and a field inside the facts could not.
+///
 /// `Waste` and `Race` each carry their `setup` kind beside the resolved
 /// facts: their two unacquired flavours ("bindings not read yet" and
 /// "binding unusable") share one answer state, so the kind is the only
@@ -2939,7 +2943,11 @@ fn map_homework_resolved(resolved: homework::HomeworkResolved) -> MobileHomework
 /// [`MobileWasteSetup`].
 #[derive(Debug, Clone, PartialEq, uniffi::Enum)]
 pub enum MobilePaneFacts {
-    Homework { resolved: MobileHomeworkResolved },
+    /// `link` is a **sibling** of `resolved`, not a field inside the facts:
+    /// the standing session link survives the Gap arm, which carries no
+    /// facts at all (`homework.rs`'s own header). `None` is "nothing bound,
+    /// or what is bound is not a web URL" — the host draws no button.
+    Homework { resolved: MobileHomeworkResolved, link: Option<String> },
     Waste { setup: MobileWasteSetup, resolved: MobileWasteResolved },
     Weekend { resolved: MobileWeekendResolved },
     Vacation { resolved: Option<MobileVacationResolved> },
@@ -3269,6 +3277,7 @@ fn mobile_pane_facts_of(
     match question {
         StandingQuestion::Homework => MobilePaneFacts::Homework {
             resolved: map_homework_resolved(homework::homework_facts(inputs, zone)),
+            link: homework::homework_link(inputs),
         },
         StandingQuestion::Waste => MobilePaneFacts::Waste {
             setup: map_waste_setup(waste::waste_setup(inputs)),
@@ -9260,7 +9269,7 @@ mod settings_tests {
             .find(|pane| pane.standing_question == MobileStandingQuestion::Homework)
             .unwrap();
         assert_eq!(pane.answer.answer_state, MobilePaneAnswerState::Answered);
-        let MobilePaneFacts::Homework { resolved } = &pane.facts else {
+        let MobilePaneFacts::Homework { resolved, .. } = &pane.facts else {
             panic!("the homework pane carried another question's facts");
         };
         let MobileHomeworkResolved::Facts { facts } = resolved else {
@@ -9269,6 +9278,54 @@ mod settings_tests {
         let winner = facts.winner.as_ref().expect("a captured item is open homework");
         assert_eq!(winner.title, "Prep for Thursday");
         assert_eq!(winner.description.as_deref(), Some("read chapter 4"));
+    }
+
+    #[tokio::test]
+    async fn the_standing_homework_link_crosses_even_when_nothing_is_open() {
+        // The "standing" half of #675's link, on this seam: the pane is
+        // dormant (nothing captured) and the link still reaches the host,
+        // because it rides beside `resolved` rather than inside the facts.
+        let host = pane_host("panes-now-homework-link").await;
+        host.set_binding(
+            "seed-link".to_string(),
+            homework::HOMEWORK_LINK_BINDING_KEY.to_string(),
+            "https://example.com/j/000000000".to_string(),
+            1_000,
+        )
+        .await
+        .unwrap();
+
+        let zone = resolve_zone_facts(host.pane_zone_queries(MobileSurface::Now, 1_000).await);
+        let ranked =
+            host.rank_panes(MobileSurface::Now, 1_000, zone, MobileSyncFacts::default()).await;
+        let pane = ranked
+            .iter()
+            .find(|pane| pane.standing_question == MobileStandingQuestion::Homework)
+            .unwrap();
+        let MobilePaneFacts::Homework { resolved, link } = &pane.facts else {
+            panic!("the homework pane carried another question's facts");
+        };
+        let MobileHomeworkResolved::Facts { facts } = resolved else {
+            panic!("expected facts, got {resolved:?}");
+        };
+        assert_eq!(facts.winner, None, "nothing was captured");
+        assert_eq!(link.as_deref(), Some("https://example.com/j/000000000"));
+    }
+
+    #[tokio::test]
+    async fn an_unbound_homework_link_crosses_as_nothing_to_draw() {
+        let host = pane_host("panes-now-homework-nolink").await;
+        let zone = resolve_zone_facts(host.pane_zone_queries(MobileSurface::Now, 1_000).await);
+        let ranked =
+            host.rank_panes(MobileSurface::Now, 1_000, zone, MobileSyncFacts::default()).await;
+        let pane = ranked
+            .iter()
+            .find(|pane| pane.standing_question == MobileStandingQuestion::Homework)
+            .unwrap();
+        let MobilePaneFacts::Homework { link, .. } = &pane.facts else {
+            panic!("the homework pane carried another question's facts");
+        };
+        assert_eq!(*link, None);
     }
 
     #[tokio::test]

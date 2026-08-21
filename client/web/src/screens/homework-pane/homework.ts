@@ -1,6 +1,7 @@
 import {
   homeworkAnswerFromCore,
   homeworkFactsFromCore,
+  homeworkLinkFromCore,
   homeworkZoneQueriesFromCore,
   type HomeworkFactsCore,
   type PaneInputsSource,
@@ -30,6 +31,13 @@ import type { PaneAnswer, PaneGlyph, QuestionInputs } from "../questions/contrac
  * runtime, and `homework.test.ts` pins the two together. */
 export const SUBJECT_KEY = "homework";
 
+/** The `settings` key the standing session link is held under, mirroring
+ * `homework.rs`'s `HOMEWORK_LINK_BINDING_KEY` — named here for the same
+ * reason `SUBJECT_KEY` is, and pinned against the core by
+ * `homework.test.ts`. Only the demo fixture and the settings copy need the
+ * spelling; every *reader* goes through `homeworkLink`. */
+export const LINK_BINDING_KEY = "homework-link";
+
 function paneInputs(inputs: QuestionInputs): PaneInputsSource {
   return {
     nowMs: inputs.nowMs,
@@ -49,6 +57,18 @@ export function homeworkView(inputs: QuestionInputs): HomeworkFactsCore | null {
   const source = paneInputs(inputs);
   const resolved = homeworkFactsFromCore(source, resolveZoneFacts(homeworkZoneQueriesFromCore(source)));
   return resolved.kind === "facts" ? resolved : null;
+}
+
+/** The standing session link, or `null` when nothing usable is bound —
+ * `homeworkView`'s thin wrapper, taking the same `QuestionInputs` every
+ * other reader here does.
+ *
+ * Deliberately *not* derived from the facts: it is offered in every state
+ * this pane has, including "No open homework" and the zone gap, because a
+ * standing link is standing. It is also not attached to the winning item —
+ * the pane is where it lives, not the homework. */
+export function homeworkLink(inputs: QuestionInputs): string | null {
+  return homeworkLinkFromCore(paneInputs(inputs));
 }
 
 /** This question's subjects — always exactly one, and never zero: nobody

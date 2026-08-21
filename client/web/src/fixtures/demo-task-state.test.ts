@@ -226,7 +226,12 @@ describe("buildDemoTaskState — #452 grows the seed past the frontier and the i
 
   it("seeds every known binding key this build actually uses, all set", () => {
     const keys = state.bindings?.map((b) => b.key).sort();
-    expect(keys).toEqual(["city-waste-page", "race-series", "trips-calendar"]);
+    expect(keys).toEqual([
+      "city-waste-page",
+      "homework-link",
+      "race-series",
+      "trips-calendar",
+    ]);
     expect(state.bindings?.every((b) => b.known)).toBe(true);
   });
 

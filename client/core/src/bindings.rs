@@ -1,7 +1,10 @@
 //! The standing-question **bindings** (#118, ADR-0015): the small
 //! cross-device facts a pane needs before it can answer anything — which
 //! race series, which calendar holds the trips, which page the waste
-//! schedule is scraped from.
+//! schedule is scraped from — and, since the homework pane's standing link,
+//! one fact that names no source at all ([`BindingKey::HomeworkLink`]): a
+//! value that must not live in a public repo, held here for the same
+//! sync-it-once reason rather than because a pane queries it.
 //!
 //! A binding is one `settings` row (ADR-0009's KV table), so it rides the
 //! ordinary delta pull and the full sweep like every other table, and is
@@ -47,6 +50,23 @@ pub enum BindingKey {
     TripsCalendar,
     /// The council page the waste schedule is polled from (#120).
     CityWastePage,
+    /// The standing meeting link the homework pane offers (#675's
+    /// follow-on).
+    ///
+    /// **Unlike its three siblings this names no source.** `race-series`,
+    /// `trips-calendar` and `city-waste-page` each say *which thing a pane
+    /// reads*, and an unset one leaves that pane `AnswerState::Unbound`
+    /// with a setup prompt. This one names a **display affordance** the
+    /// homework pane renders and never queries: unset, the pane answers
+    /// exactly as it does today and simply draws no button (ADR-0015,
+    /// amended).
+    ///
+    /// It is a binding rather than a literal beside `HOMEWORK_CONTEXT` for
+    /// one reason: the value is a meeting URL with its passcode embedded in
+    /// it, and this repo is public. A binding is one `settings` row on the
+    /// operator's own authority, set once and synced to every device —
+    /// never in git.
+    HomeworkLink,
 }
 
 impl BindingKey {
@@ -57,6 +77,7 @@ impl BindingKey {
         BindingKey::RaceSeries,
         BindingKey::TripsCalendar,
         BindingKey::CityWastePage,
+        BindingKey::HomeworkLink,
     ];
 
     /// The `settings.key` this binding is stored under — the wire spelling
@@ -66,6 +87,7 @@ impl BindingKey {
             BindingKey::RaceSeries => "race-series",
             BindingKey::TripsCalendar => "trips-calendar",
             BindingKey::CityWastePage => "city-waste-page",
+            BindingKey::HomeworkLink => "homework-link",
         }
     }
 
@@ -162,11 +184,21 @@ mod tests {
     }
 
     #[test]
-    fn the_vocabulary_is_exactly_the_three_adr_0015_bindings() {
+    fn the_vocabulary_is_the_three_adr_0015_sources_then_the_homework_link() {
+        // Declaration order is the editor's row order, so the fourth is
+        // APPENDED — the three source bindings keep their rows. It is also
+        // deliberately last in a second sense: it is not a source binding
+        // at all (see `BindingKey::HomeworkLink`), so nothing above it
+        // becomes harder to read by its arrival.
         let spellings: Vec<&str> = BindingKey::ALL.iter().map(|key| key.as_str()).collect();
         assert_eq!(
             spellings,
-            vec!["race-series", "trips-calendar", "city-waste-page"]
+            vec![
+                "race-series",
+                "trips-calendar",
+                "city-waste-page",
+                "homework-link"
+            ]
         );
     }
 

@@ -1896,7 +1896,9 @@ pub fn vacation_constants_json() -> String {
 // Three exports rather than two: the zone queries cross on their own door
 // because this pane names them from the *items* (`homework.rs`'s own
 // header), so a caller cannot compute them from `nowMs` alone the way
-// `weekend_zone_queries_json` lets it.
+// `weekend_zone_queries_json` lets it. A fourth, `homework_link_json`,
+// carries the standing session link — also its own door, and for the same
+// kind of reason: it must answer in the arms where there are no facts.
 
 #[wasm_bindgen]
 pub fn homework_zone_queries_json(inputs_json: &str) -> String {
@@ -1926,15 +1928,30 @@ pub fn homework_answer_json(inputs_json: &str, zone_facts_json: &str) -> String 
     }
 }
 
+/// `hummingbird_core::decisions::panes::homework::homework_link` — the
+/// standing session link as JSON `string | null`.
+///
+/// Its own door rather than a field on the facts: the link survives the
+/// zone gap, which carries no facts at all (`homework.rs`'s own header).
+#[wasm_bindgen]
+pub fn homework_link_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&homework::homework_link(&inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
 /// The literals this pane is defined by — the context it matches, its
-/// sentinel subject, and the `near` cutoff — so no client retypes any of
-/// them (`race_constants_json`'s own precedent).
+/// sentinel subject, the `near` cutoff, and the `settings` key its standing
+/// link is held under — so no client retypes any of them
+/// (`race_constants_json`'s own precedent).
 #[wasm_bindgen]
 pub fn homework_constants_json() -> String {
     serde_json::json!({
         "context": homework::HOMEWORK_CONTEXT,
         "subjectKey": homework::SUBJECT_KEY,
         "nearWithinDays": homework::NEAR_WITHIN_DAYS,
+        "linkBindingKey": homework::HOMEWORK_LINK_BINDING_KEY,
     })
     .to_string()
 }

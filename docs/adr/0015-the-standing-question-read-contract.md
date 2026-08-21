@@ -170,6 +170,21 @@ I write down about it", and every part of its answer comes from
    item — without it, a captured-but-untriaged item would have started
    appearing on a weekend day because a different pane needed wider inputs.
 
+*Amended again 2026-08-21 (#675, the standing link): a standing question may
+read a **binding for a display affordance** without becoming bindable.*
+`homework-link` (`bindings::BindingKey::HomeworkLink`) holds a meeting URL
+the homework pane offers as a button. Unlike `race-series`,
+`trips-calendar` and `city-waste-page` it names no source: nothing is
+polled for it, no answer is derived from it, and the pane never queries it.
+So consequence 2 above stands unchanged — the homework question still never
+reaches `unbound`, and an **unset `homework-link` is not a setup prompt**,
+it is simply no button. It is a binding for one reason and it is not an
+architectural one: the value carries a meeting passcode and this repo is
+public, so the operator's own synced `settings` table is the only place it
+can live. The link is offered in *every* arm the pane has, the dormant one
+and the zone gap included, which is why it crosses both seams beside the
+resolved facts rather than inside them.
+
 `@homework` also fails CONTEXT.md's own test for a Context — *where or with
 what* the work can be done — the test `@waiting` was deleted from the
 suggested list for failing. That objection was raised during grilling and

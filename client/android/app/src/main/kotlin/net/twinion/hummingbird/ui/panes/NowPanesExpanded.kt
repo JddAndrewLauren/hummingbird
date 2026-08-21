@@ -1,5 +1,7 @@
 package net.twinion.hummingbird.ui.panes
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -7,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
@@ -19,6 +22,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -82,7 +86,7 @@ internal fun NowPaneExpanded(
     onSetScheduledDate: (itemId: String, date: String?) -> Unit = { _, _ -> },
 ) {
     when (val facts = pane.facts) {
-        is MobilePaneFacts.Homework -> HomeworkPaneExpanded(facts.resolved)
+        is MobilePaneFacts.Homework -> HomeworkPaneExpanded(facts.resolved, facts.link)
         is MobilePaneFacts.Waste -> WastePaneExpanded(pane, facts.resolved)
         is MobilePaneFacts.Race -> RacePaneExpanded(pane, facts.resolved, nowMs)
         is MobilePaneFacts.Weekend ->
@@ -169,15 +173,53 @@ private fun HomeworkFactsBody(facts: MobileHomeworkFacts) {
     }
 }
 
+/** The standing session link's label, and the web's own words for it
+ * (`HomeworkPaneExpanded.tsx`) — pinned against them in `PaneAnswersTest`,
+ * since the wording is per-client by ADR-0025 and nothing else would notice
+ * the two drifting apart. */
+internal const val HOMEWORK_LINK_LABEL = "Join the session"
+
 @Composable
-private fun HomeworkPaneExpanded(resolved: MobileHomeworkResolved) {
-    when (resolved) {
-        is MobileHomeworkResolved.Gap -> Text(
-            "Without this device's time zone there is no way to say which day a deadline falls on.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        is MobileHomeworkResolved.Facts -> HomeworkFactsBody(resolved.facts)
+private fun HomeworkPaneExpanded(resolved: MobileHomeworkResolved, link: String?) {
+    // The link is drawn in BOTH arms, the gap included: it is standing, and
+    // it is not attached to the winning item at all. That is also why it
+    // rides beside `resolved` on the seam rather than inside the facts —
+    // the Gap arm carries none.
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        when (resolved) {
+            is MobileHomeworkResolved.Gap -> Text(
+                "Without this device's time zone there is no way to say which day a deadline falls on.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            is MobileHomeworkResolved.Facts -> HomeworkFactsBody(resolved.facts)
+        }
+        if (link != null) {
+            val context = LocalContext.current
+            TextButton(
+                onClick = {
+                    // `AlertDetailScreen.kt`'s own hand-off, verbatim. The
+                    // core already refused anything that is not http(s), so
+                    // this never hands the system an operator typo it would
+                    // resolve to something else.
+                    context.startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse(link))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                },
+            ) {
+                Text(HOMEWORK_LINK_LABEL)
+                Spacer(Modifier.width(6.dp))
+                // The web button's own trailing mark (`iconRight`), so both
+                // clients warn that the tap leaves the app rather than only
+                // one of them.
+                Icon(
+                    painterResource(R.drawable.ic_arrow_up_right),
+                    contentDescription = null,
+                    modifier = Modifier.size(15.dp),
+                )
+            }
+        }
     }
 }
 

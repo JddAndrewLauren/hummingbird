@@ -2,7 +2,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type { TaskItemDTO } from "../../store/protocol";
-import { render, screen } from "../../test/component";
+import { fireEvent, render, screen } from "../../test/component";
 import { EMPTY_QUESTION_SYNC, type QuestionInputs } from "../questions/contract";
 import { RankedRegion } from "../questions/RankedRegion";
 
@@ -53,10 +53,13 @@ function item(overrides: Partial<TaskItemDTO> & { id: string }): TaskItemDTO {
   };
 }
 
-function world(items: TaskItemDTO[]): Omit<QuestionInputs, "nowMs"> {
+function world(
+  items: TaskItemDTO[],
+  bindings: QuestionInputs["bindings"] = [],
+): Omit<QuestionInputs, "nowMs"> {
   return {
     sync: EMPTY_QUESTION_SYNC,
-    bindings: [],
+    bindings,
     paneReads: {},
     calendarReads: {},
     calendarConnected: false,
@@ -64,11 +67,11 @@ function world(items: TaskItemDTO[]): Omit<QuestionInputs, "nowMs"> {
   };
 }
 
-function mount(items: TaskItemDTO[]) {
+function mount(items: TaskItemDTO[], bindings: QuestionInputs["bindings"] = []) {
   render(
     <RankedRegion
       surface="now"
-      inputs={world(items)}
+      inputs={world(items, bindings)}
       nowMs={NOW}
       syncOutcomeSeq={1}
       storage={{ getItem: () => null, setItem: () => {}, removeItem: () => {} }}
@@ -126,5 +129,55 @@ describe("HomeworkPaneExpanded (mounted through RankedRegion)", () => {
     ]);
 
     expect(screen.getByText("Just captured")).toBeDefined();
+  });
+});
+
+describe("the standing session link", () => {
+  const URL = "https://example.com/j/000000000";
+  const BOUND = [
+    { key: "homework-link", known: true, pending: false, value: { state: "text" as const, text: URL } },
+  ];
+
+  /** Two of the pane's three arms, as the worlds that reach them. The third
+   * — the zone gap — is not reachable from a component mount (the bridge
+   * resolves in the test runner's own zone), so the link surviving *it* is
+   * pinned core-side instead: `homework.rs`'s
+   * `the_link_survives_every_arm_the_answer_has`. */
+  const ARMS: [string, TaskItemDTO[]][] = [
+    ["with homework open", [item({ id: "essay", title: "Prep", deadline: inDays(1) })]],
+    ["with nothing open", []],
+  ];
+
+  /** A dormant pane starts collapsed (`collapse.ts` bands it that way), so
+   * the "No open homework" arm is only on screen once its row is opened —
+   * which is also how a reader reaches it. */
+  function openIfCollapsed() {
+    const row = screen.queryByRole("button", { name: /No open homework/ });
+    if (row !== null) {
+      fireEvent.click(row);
+    }
+  }
+
+  for (const [name, items] of ARMS) {
+    it(`offers the link ${name}`, () => {
+      mount(items, BOUND);
+      openIfCollapsed();
+      expect(screen.getByRole("button", { name: /Join the session/ })).toBeDefined();
+    });
+
+    it(`offers no link ${name} when nothing is bound`, () => {
+      mount(items);
+      openIfCollapsed();
+      expect(screen.queryByRole("button", { name: /Join the session/ })).toBeNull();
+    });
+  }
+
+  it("opens the bound URL in a new tab, with no opener back to this app", () => {
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    mount(ARMS[0][1], BOUND);
+    fireEvent.click(screen.getByRole("button", { name: /Join the session/ }));
+    expect(open).toHaveBeenCalledWith(URL, "_blank", "noopener,noreferrer");
+    vi.unstubAllGlobals();
   });
 });
