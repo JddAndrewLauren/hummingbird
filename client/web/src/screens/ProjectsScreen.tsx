@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
+import { Icon } from "../components/core/Icon";
 import { IconButton } from "../components/core/IconButton";
 import { EmptyState } from "../components/feedback/EmptyState";
 import { Checkbox } from "../components/forms/Checkbox";
@@ -555,9 +556,12 @@ function Dossier({
 }
 
 /** The dossier's properties card (#625, ADR-0030 decisions 2–3): shows and
- * edits `githubRepo`/`defaultContext`, the two columns #625 adds. The repo
- * renders as a derived link (`githubRepoUrl`) — the stored value is always
- * the bare `owner/repo` slug, never the URL. Local edit state re-syncs from
+ * edits `githubRepo`/`defaultContext`, the two columns #625 adds. The stored
+ * value is always the bare `owner/repo` slug, never the URL; the derived one
+ * (`githubRepoUrl`) is reachable through the link glyph beside the field's
+ * label, which is the whole of it on screen — repeating the URL as its own
+ * row under a field that already shows the slug cost a row and said nothing
+ * the slug did not. Local edit state re-syncs from
  * `project` whenever its `version` moves, which is what lets a patch this
  * card just sent (no optimistic overlay) settle into the fields once the
  * next completed cycle pulls it back, rather than being clobbered by the
@@ -646,20 +650,27 @@ function PropertiesCard({
       >
         <Input
           label="GitHub repo"
+          labelTrailing={
+            link !== null ? (
+              // `arrow-up-right`, not `link`: the design system already spends
+              // `link` on the domain's blocked-by edge, and this glyph is
+              // already the app's "opens the source in a new tab" (AlertCard's
+              // "Open source"). 13px to sit with the 13px label.
+              <a
+                href={link}
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Open GitHub repo"
+                style={{ display: "inline-flex", color: "var(--accent)" }}
+              >
+                <Icon name="arrow-up-right" size={13} />
+              </a>
+            ) : null
+          }
           placeholder="owner/repo"
           value={repoInput}
           onChange={(event) => setRepoInput(event.target.value)}
         />
-        {link !== null ? (
-          <a
-            href={link}
-            target="_blank"
-            rel="noreferrer"
-            style={{ font: "var(--type-body-sm)", color: "var(--accent)" }}
-          >
-            {link}
-          </a>
-        ) : null}
         <Input
           label="Default context"
           placeholder="@computer"

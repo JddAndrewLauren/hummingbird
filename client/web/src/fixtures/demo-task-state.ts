@@ -234,8 +234,17 @@ function item(seed: Seed, index: number, loadedAt: number): TaskItemDTO {
  *
  * `agoMs` becomes a real stamp in `project()` below, for the same
  * no-top-level-clock reason the item seeds carry offsets rather than dates. */
-const PROJECT_SEEDS: { id: string; name: string; agoMs: number; archived?: boolean }[] = [
-  { id: "b-p1", name: "House repairs", agoMs: 30 * DAY },
+const PROJECT_SEEDS: {
+  id: string;
+  name: string;
+  agoMs: number;
+  archived?: boolean;
+  githubRepo?: string;
+}[] = [
+  // The repo on the first seed is what puts the properties card's link glyph
+  // in the dossier capture — with every seed's `githubRepo` null the card
+  // photographed only its empty half.
+  { id: "b-p1", name: "House repairs", agoMs: 30 * DAY, githubRepo: "JddAndrewLauren/hummingbird" },
   { id: "b-p2", name: "Autumn garden clear-up", agoMs: 12 * DAY },
   { id: "b-p3", name: "Sell the old bike", agoMs: 90 * DAY, archived: true },
 ];
@@ -245,7 +254,7 @@ function project(seed: (typeof PROJECT_SEEDS)[number], loadedAt: number): Projec
   return {
     id: seed.id,
     name: seed.name,
-    githubRepo: null,
+    githubRepo: seed.githubRepo ?? null,
     defaultContext: null,
     archivedAt: seed.archived === true ? createdAt + DAY : null,
     createdAt,
