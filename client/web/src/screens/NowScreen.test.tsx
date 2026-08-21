@@ -1234,11 +1234,14 @@ describe("NowScreen — inline project creation from the forced-open row (#652)"
     return within(editor()).getByLabelText(label);
   }
 
-  function renderNowTriage(onCreateProject: (name: string) => void) {
-    render(
+  function renderNowTriage(
+    onCreateProject: (name: string) => void,
+    task: TaskState = taskState({ triageInbox: [capture("c1", "vague thing", 500)] }),
+  ) {
+    const screenFor = (t: TaskState) => (
       <NowScreen
         onScreen={() => {}}
-        task={taskState({ triageInbox: [capture("c1", "vague thing", 500)] })}
+        task={t}
         nowMs={NOW_MS}
         selectedItemId="c1"
         onOpenItem={() => {}}
@@ -1248,8 +1251,10 @@ describe("NowScreen — inline project creation from the forced-open row (#652)"
         calendarConnected={false}
         onTriage={() => {}}
         onCreateProject={onCreateProject}
-      />,
+      />
     );
+    const view = render(screenFor(task));
+    return { rerender: (nextTask: TaskState) => view.rerender(screenFor(nextTask)) };
   }
 
   it('switches the Project field to a name-and-create form, offering "+ New project"', () => {
@@ -1275,6 +1280,28 @@ describe("NowScreen — inline project creation from the forced-open row (#652)"
 
     expect(onCreateProject).toHaveBeenCalledWith("Kitchen rebuild");
     expect(onCreateProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("says it is waiting once a create is enqueued, and stops once the project lands", () => {
+    const task = taskState({
+      triageInbox: [capture("c1", "vague thing", 500)],
+      projects: [],
+      lastProjectWrite: { seed: "s1", projectId: "p-new", kind: "ok", error: null },
+    });
+    const { rerender } = renderNowTriage(vi.fn(), task);
+
+    expect(screen.getByText(/creating — appears when the round trip lands/i)).toBeDefined();
+
+    rerender(
+      taskState({
+        triageInbox: [capture("c1", "vague thing", 500)],
+        projects: [projectDTO({ id: "p-new", name: "Kitchen rebuild" })],
+        lastProjectWrite: { seed: "s1", projectId: "p-new", kind: "ok", error: null },
+      }),
+    );
+
+    expect(screen.queryByText(/creating — appears when the round trip lands/i)).toBeNull();
+    expect(within(editor()).getByRole("option", { name: "Kitchen rebuild" })).toBeDefined();
   });
 });
 

@@ -456,6 +456,7 @@ function RealFrontier({
             onComplete={(itemId) => onAct(itemId, "complete")}
             lastTriage={task.lastTriage}
             onCreateProject={onCreateProject}
+            lastProjectWrite={task.lastProjectWrite}
           />
         </SelectedItemSection>
       ) : selectedItem ? (
