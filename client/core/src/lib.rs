@@ -1318,6 +1318,7 @@ where
     /// `url`/`position` are single-`Option` (`NOT NULL`, cannot be
     /// cleared); `label`/`removed_at` are double-`Option` —
     /// [`ProjectLinkPatch`]'s own contract, unchanged across this seam.
+    #[allow(clippy::too_many_arguments)]
     pub async fn patch_project_link(
         &mut self,
         seed: &str,

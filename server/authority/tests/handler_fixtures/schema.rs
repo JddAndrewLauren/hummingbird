@@ -56,6 +56,29 @@ fn init_schema_creates_every_adr_0009_table() {
     }
 }
 
+/// Pins `project_links`' two indexes (#626) by name. The migrated-vs-fresh
+/// `sqlite_master.sql` equality assertions below structurally cannot see a
+/// dropped index — deleting one from `CREATE_INDEXES` removes it from BOTH
+/// sides of the comparison, and equality still holds — so existence has to
+/// be asserted somewhere, once, by name.
+#[test]
+fn init_schema_creates_the_project_links_indexes() {
+    let sql = RusqliteSql::new();
+    let rows = sql
+        .exec(
+            "SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name",
+            &[],
+        )
+        .unwrap();
+    let names: Vec<String> = rows
+        .iter()
+        .map(|r| r.get("name").unwrap().as_text().unwrap().to_string())
+        .collect();
+    for index in ["idx_project_links_version", "idx_project_links_project"] {
+        assert!(names.iter().any(|n| n == index), "missing index `{index}` in {names:?}");
+    }
+}
+
 /// The 1→2 growth path: a schema-1 database (S0's meta + items) is grown
 /// additively — new tables appear, existing data survives, and
 /// `schema_version` moves forward. No migration engine; see the

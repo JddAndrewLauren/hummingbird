@@ -19,10 +19,10 @@ import { ProjectsScreen, type ProjectsScreenProps } from "./ProjectsScreen";
 const noop = () => {};
 
 /** #626 added three more required props (the links card's read/write doors)
- * plus `syncOutcomeSeq` — every call site here cares only about the
+ * — every call site here cares only about the
  * project create/patch behaviour this file already covers, so this helper
  * supplies the new ones' defaults once rather than repeating them at every
- * `render` call. */
+ * `render` call. The refetch key rides `task.syncOutcomeSeq`, not a prop. */
 function renderProjectsScreen(props: Partial<ProjectsScreenProps> & Pick<ProjectsScreenProps, "task">) {
   return render(
     <ProjectsScreen
@@ -31,7 +31,6 @@ function renderProjectsScreen(props: Partial<ProjectsScreenProps> & Pick<Project
       onRequestProjectLinks={noop}
       onCreateProjectLink={noop}
       onPatchProjectLink={noop}
-      syncOutcomeSeq={0}
       {...props}
     />,
   );
@@ -310,7 +309,6 @@ describe("ProjectsScreen", () => {
           onRequestProjectLinks={onRequestProjectLinks}
           onCreateProjectLink={noop}
           onPatchProjectLink={noop}
-          syncOutcomeSeq={2}
         />,
       );
 
@@ -357,7 +355,29 @@ describe("ProjectsScreen", () => {
       fireEvent.change(screen.getByLabelText("Label"), { target: { value: "  Docs  " } });
       fireEvent.click(screen.getByRole("button", { name: "Add link" }));
 
-      expect(onCreateProjectLink).toHaveBeenCalledWith("p-1", "https://docs.example", "Docs", 1);
+      expect(onCreateProjectLink).toHaveBeenCalledWith("p-1", "https://docs.example", "Docs", 2);
+    });
+
+    it("mints the next position past a gap left by a removed row, never onto a live one", () => {
+      // Positions 0,1,2 minus the (soft-removed, so absent here) middle row:
+      // live 0 and 2 with length 2. A count-minted position would be 2 —
+      // duplicating the live row at 2 and turning its reorder swap into a
+      // value-identical no-op. The mint must come off the max instead.
+      const onCreateProjectLink = vi.fn();
+      openDossier({
+        linksByProject: {
+          "p-1": [
+            projectLinkDTO({ id: "l-1", url: "https://a.example", position: 0 }),
+            projectLinkDTO({ id: "l-3", url: "https://c.example", position: 2 }),
+          ],
+        },
+        onCreateProjectLink,
+      });
+
+      fireEvent.change(screen.getByLabelText("URL"), { target: { value: "https://d.example" } });
+      fireEvent.click(screen.getByRole("button", { name: "Add link" }));
+
+      expect(onCreateProjectLink).toHaveBeenCalledWith("p-1", "https://d.example", null, 3);
     });
 
     it("refuses a blank url", () => {

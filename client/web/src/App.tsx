@@ -616,7 +616,6 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               onRequestProjectLinks={handleRequestProjectLinks}
               onCreateProjectLink={handleCreateProjectLink}
               onPatchProjectLink={handlePatchProjectLink}
-              syncOutcomeSeq={task.syncOutcomeSeq}
             />
           )}
           {screen === "alerts" && <AlertsScreen />}

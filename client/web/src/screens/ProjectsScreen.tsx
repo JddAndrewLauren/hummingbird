@@ -69,9 +69,6 @@ export interface ProjectsScreenProps {
     current: ProjectLinkDTO,
     patch: { url?: string; label?: string | null; position?: number; removedAt?: number | null },
   ) => void;
-  /** Keys the links card's per-cycle refetch — see `onRequestProjectLinks`'s
-   * own doc. */
-  syncOutcomeSeq: number;
 }
 
 export function ProjectsScreen({
@@ -81,7 +78,6 @@ export function ProjectsScreen({
   onRequestProjectLinks,
   onCreateProjectLink,
   onPatchProjectLink,
-  syncOutcomeSeq,
 }: ProjectsScreenProps) {
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -124,7 +120,7 @@ export function ProjectsScreen({
       onRequestProjectLinks={onRequestProjectLinks}
       onCreateProjectLink={onCreateProjectLink}
       onPatchProjectLink={onPatchProjectLink}
-      syncOutcomeSeq={syncOutcomeSeq}
+      syncOutcomeSeq={task.syncOutcomeSeq}
     />
   );
 }
@@ -514,7 +510,15 @@ function LinksCard({
       return;
     }
     const trimmedLabel = labelInput.trim();
-    const position = sortedLinks?.length ?? 0;
+    // Mint the new position past the largest live one, not from the count:
+    // removal is a soft flag, so live positions develop gaps (0,1,2 minus
+    // the middle leaves 0,2 with length 2) and a count-minted position
+    // would duplicate a live row's — turning the next reorder swap into a
+    // value-identical no-op patch. Removed rows cannot count toward the
+    // max (the mirror filters them out before this card ever sees them),
+    // and they need not: a collision with a removed row's position is
+    // harmless, since only live rows are ever sorted or swapped.
+    const position = sortedLinks === undefined || sortedLinks.length === 0 ? 0 : sortedLinks[sortedLinks.length - 1].position + 1;
     onCreateProjectLink(projectId, trimmedUrl, trimmedLabel === "" ? null : trimmedLabel, position);
     setUrlInput("");
     setLabelInput("");
