@@ -80,6 +80,12 @@ export interface NowScreenProps {
     destination: "ready" | null,
     edits: TriageEdits,
   ) => void;
+  /** #631's inline "new project" affordance, threaded to Now's own forced-open
+   * `TriageRow` the same way `TriageScreen` threads it to its rows (#652) —
+   * the SAME `handleCreateProject` `App.tsx` gives Triage, so a project
+   * created from either surface goes through the one write door. Optional
+   * for the same "no worker, no affordance" reason `onTriage` is. */
+  onCreateProject?: (name: string) => void;
   /** Injected storage for this screen's device-local view preferences —
    * resolved once here rather than read in each consumer: `RankedRegion`'s pane
    * overrides, and (#403) the frontier's grouping axis and collapsed columns.
@@ -158,6 +164,7 @@ function RealFrontier({
   onAct,
   microtask,
   onTriage,
+  onCreateProject,
   storage,
   grill,
 }: Pick<
@@ -170,6 +177,7 @@ function RealFrontier({
   | "onAct"
   | "microtask"
   | "onTriage"
+  | "onCreateProject"
   | "storage"
   | "grill"
 >) {
@@ -447,6 +455,7 @@ function RealFrontier({
             onTriage={onTriage}
             onComplete={(itemId) => onAct(itemId, "complete")}
             lastTriage={task.lastTriage}
+            onCreateProject={onCreateProject}
           />
         </SelectedItemSection>
       ) : selectedItem ? (
@@ -597,6 +606,7 @@ export function NowScreen({
   onSetScheduledDate,
   microtask,
   onTriage,
+  onCreateProject,
   storage,
   asideCollapsed = false,
   grill,
@@ -619,6 +629,7 @@ export function NowScreen({
           onAct={onAct}
           microtask={microtask}
           onTriage={onTriage}
+          onCreateProject={onCreateProject}
           storage={resolvedStorage}
           grill={grill}
         />
