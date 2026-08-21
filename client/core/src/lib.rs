@@ -86,9 +86,9 @@ pub const API_VERSION: u32 = 1;
 /// resolves to: IndexedDB in the browser, `std::fs` everywhere else — the
 /// same per-target split [`storage`] already documents.
 #[cfg(target_arch = "wasm32")]
-type CoreStore = storage::IndexedDbSnapshotStore;
+pub type CoreStore = storage::IndexedDbSnapshotStore;
 #[cfg(not(target_arch = "wasm32"))]
-type CoreStore = storage::FsSnapshotStore;
+pub type CoreStore = storage::FsSnapshotStore;
 
 #[cfg(target_arch = "wasm32")]
 fn queue_store(namespace: &str) -> CoreStore {

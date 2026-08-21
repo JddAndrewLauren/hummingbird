@@ -3,17 +3,24 @@
 //! queries every consumer (`/next-up-personal` #74, a future morning brief)
 //! targets.
 //!
-//! Nothing here is Google-specific — this is the shared shape #71's Google
-//! adapter fills and #47's future M365 adapter fills too. This module is
+//! Nothing here is Google-specific except [`google`] itself and [`host`],
+//! the per-host wrapper over one Google poller (#73, moved here from
+//! `ffi-web` by #564) — the rest is the shared shape #71's Google adapter
+//! fills and #47's future M365 adapter fills too. This module is
 //! read-only context: it cannot mint, modify, or reference an Action in the
 //! task authority (ADR-0002 rule 1).
 
 mod event;
 pub mod google;
+mod host;
 mod query;
 mod snapshot;
 
 pub use event::{EventRecord, EventStatus, EventWhen};
+pub use host::{
+    outcome_name, CalendarEventsResponse, CalendarHostCore, CalendarListResponse,
+    CALENDAR_POLL_INTERVAL_MS,
+};
 pub(crate) use query::is_actionable;
 pub use google::{CalendarHorizon, CalendarSelection};
 pub use query::{current_or_next_event, events_overlapping_interval, CurrentOrNext, Interval};
