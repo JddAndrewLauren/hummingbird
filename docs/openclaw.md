@@ -279,14 +279,35 @@ names the step and points there.
 
 ## The calendar write lane (ADR-0031)
 
-> **Status (2026-08-20): steps 1–4 below are done.** The credential is
-> minted, measured and installed, and the gate was confirmed against
-> production — a non-agent `device` token gets 403 with an empty body from
+> **Status (2026-08-20): the lane is done — steps 1–4 and the rehearsal.**
+> The credential is minted, measured and installed, and the gate was
+> confirmed against production in both directions: a non-agent `device`
+> token gets 403 with an empty body from
 > `POST /api/google/calendar_write_token` while the readonly lane still
-> answers 200. **What is still owed is the rehearsal**, which can only run
-> on the gateway because that is where the `openclaw-agent` token lives:
-> the `HB_GCAL_ID` walk-through in the checklist above, and the first 200
-> from the write route.
+> answers 200, and the same route answers **200 for `openclaw-agent` on the
+> gateway**, which is the first success it has ever returned.
+>
+> The `HB_GCAL_ID` walk-through in the checklist above was then run end to
+> end against a throwaway calendar, and all four behaviours no test covers
+> hold:
+>
+> - a **timed** `add` — the `resolve_timezone` path — resolved the zone off
+>   `events.list` on a calendar with **no events at all**, which is the
+>   sharpest form of the claim this section makes about `calendars.get`
+>   being unnecessary: the response carries `timeZone` even when `items` is
+>   empty.
+> - the **identical** `add` again answered `already on the calendar` with
+>   the *same* event id. The frozen recipe collides as designed; a retried
+>   insert after a timeout does not double-book.
+> - `move` with no `--end` preserved the event's length exactly
+>   (15:00–16:30 → 17:00–18:30, 90 minutes both sides).
+> - `cancel` left the event readable — `events.get` answers 200 with
+>   `status: "cancelled"`, not 404.
+>
+> Nothing in `openclaw/calendar/` needed changing. What remains is the
+> operator's call, not a proof: the rehearsal ran against a throwaway
+> calendar, and pointing the agent at `primary` is just leaving `HB_GCAL_ID`
+> unset.
 
 The `calendar` skill needs one thing the other three do not: a Google
 credential **on the authority**, not here. Operator steps, from a terminal
