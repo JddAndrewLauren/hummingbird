@@ -270,8 +270,8 @@ export interface CaptureFieldsWire {
 
 /** One `steps` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
  * field mirror of `hummingbird_domain::Step`, camelCased. Item detail's
- * checklist (issue #96, S10) — read-only from this binding; ticking one is
- * S11's concern. */
+ * checklist (issue #96, S10), and — since #629 — a project's Action
+ * checklist too: `createStep`/`patchStep` below are its write pair. */
 export interface StepDTO {
   id: string;
   itemId: string;
@@ -995,6 +995,62 @@ export type TaskWorkerRequest =
       resolvedAt: number | null;
       nowMs: number;
     }
+  /** #629's per-project Action read — the dossier's ordered action list,
+   * same "only what a view actually asked about" shape as `getFog`. An
+   * Action is an ordinary item, so the answer carries `TaskItemDTO` rows
+   * (including `pending`), not a bespoke shape. */
+  | { type: "getActions"; projectId: string }
+  /** #629's reorder control — moves one Action's `projectPos` through one
+   * CAS `PATCH /api/items/:id`. `current` is the caller's own last-known
+   * copy of the row (from the `actions` push) — the CAS `base` a 409 is
+   * diffed against. `projectId` rides alongside it rather than being read
+   * off `current.projectId`: that field is nullable on `TaskItemDTO` in
+   * general (an ordinary item need not carry a project), so the result's
+   * own scoping is the caller's to state explicitly, not derived from a
+   * value this message shape cannot guarantee is set. The server never
+   * renumbers any other row; a caller reordering a whole list sends one of
+   * these per Action whose position actually changed. */
+  | {
+      type: "reorderAction";
+      seed: string;
+      projectId: string;
+      current: TaskItemDTO;
+      position: number;
+      nowMs: number;
+    }
+  /** #629's step create: one `POST /api/steps`, enqueued durably like
+   * every other mutation. `body` is trimmed and an empty one refused in
+   * `client/ffi-web/src/task_host.rs`'s `create_step` before it can reach
+   * `Core` — the authority 400s on `body.is_empty()`. Same
+   * caller-mints-`seed` contract as `createFog`: this seed's hash becomes
+   * the Step's id. */
+  | {
+      type: "createStep";
+      seed: string;
+      itemId: string;
+      body: string;
+      position: number;
+      nowMs: number;
+    }
+  /** #629's step patch — ticking, rewording, repositioning, or
+   * flagging/clearing a Step's deletion (ADR-0020), all share this one
+   * message. `current` is the caller's own last-known copy of the row
+   * (from the `steps` push) — the CAS `base` a 409 is diffed against.
+   * `deletedAtTouched` distinguishes "leave this field alone" from "set
+   * it, possibly to `null`" — the same double-`Option` `StepPatch` itself
+   * carries, flattened for the wire exactly like `patchFog`'s
+   * `resolvedAtTouched`. */
+  | {
+      type: "patchStep";
+      seed: string;
+      current: StepDTO;
+      body: string | null;
+      done: boolean | null;
+      position: number | null;
+      deletedAtTouched: boolean;
+      deletedAt: number | null;
+      nowMs: number;
+    }
   | { type: "isPending"; itemId: string }
   | {
       type: "runSync";
@@ -1298,6 +1354,44 @@ export type TaskWorkerResponse =
       type: "patchFogResult";
       seed: string;
       projectId: string;
+      kind: "ok" | "failed" | "busy";
+      error: string | null;
+    }
+  /** Answers `getActions` (#629) — the `fog`-style per-project read, keyed
+   * by the requested `projectId`. An Action is an ordinary item, so this
+   * carries `TaskItemDTO` rows, `projectPos` order. */
+  | { type: "actions"; projectId: string; actions: TaskItemDTO[] }
+  /** #629's reorder result, matched back by `seed`. Same
+   * handled-not-swallowed 409 contract as `patchFogResult`: `projectId`
+   * comes from the caller's own `current.projectId`, since an Action
+   * carries its project on the row itself, unlike a Fog segment's own
+   * message which threads it separately. */
+  | {
+      type: "reorderActionResult";
+      seed: string;
+      projectId: string;
+      itemId: string;
+      kind: "ok" | "failed" | "busy";
+      error: string | null;
+    }
+  /** #629's step create result, matched back by `seed`. Same
+   * broadcast-not-reply, enqueued-not-saved contract as
+   * `createFogResult`. */
+  | {
+      type: "createStepResult";
+      seed: string;
+      itemId: string;
+      kind: "ok" | "failed" | "busy";
+      id: string | null;
+      error: string | null;
+    }
+  /** #629's step patch result (ticking, rewording, repositioning,
+   * deleting), matched back by `seed`. Same handled-not-swallowed 409
+   * contract as `patchFogResult`. */
+  | {
+      type: "patchStepResult";
+      seed: string;
+      itemId: string;
       kind: "ok" | "failed" | "busy";
       error: string | null;
     }

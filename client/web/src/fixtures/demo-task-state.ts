@@ -737,7 +737,36 @@ export function buildDemoTaskState(): TaskState {
     // about the relation rather than a gap in the fixture. `projects` was
     // empty for the same reason and no longer is: see departure 4.
     blocked: [],
-    stepsByItem: {},
+    // #629: item detail's checklist read, reused by the dossier's action
+    // checklist. `b-f1` ("Fit the new tap washer", the same row
+    // `actionsByProject` below repositions onto "House repairs") carries
+    // two steps, one already ticked — the "expanded action" visual case.
+    // `b-p1-action-2` carries none at all — the "action with no steps"
+    // case — so both empty-checklist and populated-checklist rows ship
+    // photographed rather than only the happy path.
+    stepsByItem: {
+      "b-f1": [
+        {
+          id: "b-p1-action-1-step-1",
+          itemId: "b-f1",
+          body: "Turn off the stopcock",
+          done: true,
+          position: 0,
+          deletedAt: null,
+          version: 1,
+        },
+        {
+          id: "b-p1-action-1-step-2",
+          itemId: "b-f1",
+          body: "Buy a washer that matches the old one",
+          done: false,
+          position: 1,
+          deletedAt: null,
+          version: 1,
+        },
+      ],
+      "b-p1-action-2": [],
+    },
     // Split exactly as the real answer splits it (#624): an archived project
     // is absent in the mirror and arrives on the `archivedProjects` half, so
     // a fixture that put all three in `projects` would photograph a shape the
@@ -844,6 +873,45 @@ export function buildDemoTaskState(): TaskState {
       ] satisfies FogDTO[],
     },
     lastFogWrite: null,
+    // #629: the dossier's ordered action list, populated for "House
+    // repairs" ("b-p1") — two actions, route order — and explicitly
+    // EMPTY (not absent) for "Autumn garden clear-up" ("b-p2"): the "this
+    // project has no actions yet" visual case, distinct from the
+    // not-read-yet placeholder an absent key would show instead.
+    // `b-p1-action-2` is a fixture-only row (no matching `frontier` seed —
+    // its checklist has never needed one of its own) so the card can show
+    // a second, unexpanded action alongside the one carrying steps.
+    actionsByProject: {
+      "b-p1": [
+        { ...frontier[0], projectPos: 0 },
+        {
+          id: "b-p1-action-2",
+          seq: 900,
+          title: "Order the replacement fence panels",
+          description: null,
+          stage: "ready",
+          size: "normal",
+          energy: null,
+          context: "@computer",
+          priority: 0,
+          projectId: "b-p1",
+          projectPos: 1,
+          deadline: null,
+          scheduledDate: null,
+          source: null,
+          sourceKey: null,
+          sourceUrl: null,
+          archivedAt: null,
+          createdAt: loadedAt - 3 * DAY,
+          updatedAt: loadedAt - 3 * DAY,
+          version: 1,
+          pending: false,
+        },
+      ],
+      "b-p2": [],
+    },
+    lastActionReorder: null,
+    lastStepWrite: null,
     // Piece 3: every standing question's read, built by `demo-pane-reads.ts`
     // — the kit world's own `demoQuestionInputs` called the same functions
     // before #452 folded its content into this seed and #455 deleted that

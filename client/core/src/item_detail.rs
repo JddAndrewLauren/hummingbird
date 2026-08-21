@@ -52,10 +52,12 @@ pub struct ItemDetail {
     pub item: Item,
     pub project: Option<ProjectRef>,
     /// The checklist, position order. **Read-only and deliberately not
-    /// overlaid**: no step mutation exists on this seam yet, so there is no
-    /// optimistic step to overlay. Step-ticking, when it lands, finds an
-    /// overlay seam already built for items and extends it — it does not
-    /// discover this line was load-bearing.
+    /// overlaid** even though [`crate::Core::create_step`]/
+    /// [`crate::Core::patch_step`] now exist (#629): those follow the
+    /// no-overlay convention every other project-lane write here uses
+    /// (`create_fog`/`patch_fog`), not the item table's own overlay, so a
+    /// Step written through them still becomes visible here only once the
+    /// next completed cycle pulls it back.
     pub steps: Vec<Step>,
     /// Every *open* blocker: live (not archived) and not `Done`.
     ///

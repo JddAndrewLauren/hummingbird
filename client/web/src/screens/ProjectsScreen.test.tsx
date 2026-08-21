@@ -8,13 +8,16 @@ import { describe, expect, it, vi } from "vitest";
 import {
   fireEvent,
   fogDTO,
+  itemDTO,
   ledgerRowDTO,
   projectDTO,
   projectLinkDTO,
   render,
   routeDTO,
   screen,
+  stepDTO,
   taskState,
+  within,
 } from "../test/component";
 import { ProjectsScreen, type ProjectsScreenProps } from "./ProjectsScreen";
 
@@ -38,6 +41,11 @@ function renderProjectsScreen(props: Partial<ProjectsScreenProps> & Pick<Project
       onRequestFog={noop}
       onCreateFog={noop}
       onPatchFog={noop}
+      onRequestActions={noop}
+      onReorderAction={noop}
+      onRequestActionSteps={noop}
+      onCreateStep={noop}
+      onPatchStep={noop}
       {...next}
     />
   );
@@ -362,6 +370,11 @@ describe("ProjectsScreen", () => {
           onRequestFog={noop}
           onCreateFog={noop}
           onPatchFog={noop}
+          onRequestActions={noop}
+          onReorderAction={noop}
+          onRequestActionSteps={noop}
+          onCreateStep={noop}
+          onPatchStep={noop}
         />,
       );
 
@@ -663,6 +676,256 @@ describe("ProjectsScreen", () => {
       });
 
       expect(screen.queryByText("no can do")).toBeNull();
+    });
+  });
+
+  // #629: the action list, and each action's inline steps.
+  describe("the action list", () => {
+    function openDossier(
+      overrides: {
+        actionsByProject?: ReturnType<typeof taskState>["actionsByProject"];
+        lastActionReorder?: ReturnType<typeof taskState>["lastActionReorder"];
+        stepsByItem?: ReturnType<typeof taskState>["stepsByItem"];
+        lastStepWrite?: ReturnType<typeof taskState>["lastStepWrite"];
+        onRequestActions?: ProjectsScreenProps["onRequestActions"];
+        onReorderAction?: ProjectsScreenProps["onReorderAction"];
+        onRequestActionSteps?: ProjectsScreenProps["onRequestActionSteps"];
+        onCreateStep?: ProjectsScreenProps["onCreateStep"];
+        onPatchStep?: ProjectsScreenProps["onPatchStep"];
+      } = {},
+    ) {
+      const task = taskState({
+        projects: [projectDTO({ id: "p-1", name: "House repairs" })],
+        ledger: [],
+        actionsByProject: overrides.actionsByProject ?? {},
+        lastActionReorder: overrides.lastActionReorder ?? null,
+        stepsByItem: overrides.stepsByItem ?? {},
+        lastStepWrite: overrides.lastStepWrite ?? null,
+      });
+      renderProjectsScreen({
+        task,
+        onRequestActions: overrides.onRequestActions ?? noop,
+        onReorderAction: overrides.onReorderAction ?? noop,
+        onRequestActionSteps: overrides.onRequestActionSteps ?? noop,
+        onCreateStep: overrides.onCreateStep ?? noop,
+        onPatchStep: overrides.onPatchStep ?? noop,
+      });
+      fireEvent.click(screen.getByRole("heading", { level: 3, name: "House repairs" }));
+      return task;
+    }
+
+    it("requests this project's actions the moment the dossier opens", () => {
+      const onRequestActions = vi.fn();
+      openDossier({ onRequestActions });
+
+      expect(onRequestActions).toHaveBeenCalledWith("p-1");
+    });
+
+    it("holds rather than claiming 'no actions' while the read has not answered", () => {
+      openDossier();
+
+      expect(screen.getByText("Reading actions…")).toBeTruthy();
+      expect(screen.queryByText("No actions on this Route yet.")).toBeNull();
+    });
+
+    it("renders the empty state only for a real, empty answer — a project with no actions", () => {
+      openDossier({ actionsByProject: { "p-1": [] } });
+
+      expect(screen.getByText("No actions on this Route yet.")).toBeTruthy();
+    });
+
+    it("renders every action, project-position ordered", () => {
+      openDossier({
+        actionsByProject: {
+          "p-1": [
+            itemDTO({ id: "a-2", title: "Second action", projectPos: 2 }),
+            itemDTO({ id: "a-1", title: "First action", projectPos: 1 }),
+          ],
+        },
+      });
+
+      const buttons = screen.getAllByRole("button", { name: /action$/ });
+      expect(buttons.map((el) => el.textContent)).toEqual(["First action", "Second action"]);
+    });
+
+    it("swaps the positions of the two adjacent rows on a move gesture, and stops at the ends", () => {
+      const onReorderAction = vi.fn();
+      const first = itemDTO({ id: "a-1", title: "First action", projectPos: 1 });
+      const second = itemDTO({ id: "a-2", title: "Second action", projectPos: 2 });
+      openDossier({ actionsByProject: { "p-1": [first, second] }, onReorderAction });
+
+      const moveUpButtons = screen.getAllByRole("button", { name: "Move up" });
+      const moveDownButtons = screen.getAllByRole("button", { name: "Move down" });
+      // The first row cannot move up; the last cannot move down.
+      expect(moveUpButtons[0].hasAttribute("disabled")).toBe(true);
+      expect(moveDownButtons[1].hasAttribute("disabled")).toBe(true);
+
+      fireEvent.click(moveDownButtons[0]);
+
+      expect(onReorderAction).toHaveBeenCalledWith("p-1", first, 2);
+      expect(onReorderAction).toHaveBeenCalledWith("p-1", second, 1);
+    });
+
+    it("renders a failed reorder's own message, scoped to this project", () => {
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1" })] },
+        lastActionReorder: {
+          seed: "s-1",
+          projectId: "p-1",
+          itemId: "a-1",
+          kind: "failed",
+          error: "version conflict",
+        },
+      });
+
+      expect(screen.getByText("version conflict")).toBeTruthy();
+    });
+
+    it("does not paint another project's failed reorder into this dossier", () => {
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1" })] },
+        lastActionReorder: {
+          seed: "s-1",
+          projectId: "p-2",
+          itemId: "a-9",
+          kind: "failed",
+          error: "no can do",
+        },
+      });
+
+      expect(screen.queryByText("no can do")).toBeNull();
+    });
+
+    it("expands an action's checklist inline beneath its row on selection", () => {
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
+        stepsByItem: { "a-1": [stepDTO({ id: "s-1", itemId: "a-1", body: "put on music" })] },
+      });
+
+      expect(screen.queryByText("put on music")).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "An action" }));
+
+      expect(screen.getByText("put on music")).toBeTruthy();
+    });
+
+    it("requests the expanded action's steps the moment it is selected", () => {
+      const onRequestActionSteps = vi.fn();
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
+        onRequestActionSteps,
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "An action" }));
+
+      expect(onRequestActionSteps).toHaveBeenCalledWith("a-1");
+    });
+
+    it("holds rather than claiming 'no steps' while the checklist read has not answered", () => {
+      openDossier({ actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] } });
+      fireEvent.click(screen.getByRole("button", { name: "An action" }));
+
+      expect(screen.getByText("Reading steps…")).toBeTruthy();
+    });
+
+    it("renders the empty state only for a real, empty answer — an action with no steps", () => {
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
+        stepsByItem: { "a-1": [] },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "An action" }));
+
+      expect(screen.getByText("No steps on this action yet.")).toBeTruthy();
+    });
+
+    it("ticks a step by sending only done to onPatchStep", () => {
+      const onPatchStep = vi.fn();
+      const step = stepDTO({ id: "s-1", itemId: "a-1", body: "put on music", done: false });
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
+        stepsByItem: { "a-1": [step] },
+        onPatchStep,
+      });
+      fireEvent.click(screen.getByRole("button", { name: "An action" }));
+
+      fireEvent.click(screen.getByRole("checkbox"));
+
+      expect(onPatchStep).toHaveBeenCalledWith(step, { done: true });
+    });
+
+    it("sends the trimmed body and next position to onCreateStep", () => {
+      const onCreateStep = vi.fn();
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
+        stepsByItem: { "a-1": [stepDTO({ id: "s-1", itemId: "a-1", position: 1 })] },
+        onCreateStep,
+      });
+      fireEvent.click(screen.getByRole("button", { name: "An action" }));
+
+      fireEvent.change(screen.getByLabelText("New step"), {
+        target: { value: "  buy a washer  " },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Add step" }));
+
+      expect(onCreateStep).toHaveBeenCalledWith("a-1", "buy a washer", 2);
+    });
+
+    it("rewords a step in place and sends only the body to onPatchStep", () => {
+      const onPatchStep = vi.fn();
+      const step = stepDTO({ id: "s-1", itemId: "a-1", body: "Old body" });
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
+        stepsByItem: { "a-1": [step] },
+        onPatchStep,
+      });
+      fireEvent.click(screen.getByRole("button", { name: "An action" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+      fireEvent.change(screen.getByLabelText("Step"), { target: { value: "New body" } });
+      // The action list sits in the reading Column, before the aside's own
+      // properties card — whose "Save" is always on screen too (disabled
+      // when its own fields are untouched) — so this row's "Save" is the
+      // first of the two, same disambiguation `FogCard`'s own reword test
+      // uses.
+      fireEvent.click(screen.getAllByRole("button", { name: "Save" })[0]);
+
+      expect(onPatchStep).toHaveBeenCalledWith(step, { body: "New body" });
+    });
+
+    it("swaps the positions of two adjacent steps on a move gesture", () => {
+      const onPatchStep = vi.fn();
+      const first = stepDTO({ id: "s-1", itemId: "a-1", body: "First step", position: 1 });
+      const second = stepDTO({ id: "s-2", itemId: "a-1", body: "Second step", position: 2 });
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
+        stepsByItem: { "a-1": [first, second] },
+        onPatchStep,
+      });
+      fireEvent.click(screen.getByRole("button", { name: "An action" }));
+
+      // Two "Move down" controls exist once expanded: the action row's own
+      // (disabled — this dossier has only the one action) and the first
+      // step's. `within` the steps list scopes past the action row's.
+      const stepsList = screen.getAllByRole("list")[1];
+      fireEvent.click(within(stepsList).getAllByRole("button", { name: "Move down" })[0]);
+
+      expect(onPatchStep).toHaveBeenCalledWith(first, { position: 2 });
+      expect(onPatchStep).toHaveBeenCalledWith(second, { position: 1 });
+    });
+
+    it("flags a step's deletion with a timestamp rather than erasing it (ADR-0020)", () => {
+      const onPatchStep = vi.fn();
+      const step = stepDTO({ id: "s-1", itemId: "a-1", body: "put on music" });
+      openDossier({
+        actionsByProject: { "p-1": [itemDTO({ id: "a-1", title: "An action" })] },
+        stepsByItem: { "a-1": [step] },
+        onPatchStep,
+      });
+      fireEvent.click(screen.getByRole("button", { name: "An action" }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+      expect(onPatchStep).toHaveBeenCalledWith(step, { deletedAt: expect.any(Number) });
     });
   });
 

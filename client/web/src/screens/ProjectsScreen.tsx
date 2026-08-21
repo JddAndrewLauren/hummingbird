@@ -4,16 +4,19 @@ import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
 import { IconButton } from "../components/core/IconButton";
 import { EmptyState } from "../components/feedback/EmptyState";
+import { Checkbox } from "../components/forms/Checkbox";
 import { Input } from "../components/forms/Input";
 import { Switch } from "../components/forms/Switch";
 import { Textarea } from "../components/forms/Textarea";
-import type { FogDTO, ProjectDTO, ProjectLinkDTO, RouteDTO } from "../store/protocol";
+import type { FogDTO, ProjectDTO, ProjectLinkDTO, RouteDTO, StepDTO, TaskItemDTO } from "../store/protocol";
 import type {
+  TaskActionReorderResult,
   TaskFogResult,
   TaskProjectLinkResult,
   TaskProjectResult,
   TaskRouteResult,
   TaskState,
+  TaskStepResult,
 } from "../store/store";
 import { Aside, Column, TwoColumn } from "./layout";
 import {
@@ -46,13 +49,22 @@ import {
 // shown from the moment the enqueue succeeds until the id turns up in
 // `projects`.
 //
-// **The dossier is a shell.** This slice ships the frame, the name, the back
-// affordance and labelled empty regions naming what fills them; the action
-// list and its inline steps are #629's, archive is #630's. Properties
-// (#625), links (#626), the Route's destination/notes (#627) and now the
-// reading column's fog (#628) are real cards — each remaining placeholder
-// still says what is coming, so an operator meets an unbuilt region rather
-// than a broken one.
+// **The dossier is a shell.** This slice ships the frame, the name and the
+// back affordance; archive (#630) is the last placeholder, still saying
+// what is coming so an operator meets an unbuilt region rather than a
+// broken one. Properties (#625), links (#626), the Route's
+// destination/notes (#627), the reading column's fog (#628) and now the
+// ordered action list with each action's inline steps (#629) are real
+// cards.
+//
+// **The action list's reorder overlays; its Steps don't.** Unlike every
+// other project-lane write on this screen, reordering an Action patches
+// the ordinary item table, which already carries `Core::act`'s overlay
+// (`Core::patch_action_position`'s own doc) — `ActionsCard` shows the new
+// order the instant a reorder is clicked, with no "waiting" state to paint.
+// Steps stay in the no-overlay convention every other card here uses: a
+// tick, a reword, an add or a delete becomes visible once the next
+// completed cycle pulls it back, same as Fog and Links.
 //
 // **The Route card has no optimistic overlay, so it says so.** Same
 // no-overlay contract as every other project-lane write here
@@ -106,6 +118,25 @@ export interface ProjectsScreenProps {
     current: FogDTO,
     patch: { question?: string; position?: number; resolvedAt?: number | null },
   ) => void;
+  /** #629: the action list's read — fetches one project's actions, route
+   * order. Same "the caller's own effect decides when" shape as
+   * `onRequestProjectLinks`. */
+  onRequestActions: (projectId: string) => void;
+  /** #629: the action list's reorder gesture — moves one Action's
+   * `projectPos`. Overlaid immediately (`Core::patch_action_position`'s
+   * own doc), unlike every other project-lane write on this screen. */
+  onReorderAction: (projectId: string, current: TaskItemDTO, position: number) => void;
+  /** #629: an expanded action's checklist read — the same `getSteps` door
+   * item detail's own checklist already uses (issue #96), reused here. */
+  onRequestActionSteps: (itemId: string) => void;
+  /** #629: an expanded action's add-a-step gesture. */
+  onCreateStep: (itemId: string, body: string, position: number) => void;
+  /** #629: an expanded action's tick/reword/reorder/delete gesture —
+   * `patch` carries only the fields the row actually changed. */
+  onPatchStep: (
+    current: StepDTO,
+    patch: { body?: string; done?: boolean; position?: number; deletedAt?: number | null },
+  ) => void;
 }
 
 export function ProjectsScreen({
@@ -120,6 +151,11 @@ export function ProjectsScreen({
   onRequestFog,
   onCreateFog,
   onPatchFog,
+  onRequestActions,
+  onReorderAction,
+  onRequestActionSteps,
+  onCreateStep,
+  onPatchStep,
 }: ProjectsScreenProps) {
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -171,6 +207,15 @@ export function ProjectsScreen({
       onRequestFog={onRequestFog}
       onCreateFog={onCreateFog}
       onPatchFog={onPatchFog}
+      actions={task.actionsByProject[open.project.id]}
+      lastActionReorder={task.lastActionReorder}
+      onRequestActions={onRequestActions}
+      onReorderAction={onReorderAction}
+      stepsByItem={task.stepsByItem}
+      lastStepWrite={task.lastStepWrite}
+      onRequestActionSteps={onRequestActionSteps}
+      onCreateStep={onCreateStep}
+      onPatchStep={onPatchStep}
       syncOutcomeSeq={task.syncOutcomeSeq}
     />
   );
@@ -343,6 +388,15 @@ function Dossier({
   onRequestFog,
   onCreateFog,
   onPatchFog,
+  actions,
+  lastActionReorder,
+  onRequestActions,
+  onReorderAction,
+  stepsByItem,
+  lastStepWrite,
+  onRequestActionSteps,
+  onCreateStep,
+  onPatchStep,
   syncOutcomeSeq,
 }: {
   row: ProjectRow;
@@ -379,6 +433,22 @@ function Dossier({
     current: FogDTO,
     patch: { question?: string; position?: number; resolvedAt?: number | null },
   ) => void;
+  /** `undefined` = not read yet (`TaskState.actionsByProject`'s own doc),
+   * distinct from `[]` (this project genuinely has no actions). */
+  actions: TaskItemDTO[] | undefined;
+  lastActionReorder: TaskActionReorderResult | null;
+  onRequestActions: (projectId: string) => void;
+  onReorderAction: (projectId: string, current: TaskItemDTO, position: number) => void;
+  /** Item detail's checklist store (issue #96, S10) — the expanded action's
+   * steps read the same map, keyed by item id. */
+  stepsByItem: Record<string, StepDTO[]>;
+  lastStepWrite: TaskStepResult | null;
+  onRequestActionSteps: (itemId: string) => void;
+  onCreateStep: (itemId: string, body: string, position: number) => void;
+  onPatchStep: (
+    current: StepDTO,
+    patch: { body?: string; done?: boolean; position?: number; deletedAt?: number | null },
+  ) => void;
   syncOutcomeSeq: number;
 }) {
   const projectId = row.project.id;
@@ -404,6 +474,12 @@ function Dossier({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, syncOutcomeSeq]);
 
+  // #629: same shape, for the ordered action list.
+  useEffect(() => {
+    onRequestActions(projectId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, syncOutcomeSeq]);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "var(--space-5)", flexWrap: "wrap" }}>
@@ -426,9 +502,17 @@ function Dossier({
             lastRouteWrite={lastRouteWrite}
             onPatchRoute={onPatchRoute}
           />
-          <ComingRegion
-            label="actions"
-            body="This project's ordered actions land here, each expanding to its own steps."
+          <ActionsCard
+            projectId={projectId}
+            actions={actions}
+            lastActionReorder={lastActionReorder}
+            onReorderAction={onReorderAction}
+            stepsByItem={stepsByItem}
+            lastStepWrite={lastStepWrite}
+            onRequestActionSteps={onRequestActionSteps}
+            onCreateStep={onCreateStep}
+            onPatchStep={onPatchStep}
+            syncOutcomeSeq={syncOutcomeSeq}
           />
           <FogCard
             projectId={projectId}
@@ -953,6 +1037,355 @@ function LinkEditRow({
       <Input label="Label" placeholder="optional" value={labelInput} onChange={(event) => setLabelInput(event.target.value)} />
       <div style={{ display: "flex", gap: "var(--space-3)" }}>
         <Button size="sm" onClick={save} disabled={urlInput.trim() === ""}>
+          Save
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </li>
+  );
+}
+
+/** The dossier reading column's action list (#629, ADR-0030 decision 1):
+ * renders a project's Actions in route (`projectPos`) order, reorderable
+ * with up/down controls that stop at the ends, and each one expanding
+ * **inline beneath its own row** — never into the aside, per the brief's
+ * one non-negotiable styling detail — to its own steps checklist
+ * (`ActionStepsChecklist`) when selected. `actions` is `undefined` while
+ * the read is in flight (`TaskState.actionsByProject`'s own doc) — distinct
+ * from an empty array, which is a real answer ("this project has no
+ * actions yet").
+ *
+ * **Reordering overlays immediately.** Unlike `FogCard`/`LinksCard`'s own
+ * reorder, `onReorderAction` patches the ordinary item table
+ * (`Core::patch_action_position`'s own doc), so the swapped rows repaint
+ * the instant the click handler returns — no "waiting" state is drawn.
+ * Same "swap two adjacent rows, two CAS patches" gesture `FogCard`'s own
+ * `moveFog` uses, and for the same reason: an interleaved edit from
+ * another device only ever collides with the two rows actually touched. */
+function ActionsCard({
+  projectId,
+  actions,
+  lastActionReorder,
+  onReorderAction,
+  stepsByItem,
+  lastStepWrite,
+  onRequestActionSteps,
+  onCreateStep,
+  onPatchStep,
+  syncOutcomeSeq,
+}: {
+  projectId: string;
+  actions: TaskItemDTO[] | undefined;
+  lastActionReorder: TaskActionReorderResult | null;
+  onReorderAction: (projectId: string, current: TaskItemDTO, position: number) => void;
+  stepsByItem: Record<string, StepDTO[]>;
+  lastStepWrite: TaskStepResult | null;
+  onRequestActionSteps: (itemId: string) => void;
+  onCreateStep: (itemId: string, body: string, position: number) => void;
+  onPatchStep: (
+    current: StepDTO,
+    patch: { body?: string; done?: boolean; position?: number; deletedAt?: number | null },
+  ) => void;
+  syncOutcomeSeq: number;
+}) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  // Fetches the expanded action's steps the moment it is selected, and
+  // again on every completed cycle it stays selected for — same "the
+  // caller's own effect decides when" shape `Dossier`'s own `onRequestFog`
+  // effect uses.
+  useEffect(() => {
+    if (expandedId !== null) {
+      onRequestActionSteps(expandedId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expandedId, syncOutcomeSeq]);
+
+  // Gated on `projectId`, same reasoning `FogCard`'s own failure read
+  // carries: `lastActionReorder` is one broadcast slot shared by every open
+  // dossier, so an unguarded read would paint a stranger's failure into
+  // this card.
+  const failure =
+    lastActionReorder !== null && lastActionReorder.projectId === projectId && lastActionReorder.kind !== "ok"
+      ? lastActionReorder.error ?? "That reorder did not go through."
+      : null;
+
+  const sortedActions =
+    actions === undefined ? undefined : [...actions].sort((a, b) => (a.projectPos ?? 0) - (b.projectPos ?? 0));
+
+  function moveAction(index: number, direction: -1 | 1) {
+    if (sortedActions === undefined) {
+      return;
+    }
+    const swapIndex = index + direction;
+    if (swapIndex < 0 || swapIndex >= sortedActions.length) {
+      return;
+    }
+    const current = sortedActions[index];
+    const other = sortedActions[swapIndex];
+    onReorderAction(projectId, current, other.projectPos ?? swapIndex);
+    onReorderAction(projectId, other, current.projectPos ?? index);
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      <span className="hb-meta">actions</span>
+      <Card padding="var(--space-5)" style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+        {sortedActions === undefined ? (
+          <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+            Reading actions…
+          </span>
+        ) : sortedActions.length === 0 ? (
+          <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+            No actions on this Route yet.
+          </span>
+        ) : (
+          <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+            {sortedActions.map((action, index) => (
+              <li key={action.id} style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                  <button
+                    type="button"
+                    onClick={() => setExpandedId(expandedId === action.id ? null : action.id)}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      textAlign: "left",
+                      background: "none",
+                      border: "none",
+                      padding: 0,
+                      cursor: "pointer",
+                      font: "var(--type-body-sm)",
+                      color: "var(--text-primary)",
+                    }}
+                  >
+                    {action.title}
+                  </button>
+                  {action.pending ? <Badge mono>pending</Badge> : null}
+                  <IconButton
+                    icon="chevron-down"
+                    label="Move up"
+                    size="sm"
+                    style={{ transform: "rotate(180deg)" }}
+                    disabled={index === 0}
+                    onClick={() => moveAction(index, -1)}
+                  />
+                  <IconButton
+                    icon="chevron-down"
+                    label="Move down"
+                    size="sm"
+                    disabled={index === sortedActions.length - 1}
+                    onClick={() => moveAction(index, 1)}
+                  />
+                </div>
+                {expandedId === action.id ? (
+                  <ActionStepsChecklist
+                    itemId={action.id}
+                    steps={stepsByItem[action.id]}
+                    lastStepWrite={lastStepWrite}
+                    onCreateStep={onCreateStep}
+                    onPatchStep={onPatchStep}
+                  />
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+        {failure !== null ? <Badge tone="danger">{failure}</Badge> : null}
+      </Card>
+    </div>
+  );
+}
+
+/** One expanded action's steps checklist (#629) — rendered inline beneath
+ * its row by `ActionsCard`, never in the aside. Ticking, rewording,
+ * reordering and adding a Step all share the no-overlay convention every
+ * other project-lane write on this screen uses (`Core::patch_step`'s own
+ * doc): a change becomes visible once the next completed cycle pulls it
+ * back. Deleting a step flags it (ADR-0020) rather than erasing it — the
+ * flagged row simply stops appearing here, since a deleted Step demotes to
+ * `Presence::Absent` in the mirror (`sync::mirror`'s own `apply_tables`,
+ * unlike Fog's `resolved_at`), so there is no client-side "hide it" logic
+ * to get wrong. `steps` is `undefined` while the read is in flight
+ * (`TaskState.stepsByItem`'s own doc), distinct from an empty array (this
+ * action genuinely has no steps yet). */
+function ActionStepsChecklist({
+  itemId,
+  steps,
+  lastStepWrite,
+  onCreateStep,
+  onPatchStep,
+}: {
+  itemId: string;
+  steps: StepDTO[] | undefined;
+  lastStepWrite: TaskStepResult | null;
+  onCreateStep: (itemId: string, body: string, position: number) => void;
+  onPatchStep: (
+    current: StepDTO,
+    patch: { body?: string; done?: boolean; position?: number; deletedAt?: number | null },
+  ) => void;
+}) {
+  const [bodyInput, setBodyInput] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  // Gated on `itemId`, same reasoning `ActionsCard`'s own failure read
+  // carries: `lastStepWrite` is one broadcast slot shared by every
+  // expanded checklist on every open dossier.
+  const failure =
+    lastStepWrite !== null && lastStepWrite.itemId === itemId
+      ? (lastStepWrite.kind === "ok" ? null : lastStepWrite.error ?? "That step write did not go through.")
+      : null;
+
+  const sortedSteps = steps === undefined ? undefined : [...steps].sort((a, b) => a.position - b.position);
+
+  function addStep() {
+    const trimmedBody = bodyInput.trim();
+    if (trimmedBody === "") {
+      return;
+    }
+    // Mint the new position past the largest live one, not from the count
+    // — `FogCard.addFog`'s own reasoning, ported verbatim: a deleted step
+    // drops out of this read without renumbering the rest, so a
+    // count-minted position could duplicate a live row's.
+    const position = sortedSteps === undefined || sortedSteps.length === 0 ? 0 : sortedSteps[sortedSteps.length - 1].position + 1;
+    onCreateStep(itemId, trimmedBody, position);
+    setBodyInput("");
+  }
+
+  function moveStep(index: number, direction: -1 | 1) {
+    if (sortedSteps === undefined) {
+      return;
+    }
+    const swapIndex = index + direction;
+    if (swapIndex < 0 || swapIndex >= sortedSteps.length) {
+      return;
+    }
+    const step = sortedSteps[index];
+    const other = sortedSteps[swapIndex];
+    onPatchStep(step, { position: other.position });
+    onPatchStep(other, { position: step.position });
+  }
+
+  return (
+    <div style={{ marginLeft: "var(--space-6)", display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      {sortedSteps === undefined ? (
+        <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>Reading steps…</span>
+      ) : sortedSteps.length === 0 ? (
+        <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+          No steps on this action yet.
+        </span>
+      ) : (
+        <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+          {sortedSteps.map((step, index) =>
+            editingId === step.id ? (
+              <StepEditRow
+                key={step.id}
+                step={step}
+                onSave={(body) => {
+                  onPatchStep(step, { body });
+                  setEditingId(null);
+                }}
+                onCancel={() => setEditingId(null)}
+              />
+            ) : (
+              <li key={step.id} style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                <Checkbox
+                  checked={step.done}
+                  onChange={() => onPatchStep(step, { done: !step.done })}
+                  aria-label={step.body}
+                />
+                <span
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    font: "var(--type-body-sm)",
+                    color: step.done ? "var(--text-secondary)" : "var(--text-primary)",
+                    textDecoration: step.done ? "line-through" : "none",
+                  }}
+                >
+                  {step.body}
+                </span>
+                <IconButton
+                  icon="chevron-down"
+                  label="Move up"
+                  size="sm"
+                  style={{ transform: "rotate(180deg)" }}
+                  disabled={index === 0}
+                  onClick={() => moveStep(index, -1)}
+                />
+                <IconButton
+                  icon="chevron-down"
+                  label="Move down"
+                  size="sm"
+                  disabled={index === sortedSteps.length - 1}
+                  onClick={() => moveStep(index, 1)}
+                />
+                <Button variant="ghost" size="sm" onClick={() => setEditingId(step.id)}>
+                  Edit
+                </Button>
+                <IconButton
+                  icon="trash-2"
+                  label="Delete"
+                  size="sm"
+                  onClick={() => onPatchStep(step, { deletedAt: Date.now() })}
+                />
+              </li>
+            ),
+          )}
+        </ul>
+      )}
+
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          addStep();
+        }}
+        style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}
+      >
+        <Input
+          label="New step"
+          placeholder="A ~2–5 minute concrete physical step"
+          value={bodyInput}
+          onChange={(event) => setBodyInput(event.target.value)}
+        />
+        {failure !== null ? <Badge tone="danger">{failure}</Badge> : null}
+        <Button type="submit" size="sm" disabled={bodyInput.trim() === "" || sortedSteps === undefined}>
+          Add step
+        </Button>
+      </form>
+    </div>
+  );
+}
+
+/** One step's inline reword form — swapped in for its display row
+ * (`ActionStepsChecklist`'s own `editingId`), the same "click to reveal the
+ * fields" shape `FogEditRow` uses. */
+function StepEditRow({
+  step,
+  onSave,
+  onCancel,
+}: {
+  step: StepDTO;
+  onSave: (body: string) => void;
+  onCancel: () => void;
+}) {
+  const [bodyInput, setBodyInput] = useState(step.body);
+
+  function save() {
+    const trimmedBody = bodyInput.trim();
+    if (trimmedBody === "") {
+      return;
+    }
+    onSave(trimmedBody);
+  }
+
+  return (
+    <li style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      <Input label="Step" value={bodyInput} onChange={(event) => setBodyInput(event.target.value)} />
+      <div style={{ display: "flex", gap: "var(--space-3)" }}>
+        <Button size="sm" onClick={save} disabled={bodyInput.trim() === ""}>
           Save
         </Button>
         <Button variant="ghost" size="sm" onClick={onCancel}>

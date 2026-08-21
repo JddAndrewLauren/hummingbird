@@ -64,9 +64,9 @@ pub mod task;
 use bindings::{Binding, BindingKey, BindingValue};
 use hummingbird_domain::{
     resulting_stage, Alert, AlertPatch, Condition, CreateFog, CreateGrill, CreateItem,
-    CreateProject, CreateProjectLink, CreateRule, Energy, Fog, FogPatch, GrillVerdict, Item,
-    Project, ProjectLink, ProjectLinkPatch, ProjectPatch, Route, RoutePatch, Rule, RulePatch,
-    Setting, Size, Stage, Step, Tier,
+    CreateProject, CreateProjectLink, CreateRule, CreateStep, Energy, Fog, FogPatch, GrillVerdict,
+    Item, Project, ProjectLink, ProjectLinkPatch, ProjectPatch, Route, RoutePatch, Rule,
+    RulePatch, Setting, Size, Stage, Step, StepPatch, Tier,
 };
 
 use serde::{Deserialize, Serialize};
@@ -1517,6 +1517,169 @@ where
                 // `Fog` carries no `updated_at` column, same as `ProjectLink`
                 // — the rebase compares against the row's own last-seen
                 // `version` alone.
+                base_updated_at: 0,
+                patch_fields,
+                rebase_fields: None,
+            },
+        };
+        self.cycle.enqueue(entry, now_ms).await?;
+        Ok(())
+    }
+
+    /// Every live Action on a project — items with `project_id` set to
+    /// this project **and a `project_pos`**, position order (#629,
+    /// ADR-0030 decision 1's "each item's `project_pos`" is shared-owned).
+    /// `project_pos` is the filter, not just the sort key: `Item::project_pos`'s
+    /// own doc calls it "order within the Route's action list", and
+    /// CONTEXT.md's **Action** entry draws the same line — an item merely
+    /// assigned a project (triage's "project selected" gesture, ADR-0030
+    /// decision 3) is not yet minted as an Action and has no route
+    /// position to render, so it does not belong on this list until
+    /// `/to-actions` (or a future client mint) gives it one.
+    ///
+    /// Overlay applied ([`Core::overlaid_items`]): unlike
+    /// [`Core::open_fog_for`]/[`Core::route`]/[`Core::links_for`], which
+    /// read project-lane tables with no overlay of their own, this reads
+    /// the ordinary item table, which already carries the overlay
+    /// [`Core::act`]/[`Core::triage`] write into — so a reorder enqueued
+    /// through [`Core::patch_action_position`] shows here the instant it
+    /// is enqueued, through that same existing overlay, never a second one
+    /// invented for this read.
+    pub fn actions_for(&self, project_id: &str) -> Vec<Item> {
+        let mut actions: Vec<Item> = self
+            .overlaid_items()
+            .into_values()
+            .filter(|item| item.project_id.as_deref() == Some(project_id) && item.project_pos.is_some())
+            .collect();
+        actions.sort_by_key(|item| (item.project_pos, item.id.clone()));
+        actions
+    }
+
+    /// Moves one Action's `project_pos` within its project's Route (#629,
+    /// ADR-0030 decision 1) — the dossier's reorder control: one CAS
+    /// `PATCH /api/items/:id` touching only `project_pos`. Same
+    /// shared-owned, 409-is-ordinary contract [`Core::patch_route`]
+    /// documents: `/to-actions` writes `project_pos` too, so losing a race
+    /// here lands in the ordinary dead-letter journal like any other CAS
+    /// write, never a bespoke conflict surface. The server never renumbers
+    /// any other row on the client's behalf — a caller reordering a whole
+    /// list calls this once per Action whose position actually changed,
+    /// same "swap two adjacent rows, two CAS patches" gesture
+    /// `ProjectsScreen`'s `FogCard`/`LinksCard` already use for their own
+    /// reorder control.
+    ///
+    /// Overlaid immediately, exactly [`Core::act`]'s own contract — unlike
+    /// the no-overlay project-lane writes ([`Core::patch_route`]/
+    /// [`Core::patch_fog`]/[`Core::patch_project_link`]), this patches the
+    /// ordinary item table, which already carries [`Core::act`]'s overlay
+    /// machinery.
+    pub async fn patch_action_position(
+        &mut self,
+        seed: &str,
+        current: &Item,
+        position: i64,
+        now_ms: i64,
+    ) -> Result<(), ActError<QS::Error>> {
+        let base = serde_json::to_value(current).expect("Item always serializes");
+        let mut optimistic = current.clone();
+        optimistic.project_pos = Some(position);
+        optimistic.updated_at = now_ms;
+
+        let entry_id = sync::write::deterministic_id(seed);
+        let entry = QueueEntry {
+            id: entry_id.clone(),
+            intent: MutationIntent::Patch {
+                path: sync::write::paths::item(&current.id),
+                method: HttpMethod::Patch,
+                base,
+                base_updated_at: current.updated_at,
+                patch_fields: serde_json::json!({ "project_pos": position }),
+                rebase_fields: None,
+            },
+        };
+
+        self.cycle
+            .enqueue(entry, now_ms)
+            .await
+            .map_err(ActError::Snapshot)?;
+
+        self.overlay.insert(
+            current.id.clone(),
+            OverlayEntry { entry_id, item: optimistic },
+        );
+
+        Ok(())
+    }
+
+    /// Creates a Step on an item's checklist (#629): enqueues a `POST
+    /// /api/steps` create, durably, exactly [`Core::create_fog`]'s own
+    /// shape. `seed` mints the deterministic id. Returns the minted id.
+    ///
+    /// No optimistic overlay, same reasoning as [`Core::create_fog`]'s own
+    /// doc: the new Step becomes visible once the next completed cycle
+    /// pulls it back. [`item_detail::ItemDetail::steps`]'s own doc named
+    /// this the seam a future Step overlay would extend; this slice does
+    /// not build one, matching the no-overlay convention every other
+    /// project-lane write here (`create_fog`, `create_project_link`)
+    /// already follows.
+    pub async fn create_step(
+        &mut self,
+        seed: &str,
+        item_id: &str,
+        body: impl Into<String>,
+        position: i64,
+        now_ms: i64,
+    ) -> Result<String, SnapshotError<QS::Error>> {
+        let id = sync::write::deterministic_id(seed);
+        let create = CreateStep { id: id.clone(), item_id: item_id.to_string(), body: body.into(), position };
+        let body_json = serde_json::to_value(&create).expect("CreateStep always serializes");
+        let entry = QueueEntry {
+            id: id.clone(),
+            intent: MutationIntent::Create { path: sync::write::paths::steps(), body: body_json },
+        };
+        self.cycle.enqueue(entry, now_ms).await?;
+        Ok(id)
+    }
+
+    /// Patches a Step (#629) — ticking it (the scalar CAS write ADR-0008
+    /// exists for), rewording it, repositioning it, or flagging/clearing
+    /// its deletion (ADR-0020), all through this one entry point. Same
+    /// contract as [`Core::patch_fog`]: every `Some` field is touched,
+    /// absolute-set; `None` means "leave this field alone."
+    /// `body`/`done`/`position` are single-`Option` (`NOT NULL`, cannot be
+    /// cleared); `deleted_at` is double-`Option` — flagging deletion sets
+    /// it, restoring clears it with an explicit `null`, the same gesture
+    /// [`Core::patch_fog`]'s `resolved_at` carries. A Step is never
+    /// erased, only flagged (ADR-0020) — this is the one entry point that
+    /// can set that flag.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn patch_step(
+        &mut self,
+        seed: &str,
+        current: &Step,
+        body: Option<String>,
+        done: Option<bool>,
+        position: Option<i64>,
+        deleted_at: Option<Option<i64>>,
+        now_ms: i64,
+    ) -> Result<(), SnapshotError<QS::Error>> {
+        let base = serde_json::to_value(current).expect("Step always serializes");
+        let patch = StepPatch { expected_version: current.version, body, done, position, deleted_at };
+
+        let mut patch_fields = serde_json::to_value(&patch).expect("StepPatch always serializes");
+        if let serde_json::Value::Object(map) = &mut patch_fields {
+            map.remove("expected_version");
+        }
+
+        let entry = QueueEntry {
+            id: sync::write::deterministic_id(seed),
+            intent: MutationIntent::Patch {
+                path: sync::write::paths::step(&current.id),
+                method: HttpMethod::Patch,
+                base,
+                // `Step` carries no `updated_at` column, same as `Fog`/
+                // `ProjectLink` — the rebase compares against the row's
+                // own last-seen `version` alone.
                 base_updated_at: 0,
                 patch_fields,
                 rebase_fields: None,
@@ -6734,6 +6897,227 @@ mod tests {
             panic!("a fog edit is a CAS patch, not a create");
         };
         assert_eq!(patch_fields, &serde_json::json!({ "resolved_at": null }));
+    }
+
+    // ------------------------------------------------- Actions/Steps (#629)
+
+    /// Runs one full-sweep cycle seeding `items` — `core_with_fog`'s own
+    /// shape, since an Action's own `project_pos` must reach the mirror the
+    /// ordinary way or not at all.
+    async fn core_with_items(items: Vec<hummingbird_domain::Item>) -> Core {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            items,
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let outcome = core
+            .run(&read, &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0)
+            .await;
+        assert!(matches!(
+            outcome,
+            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
+        ));
+        core
+    }
+
+    fn fixture_action(id: &str, project_id: &str, project_pos: i64) -> hummingbird_domain::Item {
+        hummingbird_domain::Item {
+            project_id: Some(project_id.to_string()),
+            project_pos: Some(project_pos),
+            ..fixture_item(id, Stage::Ready)
+        }
+    }
+
+    /// #629 acceptance: "Actions render in route order" — every live item
+    /// on a project, pulled by an ordinary sweep, answers
+    /// [`Core::actions_for`] in `project_pos` order, scoped to its own
+    /// project; an item on a different project (or none) never appears.
+    #[tokio::test]
+    async fn actions_for_reads_project_items_in_position_order() {
+        let core = core_with_items(vec![
+            fixture_action("a-2", "p-1", 2),
+            fixture_action("a-1", "p-1", 1),
+            fixture_action("a-0", "p-1", 0),
+            fixture_action("a-other", "p-2", 0),
+            fixture_item("no-project", Stage::Ready),
+            // Assigned to the project (ADR-0030 decision 3's "project
+            // selected" gesture) but not yet minted with a route position —
+            // not an Action yet, and must not appear here.
+            hummingbird_domain::Item {
+                project_id: Some("p-1".to_string()),
+                project_pos: None,
+                ..fixture_item("not-minted-yet", Stage::Triage)
+            },
+        ])
+        .await;
+
+        assert_eq!(
+            core.actions_for("p-1").iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            vec!["a-0", "a-1", "a-2"],
+        );
+        assert_eq!(core.actions_for("p-unknown"), Vec::new());
+    }
+
+    /// #629 acceptance: "reordering writes one item CAS patch … touching
+    /// only `project_pos`" — same "leave every other field alone" contract
+    /// `patch_route`/`patch_fog`'s own tests pin, applied to the item
+    /// table's `project_pos` column.
+    #[tokio::test]
+    async fn patch_action_position_touches_only_project_pos() {
+        let mut core = core_with_items(vec![fixture_action("a-1", "p-1", 0)]).await;
+        let current = core.actions_for("p-1").into_iter().next().unwrap();
+
+        core.patch_action_position("seed-1", &current, 2, 3_000).await.unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        assert_eq!(entries.len(), 1);
+        let MutationIntent::Patch { path, method, base_updated_at, patch_fields, .. } =
+            &entries[0].intent
+        else {
+            panic!("a reorder is a CAS patch, not a create");
+        };
+        assert_eq!(path, "/api/items/a-1");
+        assert_eq!(*method, HttpMethod::Patch);
+        assert_eq!(*base_updated_at, current.updated_at);
+        assert_eq!(patch_fields, &serde_json::json!({ "project_pos": 2 }));
+    }
+
+    /// #629 acceptance: a reorder overlays immediately — unlike the
+    /// no-overlay project-lane writes, this patches the ordinary item
+    /// table, so [`Core::actions_for`] reflects the new order the instant
+    /// [`Core::patch_action_position`] returns, offline or not.
+    #[tokio::test]
+    async fn patch_action_position_overlays_the_new_order_immediately() {
+        let mut core =
+            core_with_items(vec![fixture_action("a-1", "p-1", 0), fixture_action("a-2", "p-1", 1)]).await;
+        let first = core.actions_for("p-1").into_iter().next().unwrap();
+        assert_eq!(first.id, "a-1");
+
+        // Swap the two rows: give a-1 a-2's position and vice versa.
+        core.patch_action_position("seed-1", &first, 1, 3_000).await.unwrap();
+        let second = core.actions_for("p-1").into_iter().nth(1).unwrap();
+        assert_eq!(second.id, "a-2");
+        core.patch_action_position("seed-2", &second, 0, 3_000).await.unwrap();
+
+        assert_eq!(
+            core.actions_for("p-1").iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            vec!["a-2", "a-1"],
+        );
+    }
+
+    /// #629 acceptance: creating a Step enqueues one `POST /api/steps`
+    /// create and overlays nothing — same no-overlay contract
+    /// `create_fog_enqueues_one_post_create` pins for fog.
+    #[tokio::test]
+    async fn create_step_enqueues_one_post_create() {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+
+        let id = core.create_step("seed-1", "item-1", "Buy the permit", 0, 2_000).await.unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        assert_eq!(entries.len(), 1);
+        let MutationIntent::Create { path, body } = &entries[0].intent else {
+            panic!("a step create is a POST create, not a patch");
+        };
+        assert_eq!(path, "/api/steps");
+        assert_eq!(body.get("id").and_then(|v| v.as_str()), Some(id.as_str()));
+        assert_eq!(body.get("item_id").and_then(|v| v.as_str()), Some("item-1"));
+        assert_eq!(body.get("body").and_then(|v| v.as_str()), Some("Buy the permit"));
+        assert_eq!(body.get("position").and_then(|v| v.as_i64()), Some(0));
+    }
+
+    /// Runs one full-sweep cycle seeding `steps` — `core_with_fog`'s own
+    /// shape.
+    async fn core_with_steps(steps: Vec<hummingbird_domain::Step>) -> Core {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            steps,
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let outcome = core
+            .run(&read, &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0)
+            .await;
+        assert!(matches!(
+            outcome,
+            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
+        ));
+        core
+    }
+
+
+    /// #629 acceptance: "ticking a step is the scalar CAS write" — only
+    /// `done` is touched, same "leave every other field alone" contract
+    /// every other patch here carries.
+    #[tokio::test]
+    async fn patch_step_ticking_touches_only_done() {
+        let mut core = core_with_steps(vec![fixture_step("s-1", "item-1", "step s-1", false)]).await;
+        let current = core.steps_for("item-1").into_iter().next().unwrap();
+
+        core.patch_step("seed-1", &current, None, Some(true), None, None, 3_000).await.unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        assert_eq!(entries.len(), 1);
+        let MutationIntent::Patch { path, method, base_updated_at, patch_fields, .. } =
+            &entries[0].intent
+        else {
+            panic!("a step edit is a CAS patch, not a create");
+        };
+        assert_eq!(path, "/api/steps/s-1");
+        assert_eq!(*method, HttpMethod::Patch);
+        assert_eq!(*base_updated_at, 0, "Step carries no updated_at column");
+        assert_eq!(patch_fields, &serde_json::json!({ "done": true }));
+        assert!(patch_fields.get("expected_version").is_none());
+    }
+
+    /// #629 acceptance: "deleting a step flags it rather than erasing it"
+    /// (ADR-0020) — flagging sends an explicit `deleted_at` timestamp.
+    #[tokio::test]
+    async fn patch_step_delete_flags_rather_than_erases() {
+        let mut core = core_with_steps(vec![fixture_step("s-1", "item-1", "step s-1", false)]).await;
+        let current = core.steps_for("item-1").into_iter().next().unwrap();
+
+        core.patch_step("seed-1", &current, None, None, None, Some(Some(9_000)), 3_000).await.unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        let MutationIntent::Patch { patch_fields, .. } = &entries[0].intent else {
+            panic!("a step edit is a CAS patch, not a create");
+        };
+        assert_eq!(patch_fields, &serde_json::json!({ "deleted_at": 9_000 }));
+    }
+
+    /// The clearing half: `Some(None)` sends an explicit JSON `null` —
+    /// restoring a flagged step, same double-`Option` contract every other
+    /// nullable patch field here carries. Built directly rather than seeded
+    /// through a sweep: a deleted step demotes to `Presence::Absent`
+    /// (`sync::mirror`'s own `apply_tables`, unlike Fog's `resolved_at`,
+    /// which never demotes), so `steps_for` cannot read it back — exactly
+    /// [`Core::patch_fog`]'s own tests read `current` off a live row, this
+    /// one supplies it directly, the same "caller supplies `base`"
+    /// contract every patch method here follows regardless of whether the
+    /// mirror can currently see that row.
+    #[tokio::test]
+    async fn patch_step_restore_clears_deleted_at_with_explicit_null() {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let mut deleted = fixture_step("s-1", "item-1", "step s-1", false);
+        deleted.deleted_at = Some(9_000);
+
+        core.patch_step("seed-1", &deleted, None, None, None, Some(None), 3_000).await.unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        let MutationIntent::Patch { patch_fields, .. } = &entries[0].intent else {
+            panic!("a step edit is a CAS patch, not a create");
+        };
+        assert_eq!(patch_fields, &serde_json::json!({ "deleted_at": null }));
     }
 
     /// #140 acceptance: "the enable/disable toggle is one CAS field,

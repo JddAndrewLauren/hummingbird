@@ -218,6 +218,11 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     requestFog: handleRequestFog,
     createFog: handleCreateFog,
     patchFog: handlePatchFog,
+    requestActions: handleRequestActions,
+    reorderAction: handleReorderAction,
+    requestSteps: handleRequestActionSteps,
+    createStep: handleCreateStep,
+    patchStep: handlePatchStep,
   } = useProjectsWiring(worker);
   // #245: every source the registered standing questions need, refreshed on
   // the same per-cycle signal as the bindings they depend on.
@@ -630,6 +635,11 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               onRequestFog={handleRequestFog}
               onCreateFog={handleCreateFog}
               onPatchFog={handlePatchFog}
+              onRequestActions={handleRequestActions}
+              onReorderAction={handleReorderAction}
+              onRequestActionSteps={handleRequestActionSteps}
+              onCreateStep={handleCreateStep}
+              onPatchStep={handlePatchStep}
             />
           )}
           {screen === "alerts" && <AlertsScreen />}
