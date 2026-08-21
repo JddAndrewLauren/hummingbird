@@ -113,13 +113,13 @@ describe("shouldKeepExistingConnection", () => {
   const failed = { connected: false, needsReconnect: false, expiresAtMs: null, error: null };
   const succeeded = { connected: true, needsReconnect: false, expiresAtMs: 10_000, error: null };
 
-  it("keeps the opt-in when a Reconnect is cancelled or fails", () => {
+  it("keeps the opt-in when a Reconnect fails", () => {
     // The device stays connected-but-needing-reconnect: its last-good tile
     // and the Reconnect button both survive a mint the authority refused.
     expect(shouldKeepExistingConnection(true, failed)).toBe(true);
   });
 
-  it("lets a first-time Connect that is declined end disconnected", () => {
+  it("lets a first-time Connect that fails end disconnected", () => {
     expect(shouldKeepExistingConnection(false, failed)).toBe(false);
   });
 
