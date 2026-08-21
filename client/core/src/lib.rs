@@ -1570,10 +1570,17 @@ where
     /// through [`Core::patch_action_position`] shows here the instant it
     /// is enqueued, through that same existing overlay, never a second one
     /// invented for this read.
+    ///
+    /// `archived_at` filtered, same as [`Core::frontier`] and its own
+    /// comment: a cancel (S11/#109) archives an overlaid item without
+    /// changing its stage, so a cancelled Action drops out of the
+    /// dossier's action list immediately, offline or not, rather than
+    /// lingering until a completed sync cycle pulls the archive back.
     pub fn actions_for(&self, project_id: &str) -> Vec<Item> {
         let mut actions: Vec<Item> = self
             .overlaid_items()
             .into_values()
+            .filter(|item| item.archived_at.is_none())
             .filter(|item| item.project_id.as_deref() == Some(project_id) && item.project_pos.is_some())
             .collect();
         actions.sort_by_key(|item| (item.project_pos, item.id.clone()));
@@ -7016,6 +7023,29 @@ mod tests {
             vec!["a-0", "a-1", "a-2"],
         );
         assert_eq!(core.actions_for("p-unknown"), Vec::new());
+    }
+
+    /// #670: a cancel (S11/#109) archives an overlaid item without
+    /// changing its stage — the same fact [`Core::frontier`]'s own
+    /// comment states — so a just-cancelled Action must drop out of
+    /// [`Core::actions_for`] immediately, offline or not, rather than
+    /// lingering until a completed sync cycle pulls the archive back.
+    #[tokio::test]
+    async fn actions_for_drops_a_cancelled_action_immediately() {
+        let mut core = core_with_items(vec![
+            fixture_action("a-0", "p-1", 0),
+            fixture_action("a-1", "p-1", 1),
+            fixture_action("a-2", "p-1", 2),
+        ])
+        .await;
+
+        core.act("seed-1", "a-1", ItemAction::Cancel, 2_000).await.unwrap();
+
+        assert_eq!(
+            core.actions_for("p-1").iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            vec!["a-0", "a-2"],
+            "a cancelled Action leaves the list immediately, siblings keep their order"
+        );
     }
 
     /// #629 acceptance: "reordering writes one item CAS patch … touching
