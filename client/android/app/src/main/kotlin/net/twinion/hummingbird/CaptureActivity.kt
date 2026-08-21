@@ -15,15 +15,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -41,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
@@ -57,6 +59,7 @@ import net.twinion.hummingbird.ui.forms.LevelSlider
 import net.twinion.hummingbird.ui.forms.PriorityRow
 import net.twinion.hummingbird.ui.forms.ProjectField
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
+import net.twinion.hummingbird.ui.theme.Sky600
 import uniffi.hummingbird_ffi_mobile.CaptureDestination
 
 // M1-5's capture surface (#128/#503), the second launcher icon's
@@ -68,11 +71,13 @@ import uniffi.hummingbird_ffi_mobile.CaptureDestination
 //
 // M3/#529 widened this from title-only to the web capture box's whole
 // field set: the energy/size sliders, the open-vocabulary context field,
-// and a details disclosure holding description, project, priority,
-// deadline and scheduled date. The destination rides on the submit gesture
-// — Triage and Add are two buttons, not a switch above one — and the
-// button row is pinned below the scrolling fields so the keyboard can
-// never push it out of reach. Dictation stays title-field-only
+// the description box (out from behind the disclosure and above Context
+// since 2026-08-21, argued at the field), and a details disclosure holding
+// project, priority, deadline and scheduled date. The destination rides on the submit gesture
+// — Triage and Add are two buttons, not a switch above one, and since
+// 2026-08-21 two coloured glyph squares rather than two words (argued at
+// the row itself) — and the button row is pinned below the scrolling
+// fields so the keyboard can never push it out of reach. Dictation stays title-field-only
 // (`CaptureViewModel.onTranscript`'s own doc) — say so here too, not just
 // there. `LevelSlider`/`ContextField`/`CaptureDateField`/`ProjectField`
 // (`ui/forms/`) are the shared components this screen builds and both the
@@ -244,11 +249,53 @@ private fun CaptureScreen(
                     selected = draft.size.ifEmpty { null },
                     onSelect = { viewModel.updateDraft(draft.copy(size = it.orEmpty())) },
                 )
-                ContextField(
-                    value = draft.context,
-                    onValueChange = { viewModel.updateDraft(draft.copy(context = it)) },
-                    suggestions = viewModel.formMeta.suggestedContexts,
+                // Description is the one mint field that stands open, above
+                // Context (operator decision 2026-08-21): a capture that
+                // needs a sentence of its own needs it while the words are
+                // still in the head, and a field reachable only behind a
+                // disclosure is one the hand does not reach for. The rest of
+                // the mint set stays behind the chevron.
+                OutlinedTextField(
+                    value = draft.description,
+                    onValueChange = { viewModel.updateDraft(draft.copy(description = it)) },
+                    label = { Text("Description") },
+                    modifier = Modifier.fillMaxWidth(),
                 )
+                // The details disclosure rides at this row's right-hand end
+                // (operator decision 2026-08-21) rather than centred on a
+                // line of its own below — where the web capture box already
+                // keeps it (`.hb-capture-details-toggle` in
+                // `shell/responsive.css`), and a row carrying nothing but
+                // one chevron spent a whole line of height on it.
+                // `CenterVertically` levels it with the field's box rather
+                // than its floating label.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ContextField(
+                        value = draft.context,
+                        onValueChange = { viewModel.updateDraft(draft.copy(context = it)) },
+                        suggestions = viewModel.formMeta.suggestedContexts,
+                        modifier = Modifier.weight(1f),
+                    )
+                    // Everything a mint would ask, behind one disclosure — the web
+                    // capture box's own "More details" (`CaptureBox.tsx`), drawn
+                    // as a chevron since 2026-08-20 (operator decision, taken on
+                    // the capture sheet and carried here so the two surfaces do
+                    // not disclose the same field set with two different
+                    // controls). `ic_chevron_down` rotated a half-turn when open,
+                    // `NowScreen`'s `ColumnHeader` idiom; the words survive as the
+                    // `contentDescription`.
+                    IconButton(onClick = { detailsOpen = !detailsOpen }) {
+                        Icon(
+                            painterResource(R.drawable.ic_chevron_down),
+                            contentDescription = if (detailsOpen) "Fewer details" else "More details",
+                            modifier = Modifier.rotate(if (detailsOpen) 180f else 0f),
+                        )
+                    }
+                }
 
                 // ADR-0022: a dictation pass that ends without text says so.
                 // A mic that renders and then does nothing is the failure mode
@@ -260,33 +307,8 @@ private fun CaptureScreen(
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
-
-                // Everything a mint would ask, behind one disclosure — the web
-                // capture box's own "More details" (`CaptureBox.tsx`), drawn
-                // as a chevron since 2026-08-20 (operator decision, taken on
-                // the capture sheet and carried here so the two surfaces do
-                // not disclose the same field set with two different
-                // controls). `ic_chevron_down` rotated a half-turn when open,
-                // `NowScreen`'s `ColumnHeader` idiom; the words survive as the
-                // `contentDescription`.
-                IconButton(
-                    onClick = { detailsOpen = !detailsOpen },
-                    modifier = Modifier.align(Alignment.CenterHorizontally),
-                ) {
-                    Icon(
-                        painterResource(R.drawable.ic_chevron_down),
-                        contentDescription = if (detailsOpen) "Fewer details" else "More details",
-                        modifier = Modifier.rotate(if (detailsOpen) 180f else 0f),
-                    )
-                }
                 if (detailsOpen) {
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        OutlinedTextField(
-                            value = draft.description,
-                            onValueChange = { viewModel.updateDraft(draft.copy(description = it)) },
-                            label = { Text("Description") },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
                         ProjectField(
                             projects = projects,
                             selectedId = draft.projectId,
@@ -326,11 +348,17 @@ private fun CaptureScreen(
             // Triage/Mint (`CaptureBox.tsx`), as two submit buttons rather
             // than a switch above one (operator decision 2026-08-20): the
             // destination is a property of the gesture, so there is no
-            // selected-state to read back or get wrong. "Add" is the filled
-            // button because Ready is the committing choice, mirroring the
-            // web's own Triage/Mint hierarchy. Both are gated on the
-            // in-flight flag as well as the draft: two doors to one
-            // `captureFn` is two ways to mint the same words twice
+            // selected-state to read back or get wrong. Both are drawn as
+            // solid coloured halves carrying a glyph and no word (operator
+            // decision 2026-08-21, the same change as the web's): triage's
+            // own blue with the inbox, brand orange with the plus. The
+            // colour and the glyph are the label, so each button's
+            // `contentDescription` is the only place its gesture is named.
+            // `Sky600` is named directly rather than taken from the scheme
+            // because `tertiary` is only the light scheme's blue and one
+            // fill has to carry white content in both themes. Both are
+            // gated on the in-flight flag as well as the draft: two doors
+            // to one `captureFn` is two ways to mint the same words twice
             // ([CaptureViewModel.submitting]).
             val canSubmit = viewModel.canSubmitDraft() && !submitting
             Row(
@@ -339,19 +367,31 @@ private fun CaptureScreen(
                     .padding(horizontal = 24.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                OutlinedButton(
+                Button(
                     onClick = { submit(CaptureDestination.TRIAGE) },
                     enabled = canSubmit,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Sky600,
+                        contentColor = Color.White,
+                    ),
                     modifier = Modifier.weight(1f),
                 ) {
-                    Text("Triage")
+                    Icon(
+                        painter = painterResource(R.drawable.ic_inbox),
+                        contentDescription = "Triage",
+                        modifier = Modifier.size(20.dp),
+                    )
                 }
                 Button(
                     onClick = { submit(CaptureDestination.READY) },
                     enabled = canSubmit,
                     modifier = Modifier.weight(1f),
                 ) {
-                    Text("Add")
+                    Icon(
+                        painter = painterResource(R.drawable.ic_plus),
+                        contentDescription = "Add",
+                        modifier = Modifier.size(20.dp),
+                    )
                 }
             }
         }

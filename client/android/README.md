@@ -473,9 +473,10 @@ Operator batch 2026-08-20, three areas on one branch.
   is released in a `finally`, so a failed enqueue does not leave both
   buttons dead for the screen's life.
 - **The sheet is no longer the light form.** It gains the "More details"
-  disclosure — description, project, priority, deadline, scheduled date —
-  so the two capture surfaces differ only in which door they are, never in
-  what a person can record through them. `CaptureSheetStructuralTest`'s ban
+  disclosure — description, project, priority, deadline, scheduled date;
+  description came out from behind it, above Context, on 2026-08-21, on
+  both surfaces at once — so the two capture surfaces differ only in which
+  door they are, never in what a person can record through them. `CaptureSheetStructuralTest`'s ban
   on `detailsOpen` is inverted into the parity assertion it became, checked
   field by field rather than by the disclosure's flag alone. The Project
   picker moved to `ui/forms/ProjectField.kt` so its refusal of free text
@@ -576,7 +577,11 @@ field set must not disclose it with two different controls.
   and the design system's "Unicode as icons: never" rule. The words it
   replaces survive as the `contentDescription`, so the control still names
   itself to a screen reader; a bare glyph with no accessible name would have
-  been a downgrade, not a simplification.
+  been a downgrade, not a simplification. Since 2026-08-21 it **rides the
+  right-hand end of the Context row** rather than sitting centred on a line
+  of its own (operator decision, both capture surfaces at once) — where the
+  web capture box already keeps it, and the same 64dp band the item panel's
+  own chevron bought back when it moved (below).
 - **Priority is one line of four chips.** "No priority" is gone — not
   picking one already says it, and a chip for the absence of a choice is a
   fifth target meaning what the resting state means. Clearing is what it
@@ -1196,7 +1201,8 @@ restyle, so each is recorded with what it replaced.
   editable behind a shut disclosure is invisible work. The panel gap came
   down 12dp → 8dp in the same pass.
 - **And the chevron rides the axes row, not a line of its own.** Centred
-  under the axes — `CaptureSheet`'s literal placement — it cost a 64dp band:
+  under the axes — which is what `CaptureSheet` did at the time, and stopped
+  doing on 2026-08-21 for this same reason — it cost a 64dp band:
   8dp of panel gap, a 48dp touch target around a 24dp glyph, 8dp again. The
   device pass is what made that visible, and between two open editors on
   Triage it was the most conspicuous whitespace left in a pane the whole

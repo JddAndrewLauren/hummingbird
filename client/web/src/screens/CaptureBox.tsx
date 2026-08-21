@@ -714,33 +714,35 @@ export function CaptureBox({
           }}
         />
         <div style={{ display: "flex", gap: "var(--space-4)", flexWrap: "wrap" }}>
-          {/* The two destinations, drawn as what they are rather than as two
-              equal sentences: this one is the inbox (`inbox` is triage's own
-              icon in the design system's vocabulary)... */}
-          <Button
-            size="md"
-            variant="secondary"
-            iconLeft="inbox"
-            disabled={!canSubmit}
-            onClick={() => submit("triage")}
-          >
-            Triage
-          </Button>
-          {/* ...and this one is the skip — CONTEXT.md's Mint, "landing in
-              Ready", for something already startable; the item never sits in
-              Triage at all. A bare `+` because minting is the gesture the
-              hand learns and then stops reading, and the accessible name
-              still says the whole thing. */}
-          {/* `md`, not `lg`: at `lg` this square is 44px beside a `md` field
-              and a `md` Triage button that are both 36, so it stuck 8px above
-              the row it belongs to. `md`'s own box is 34, so the explicit 36
-              is what makes it exactly the field's height rather than merely
-              closer — `IconButton` spreads `style` last, over its own sizing.
-              The row's `alignItems: "flex-end"` then lines all three up. */}
+          {/* The two destinations, drawn as two solid squares that say what
+              they are by colour and glyph alone. This one is the inbox
+              (`inbox` is triage's own icon in the design system's vocabulary,
+              and `info` is the blue triage wears in `StageBadge`)... */}
+          {/* Both carry the same explicit 36: `md`'s own box is 34, and
+              `IconButton` spreads `style` last over its own sizing, so this
+              is what makes each square exactly the `md` field's height. At
+              `lg` they would be 44 and stick 8px above the row. The row's
+              `alignItems: "flex-end"` then lines all three up. */}
           <IconButton
             size="md"
             style={{ height: 36, width: 36 }}
             variant="solid"
+            tone="info"
+            icon="inbox"
+            label="Triage"
+            disabled={!canSubmit}
+            onClick={() => submit("triage")}
+          />
+          {/* ...and this one is the skip — CONTEXT.md's Mint, "landing in
+              Ready", for something already startable; the item never sits in
+              Triage at all. Brand orange, because minting is the gesture the
+              hand learns and then stops reading; with both glyphs now bare,
+              each `label` is the only place its gesture is named. */}
+          <IconButton
+            size="md"
+            style={{ height: 36, width: 36 }}
+            variant="solid"
+            tone="accent"
             icon="plus"
             label="Mint action"
             disabled={!canSubmit}

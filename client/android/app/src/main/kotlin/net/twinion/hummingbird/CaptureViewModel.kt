@@ -58,8 +58,9 @@ data class CaptureFormState(
 }
 
 // M1-5's whole surface (#128/#503), widened at M3/#529 to the capture box's
-// full field set: energy/size, context, and the details disclosure
-// (description, project, priority, deadline, scheduled date). The
+// full field set: energy/size, description, context, and the details
+// disclosure (project, priority, deadline, scheduled date — description
+// stood open above Context on 2026-08-21, both surfaces at once). The
 // destination is [submit]'s argument rather than a field — see
 // [CaptureFormState.toDraft].
 // `canSubmitFn`/`metaProblemsFn` default, in [create], to the uniffi doors
