@@ -68,7 +68,7 @@ class PaneContentStructuralTest {
     }
 
     @Test
-    fun `the Now dispatcher answers every facts arm, renders nothing for the calendar pair, errors on the Status four`() {
+    fun `the Now dispatcher answers every facts arm, renders nothing for Vacation, errors on the Status four`() {
         for (arm in listOf("Waste", "Race", "Weekend", "Vacation")) {
             assertTrue(
                 "NowPaneExpanded must answer the $arm arm",
@@ -80,11 +80,15 @@ class PaneContentStructuralTest {
             nowSrc.contains("error(\"a Status-surface question reached the Now expanded slot"),
         )
         assertTrue(
-            "Weekend renders nothing beyond the shell — permanently unbound until a mobile calendar lane",
-            Regex("""is MobilePaneFacts\.Weekend\s*->\s*Unit""").containsMatchIn(nowSrc),
+            "Weekend renders its own card since #564/#621",
+            Regex("""is MobilePaneFacts\.Weekend\s*->\s*\n?\s*WeekendPaneExpanded""")
+                .containsMatchIn(nowSrc),
         )
+        // Vacation still renders nothing, and for a reason that is now a
+        // scope line rather than a missing lane: `MobileTrip` carries no
+        // event title, so a card would name every trip by its location.
         assertTrue(
-            "Vacation renders nothing beyond the shell — the same calendar-lane deferral",
+            "Vacation renders nothing beyond the shell — the seam carries no trip name",
             Regex("""is MobilePaneFacts\.Vacation\s*->\s*Unit""").containsMatchIn(nowSrc),
         )
     }
@@ -94,7 +98,7 @@ class PaneContentStructuralTest {
         val nowScreen = source("NowScreen.kt")
         assertTrue(
             "NowScreen must fill the shell's expandedContent slot with the one dispatcher",
-            nowScreen.contains("NowPaneExpanded(pane, nowMs)"),
+            nowScreen.contains("NowPaneExpanded(pane, nowMs, onSetScheduledDate)"),
         )
         val hits = listOf("StatusScreen.kt", "NowScreen.kt", "PaneShell.kt")
             .map { it to source(it) }

@@ -2281,8 +2281,8 @@ pub struct MobileWeekendWindow {
     pub under_way: bool,
 }
 
-/// [`weekend::WindowCounts`], mirrored — counts, never a per-entry list
-/// (the core module's own call).
+/// [`weekend::WindowCounts`], mirrored — tallied from the entries
+/// themselves core-side, so the two can never disagree.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct MobileWeekendCounts {
     pub events: i64,
@@ -2298,6 +2298,27 @@ pub enum MobileWeekendGap {
     UnresolvableZone,
 }
 
+fn map_weekend_entry(entry: weekend::WindowEntry) -> MobileWeekendEntry {
+    MobileWeekendEntry {
+        id: entry.id,
+        kind: match entry.kind {
+            weekend::EntryKind::Event => MobileWeekendEntryKind::Event,
+            weekend::EntryKind::Due => MobileWeekendEntryKind::Due,
+            weekend::EntryKind::Scheduled => MobileWeekendEntryKind::Scheduled,
+        },
+        title: entry.title,
+        at_ms: entry.at_ms,
+        anchor: match entry.anchor {
+            weekend::EntryAnchor::Time => MobileWeekendEntryAnchor::Time,
+            weekend::EntryAnchor::Day => MobileWeekendEntryAnchor::Day,
+        },
+        day_key: entry.day_key,
+        source_id: entry.source_id,
+        also_scheduled_on: entry.also_scheduled_on,
+        deadline_outside_window: entry.deadline_outside_window,
+    }
+}
+
 fn map_weekend_gap(gap: weekend::WeekendGap) -> MobileWeekendGap {
     match gap {
         weekend::WeekendGap::NotConnected => MobileWeekendGap::NotConnected,
@@ -2306,11 +2327,57 @@ fn map_weekend_gap(gap: weekend::WeekendGap) -> MobileWeekendGap {
     }
 }
 
+/// [`weekend::EntryKind`], mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileWeekendEntryKind {
+    Event,
+    Due,
+    Scheduled,
+}
+
+/// [`weekend::EntryAnchor`], mirrored — an instant within the day, or the
+/// whole day. What a renderer needs to choose between "9:30 – 10:00" and
+/// "all day", and nothing Kotlin re-derives from a timestamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileWeekendEntryAnchor {
+    Time,
+    Day,
+}
+
+/// [`weekend::WindowEntry`], mirrored (#564/#621). The merge — including
+/// the due-beats-scheduled dedupe and both its residues — happens in
+/// `weekend.rs`; this crossing carries the result.
+///
+/// `source_id` is the phone's handle back into its own item, and the reason
+/// the plan chips can write: `also_scheduled_on` and `day_key` say which
+/// chip is filled, `source_id` says which item a tap writes to.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileWeekendEntry {
+    pub id: String,
+    pub kind: MobileWeekendEntryKind,
+    pub title: String,
+    pub at_ms: i64,
+    pub anchor: MobileWeekendEntryAnchor,
+    pub day_key: String,
+    pub source_id: String,
+    pub also_scheduled_on: Option<String>,
+    pub deadline_outside_window: Option<String>,
+}
+
+/// [`weekend::WeekendDayEntries`], mirrored.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileWeekendDayEntries {
+    pub date: String,
+    pub entries: Vec<MobileWeekendEntry>,
+}
+
 /// [`weekend::WeekendFacts`], mirrored.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct MobileWeekendFacts {
     pub window: MobileWeekendWindow,
     pub counts: MobileWeekendCounts,
+    /// Always exactly three, in window order — Friday, Saturday, Sunday.
+    pub days: Vec<MobileWeekendDayEntries>,
 }
 
 /// [`weekend::WeekendResolved`], mirrored.
@@ -2344,6 +2411,14 @@ fn map_weekend_resolved(resolved: weekend::WeekendResolved) -> MobileWeekendReso
                     due: facts.counts.due,
                     scheduled: facts.counts.scheduled,
                 },
+                days: facts
+                    .days
+                    .into_iter()
+                    .map(|day| MobileWeekendDayEntries {
+                        date: day.date,
+                        entries: day.entries.into_iter().map(map_weekend_entry).collect(),
+                    })
+                    .collect(),
             },
         },
         weekend::WeekendResolved::Gap { gap } => {
