@@ -338,7 +338,15 @@ web's is, and **not** through a row component: the web's first cut used
 characters in the 320px aside, so both clients draw a title and a meta line
 instead. **Weekend renders its own card since #564/#621** — the merged
 per-day entries `weekend.rs` now sinks, plus the plan chips that write a
-do-date through `MobileTaskHost.setScheduledDate`. **Vacation still renders
+do-date through `MobileTaskHost.setScheduledDate`. **SCPS renders its own
+card since #694**, `ScpsPaneExpanded.tsx` ported: the next `SCPS `-titled
+event's kind and topic as the title, a `day · time` meta line beneath it
+(never repeating the title — the same "two of the same fact" rule
+`VacationPaneExpanded.tsx` states), its location and notes when present,
+the Photo Quest line, and any further events in the window beneath. Read-
+only and unbound-free, `scps.rs`'s own "never unbound" rule — the card's
+only empty state is "nothing to show until this device has read its
+calendars", never a setup prompt. **Vacation still renders
 none**, and that is a scope line rather than a missing lane: `MobileTrip`
 carries no event title, so a card would name every trip by its location or
 "a trip" (`PaneAnswers.kt`'s `vacationTripHeadline` records the same

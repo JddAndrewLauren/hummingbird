@@ -7,6 +7,9 @@ import uniffi.hummingbird_ffi_mobile.MobileKimiGap
 import uniffi.hummingbird_ffi_mobile.MobilePaneFreshness
 import uniffi.hummingbird_ffi_mobile.MobileProbeGap
 import uniffi.hummingbird_ffi_mobile.MobileRaceGap
+import uniffi.hummingbird_ffi_mobile.MobileScpsEvent
+import uniffi.hummingbird_ffi_mobile.MobileScpsKind
+import uniffi.hummingbird_ffi_mobile.MobileScpsQuestFact
 import uniffi.hummingbird_ffi_mobile.MobileWasteGap
 import uniffi.hummingbird_ffi_mobile.MobileWorkflowGap
 
@@ -97,5 +100,89 @@ class PaneExpandedWordsTest {
         assertEquals("Sunday", raceDayLabel(nowMs + 3 * 86_400_000L, nowMs, zone))
         assertEquals("Sep 20", raceDayLabel(nowMs + 31 * 86_400_000L, nowMs, zone))
         assertEquals("8:00 AM", raceClock(nowMs + 2 * 3_600_000L, zone))
+    }
+
+    // -------------------------------------------------------------- scps
+
+    private val zone = ZoneId.of("UTC")
+
+    private fun scpsEvent(
+        kind: MobileScpsKind = MobileScpsKind.MEETING,
+        topic: String? = "Impressions of Venice",
+        startMs: Long = 0L,
+        startDate: String = "2026-03-01",
+        location: String? = null,
+        notes: String? = null,
+        daysUntil: Long = 0L,
+        inProgress: Boolean = false,
+    ): MobileScpsEvent = MobileScpsEvent(
+        id = "e1",
+        kind = kind,
+        topic = topic,
+        startMs = startMs,
+        endMs = startMs + 3_600_000L,
+        startDate = startDate,
+        location = location,
+        notes = notes,
+        daysUntil = daysUntil,
+        inProgress = inProgress,
+    )
+
+    @Test
+    fun `scpsTimeLabel formats 2-00pm and 9-00am plainly, no space, lowercase`() {
+        // 2026-03-01 14:00 and 09:00 UTC.
+        assertEquals("2:00pm", scpsTimeLabel(1_772_373_600_000L, zone))
+        assertEquals("9:00am", scpsTimeLabel(1_772_355_600_000L, zone))
+    }
+
+    @Test
+    fun `scpsMonthName reads the two-digit month token`() {
+        assertEquals("September", scpsMonthName("2026-09"))
+        assertEquals("January", scpsMonthName("2026-01"))
+    }
+
+    @Test
+    fun `scpsDayLabel reads today, tomorrow, weekday and date off daysUntil and startDate`() {
+        assertEquals("today", scpsDayLabel(scpsEvent(daysUntil = 0L)))
+        assertEquals("today", scpsDayLabel(scpsEvent(daysUntil = 3L, inProgress = true)))
+        assertEquals("tomorrow", scpsDayLabel(scpsEvent(daysUntil = 1L)))
+        // 2026-03-06 is a Friday, 5 days out.
+        assertEquals("Fri", scpsDayLabel(scpsEvent(daysUntil = 5L, startDate = "2026-03-06")))
+        assertEquals("20 Mar", scpsDayLabel(scpsEvent(daysUntil = 19L, startDate = "2026-03-20")))
+    }
+
+    @Test
+    fun `scpsCardTitle titles with kind and topic only — no day or time`() {
+        assertEquals(
+            "SCPS Meeting — Impressions of Venice",
+            scpsCardTitle(scpsEvent(kind = MobileScpsKind.MEETING, topic = "Impressions of Venice")),
+        )
+        assertEquals(
+            "SCPS Happy Hour in progress",
+            scpsCardTitle(scpsEvent(kind = MobileScpsKind.HAPPY_HOUR, topic = null, inProgress = true)),
+        )
+        assertEquals(
+            "SCPS Happy Hour",
+            scpsCardTitle(scpsEvent(kind = MobileScpsKind.HAPPY_HOUR, topic = null, inProgress = false)),
+        )
+        assertEquals(
+            "SCPS event",
+            scpsCardTitle(scpsEvent(kind = MobileScpsKind.EVENT, topic = null)),
+        )
+    }
+
+    @Test
+    fun `scpsQuestLine shows the current phrase, the last-posted one, or unset`() {
+        assertEquals(
+            "Photo Quest — Reflected Light",
+            scpsQuestLine(MobileScpsQuestFact.Current("Reflected Light"), 0L, zone),
+        )
+        // 2026-10-01 UTC.
+        val octoberFirst = 1_790_812_800_000L
+        assertEquals(
+            "No quest posted for October; last: Reflected Light (September)",
+            scpsQuestLine(MobileScpsQuestFact.Other("2026-09", "Reflected Light"), octoberFirst, zone),
+        )
+        assertEquals("No quest set", scpsQuestLine(MobileScpsQuestFact.None, 0L, zone))
     }
 }
