@@ -94,7 +94,7 @@ class StatusViewModelTest {
 
         vm.load(1_000L)
 
-        assertEquals(StatusState.Loaded(panes, 1_000L), vm.state.value)
+        assertEquals(StatusState.Loaded(panes, 1_000L, null, null, null), vm.state.value)
     }
 
     @Test
@@ -179,5 +179,99 @@ class StatusViewModelTest {
         }
 
         assertNull(vm.statusLine.value)
+    }
+
+    // ------------------------------------------- the open chip (#689)
+
+    @Test
+    fun `opening a chip records it, and opening a second replaces the first`() = runBlocking {
+        val written = mutableListOf<String?>()
+        val panes = listOf(
+            pane(MobileStandingQuestion.KIMI, MobilePaneBand.DORMANT),
+            pane(MobileStandingQuestion.UPTIME, MobilePaneBand.DORMANT),
+        )
+        val vm = StatusViewModel(
+            rankPanesFn = { panes },
+            writeExpandedFn = { key -> written += key },
+        )
+        vm.load(1_000L)
+
+        vm.toggleExpanded(panes[0])
+        assertEquals(panes[0].paneKey, vm.expandedKey.value)
+
+        // Single selection is the state's shape: there is one key, so the
+        // first closes with nothing enforcing it.
+        vm.toggleExpanded(panes[1])
+        assertEquals(panes[1].paneKey, vm.expandedKey.value)
+        assertEquals(listOf(panes[0].paneKey, panes[1].paneKey), written)
+    }
+
+    @Test
+    fun `tapping the open chip again shuts it`() = runBlocking {
+        val written = mutableListOf<String?>()
+        val panes = listOf(pane(MobileStandingQuestion.KIMI, MobilePaneBand.DORMANT))
+        val vm = StatusViewModel(
+            rankPanesFn = { panes },
+            writeExpandedFn = { key -> written += key },
+        )
+        vm.load(1_000L)
+
+        vm.toggleExpanded(panes[0])
+        vm.toggleExpanded(panes[0])
+
+        assertNull(vm.expandedKey.value)
+        assertEquals(listOf(panes[0].paneKey, null), written)
+    }
+
+    @Test
+    fun `the stored open chip is read once, with the first rank`() = runBlocking {
+        var reads = 0
+        val vm = StatusViewModel(
+            rankPanesFn = { emptyList() },
+            readExpandedFn = {
+                reads += 1
+                "uptime:runner"
+            },
+        )
+
+        vm.load(1_000L)
+        vm.load(2_000L)
+
+        assertEquals("uptime:runner", vm.expandedKey.value)
+        assertEquals(1, reads)
+    }
+
+    /** A stored key whose pane no longer ranks is kept, not pruned — it
+     * simply matches no chip. `PaneCollapse`'s own resurrection instinct:
+     * the pane may be back on the next rank, and the reader's choice
+     * should outlive one quiet cycle. */
+    @Test
+    fun `a stored key that no longer ranks is kept rather than pruned`() = runBlocking {
+        val written = mutableListOf<String?>()
+        val vm = StatusViewModel(
+            rankPanesFn = { listOf(pane(MobileStandingQuestion.KIMI, MobilePaneBand.DORMANT)) },
+            readExpandedFn = { "uptime:a-service-that-stopped-ranking" },
+            writeExpandedFn = { key -> written += key },
+        )
+
+        vm.load(1_000L)
+
+        assertEquals("uptime:a-service-that-stopped-ranking", vm.expandedKey.value)
+        assertEquals(emptyList<String?>(), written)
+    }
+
+    @Test
+    fun `the queue depth and api version ride the same crossing as the rank`() = runBlocking {
+        val vm = StatusViewModel(
+            rankPanesFn = { emptyList() },
+            queueDepthFn = { 3u },
+            apiVersionFn = { 4u },
+        )
+
+        vm.load(1_000L)
+
+        val loaded = vm.state.value as StatusState.Loaded
+        assertEquals(3u, loaded.queueDepth)
+        assertEquals(4u, loaded.apiVersion)
     }
 }

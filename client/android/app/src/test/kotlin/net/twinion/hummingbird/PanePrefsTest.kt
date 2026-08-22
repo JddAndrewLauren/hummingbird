@@ -6,11 +6,13 @@ import androidx.datastore.preferences.core.emptyPreferences
 import java.io.IOException
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 import net.twinion.hummingbird.ui.panes.CollapseOverride
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 import uniffi.hummingbird_ffi_mobile.MobilePaneBand
 import uniffi.hummingbird_ffi_mobile.MobileSurface
@@ -171,5 +173,65 @@ class PanePrefsTest {
                 // The one exception these doors must never swallow.
             }
         }
+    }
+
+    // ---------------------------------------------- the open chip (#689)
+
+    @Test
+    fun `a working store round-trips the open chip through both doors`() = runBlocking {
+        val store = WorkingStore()
+
+        PanePrefs.writeExpanded(store, MobileSurface.STATUS, "uptime:runner")
+
+        assertEquals("uptime:runner", PanePrefs.readExpanded(store, MobileSurface.STATUS))
+    }
+
+    @Test
+    fun `nothing open is the key's absence, not a stored blank`() = runBlocking {
+        val store = WorkingStore()
+        PanePrefs.writeExpanded(store, MobileSurface.STATUS, "uptime:runner")
+
+        PanePrefs.writeExpanded(store, MobileSurface.STATUS, null)
+
+        assertNull(PanePrefs.readExpanded(store, MobileSurface.STATUS))
+        assertEquals(emptyPreferences(), store.data.first())
+    }
+
+    @Test
+    fun `an unread surface has nothing open`() = runBlocking {
+        assertNull(PanePrefs.readExpanded(WorkingStore(), MobileSurface.STATUS))
+    }
+
+    /** The open chip is a different preference from the collapse map, and a
+     * key of its own — writing one must not disturb the other. */
+    @Test
+    fun `the open chip is namespaced away from the collapse map`() = runBlocking {
+        val store = WorkingStore()
+        val collapses = mapOf("uptime:runner" to dormantCollapsed)
+
+        PanePrefs.writeCollapse(store, MobileSurface.STATUS, collapses)
+        PanePrefs.writeExpanded(store, MobileSurface.STATUS, "kimi:balance")
+
+        assertEquals(collapses, PanePrefs.readCollapse(store, MobileSurface.STATUS))
+        assertEquals("kimi:balance", PanePrefs.readExpanded(store, MobileSurface.STATUS))
+    }
+
+    @Test
+    fun `Now and Status never read each other's open chip`() = runBlocking {
+        val store = WorkingStore()
+
+        PanePrefs.writeExpanded(store, MobileSurface.NOW, "waste:default")
+        PanePrefs.writeExpanded(store, MobileSurface.STATUS, "uptime:runner")
+
+        assertEquals("waste:default", PanePrefs.readExpanded(store, MobileSurface.NOW))
+        assertEquals("uptime:runner", PanePrefs.readExpanded(store, MobileSurface.STATUS))
+    }
+
+    @Test
+    fun `an unreadable store has nothing open, and an unwritable one stays silent`() = runBlocking {
+        val store = FailingStore(IOException("disk"))
+
+        assertNull(PanePrefs.readExpanded(store, MobileSurface.STATUS))
+        PanePrefs.writeExpanded(store, MobileSurface.STATUS, "uptime:runner")
     }
 }

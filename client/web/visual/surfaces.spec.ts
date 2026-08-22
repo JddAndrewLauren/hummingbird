@@ -387,12 +387,20 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     // Ten poller-backed panes — `docs/SURFACES.md`'s own count, made
     // executable: one `kimi-balance/v1` gauge, five `github-hummingbird/v1`
     // workflow rows, three `uptime/v1` service rows, plus one quiet,
-    // device-local `reachability` answer. `RankedRegion` gives every pane
-    // its own toggle button (`aria-expanded`, collapsed or open) and no
-    // other per-pane hook — no `role="region"`, no test id — so that
-    // attribute, scoped to the page's one `<main>` landmark, is what gets
-    // counted.
-    await expect(page.getByRole("main").locator("[aria-expanded]")).toHaveCount(10);
+    // device-local `reachability` answer. `StatusBoard` gives every pane one
+    // tile and no other per-pane hook — no `role="region"`, no test id — so
+    // `data-tile-tone`, which both tile arms carry, is what counts them.
+    await expect(page.getByRole("main").locator("[data-tile-tone]")).toHaveCount(10);
+    // **Nine toggles, not ten.** An answered reachability pane has nothing
+    // beneath its headline to disclose, so its tile is drawn without a
+    // toggle rather than with one that opens onto an empty card; the seed
+    // answers that pane, so exactly one tile is missing its `aria-expanded`.
+    // A tenth appearing here means the empty expansion came back.
+    await expect(page.getByRole("main").locator("[aria-expanded]")).toHaveCount(9);
+    // Both grids are labelled and counted, so a group that silently lost its
+    // panes cannot pass as a board that simply has fewer tiles.
+    await expect(page.getByText(/^infra · \d+ subjects?$/)).toBeVisible();
+    await expect(page.getByText(/^capture & context sources · \d+ subjects?$/)).toBeVisible();
   },
   settings: async (page) => {
     // #456: `SettingsScreen` no longer takes a `demo` prop, so the kit
@@ -456,6 +464,24 @@ for (const theme of THEMES) {
         });
       });
     }
+
+    test("an open Status tile captures", async ({ page }, testInfo) => {
+      // Its own state, not a screen: the board's per-screen capture is the
+      // all-compact board, so the shape only an open tile has — a card
+      // spanning two grid columns, with a pane's own body inside it — is
+      // photographed nowhere else. It is also where the board can overflow:
+      // an expanded tile is the widest thing on the surface.
+      await openApp(page, theme, "board");
+      await show(page, "Status", testInfo.project.name);
+      const tiles = page.getByRole("main").locator("[aria-expanded]");
+      await tiles.first().click();
+      await expect(tiles.first()).toHaveAttribute("aria-expanded", "true");
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({
+        path: `visual/.captures/status-expanded-${testInfo.project.name}-${theme}.png`,
+        fullPage: false,
+      });
+    });
 
     test("the capture popover captures", async ({ page }, testInfo) => {
       // Its own state, not a screen: `shell/CapturePopover.tsx` renders over

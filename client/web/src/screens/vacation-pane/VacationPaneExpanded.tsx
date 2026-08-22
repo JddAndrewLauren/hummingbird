@@ -88,10 +88,18 @@ function Countdown({ trip }: { trip: Trip }) {
         letterSpacing: "var(--tracking-display)",
       }}
     >
-      <span style={{ display: "inline-flex", alignItems: "baseline", gap: "var(--space-3)" }}>
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "baseline",
+          gap: "var(--space-3)",
+        }}
+      >
         <span style={HEADLINE}>{trip.name}</span>
         <span style={JOIN}>in</span>
-        <span style={{ ...HEADLINE, fontVariantNumeric: "tabular-nums" }}>{trip.daysUntil}</span>
+        <span style={{ ...HEADLINE, fontVariantNumeric: "tabular-nums" }}>
+          {trip.daysUntil}
+        </span>
         <span style={JOIN}>days</span>
       </span>
     </FitText>
@@ -126,7 +134,11 @@ export function VacationPaneExpanded({
           }
           action={
             onSetupNavigate ? (
-              <Button variant="secondary" iconLeft="settings" onClick={onSetupNavigate}>
+              <Button
+                variant="secondary"
+                iconLeft="settings"
+                onClick={onSetupNavigate}
+              >
                 Open Settings
               </Button>
             ) : undefined
@@ -161,7 +173,11 @@ export function VacationPaneExpanded({
     <Card
       accent={next !== null && next.phase !== "upcoming"}
       padding="var(--space-5)"
-      style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-3)",
+      }}
     >
       {next === null ? (
         <p style={{ font: "var(--type-body)", color: "var(--text-muted)" }}>
@@ -170,11 +186,21 @@ export function VacationPaneExpanded({
       ) : (
         <>
           <Countdown trip={next} />
-          <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+          <p
+            style={{
+              font: "var(--type-body-sm)",
+              color: "var(--text-secondary)",
+            }}
+          >
             {tripDateRange(next, inputs.nowMs)} · {next.lengthDays} days
           </p>
           {next.location ? (
-            <p style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}>
+            <p
+              style={{
+                font: "var(--type-body-sm)",
+                color: "var(--text-muted)",
+              }}
+            >
               {next.location}
             </p>
           ) : null}
@@ -191,7 +217,13 @@ export function VacationPaneExpanded({
       )}
 
       {later.length > 0 ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "var(--space-2)",
+          }}
+        >
           {later.map((trip) => (
             <p
               key={trip.id}
@@ -204,7 +236,9 @@ export function VacationPaneExpanded({
               }}
             >
               <span>{trip.name}</span>
-              <span style={{ whiteSpace: "nowrap" }}>{tripDayLabel(trip, inputs.nowMs)}</span>
+              <span style={{ whiteSpace: "nowrap" }}>
+                {tripDayLabel(trip, inputs.nowMs)}
+              </span>
             </p>
           ))}
         </div>
@@ -214,7 +248,13 @@ export function VacationPaneExpanded({
           renders, with its age said out loud beneath it. An `unknown` age has
           no hours to name, so it says that rather than fabricating a number. */}
       {stale ? (
-        <p style={{ ...META, marginTop: "var(--space-2)", color: "var(--status-warn-fg)" }}>
+        <p
+          style={{
+            ...META,
+            marginTop: "var(--space-2)",
+            color: "var(--status-warn-fg)",
+          }}
+        >
           {ageMs === null
             ? "Stale — age unknown"
             : `Stale — as of ${Math.floor(ageMs / 3_600_000)}h ago`}

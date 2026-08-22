@@ -1,8 +1,14 @@
 import { Badge } from "../../components/core/Badge";
 import { Card } from "../../components/core/Card";
-import { EmptyState } from "../../components/feedback/EmptyState";
+import { PaneGap } from "../questions/PaneGap";
 import type { QuestionInputs } from "../questions/contract";
-import { NEVER_POLLED_SUBJECT, githubBand, githubGapReason, githubView, observedAtMs } from "./github";
+import {
+  NEVER_POLLED_SUBJECT,
+  githubBand,
+  githubGapReason,
+  githubView,
+  observedAtMs,
+} from "./github";
 
 // The GitHub workflow pane's own expanded rendering — `KimiPaneExpanded`'s
 // shape, carried over: a headline first, supporting detail below it,
@@ -25,39 +31,46 @@ function ageLabel(ageMs: number): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-export function GithubPaneExpanded({
+/** The pane's content, with no `Card` of its own — what the Status board's
+ * expanded tile draws inside the one card it already is. `*PaneExpanded`
+ * below is this plus Now's card. */
+/** Whether this body draws its own headline.
+ *
+ * Now's card does (it is the pane's whole rendering there). The Status
+ * board's expanded tile does not: that tile's header row already carries the
+ * pane's decided `collapsedHeadline`, so a body that drew its own would say
+ * the same thing twice, two lines apart. */
+export function GithubPaneBody({
   subjectKey,
   inputs,
+  headline = true,
 }: {
   subjectKey: string;
   inputs: QuestionInputs;
+  headline?: boolean;
 }) {
   if (subjectKey === NEVER_POLLED_SUBJECT) {
     return (
-      <Card padding="var(--space-3)">
-        <EmptyState
-          compact
-          icon="cloud-fog"
-          headingLevel={3}
+      <>
+        <PaneGap
+          headline={headline}
           title="No answer yet"
           body="Nothing has polled this yet."
         />
-      </Card>
+      </>
     );
   }
 
   const view = githubView(subjectKey, inputs);
   if (view === null) {
     return (
-      <Card padding="var(--space-3)">
-        <EmptyState
-          compact
-          icon="cloud-fog"
-          headingLevel={3}
+      <>
+        <PaneGap
+          headline={headline}
           title="No answer yet"
           body={githubGapReason(subjectKey, inputs)}
         />
-      </Card>
+      </>
     );
   }
 
@@ -68,24 +81,29 @@ export function GithubPaneExpanded({
   const ageMs = freshness.kind === "age" ? freshness.ageMs : null;
 
   return (
-    <Card
-      padding="var(--space-5)"
-      style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-4)",
+      }}
     >
-      <p
-        style={{
-          font: "var(--weight-bold) 20px/1.1 var(--font-display)",
-          letterSpacing: "var(--tracking-heading)",
-          color:
-            band === "live" || band === "imminent"
-              ? "var(--status-danger-fg)"
-              : band === "near" || band === "distant"
-                ? "var(--status-warn-fg)"
-                : "var(--text-primary)",
-        }}
-      >
-        {body.displayName}
-      </p>
+      {headline ? (
+        <p
+          style={{
+            font: "var(--weight-bold) 20px/1.1 var(--font-display)",
+            letterSpacing: "var(--tracking-heading)",
+            color:
+              band === "live" || band === "imminent"
+                ? "var(--status-danger-fg)"
+                : band === "near" || band === "distant"
+                  ? "var(--status-warn-fg)"
+                  : "var(--text-primary)",
+          }}
+        >
+          {body.displayName}
+        </p>
+      ) : null}
 
       <div
         style={{
@@ -122,9 +140,31 @@ export function GithubPaneExpanded({
 
       {stale ? (
         <span className="hb-meta" style={{ color: "var(--status-warn-fg)" }}>
-          {ageMs === null ? "stale — age unknown" : `stale — as of ${Math.floor(ageMs / 3_600_000)}h ago`}
+          {ageMs === null
+            ? "stale — age unknown"
+            : `stale — as of ${Math.floor(ageMs / 3_600_000)}h ago`}
         </span>
       ) : null}
+    </div>
+  );
+}
+
+export function GithubPaneExpanded({
+  subjectKey,
+  inputs,
+}: {
+  subjectKey: string;
+  inputs: QuestionInputs;
+}) {
+  // The gap arm sits tighter than the answered one, exactly as it did when
+  // this component held both trees itself. Re-reading the (pure) view to
+  // pick the padding costs a call and keeps the two arms' chrome unchanged.
+  const gap =
+    subjectKey === NEVER_POLLED_SUBJECT ||
+    githubView(subjectKey, inputs) === null;
+  return (
+    <Card padding={gap ? "var(--space-3)" : "var(--space-5)"}>
+      <GithubPaneBody subjectKey={subjectKey} inputs={inputs} />
     </Card>
   );
 }

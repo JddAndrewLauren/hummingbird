@@ -1,0 +1,31 @@
+<!-- Lucide `git-branch` at 24dp — the GitHub workflow panes on Status — outline, 1.75px stroke,
+     rounded caps, `ic_inbox.xml`'s recipe. Drawn in white and tinted at
+     use: icons never carry colour independently of their label.
+     Stands in for Lucide `github`, which the icon set no longer ships (its
+     brand marks were removed); the web client substitutes the same glyph.
+     Every GitHub pane on this client wears it — the web board additionally
+     gives each workflow its source's own glyph, which this screen does not. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M15 6a9 9 0 0 0-9 9V3"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M15,6a3,3 0 1,0 6,0a3,3 0 1,0 -6,0"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M3,18a3,3 0 1,0 6,0a3,3 0 1,0 -6,0"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

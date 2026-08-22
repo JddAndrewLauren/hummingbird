@@ -801,6 +801,11 @@ private fun AppRoot(
                             // every later Status tap — the tab was unreachable from
                             // its own bar button.
                             onGoToSettings = { goToTab(Routes.SETTINGS) },
+                            // The same two values Settings' own sync card
+                            // reads — the Status strip states the one answer
+                            // to "did this sync work", it does not sample it.
+                            lastSyncOutcomeKind = lastSyncOutcomeKind,
+                            lastSyncAtMs = lastSyncAtMs,
                         )
                     }
                     composable(Routes.SETTINGS) {

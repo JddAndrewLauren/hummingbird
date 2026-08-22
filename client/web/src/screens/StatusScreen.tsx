@@ -1,28 +1,31 @@
-import type { Screen } from "../shell/screens";
 import type { CalendarReadDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
 import { SingleColumn } from "./layout";
 import { realQuestionInputs } from "./NowScreen";
-import { RankedRegion } from "./questions/RankedRegion";
+import { StatusBoard } from "./status-board/StatusBoard";
 
-// ADR-0017's Status screen (#311): the second surface of the same ranked
-// region ADR-0015 designed for `NowScreen`'s aside — a board, not a bespoke
-// tile grid, so collapse-when-dormant gives it "all green is one quiet
-// stack, red announces itself" for free (ADR-0017 decision 1).
+// ADR-0017's Status screen (#311), redrawn as the design handoff's board of
+// expanding tiles.
 //
-// Thin by design: nothing decidable is decided in this file. The surface
-// filter, the sort and the collapse map are pure modules beside it today,
-// and ADR-0025 moves that kind of decision further out still — into the
-// core, reached through `src/decisions/seam.ts` — as each screen is built
-// for Android. Neither move touches this component, which is the point; this
-// component's only job is to pick the surface's inputs — real or demo — and
-// hand them to the same `RankedRegion` `NowScreen` uses, which is what keeps
-// this a second surface of one contract rather than a parallel screen that
-// can drift from it.
+// Still thin by design: nothing decidable is decided in this file. What
+// changed is only how the decided panes are *drawn* — this screen no longer
+// instantiates the same `RankedRegion` `NowScreen`'s aside uses, because a
+// board and an aside now want different chrome for the same answers. The
+// panes, their bands, their sentences and their glyphs are the identical
+// `rankPanes(…, "status")` output either way; `status-board/StatusBoard.tsx`
+// carries the reasoning for what it does and does not reuse from the region.
+//
+// It takes no `onScreen` any more. The region threaded one so an *unbound*
+// pane could offer its setup prompt, and no question on this surface has a
+// per-device binding to be unbound from: the four answer `answered` or
+// `bound-but-unacquired` and say so in words. A prompt that can never render
+// is a prop that can never fire.
 
 export interface StatusScreenProps {
-  onScreen: (screen: Screen) => void;
   task: TaskState;
+  /** Whether this device can currently reach the authority — the sync
+   * strip's own input, the same value the header's sync pill reads. */
+  online: boolean;
   /** The one clock this screen gets — `App.tsx`'s `useSyncWiring` tick,
    * threaded straight through exactly as `NowScreen` does. */
   nowMs: number;
@@ -31,21 +34,22 @@ export interface StatusScreenProps {
 }
 
 export function StatusScreen({
-  onScreen,
   task,
+  online,
   nowMs,
   calendarReads,
   calendarConnected,
 }: StatusScreenProps) {
   return (
     <SingleColumn>
-      <RankedRegion
-        surface="status"
+      <StatusBoard
         inputs={realQuestionInputs(task, calendarReads, calendarConnected)}
         nowMs={nowMs}
-        syncOutcomeSeq={task.syncOutcomeSeq}
+        online={online}
+        queueDepth={task.queueDepth}
+        lastSyncOutcome={task.lastSyncOutcome}
+        lastSyncAtMs={task.lastSyncAtMs}
         storage={typeof localStorage === "undefined" ? undefined : localStorage}
-        onScreen={onScreen}
       />
     </SingleColumn>
   );

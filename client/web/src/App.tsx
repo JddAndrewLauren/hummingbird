@@ -660,8 +660,8 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           )}
           {screen === "status" && (
             <StatusScreen
-              onScreen={setScreen}
               task={task}
+              online={online}
               nowMs={syncNowMs}
               calendarReads={calendar.eventReads}
               calendarConnected={calendar.connected}

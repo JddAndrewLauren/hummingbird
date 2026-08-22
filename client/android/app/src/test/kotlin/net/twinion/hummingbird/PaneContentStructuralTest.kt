@@ -24,13 +24,22 @@ class PaneContentStructuralTest {
     private val statusSrc by lazy { source("ui/panes/StatusPanesExpanded.kt") }
     private val nowSrc by lazy { source("ui/panes/NowPanesExpanded.kt") }
 
-    private val bothSurfaces by lazy {
-        listOf("StatusPanesExpanded.kt" to statusSrc, "NowPanesExpanded.kt" to nowSrc)
+    private val quietStackSrc by lazy { source("ui/panes/StatusQuietStack.kt") }
+
+    /** Every file that renders a pane's own content. The quiet stack joined
+     * them at #689: it draws the headline and the card around the facts, so
+     * the same "no second clock, no wildcard arm" rules bind it. */
+    private val paneSurfaces by lazy {
+        listOf(
+            "StatusPanesExpanded.kt" to statusSrc,
+            "NowPanesExpanded.kt" to nowSrc,
+            "StatusQuietStack.kt" to quietStackSrc,
+        )
     }
 
     @Test
     fun `the expanded cards read decided answers and return no band of their own`() {
-        for ((name, src) in bothSurfaces) {
+        for ((name, src) in paneSurfaces) {
             assertFalse(
                 "$name: no function may RETURN a MobilePaneBand — banding is the seam's",
                 Regex(""":\s*MobilePaneBand\s*[={]""").containsMatchIn(src),
@@ -48,7 +57,7 @@ class PaneContentStructuralTest {
 
     @Test
     fun `no expanded card reads its own clock`() {
-        for ((name, src) in bothSurfaces) {
+        for ((name, src) in paneSurfaces) {
             assertFalse(
                 "$name: nowMs is the shell's — a card reading the wall clock would drift from the rank",
                 src.contains("System.currentTimeMillis()") ||
@@ -59,7 +68,7 @@ class PaneContentStructuralTest {
 
     @Test
     fun `no wildcard when-arm anywhere in the expanded cards`() {
-        for ((name, src) in bothSurfaces) {
+        for ((name, src) in paneSurfaces) {
             assertFalse(
                 "$name: the exhaustive when is the drift gate — a new gap kind or band must fail this build",
                 Regex("""(?m)^\s*else\s*->""").containsMatchIn(src),
@@ -125,19 +134,39 @@ class PaneContentStructuralTest {
     }
 
     @Test
-    fun `the Status four dispatch from StatusScreen's expandedContent and nowhere else`() {
-        val statusScreen = source("StatusScreen.kt")
+    fun `the Status four dispatch from the quiet stack and nowhere else`() {
+        // The quiet stack replaced the shell's `expandedContent` slot on this
+        // surface (#689): a problem card and an open chip each render the
+        // pane's own facts, and both draw the headline themselves — so both
+        // call the dispatcher with `headline = false`, and nothing else calls
+        // it at all.
+        val quietStack = source("ui/panes/StatusQuietStack.kt")
         assertTrue(
-            "StatusScreen must fill the shell's expandedContent slot with the one dispatcher",
-            statusScreen.contains("StatusPaneExpanded(pane, current.rankedAtMs)"),
+            "the quiet stack's problem card must render the pane's own facts",
+            quietStack.contains("StatusPaneExpanded(pane, nowMs, headline = false)"),
         )
-        val hits = listOf("StatusScreen.kt", "NowScreen.kt", "PaneShell.kt")
+        assertTrue(
+            "an open chip's detail must render the pane's own facts",
+            quietStack.contains("StatusPaneExpanded(pane, nowMs, headline = false)"),
+        )
+        // Two call sites, not one: the announcing card and the open chip.
+        assertTrue(
+            "both hosts must draw the pane's facts",
+            Regex("""StatusPaneExpanded\(pane, nowMs, headline = false\)""")
+                .findAll(quietStack).count() == 2,
+        )
+        val hits = listOf(
+            "StatusScreen.kt",
+            "NowScreen.kt",
+            "PaneShell.kt",
+            "ui/panes/StatusQuietStack.kt",
+        )
             .map { it to source(it) }
             .filter { (_, src) -> src.contains("StatusPaneExpanded(") }
             .map { it.first }
         assertTrue(
             "StatusPaneExpanded must have exactly one caller (found: $hits)",
-            hits == listOf("StatusScreen.kt"),
+            hits == listOf("ui/panes/StatusQuietStack.kt"),
         )
     }
 }

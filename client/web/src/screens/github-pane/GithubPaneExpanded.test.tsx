@@ -11,7 +11,7 @@
 import { describe, expect, it } from "vitest";
 import { StatusScreen } from "../StatusScreen";
 import type { PaneReadDTO, PaneSnapshotDTO } from "../../store/protocol";
-import { render, screen, taskState } from "../../test/component";
+import { fireEvent, render, screen, taskState } from "../../test/component";
 import { SOURCE } from "./github";
 
 const NOW_MS = 1_700_000_000_000;
@@ -42,11 +42,18 @@ function read(snapshots: PaneSnapshotDTO[]): PaneReadDTO {
   return { source: SOURCE, snapshots, liveAlerts: [] };
 }
 
+/** Open one tile by the pane it names — the board draws tiles compact until
+ * the reader opens one, so a test about what the pane's own body says has to
+ * open it first. */
+function openTile(name: RegExp): void {
+  fireEvent.click(screen.getByRole("button", { name }));
+}
+
 describe("GithubPaneExpanded, mounted inside StatusScreen", () => {
   it("renders the never-polled gap when nothing has been read yet", () => {
     render(
       <StatusScreen
-        onScreen={() => {}}
+        online
         task={taskState()}
         nowMs={NOW_MS}
         calendarReads={{}}
@@ -94,7 +101,7 @@ describe("GithubPaneExpanded, mounted inside StatusScreen", () => {
 
     render(
       <StatusScreen
-        onScreen={() => {}}
+        online
         task={taskState({ paneReads: { [SOURCE]: rows } })}
         nowMs={NOW_MS}
         calendarReads={{}}
@@ -102,16 +109,22 @@ describe("GithubPaneExpanded, mounted inside StatusScreen", () => {
       />,
     );
 
-    // Every healthy workflow's collapsed sentence is on screen — the row is
-    // collapsed, but the collapsed row's own headline still renders.
+    // Every healthy workflow's sentence is on screen as its tile's own
+    // accessible name — the board splits the sentence across the tile's two
+    // types, so it is what a screen reader hears rather than one text node.
     for (const name of ["gmail-poll", "calendar-poll", "graph-mail-poll", "graph-calendar-poll"]) {
-      expect(screen.getByText(`${name} · healthy`)).toBeTruthy();
+      expect(
+        // Anchored on the label's own dash: a bare `calendar-poll` also
+        // matches `graph-calendar-poll`'s tile.
+        screen.getByRole("button", { name: new RegExp(`— ${name} · healthy`) }),
+      ).toBeTruthy();
     }
-    // The stalled one opens on its own (`live` is not dormant, so
-    // `collapse.ts`'s default rule lifts it) and shows its own expanded
-    // content — a collapsed row renders no expanded content at all
-    // (`RankedRegion`'s own split), so finding this proves the row opened.
-    expect(screen.getByText("city-waste")).toBeTruthy();
+    // The stalled one reads as stalled while still compact — no click, no
+    // colour-only cue — and opens to its own facts.
+    expect(
+      screen.getByRole("button", { name: /city-waste · never run/ }),
+    ).toBeTruthy();
+    openTile(/city-waste · never run/);
     expect(screen.getByText("never run")).toBeTruthy();
     expect(screen.getByText("no scheduled success on record")).toBeTruthy();
   });
@@ -135,7 +148,7 @@ describe("GithubPaneExpanded, mounted inside StatusScreen", () => {
 
     render(
       <StatusScreen
-        onScreen={() => {}}
+        online
         task={taskState({ paneReads: { [SOURCE]: rows } })}
         nowMs={NOW_MS}
         calendarReads={{}}
@@ -143,13 +156,17 @@ describe("GithubPaneExpanded, mounted inside StatusScreen", () => {
       />,
     );
 
-    // The expanded card is what rendered (a collapsed row renders no
-    // expanded content at all), and it names the unreadable cadence.
-    expect(screen.getByText("graph-calendar-poll")).toBeTruthy();
-    expect(screen.getByText("last run success (schedule), under an hour ago")).toBeTruthy();
+    // Compact, the tile already carries the warning word rather than two
+    // unwarned green facts (#314 review round 2's blocker); opened, the body
+    // names the unreadable cadence itself.
+    expect(
+      screen.getByRole("button", { name: /graph-calendar-poll · cadence unreadable/ }),
+    ).toBeTruthy();
+    openTile(/graph-calendar-poll · cadence unreadable/);
+    expect(
+      screen.getByText("last run success (schedule), under an hour ago"),
+    ).toBeTruthy();
     expect(screen.getByText("cadence unreadable")).toBeTruthy();
-    // The collapsed sentence is NOT what matched above — this pane is open.
-    expect(screen.queryByText(/· cadence unreadable/)).toBeNull();
   });
 
   /** The card's `stale — age unknown` arm: a freshness the shell could not
@@ -169,7 +186,7 @@ describe("GithubPaneExpanded, mounted inside StatusScreen", () => {
 
     render(
       <StatusScreen
-        onScreen={() => {}}
+        online
         task={taskState({ paneReads: { [SOURCE]: rows } })}
         nowMs={NOW_MS}
         calendarReads={{}}
@@ -177,10 +194,12 @@ describe("GithubPaneExpanded, mounted inside StatusScreen", () => {
       />,
     );
 
-    expect(screen.getByText("gmail-poll")).toBeTruthy();
+    // The staleness is in the tile's own sentence, and the open body says it
+    // again in its own words rather than leaving a green-looking fact bare.
+    expect(
+      screen.getByRole("button", { name: /gmail-poll · answer may be stale/ }),
+    ).toBeTruthy();
+    openTile(/gmail-poll · answer may be stale/);
     expect(screen.getByText("stale — age unknown")).toBeTruthy();
-    // Open, not collapsed — the collapsed sentence would have named the
-    // staleness instead of the card.
-    expect(screen.queryByText(/· answer may be stale/)).toBeNull();
   });
 });

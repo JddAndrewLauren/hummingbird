@@ -3,7 +3,14 @@ import { Button } from "../../components/core/Button";
 import { Card } from "../../components/core/Card";
 import { EmptyState } from "../../components/feedback/EmptyState";
 import type { QuestionInputs } from "../questions/contract";
-import { BIN, orderedStreams, wasteGapReason, wasteHeadline, wasteSetup, wasteView } from "./waste";
+import {
+  BIN,
+  orderedStreams,
+  wasteGapReason,
+  wasteHeadline,
+  wasteSetup,
+  wasteView,
+} from "./waste";
 import type { Stream } from "./waste";
 
 // The which-cans pane's own expanded rendering — the *only* part of this
@@ -21,10 +28,20 @@ function Bin({ stream }: { stream: Stream }) {
     <span
       role="img"
       aria-label={bin.label}
-      style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 3,
+      }}
     >
       <span
-        style={{ width: 34, height: 5, borderRadius: "var(--radius-sm)", background: bin.edge }}
+        style={{
+          width: 34,
+          height: 5,
+          borderRadius: "var(--radius-sm)",
+          background: bin.edge,
+        }}
       />
       <span
         style={{
@@ -76,7 +93,11 @@ export function WastePaneExpanded({
           compact
           icon="help-circle"
           headingLevel={3}
-          title={unusable ? "That collection page can't be read" : "Which cans go out?"}
+          title={
+            unusable
+              ? "That collection page can't be read"
+              : "Which cans go out?"
+          }
           body={
             unusable
               ? "The collection page setting holds something that isn't text. Set it again."
@@ -84,7 +105,11 @@ export function WastePaneExpanded({
           }
           action={
             onSetupNavigate ? (
-              <Button variant="secondary" iconLeft="settings" onClick={onSetupNavigate}>
+              <Button
+                variant="secondary"
+                iconLeft="settings"
+                onClick={onSetupNavigate}
+              >
                 Open Settings
               </Button>
             ) : undefined
@@ -115,9 +140,19 @@ export function WastePaneExpanded({
   return (
     <Card
       padding="var(--space-5)"
-      style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-4)",
+      }}
     >
-      <div style={{ display: "flex", gap: "var(--space-4)", justifyContent: "center" }}>
+      <div
+        style={{
+          display: "flex",
+          gap: "var(--space-4)",
+          justifyContent: "center",
+        }}
+      >
         {orderedStreams(view.body.streams).map((stream) => (
           <Bin key={stream} stream={stream} />
         ))}
@@ -153,10 +188,7 @@ export function WastePaneExpanded({
             An `unknown` age has no hours to name, so it says that instead of
             fabricating a number. */}
         {view.stale ? (
-          <span
-            className="hb-meta"
-            style={{ color: "var(--status-warn-fg)" }}
-          >
+          <span className="hb-meta" style={{ color: "var(--status-warn-fg)" }}>
             {ageMs === null
               ? "stale — age unknown"
               : `stale — as of ${Math.floor(ageMs / 3_600_000)}h ago`}
