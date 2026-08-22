@@ -29,6 +29,7 @@ under the skill's name and carries the amendment.
 | `openclaw/microtask/` | The microtask arm: `SKILL.md` + `scripts/hb.sh`, a **verbatim copy** of `.claude/skills/microtask/scripts/hb.sh` — same frozen step-id recipe, CI-pinned against drift. |
 | `openclaw/grill-me/` | The grill arm: `SKILL.md` + `scripts/grill-record.sh` (one verb: `POST /api/grills` for an accepted outcome). |
 | `openclaw/calendar/` | Google Calendar: `SKILL.md` + `scripts/gcal.sh` (`agenda`/`add`/`edit`/`move`/`cancel`, events only, frozen event-id recipe). The one skill here that writes somewhere other than the authority — ADR-0031. |
+| `openclaw/scps/` | Sierra Club Photo Section mail extraction: `SKILL.md` + `scripts/scps.sh` (`list`/`add`/`update`/`quest`). Delegates every calendar read/write to `gcal.sh` (a sibling skill, resolved by path — never a second Google credential) and writes the monthly Photo Quest itself, as a `settings` binding under CAS. ADR-0032. |
 | `openclaw/agent/AGENTS.md` | The agent's charter template — session-start sweep, the default gestures, the boundaries. |
 | `.github/workflows/openclaw.yml` | The gate: shellcheck over every script here, plus the step-id parity check between the two `hb.sh` copies. |
 
@@ -71,10 +72,16 @@ population that can write the operator's Google Calendar**. `POST
 holders on an allowed-holder list — today `["openclaw-agent"]` — and answers
 403 to every other device token, browsers included. The Google credential
 itself never leaves the authority (three `GOOGLE_CALENDAR_WRITE_*` Wrangler
-secrets), so there is still exactly one credential file on this gateway, and
-the revoke above still kills everything at once: task writes, runner spend
-and calendar writes together. Whoever holds this file can move a meeting on
-the operator's real calendar.
+secrets), so revoking this one file still kills everything reachable from
+the authority at once: task writes, runner spend and calendar writes
+together. Whoever holds this file can move a meeting on the operator's real
+calendar.
+
+**This is no longer the only credential on this gateway.** Since ADR-0032
+there is a second one, the SCPS mailbox's own Gmail credential — see "The
+SCPS mailbox" below. It is not this token, does not touch the authority,
+and revoking `openclaw-agent` does not revoke it: the two are independent
+and are named, stored and revoked separately.
 
 ## Operator runbook (nothing below is run by an agent slice)
 
@@ -163,18 +170,23 @@ names the step and points there.
    openclaw agents add hummingbird-agent
    ```
 
-4. **Install the four skills** into that agent from the clone:
+4. **Install the five skills** into that agent from the clone:
 
    ```sh
    openclaw skills install <clone>/openclaw/hummingbird-tasks --agent hummingbird-agent
    openclaw skills install <clone>/openclaw/microtask        --agent hummingbird-agent
    openclaw skills install <clone>/openclaw/grill-me         --agent hummingbird-agent
    openclaw skills install <clone>/openclaw/calendar         --agent hummingbird-agent
+   openclaw skills install <clone>/openclaw/scps             --agent hummingbird-agent
    ```
 
    `calendar` needs no credential of its own — it reads the same token file
    step 2 placed. It does need the authority's write lane provisioned, which
-   is the operator step below.
+   is the operator step below. `scps` needs neither a credential of its own
+   nor `calendar`'s write lane to *install* — it calls `gcal.sh` as a
+   sibling script — but its `add`/`update` verbs are unusable until that
+   write lane is, and its mail ingress is the separate mailbox setup in
+   "The SCPS mailbox" below.
 
 5. **Install the charter**: copy `openclaw/agent/AGENTS.md` over the new
    agent workspace's `AGENTS.md` — a plain `cp` at the gateway host, or,
@@ -351,6 +363,66 @@ with `op`, in this order:
 Until all three are set, `gcal.sh` dies with the 503's prose, which names
 the write credential rather than the readonly one.
 
+## The SCPS mailbox (ADR-0032)
+
+> **Status: not provisioned by this slice.** #692 ships `openclaw/scps/`
+> and this runbook section; the steps below are the operator's, tracked as
+> #695 (`ready-for-human`, blocked by #692). Nothing here runs from an
+> agent slice.
+
+The `scps` skill's mail ingress is a mailbox the agent owns, not the
+operator's own inbox — the narrowing of "no Google credential on this
+machine" ADR-0032 makes, since its worst case is a wrong meeting date on
+one forwarded-mail inbox rather than anything wider.
+
+1. **Create the agent's mailbox** — a dedicated Gmail address, held by the
+   operator, that only ever receives the section's forwarded mail. Nothing
+   else should ever be sent to it: the mailbox's narrow purpose is what
+   bounds the credential's blast radius.
+2. **The operator-side Gmail auto-forward rule.** In the operator's own
+   Gmail, a filter on the section's sender address, forwarding to the
+   mailbox from step 1. This is the one piece of this section that touches
+   the operator's *existing* mail, and only as a read-only filter rule —
+   nothing here changes how the operator's own inbox behaves for any other
+   sender.
+3. **`openclaw webhooks gmail` on the gateway**, pointed at the mailbox
+   from step 1, per the OpenClaw CLI's own setup for a Gmail push webhook:
+   a Google Pub/Sub watch on that mailbox, delivered to the gateway as a
+   wake for `hummingbird-agent` carrying the new mail. This is what turns
+   "mail arrived" into the charter's "SCPS mail" section firing, unprompted,
+   the same way step 6 of the bootstrap runbook proved the agent reachable
+   at all.
+4. **Renewal.** A Gmail watch expires after **7 days** (Google's own limit,
+   not this repo's) — `openclaw webhooks gmail`'s hook owns renewing it,
+   per ADR-0032's own framing of the risk ("renewal is the hook's job, and
+   it must be proven on the gateway before the pane ships"); it is not a
+   second cron this repo adds (the "no competing clocks" rule stays intact
+   — the renewal lives entirely inside the hook OpenClaw already runs, not
+   as a new supercronic or Actions `schedule:` entry here). **Verify it
+   survives one real renewal window** before trusting the lane: watch the
+   hook's own activity (`openclaw logs --follow` around the gateway) for a
+   renewal near the 7-day mark following step 3, and confirm a mail sent
+   after that point still wakes the agent — a hook that silently stops
+   renewing is indistinguishable from a healthy one until the watch
+   actually lapses, so the proof is a mail delivered *after* a renewal
+   boundary has passed, not just the initial setup succeeding.
+5. **The per-mailbox Google credential's storage on the gateway.** This is
+   a *second* Google credential on this machine, independent of the three
+   `GOOGLE_CALENDAR_WRITE_*` secrets behind `gcal.sh` (those live on the
+   authority, not the gateway, and are unaffected by anything here) and
+   independent of the `openclaw-agent` device token (the Credential section
+   above). Store it the way `openclaw webhooks gmail`'s own setup expects
+   on this host, and record where — the point of naming it here is that
+   the next person auditing "what Google credentials live on this gateway"
+   finds two, not one.
+6. **Revocation.** Revoke via Google's own account/app-permissions surface
+   for the mailbox from step 1 (or delete the mailbox outright, since it
+   holds nothing but forwarded club mail) — this is independent of
+   `DELETE /api/admin/tokens/openclaw-agent`, which does not touch it. A
+   revoke here costs nothing wider than "the SCPS lane goes dormant until
+   re-provisioned"; the task list, grill-me, microtask and calendar-write
+   lanes are all still live.
+
 ## Registering it on the Skills side
 
 The gateway's conventions live in the operator's Skills repo, and an agent
@@ -411,13 +483,13 @@ problem.
 Skills change in this repo, land on `main`, and reach the agent by `git
 pull` on the gateway clone followed by a re-install. That re-install needs
 `--force` — `openclaw skills install` refuses to overwrite an existing
-workspace skill without it — and it covers all four skills: they install
-independently and none of them updates the others, so it is all four or
+workspace skill without it — and it covers all five skills: they install
+independently and none of them updates the others, so it is all five or
 the agent runs a mixed set. **A skill added to this repo and not added to
 the loop below never reaches the gateway at all**, silently.
 
 ```sh
-for s in hummingbird-tasks microtask grill-me calendar; do
+for s in hummingbird-tasks microtask grill-me calendar scps; do
   openclaw skills install "<clone>/openclaw/$s" --agent hummingbird-agent --force
 done
 ```
