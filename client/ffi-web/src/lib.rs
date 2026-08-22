@@ -1648,6 +1648,9 @@ mod wasm_bindings {
         /// are rejected as `"failed"` here, before the host is ever checked
         /// out, on the same "reject before the seam" discipline
         /// [`TaskHost::triage`] uses.
+        // These are the boundary's required scalars, not an options bag; the
+        // host method documents why grouping them would obscure the wire.
+        #[allow(clippy::too_many_arguments)]
         #[wasm_bindgen(js_name = completeGrill)]
         pub fn complete_grill(
             &self,
