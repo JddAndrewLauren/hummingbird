@@ -33,6 +33,13 @@ class StatusScreenStructuralTest {
 
     private val screenSrc by lazy { source("StatusScreen.kt") }
     private val shellSrc by lazy { source("PaneShell.kt") }
+    private val stackSrc by lazy { source("ui/panes/StatusQuietStack.kt") }
+    private val partitionSrc by lazy { source("ui/panes/StatusPartition.kt") }
+
+    /** Every file this screen's rendering now spans. The quiet stack and its
+     * partition joined at #689, and the rules below bind them exactly as
+     * they bound the screen alone. */
+    private val statusSurface by lazy { listOf(screenSrc, shellSrc, stackSrc, partitionSrc) }
 
     @Test
     fun `every when over the seam pane enums is exhaustive with no wildcard arm`() {
@@ -46,7 +53,11 @@ class StatusScreenStructuralTest {
             "PaneShell.kt must map MobilePaneBand by its variants",
             bandArm.containsMatchIn(shellSrc),
         )
-        for (src in listOf(screenSrc, shellSrc)) {
+        assertTrue(
+            "the quiet stack must map MobileStandingQuestion by its variants",
+            arm.containsMatchIn(stackSrc),
+        )
+        for (src in statusSurface) {
             assertFalse(
                 "no when over a seam pane enum may carry a wildcard arm",
                 Regex("""(?m)^\s*else\s*->""").containsMatchIn(src),
@@ -64,12 +75,58 @@ class StatusScreenStructuralTest {
             "the pane row must read the seam's own answerState",
             shellSrc.contains("pane.answer.answerState"),
         )
-        for (src in listOf(screenSrc, shellSrc)) {
+        for (src in statusSurface) {
             assertFalse(
                 "no local comparator may reorder the seam's own display order",
-                src.contains("sortedBy") || src.contains("sortedWith"),
+                src.contains("sortedBy") || src.contains("sortedWith") || src.contains("sorted("),
             )
         }
+    }
+
+    @Test
+    fun `an announcing card never wears the healthy band colour`() {
+        // The core bands every gap `Dormant`, and `bandColor`'s DORMANT arm
+        // is the healthy green — so a card that coloured itself by band
+        // alone drew "No answer yet" in success green inside an alert
+        // border, which is the one reading this screen exists to prevent.
+        // The device this was built on had live poller data, so no capture
+        // and no hardware run could show it; this is the gate instead.
+        assertTrue(
+            "the quiet stack must route its headline colour through a helper that reads answerState",
+            stackSrc.contains("fun headlineColor(") && stackSrc.contains("MobilePaneAnswerState.ANSWERED"),
+        )
+        assertFalse(
+            "a card must not take bandColor for its headline without checking answerState first",
+            Regex("""(tint|color) = bandColor\(""").containsMatchIn(stackSrc),
+        )
+    }
+
+    @Test
+    fun `the quiet stack splits by partition, and the split reads a decided answer`() {
+        // `partition {}` is the whole reason the quiet stack can show two
+        // groups without a comparator: it preserves the seam's order inside
+        // each half. A `sortedBy` here would be caught above; this is the
+        // positive half of the same rule.
+        assertTrue(
+            "StatusScreen must split the ranked panes with partition, never a sort",
+            screenSrc.contains("partition {") || screenSrc.contains("partition("),
+        )
+        assertTrue(
+            "the split must be StatusPartition's, not a predicate inlined at the screen",
+            screenSrc.contains("StatusPartition.isProblem("),
+        )
+        assertTrue(
+            "the partition must read the seam's own answerState",
+            partitionSrc.contains("answer.answerState"),
+        )
+        assertTrue(
+            "the partition must read the seam's own band",
+            partitionSrc.contains("answer.band"),
+        )
+        assertFalse(
+            "the partition must RETURN no band — banding is the seam's",
+            Regex(""":\s*MobilePaneBand\s*[={]""").containsMatchIn(partitionSrc),
+        )
     }
 
     @Test

@@ -87,7 +87,11 @@ export function RacePaneExpanded({
           compact
           icon="help-circle"
           headingLevel={3}
-          title={unusable ? "That series list can't be read" : "Which series do you follow?"}
+          title={
+            unusable
+              ? "That series list can't be read"
+              : "Which series do you follow?"
+          }
           body={
             unusable
               ? "The race series setting holds something that isn't text. Set it again."
@@ -95,7 +99,11 @@ export function RacePaneExpanded({
           }
           action={
             onSetupNavigate ? (
-              <Button variant="secondary" iconLeft="settings" onClick={onSetupNavigate}>
+              <Button
+                variant="secondary"
+                iconLeft="settings"
+                onClick={onSetupNavigate}
+              >
                 Open Settings
               </Button>
             ) : undefined
@@ -130,11 +138,19 @@ export function RacePaneExpanded({
     <Card
       accent={live}
       padding="var(--space-5)"
-      style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-3)",
+      }}
     >
       <span
         className="hb-meta"
-        style={{ display: "inline-flex", alignItems: "center", gap: "var(--space-3)" }}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "var(--space-3)",
+        }}
       >
         <Icon name={live ? "siren" : "flag"} size={13} />
         {view.label}
@@ -155,7 +171,13 @@ export function RacePaneExpanded({
         {headline.kind === "fallback" ? (
           headline.text
         ) : (
-          <span style={{ display: "inline-flex", alignItems: "baseline", gap: "var(--space-3)" }}>
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "baseline",
+              gap: "var(--space-3)",
+            }}
+          >
             <span style={HEADLINE}>{headline.name}</span>
             <span style={JOIN}>in</span>
             <span style={{ ...HEADLINE, fontVariantNumeric: "tabular-nums" }}>
@@ -172,24 +194,44 @@ export function RacePaneExpanded({
               that actually happens first, which for most of a race weekend
               is Friday practice. Once the ladder is done it is the race
               itself, so the line is never absent. */}
-          <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
-            {view.nextStart.label} · {dayLabel(view.nextStart.startsAtMs, inputs.nowMs)}{" "}
+          <p
+            style={{
+              font: "var(--type-body-sm)",
+              color: "var(--text-secondary)",
+            }}
+          >
+            {view.nextStart.label} ·{" "}
+            {dayLabel(view.nextStart.startsAtMs, inputs.nowMs)}{" "}
             {clock(view.nextStart.startsAtMs)}
           </p>
           {/* The circuit, and only the circuit: the headline already names
               the event, and repeating it here says the same thing twice. */}
-          <p style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}>
+          <p
+            style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}
+          >
             {view.event.locality}
           </p>
         </>
       ) : null}
 
       {view.liveAlert !== null ? (
-        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)", flexWrap: "wrap" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "var(--space-3)",
+            flexWrap: "wrap",
+          }}
+        >
           <Badge tone="danger" icon="siren" mono>
             starting soon
           </Badge>
-          <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+          <span
+            style={{
+              font: "var(--type-body-sm)",
+              color: "var(--text-secondary)",
+            }}
+          >
             {view.liveAlert.title}
           </span>
         </div>

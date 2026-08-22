@@ -11,10 +11,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import net.twinion.hummingbird.core.CoreHolder
 import net.twinion.hummingbird.core.SyncHistoryStore
-import net.twinion.hummingbird.ui.panes.CollapseOverride
-import net.twinion.hummingbird.ui.panes.PaneCollapse
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 import uniffi.hummingbird_ffi_mobile.MobileSurface
+import uniffi.hummingbird_ffi_mobile.MobileSyncFacts
 
 /** What the Status screen is showing — [Loading] until the first rank has
  * landed, which is real and reachable (the seam crossing is a JNI call
@@ -25,8 +24,21 @@ sealed interface StatusState {
     data object Loading : StatusState
 
     /** [rankedAtMs] is the clock the rank was taken at — what the shell's
-     * age/countdown words render against. */
-    data class Loaded(val panes: List<MobileRankedPane>, val rankedAtMs: Long) : StatusState
+     * age/countdown words render against. [queueDepth] and [apiVersion] are
+     * separate seam crossings taken beside the rank — not one atomic read,
+     * and not claimed to be: they are read together so the strip and the
+     * footer describe the same moment the panes do, within a millisecond,
+     * which is all this screen needs. */
+    data class Loaded(
+        val panes: List<MobileRankedPane>,
+        val rankedAtMs: Long,
+        val queueDepth: UInt?,
+        val apiVersion: UInt?,
+        /** This device's own durable sync history — what the sync strip
+         * falls back to on a cold start, so it cannot contradict the
+         * reachability pane beside it. */
+        val syncFacts: MobileSyncFacts?,
+    ) : StatusState
 }
 
 // The Status screen's decision half (#536/M4, ADR-0025): calls
@@ -40,22 +52,30 @@ sealed interface StatusState {
 // straight through; #537's Now screen is what exercises the resolve leg.
 class StatusViewModel(
     private val rankPanesFn: suspend (nowMs: Long) -> List<MobileRankedPane>,
-    /** The pane collapse's device-local store (`PanePrefs`, surface-keyed
-     * to [MobileSurface.STATUS]) — injected like [rankPanesFn] so a JVM
-     * test needs no DataStore. */
-    private val readPaneCollapseFn: suspend () -> Map<String, CollapseOverride> = { emptyMap() },
-    private val writePaneCollapseFn: suspend (Map<String, CollapseOverride>) -> Unit = {},
+    /** The open chip's device-local store (`PanePrefs`, surface-keyed to
+     * [MobileSurface.STATUS]) — injected like [rankPanesFn] so a JVM test
+     * needs no DataStore. */
+    private val readExpandedFn: suspend () -> String? = { null },
+    private val writeExpandedFn: suspend (String?) -> Unit = {},
+    private val queueDepthFn: suspend () -> UInt? = { null },
+    private val apiVersionFn: suspend () -> UInt? = { null },
+    private val syncFactsFn: suspend () -> MobileSyncFacts? = { null },
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<StatusState>(StatusState.Loading)
     val state: StateFlow<StatusState> = _state.asStateFlow()
 
-    /** The band-stamped collapse overrides (`PaneCollapse`) — loaded once
-     * with the first rank, written through [togglePaneCollapsed]. Here,
-     * never in a `remember {}`: the recorded fold/unfold defect. */
-    private val _paneOverrides = MutableStateFlow<Map<String, CollapseOverride>>(emptyMap())
-    val paneOverrides: StateFlow<Map<String, CollapseOverride>> = _paneOverrides.asStateFlow()
-    private var paneOverridesLoaded = false
+    /** Which quiet chip is open — one pane key or none, loaded once with
+     * the first rank and written through [toggleExpanded]. Here, never in a
+     * `remember {}`: the recorded fold/unfold defect.
+     *
+     * A stored key that no longer ranks is *kept*, not pruned — it simply
+     * matches no chip, so nothing is open. That is `PaneCollapse.write`'s
+     * own resurrection instinct: a pane that has gone quiet for now may be
+     * back on the next rank, and the reader's choice should survive it. */
+    private val _expandedKey = MutableStateFlow<String?>(null)
+    val expandedKey: StateFlow<String?> = _expandedKey.asStateFlow()
+    private var expandedKeyLoaded = false
 
     /** The one failure line this screen owns — `TriageViewModel`'s
      * `statusLine` shape, cleared by the next load that lands. */
@@ -64,11 +84,17 @@ class StatusViewModel(
 
     suspend fun load(nowMs: Long) {
         try {
-            _state.value = StatusState.Loaded(rankPanesFn(nowMs), nowMs)
+            _state.value = StatusState.Loaded(
+                panes = rankPanesFn(nowMs),
+                rankedAtMs = nowMs,
+                queueDepth = queueDepthFn(),
+                apiVersion = apiVersionFn(),
+                syncFacts = syncFactsFn(),
+            )
             _statusLine.value = null
-            if (!paneOverridesLoaded) {
-                _paneOverrides.value = readPaneCollapseFn()
-                paneOverridesLoaded = true
+            if (!expandedKeyLoaded) {
+                _expandedKey.value = readExpandedFn()
+                expandedKeyLoaded = true
             }
         } catch (error: CancellationException) {
             // A resume cancelled by a fold or a fast Back is not a failure
@@ -83,20 +109,14 @@ class StatusViewModel(
         }
     }
 
-    /** Flips one pane's collapse, stamped with the band it was made in and
-     * pruned of unranked keys — `PaneCollapse.write`'s whole contract. */
-    suspend fun togglePaneCollapsed(pane: MobileRankedPane) {
-        val current = _paneOverrides.value
-        val resolved = PaneCollapse.resolve(current, pane.paneKey, pane.answer)
-        val ranked = (state.value as? StatusState.Loaded)?.panes.orEmpty().map { it.paneKey }
-        val next = PaneCollapse.write(
-            current,
-            pane.paneKey,
-            CollapseOverride(pane.answer.band, !resolved),
-            ranked,
-        )
-        _paneOverrides.value = next
-        writePaneCollapseFn(next)
+    /** Opens one chip's detail, or shuts it if it was already the open one.
+     * Single selection is the state's shape, not a rule applied on top of
+     * it: there is one key, so opening a second chip closes the first with
+     * nothing to enforce. */
+    suspend fun toggleExpanded(pane: MobileRankedPane) {
+        val next = if (_expandedKey.value == pane.paneKey) null else pane.paneKey
+        _expandedKey.value = next
+        writeExpandedFn(next)
     }
 
     companion object {
@@ -112,10 +132,13 @@ class StatusViewModel(
                         SyncHistoryStore.load(appContext),
                     )
                 },
-                readPaneCollapseFn = { PanePrefs.readCollapse(appContext, MobileSurface.STATUS) },
-                writePaneCollapseFn = { map ->
-                    PanePrefs.writeCollapse(appContext, MobileSurface.STATUS, map)
+                readExpandedFn = { PanePrefs.readExpanded(appContext, MobileSurface.STATUS) },
+                writeExpandedFn = { paneKey ->
+                    PanePrefs.writeExpanded(appContext, MobileSurface.STATUS, paneKey)
                 },
+                queueDepthFn = { core().queueDepth() },
+                apiVersionFn = { core().apiVersion() },
+                syncFactsFn = { SyncHistoryStore.load(appContext) },
             )
         }
 

@@ -34,13 +34,21 @@ const URGENCY_COLOR = {
 
 function KindGlyph({ entry, nowMs }: { entry: WindowEntry; nowMs: number }) {
   if (entry.kind === "event") {
-    return <Icon name="calendar-clock" size={16} color="var(--text-secondary)" />;
+    return (
+      <Icon name="calendar-clock" size={16} color="var(--text-secondary)" />
+    );
   }
   if (entry.kind === "due") {
     // The flag is the due-date glyph (design README's icon vocabulary), and
     // it is the ONE thing on this row that carries urgency colour — a
     // do-date never does, because a do-date has no consequence.
-    return <Icon name="flag" size={16} color={URGENCY_COLOR[entryUrgency(entry, nowMs)]} />;
+    return (
+      <Icon
+        name="flag"
+        size={16}
+        color={URGENCY_COLOR[entryUrgency(entry, nowMs)]}
+      />
+    );
   }
   return <Icon name="calendar" size={16} color="var(--text-muted)" />;
 }
@@ -56,17 +64,26 @@ function PlanChips({
 }) {
   const item = entry.item;
   if (!item) return null;
-  const planned = entry.kind === "scheduled" ? entry.dayKey : (entry.alsoScheduledOn ?? null);
+  const planned =
+    entry.kind === "scheduled" ? entry.dayKey : (entry.alsoScheduledOn ?? null);
 
   return (
-    <span style={{ display: "inline-flex", gap: "var(--space-2)", flex: "0 0 auto" }}>
+    <span
+      style={{
+        display: "inline-flex",
+        gap: "var(--space-2)",
+        flex: "0 0 auto",
+      }}
+    >
       {dayKeys.map((key) => {
         const on = planned === key;
         return (
           <button
             key={key}
             type="button"
-            title={on ? "Clear this do-date" : `Plan it for ${shortDayLabel(key)}`}
+            title={
+              on ? "Clear this do-date" : `Plan it for ${shortDayLabel(key)}`
+            }
             onClick={(clickEvent) => {
               clickEvent.stopPropagation();
               onSetScheduledDate(item.id, on ? null : key);
@@ -106,7 +123,9 @@ function EntryRow({
 }) {
   const meta = [
     timeLabel(entry),
-    entry.alsoScheduledOn ? `planned ${shortDayLabel(entry.alsoScheduledOn)}` : null,
+    entry.alsoScheduledOn
+      ? `planned ${shortDayLabel(entry.alsoScheduledOn)}`
+      : null,
     entry.deadlineOutsideWindow ? `due ${entry.deadlineOutsideWindow}` : null,
   ].filter(Boolean);
 
@@ -126,7 +145,10 @@ function EntryRow({
           style={{
             display: "block",
             font: "var(--type-body-sm)",
-            color: entry.kind === "scheduled" ? "var(--text-secondary)" : "var(--text-primary)",
+            color:
+              entry.kind === "scheduled"
+                ? "var(--text-secondary)"
+                : "var(--text-primary)",
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
@@ -139,7 +161,11 @@ function EntryRow({
         </span>
       </span>
       {entry.item && onSetScheduledDate ? (
-        <PlanChips entry={entry} dayKeys={dayKeys} onSetScheduledDate={onSetScheduledDate} />
+        <PlanChips
+          entry={entry}
+          dayKeys={dayKeys}
+          onSetScheduledDate={onSetScheduledDate}
+        />
       ) : null}
     </div>
   );
@@ -167,7 +193,11 @@ function WeekendCard({
   return (
     <Card
       padding="var(--space-5)"
-      style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-4)",
+      }}
     >
       <div
         style={{
@@ -177,10 +207,19 @@ function WeekendCard({
           gap: "var(--space-3)",
         }}
       >
-        <span style={{ font: "var(--type-h3)", color: "var(--text-primary)", whiteSpace: "nowrap" }}>
+        <span
+          style={{
+            font: "var(--type-h3)",
+            color: "var(--text-primary)",
+            whiteSpace: "nowrap",
+          }}
+        >
           This Weekend
         </span>
-        <span className="hb-meta" style={{ color: "var(--text-muted)", textAlign: "right" }}>
+        <span
+          className="hb-meta"
+          style={{ color: "var(--text-muted)", textAlign: "right" }}
+        >
           {meta.join(" · ")}
         </span>
       </div>
@@ -206,21 +245,41 @@ function WeekendCard({
             style={{
               display: "flex",
               flexDirection: "column",
-              borderTop: index === 0 ? "none" : "1px solid var(--border-subtle)",
+              borderTop:
+                index === 0 ? "none" : "1px solid var(--border-subtle)",
               paddingTop: index === 0 ? 0 : "var(--space-4)",
             }}
           >
-            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
-              <span style={{ font: "var(--type-body-strong)", color: "var(--text-primary)" }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                justifyContent: "space-between",
+              }}
+            >
+              <span
+                style={{
+                  font: "var(--type-body-strong)",
+                  color: "var(--text-primary)",
+                }}
+              >
                 {day.label}
               </span>
               <span className="hb-meta" style={{ color: "var(--text-muted)" }}>
-                {day.entries.length === 0 ? "clear" : `${day.entries.length} things`}
+                {day.entries.length === 0
+                  ? "clear"
+                  : `${day.entries.length} things`}
               </span>
             </div>
 
             {day.entries.length === 0 ? (
-              <span style={{ font: "var(--type-body-sm)", color: "var(--text-muted)", padding: "var(--space-3) 0" }}>
+              <span
+                style={{
+                  font: "var(--type-body-sm)",
+                  color: "var(--text-muted)",
+                  padding: "var(--space-3) 0",
+                }}
+              >
                 Nothing booked, nothing due.
               </span>
             ) : (
@@ -268,7 +327,11 @@ export function WeekendPaneExpanded({
           body="Connect a calendar to see events alongside what's due and planned."
           action={
             onSetupNavigate ? (
-              <Button variant="secondary" iconLeft="settings" onClick={onSetupNavigate}>
+              <Button
+                variant="secondary"
+                iconLeft="settings"
+                onClick={onSetupNavigate}
+              >
                 Open Settings
               </Button>
             ) : undefined
@@ -301,7 +364,13 @@ export function WeekendPaneExpanded({
     // rather than a non-null assertion — visibly broken, never a crash.
     return (
       <Card padding="var(--space-3)">
-        <EmptyState compact icon="cloud-fog" headingLevel={3} title="No answer yet" body="" />
+        <EmptyState
+          compact
+          icon="cloud-fog"
+          headingLevel={3}
+          title="No answer yet"
+          body=""
+        />
       </Card>
     );
   }

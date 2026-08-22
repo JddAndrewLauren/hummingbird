@@ -29,6 +29,18 @@ val Typography = Typography(
         lineHeight = 28.sp,
         letterSpacing = (-0.022).em,
     ),
+    // The pane headline — the size the design handoff sets a Status card's
+    // answer in (20/1.2, `--tracking-heading`). It was reached by name from
+    // `StatusPanesExpanded.kt` long before it was defined here, so those
+    // headlines were quietly rendering in Material's default Roboto; naming
+    // it is what makes them Space Grotesk.
+    titleLarge = TextStyle(
+        fontFamily = SpaceGroteskFamily,
+        fontWeight = FontWeight.Bold,
+        fontSize = 20.sp,
+        lineHeight = 24.sp,
+        letterSpacing = (-0.014).em,
+    ),
     titleMedium = TextStyle(
         fontFamily = SpaceGroteskFamily,
         fontWeight = FontWeight.SemiBold,

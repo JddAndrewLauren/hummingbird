@@ -1,0 +1,27 @@
+<!-- Lucide `circle-dollar-sign` at 24dp — the Kimi model-credit pane on Status — outline, 1.75px stroke,
+     rounded caps, `ic_inbox.xml`'s recipe. Drawn in white and tinted at
+     use: icons never carry colour independently of their label. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M2,12a10,10 0 1,0 20,0a10,10 0 1,0 -20,0"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M12 18V6"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

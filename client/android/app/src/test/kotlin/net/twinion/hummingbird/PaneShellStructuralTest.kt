@@ -101,23 +101,50 @@ class PaneShellStructuralTest {
     }
 
     @Test
-    fun `the ViewModels own the collapse state, resolved through PaneCollapse, never a remember`() {
-        for (name in listOf("NowViewModel.kt", "StatusViewModel.kt")) {
+    fun `the ViewModels own what is open, never a remember`() {
+        // The rule is one: the state that says what a reader has opened
+        // lives on the ViewModel, because a `remember {}` loses it on the
+        // configuration change a fold is (the recorded defect). The two
+        // surfaces now hold *different* state under it — Now still has
+        // per-pane, band-stamped collapse; Status has one open chip since
+        // its quiet stack (#689) — so this checks each for its own.
+        val nowViewModel = source("NowViewModel.kt")
+        assertTrue(
+            "NowViewModel must own the band-stamped override map",
+            nowViewModel.contains("_paneOverrides"),
+        )
+        assertTrue(
+            "NowViewModel must toggle through PaneCollapse.write",
+            nowViewModel.contains("PaneCollapse.write("),
+        )
+        assertTrue(
+            "NowScreen must resolve a pane's collapse through PaneCollapse.resolve",
+            source("NowScreen.kt").contains("PaneCollapse.resolve("),
+        )
+
+        val statusViewModel = source("StatusViewModel.kt")
+        assertTrue(
+            "StatusViewModel must own the open chip",
+            statusViewModel.contains("_expandedKey"),
+        )
+        assertTrue(
+            "StatusViewModel must write the open chip through PanePrefs",
+            statusViewModel.contains("writeExpandedFn"),
+        )
+        // The half a green build would not catch: the selection sliding back
+        // into the composition, where a fold drops it.
+        //
+        // Scoped to the *selection*, not to `remember` at all. The first
+        // spelling of this pin forbade every `remember {` in the file, which
+        // banned ordinary memoisation — the correct fix for a per-composition
+        // `ContentResolver` read failed this test. A pin that blocks the right
+        // change is a pin with the wrong teeth.
+        for (name in listOf("StatusScreen.kt", "ui/panes/StatusQuietStack.kt")) {
             val src = source(name)
-            assertTrue(
-                "$name must own the override map",
-                src.contains("_paneOverrides"),
-            )
-            assertTrue(
-                "$name must toggle through PaneCollapse.write",
-                src.contains("PaneCollapse.write("),
-            )
-        }
-        for (name in listOf("NowScreen.kt", "StatusScreen.kt")) {
-            val src = source(name)
-            assertTrue(
-                "$name must resolve a pane's collapse through PaneCollapse.resolve",
-                src.contains("PaneCollapse.resolve("),
+            assertFalse(
+                "$name must not hold the open chip in a remember — a fold would lose it",
+                Regex("""remember[^\n]*\{[^\n]*(expandedKey|selected)""").containsMatchIn(src) ||
+                    Regex("""(expandedKey|selected)\s*(:[^=]*)?=\s*remember""").containsMatchIn(src),
             )
         }
     }

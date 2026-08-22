@@ -1,0 +1,33 @@
+<!-- Lucide `server` at 24dp — the authority uptime probe on Status — outline, 1.75px stroke,
+     rounded caps, `ic_inbox.xml`'s recipe. Drawn in white and tinted at
+     use: icons never carry colour independently of their label. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M4,2H20A2,2 0 0 1 22,4V8A2,2 0 0 1 20,10H4A2,2 0 0 1 2,8V4A2,2 0 0 1 4,2Z"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M4,14H20A2,2 0 0 1 22,16V20A2,2 0 0 1 20,22H4A2,2 0 0 1 2,20V16A2,2 0 0 1 4,14Z"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M6,6L6.01,6"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M6,18L6.01,18"
+        android:strokeWidth="1.75"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

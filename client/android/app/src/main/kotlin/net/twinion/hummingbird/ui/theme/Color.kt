@@ -60,6 +60,12 @@ val StatusInfoFgDark = Color(0xFF5CB6D8) // --status-info-fg (dark)
 // divergences on this page.
 val StatusWarnFgDark = Color(0xFFF0B429) // --status-warn-fg (dark)
 val StatusDoneFgDark = Color(0xFF4CC79B) // --status-done-fg (dark)
+// The Status quiet stack's problem-card border. Light aliases the ramp
+// (`--accent-quiet-border` light is `var(--ember-200)`, so the use site
+// reads `Ember200` and needs no constant of its own); dark declares a
+// translucent literal — 32% of ember on whatever is behind it, which is the
+// same ramp-vs-literal divergence `UrgencySoonDark` documents below.
+val AccentQuietBorderDark = Color(0x52EB6D06) // --accent-quiet-border (dark)
 // The alerts surface's `normal` tier chip in dark mode. Its light twin is
 // `Sky100` (`--status-info-bg` light is `var(--sky-100)`), but the dark
 // scope declares a translucent literal instead of aliasing the ramp — the

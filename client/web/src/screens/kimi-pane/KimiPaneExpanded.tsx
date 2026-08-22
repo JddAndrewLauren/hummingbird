@@ -1,6 +1,6 @@
 import { Badge } from "../../components/core/Badge";
 import { Card } from "../../components/core/Card";
-import { EmptyState } from "../../components/feedback/EmptyState";
+import { PaneGap } from "../questions/PaneGap";
 import type { QuestionInputs } from "../questions/contract";
 import { formatUsd, kimiBand, kimiGapReason, kimiView } from "./kimi";
 
@@ -12,7 +12,23 @@ import { formatUsd, kimiBand, kimiGapReason, kimiView } from "./kimi";
 // There is no dormant rendering here, on `WastePaneExpanded`'s own reasoning
 // — dormant IS the collapsed row, which the shell owns.
 
-export function KimiPaneExpanded({ inputs }: { subjectKey: string; inputs: QuestionInputs }) {
+/** The pane's content, with no `Card` of its own — what the Status board's
+ * expanded tile draws inside the one card it already is. `*PaneExpanded`
+ * below is this plus Now's card. */
+/** Whether this body draws its own headline.
+ *
+ * Now's card does (it is the pane's whole rendering there). The Status
+ * board's expanded tile does not: that tile's header row already carries the
+ * pane's decided `collapsedHeadline`, so a body that drew its own would say
+ * the same thing twice, two lines apart. */
+export function KimiPaneBody({
+  inputs,
+  headline = true,
+}: {
+  subjectKey?: string;
+  inputs: QuestionInputs;
+  headline?: boolean;
+}) {
   const view = kimiView(inputs);
   if (view === null) {
     // Visibly broken, never quietly empty — the reason is words, on screen.
@@ -20,15 +36,13 @@ export function KimiPaneExpanded({ inputs }: { subjectKey: string; inputs: Quest
     // arm): this question has no per-device binding to point Settings at,
     // so "never polled yet" is the whole story.
     return (
-      <Card padding="var(--space-3)">
-        <EmptyState
-          compact
-          icon="cloud-fog"
-          headingLevel={3}
+      <>
+        <PaneGap
+          headline={headline}
           title="No balance answer yet"
           body={kimiGapReason(inputs)}
         />
-      </Card>
+      </>
     );
   }
 
@@ -38,24 +52,29 @@ export function KimiPaneExpanded({ inputs }: { subjectKey: string; inputs: Quest
   const cashNegative = body.cashBalance < 0;
 
   return (
-    <Card
-      padding="var(--space-5)"
-      style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-4)",
+      }}
     >
-      <p
-        style={{
-          font: "var(--weight-bold) 24px/1.1 var(--font-display)",
-          letterSpacing: "var(--tracking-heading)",
-          color:
-            band === "live" || band === "imminent"
-              ? "var(--status-danger-fg)"
-              : band === "near"
-                ? "var(--status-warn-fg)"
-                : "var(--text-primary)",
-        }}
-      >
-        {formatUsd(body.availableBalance)} left
-      </p>
+      {headline ? (
+        <p
+          style={{
+            font: "var(--weight-bold) 24px/1.1 var(--font-display)",
+            letterSpacing: "var(--tracking-heading)",
+            color:
+              band === "live" || band === "imminent"
+                ? "var(--status-danger-fg)"
+                : band === "near"
+                  ? "var(--status-warn-fg)"
+                  : "var(--text-primary)",
+          }}
+        >
+          {formatUsd(body.availableBalance)} left
+        </p>
+      ) : null}
 
       <div
         style={{
@@ -65,10 +84,14 @@ export function KimiPaneExpanded({ inputs }: { subjectKey: string; inputs: Quest
           flexWrap: "wrap",
         }}
       >
-        <span className="hb-meta">voucher {formatUsd(body.voucherBalance)}</span>
+        <span className="hb-meta">
+          voucher {formatUsd(body.voucherBalance)}
+        </span>
         <span
           className="hb-meta"
-          style={cashNegative ? { color: "var(--status-danger-fg)" } : undefined}
+          style={
+            cashNegative ? { color: "var(--status-danger-fg)" } : undefined
+          }
         >
           cash {formatUsd(body.cashBalance)}
         </span>
@@ -84,9 +107,28 @@ export function KimiPaneExpanded({ inputs }: { subjectKey: string; inputs: Quest
 
       {stale ? (
         <span className="hb-meta" style={{ color: "var(--status-warn-fg)" }}>
-          {ageMs === null ? "stale — age unknown" : `stale — as of ${Math.floor(ageMs / 3_600_000)}h ago`}
+          {ageMs === null
+            ? "stale — age unknown"
+            : `stale — as of ${Math.floor(ageMs / 3_600_000)}h ago`}
         </span>
       ) : null}
+    </div>
+  );
+}
+
+export function KimiPaneExpanded({
+  inputs,
+}: {
+  subjectKey: string;
+  inputs: QuestionInputs;
+}) {
+  // The gap arm sits tighter than the answered one, exactly as it did when
+  // this component held both trees itself. Re-reading the (pure) view to
+  // pick the padding costs a call and keeps the two arms' chrome unchanged.
+  const gap = kimiView(inputs) === null;
+  return (
+    <Card padding={gap ? "var(--space-3)" : "var(--space-5)"}>
+      <KimiPaneBody inputs={inputs} />
     </Card>
   );
 }
