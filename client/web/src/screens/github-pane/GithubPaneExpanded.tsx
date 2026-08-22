@@ -2,7 +2,7 @@ import { Badge } from "../../components/core/Badge";
 import { Card } from "../../components/core/Card";
 import { EmptyState } from "../../components/feedback/EmptyState";
 import type { QuestionInputs } from "../questions/contract";
-import { NEVER_POLLED_SUBJECT, githubBand, githubGapReason, githubView } from "./github";
+import { NEVER_POLLED_SUBJECT, githubBand, githubGapReason, githubView, observedAtMs } from "./github";
 
 // The GitHub workflow pane's own expanded rendering — `KimiPaneExpanded`'s
 // shape, carried over: a headline first, supporting detail below it,
@@ -62,7 +62,9 @@ export function GithubPaneExpanded({
   }
 
   const { body, freshness, stale } = view;
-  const band = githubBand(body, inputs.nowMs);
+  // The band judges overdue-ness as of the poller's own observation, never
+  // this render's clock — `github.rs`'s `observed_at_ms` states why.
+  const band = githubBand(body, observedAtMs(inputs.nowMs, freshness));
   const ageMs = freshness.kind === "age" ? freshness.ageMs : null;
 
   return (
@@ -107,12 +109,13 @@ export function GithubPaneExpanded({
           <Badge tone="danger" mono>
             cron stalled
           </Badge>
-        ) : body.declaredCadenceMs === null ? (
+        ) : band === "distant" ? (
           // The overdue judgement could not be made — `githubBand` bands
           // this `distant`, and this card must say so, not present two
-          // green facts unwarned.
+          // green facts unwarned. Two ways in: an unreadable cadence, or a
+          // row whose observation instant could not be located.
           <Badge tone="warn" mono>
-            cadence unreadable
+            {body.declaredCadenceMs === null ? "cadence unreadable" : "observed when unknown"}
           </Badge>
         ) : null}
       </div>

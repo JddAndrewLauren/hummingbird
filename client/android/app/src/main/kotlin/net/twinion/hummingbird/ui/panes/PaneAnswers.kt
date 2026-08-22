@@ -527,7 +527,12 @@ private fun githubHeadline(pane: MobileRankedPane, resolved: MobileWorkflowResol
                 MobilePaneBand.NEAR -> "${body.displayName} · last run failed"
                 MobilePaneBand.DISTANT -> {
                     val lastOk = body.lastScheduledSuccessAtMs ?: nowMs
-                    "${body.displayName} · cadence unreadable, last scheduled success ${ageWords(nowMs - lastOk)}"
+                    // `distant` is an overdue judgement that could not be
+                    // made, and there are two ways in — an unreadable
+                    // cadence, or a row whose observation instant could not
+                    // be located (`github.rs`'s `observed_at_ms`).
+                    val why = if (body.declaredCadenceMs == null) "cadence unreadable" else "observed when unknown"
+                    "${body.displayName} · $why, last scheduled success ${ageWords(nowMs - lastOk)}"
                 }
                 MobilePaneBand.DORMANT -> "${body.displayName} · healthy"
             }
@@ -551,7 +556,16 @@ private fun githubGlyphs(pane: MobileRankedPane, resolved: MobileWorkflowResolve
                     }
                 MobilePaneBand.NEAR -> listOf(PaneGlyph.Icon(R.drawable.ic_bell, "$name last run failed"))
                 MobilePaneBand.DISTANT ->
-                    listOf(PaneGlyph.Icon(R.drawable.ic_help_circle, "$name cadence unreadable"))
+                    listOf(
+                        PaneGlyph.Icon(
+                            R.drawable.ic_help_circle,
+                            if (resolved.view.body.declaredCadenceMs == null) {
+                                "$name cadence unreadable"
+                            } else {
+                                "$name observed when unknown"
+                            },
+                        ),
+                    )
                 MobilePaneBand.DORMANT ->
                     listOf(PaneGlyph.Icon(R.drawable.ic_circle_check, "$name healthy"))
             }

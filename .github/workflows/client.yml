@@ -56,6 +56,11 @@ jobs:
       - name: cargo clippy (client workspace)
         working-directory: client
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # The web bindings are cfg'd out on the host, so the workspace lint
+      # above cannot see them. Lint the crate again for its shipped target.
+      - name: cargo clippy (wasm web bindings)
+        working-directory: client
+        run: cargo clippy --target wasm32-unknown-unknown -p hummingbird-ffi-web -- -D warnings
       - name: cargo test (client workspace)
         working-directory: client
         run: cargo test --workspace

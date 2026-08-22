@@ -23,11 +23,17 @@
 use serde::Serialize;
 
 /// How often this poller says it runs, for `Freshness`'s declared cadence.
-/// **Must match `.github/workflows/github-status.yml`'s cron.** Once a day
-/// — the manifest scan and the run-history fetch are both cheap, and there
-/// is no reason to poll GitHub's own run history more often than the
-/// workflows it watches run at their slowest (daily, `city-waste.yml`).
-pub const POLLED_EVERY_MS: i64 = 24 * 60 * 60 * 1000;
+/// **Must match `.github/workflows/github-status.yml`'s cron.** Every half
+/// hour — the manifest scan and the run-history fetch are both cheap, and a
+/// poller cannot resolve anything finer than its own interval.
+///
+/// **This was daily, argued from the wrong end of the range**: "no reason
+/// to poll more often than the workflows it watches run at their *slowest*"
+/// (daily, `city-waste.yml`). The pane judges each workflow against its own
+/// cadence, so what bounds this interval is the *fastest* thing watched —
+/// the `*/15` pollers — and a daily reading left the pane a day behind the
+/// lane it exists to watch. The workflow's own header carries the rest.
+pub const POLLED_EVERY_MS: i64 = 30 * 60 * 1000;
 
 /// One workflow's whole reported state — the `github-hummingbird/v1` body,
 /// written once per scheduled workflow under `context_snapshots.key` =

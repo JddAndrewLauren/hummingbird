@@ -1,7 +1,7 @@
 //! `hummingbird-github-status`: the out-of-process poller behind the
 //! `github-hummingbird/v1` standing question (#314, ADR-0017 decision 2).
 //!
-//! Once a day it reads this repo's own committed `.github/workflows/*.yml`
+//! Every half hour it reads this repo's own committed `.github/workflows/*.yml`
 //! for every workflow carrying a `schedule:` trigger, asks GitHub's own
 //! Actions API for each one's recent run history, and writes one
 //! `context_snapshots` row per workflow — `key` = the workflow's file name
@@ -38,7 +38,7 @@
 //! `github-status.yml` writes nothing, and nothing here can make it write
 //! something about itself. What detects that is the pane's own staleness:
 //! once `github-status.yml` itself stops running, every row it owns simply
-//! stops moving, and `Freshness` bands the whole pane stale within a day,
+//! stops moving, and `Freshness` bands the whole pane stale within ~6h,
 //! exactly the tell `city-waste`'s own pane already relies on for itself.
 //!
 //! # The split inside it

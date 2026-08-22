@@ -172,7 +172,7 @@ mod tests {
     const EVERY_SCHEDULED_WORKFLOW: &[(&str, &str, &str, &[&str])] = &[
         ("calendar-poll.yml", CALENDAR_POLL, "calendar-poll", &["*/15 * * * *"]),
         ("city-waste.yml", CITY_WASTE, "city-waste", &["40 13 * * *"]),
-        ("github-status.yml", GITHUB_STATUS, "github-status", &["15 6 * * *"]),
+        ("github-status.yml", GITHUB_STATUS, "github-status", &["*/30 * * * *"]),
         ("gmail-poll.yml", GMAIL_POLL, "gmail-poll", &["*/15 * * * *"]),
         ("graph-calendar-poll.yml", GRAPH_CALENDAR_POLL, "graph-calendar-poll", &["*/15 * * * *"]),
         ("graph-mail-poll.yml", GRAPH_MAIL_POLL, "graph-mail-poll", &["*/15 * * * *"]),
