@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { FreshnessDTO, PaneReadDTO, PaneSnapshotDTO } from "../../store/protocol";
 import { EMPTY_QUESTION_SYNC, type QuestionInputs } from "../questions/contract";
 import {
+  MIN_OVERDUE_AFTER_MS,
   NEVER_POLLED_SUBJECT,
   OVERDUE_MULTIPLIER,
   SOURCE,
@@ -14,6 +15,7 @@ import {
   githubSubjects,
   githubView,
   isStaleFreshness,
+  observedAtMs,
   parseWorkflowBody,
 } from "./github";
 
@@ -183,7 +185,8 @@ describe("githubBand", () => {
   });
 
   it("bands overdue against the declared cadence imminent, even with a stored success", () => {
-    const cadence = 15 * 60 * 1000;
+    // Daily, so `3x` clears MIN_OVERDUE_AFTER_MS and this is the plain arm.
+    const cadence = 24 * 60 * 60 * 1000;
     const justUnderThreshold = NOW - cadence * OVERDUE_MULTIPLIER + 1;
     const justOverThreshold = NOW - cadence * OVERDUE_MULTIPLIER - 1;
     expect(
@@ -192,6 +195,42 @@ describe("githubBand", () => {
     expect(
       githubBand({ ...healthy, declaredCadenceMs: cadence, lastScheduledSuccessAtMs: justOverThreshold }, NOW),
     ).toBe("imminent");
+  });
+
+  it("floors the overdue threshold, so GitHub's own queueing never reads as a stalled cron", () => {
+    // GitHub does not deliver a public repo's `*/15` every 15 minutes: on
+    // this repo the observed gap ran to 88-106min. `3 x 15min = 45min` is
+    // below the median gap, so without the floor a healthy poller bands
+    // imminent most of the time. See `MIN_OVERDUE_AFTER_MS`.
+    const cadence = 15 * 60 * 1000;
+    expect(cadence * OVERDUE_MULTIPLIER).toBeLessThan(MIN_OVERDUE_AFTER_MS);
+    const banded = (lastScheduledSuccessAtMs: number) =>
+      githubBand({ ...healthy, declaredCadenceMs: cadence, lastScheduledSuccessAtMs }, NOW);
+    expect(banded(NOW - 106 * 60 * 1000)).toBe("dormant");
+    expect(banded(NOW - MIN_OVERDUE_AFTER_MS + 1)).toBe("dormant");
+    expect(banded(NOW - MIN_OVERDUE_AFTER_MS - 1)).toBe("imminent");
+  });
+
+  it("judges overdue-ness as of the observation, not the reader's own clock", () => {
+    // The false alarm this fix is about: the poller looked 6h ago and saw a
+    // scheduled success a minute before that. Against the observation the
+    // workflow is healthy; against `nowMs` the same payload reads stalled
+    // purely because the *poller* has not run since.
+    const observedAt = NOW - 6 * 60 * 60 * 1000;
+    const body = { ...healthy, lastScheduledSuccessAtMs: observedAt - 60_000 };
+    expect(githubBand(body, observedAt)).toBe("dormant");
+    expect(githubBand(body, NOW)).toBe("imminent");
+  });
+
+  it("bands distant, never dormant, when the observation instant is unknown", () => {
+    const band = githubBand(healthy, null);
+    expect(band).toBe("distant");
+    expect(band).not.toBe("dormant");
+  });
+
+  it("reads the observation instant off the row's own freshness", () => {
+    expect(observedAtMs(NOW, { kind: "age", ageMs: 90_000, declaredCadenceMs: null })).toBe(NOW - 90_000);
+    expect(observedAtMs(NOW, { kind: "unknown" })).toBeNull();
   });
 
   it("bands a single recent failure near — less urgent than a stopped cron", () => {
@@ -236,11 +275,11 @@ describe("githubCollapsedHeadline", () => {
   };
 
   it("names the workflow in every band", () => {
-    expect(githubCollapsedHeadline(healthy, NOW)).toBe("gmail-poll · healthy");
-    expect(githubCollapsedHeadline({ ...healthy, lastRunAtMs: null, lastScheduledSuccessAtMs: null }, NOW)).toBe(
-      "gmail-poll · never run",
-    );
-    expect(githubCollapsedHeadline({ ...healthy, lastRunConclusion: "failure" }, NOW)).toBe(
+    expect(githubCollapsedHeadline(healthy, NOW, NOW)).toBe("gmail-poll · healthy");
+    expect(
+      githubCollapsedHeadline({ ...healthy, lastRunAtMs: null, lastScheduledSuccessAtMs: null }, NOW, NOW),
+    ).toBe("gmail-poll · never run");
+    expect(githubCollapsedHeadline({ ...healthy, lastRunConclusion: "failure" }, NOW, NOW)).toBe(
       "gmail-poll · last run failed",
     );
   });
@@ -249,6 +288,7 @@ describe("githubCollapsedHeadline", () => {
     const twoHoursAgo = NOW - 2 * 60 * 60 * 1000;
     const headline = githubCollapsedHeadline(
       { ...healthy, declaredCadenceMs: null, lastScheduledSuccessAtMs: twoHoursAgo },
+      NOW,
       NOW,
     );
     expect(headline).toBe("gmail-poll · cadence unreadable, last scheduled success 2h ago");
@@ -384,9 +424,9 @@ describe("isStaleFreshness / staleness", () => {
     expect(answer.collapsedHeadline).toContain("last heard an unknown time ago");
   });
 
-  it("bands stale at ~30h against the daily cadence", () => {
-    const freshRead = read([snapshot({ freshness: { kind: "age", ageMs: 29 * 60 * 60 * 1000, declaredCadenceMs: 86_400_000 } })]);
-    const staleRead = read([snapshot({ freshness: { kind: "age", ageMs: 31 * 60 * 60 * 1000, declaredCadenceMs: 86_400_000 } })]);
+  it("bands stale at ~6h against the poller's own half-hourly cadence", () => {
+    const freshRead = read([snapshot({ freshness: { kind: "age", ageMs: STALE_AFTER_MS - 60_000, declaredCadenceMs: 1_800_000 } })]);
+    const staleRead = read([snapshot({ freshness: { kind: "age", ageMs: STALE_AFTER_MS + 60_000, declaredCadenceMs: 1_800_000 } })]);
 
     const freshView = githubView(FILE_NAME, inputs({ paneReads: { [SOURCE]: freshRead } }));
     const staleView = githubView(FILE_NAME, inputs({ paneReads: { [SOURCE]: staleRead } }));

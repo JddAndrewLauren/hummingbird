@@ -1,5 +1,5 @@
-# The GitHub workflow-health poller (#314, ADR-0017 decision 2): once a day
-# it reads this repo's own `.github/workflows/*.yml` for every scheduled
+# The GitHub workflow-health poller (#314, ADR-0017 decision 2): every half
+# hour it reads this repo's own `.github/workflows/*.yml` for every scheduled
 # workflow, asks GitHub's own Actions API for each one's run history, and
 # writes one `context_snapshots` row per workflow under
 # `github-hummingbird/v1` — the tell for GitHub's 60-day auto-disable of an
@@ -9,8 +9,8 @@
 # **`schedule:` case, per the convention `city-waste.yml` established.**
 # hummingbird is public, so scheduled Actions runs are free, and this lane
 # is self-monitoring on the same posture every prior scheduled workflow here
-# gives: the pane bands its own answer stale at ~30h and then refuses to
-# answer at all, so a stalled poller is visible within a day and a half
+# gives: the pane bands its own answer stale at ~6h and then refuses to
+# answer at all, so a stalled poller is visible within a quarter day
 # without anyone watching this workflow. This is the **ninth** `schedule:`
 # in the repo, counted directly against the workflow files at the time this
 # one was added (`city-waste.yml`, `gmail-poll.yml`, `calendar-poll.yml`,
@@ -34,8 +34,19 @@
 #
 # `server/github-status/src/body.rs::POLLED_EVERY_MS` must match this
 # interval — it is what `Freshness` reads as the declared cadence, and
-# `server/github-status/tests/contract.rs::polled_every_ms_is_one_day` pins
-# the constant's own side.
+# `server/github-status/tests/contract.rs::polled_every_ms_is_half_an_hour`
+# pins the constant's own side.
+#
+# **Half-hourly, not the daily this shipped with.** A poller cannot resolve
+# anything finer than its own interval, and this one's whole purpose is
+# catching a dead cron *quickly* — against a daily poll, a `*/15` workflow
+# that died five minutes after the snapshot went unreported for a day. The
+# daily interval was argued from "no reason to poll more often than the
+# workflows it watches run at their slowest"; the reader needed the
+# *fastest*, since the pane judges each workflow against its own cadence,
+# and reading it the other way is what left the pane a day behind the lane
+# it exists to watch. The run is a GET and a POST behind a cached build on a
+# public repo, so the cost of the change is nil.
 #
 # **The credential.** `GH_STATUS_INGEST_TOKEN` is an `ingest`-scope
 # token bound to `github-hummingbird/v1`, minted from the operator's
@@ -54,7 +65,7 @@ name: github-status
 
 on:
   schedule:
-    - cron: "15 6 * * *"
+    - cron: "*/30 * * * *"
   # A missed or dropped run, and the first run after the token is minted,
   # otherwise have no trigger at all.
   workflow_dispatch:

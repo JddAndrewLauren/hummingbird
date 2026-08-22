@@ -2,6 +2,7 @@ import {
   githubAnswerFromCore,
   githubBandFromCore,
   githubFactsFromCore,
+  githubObservedAtMsFromCore,
   githubSubjectsFromCore,
   parseWorkflowBodyFromCore,
   type PaneInputsSource,
@@ -18,20 +19,22 @@ import { isStaleFreshness } from "../questions/freshness";
 //
 // Every rule this file used to hold is now
 // `hummingbird_core::decisions::panes::github`: the payload parser, the
-// subjects list, the band (including the stale-poller escalation), and the
-// gap kinds. Read that module for the reasoning behind any of them.
+// subjects list, the observation instant the band is judged against, the
+// band itself (including the stale-poller escalation), and the gap kinds.
+// Read that module for the reasoning behind any of them.
 //
 // What stayed here is what ADR-0025 leaves per-client: **the words and the
 // glyph**. `githubCollapsedHeadline`, `githubGlyph`, `ageWords` and
 // `githubGapReason`.
 
-/** These four constants stay literal TS, pinned against `github_constants_json()`
+/** These five constants stay literal TS, pinned against `github_constants_json()`
  * by `seam.test.ts` — `question.ts` builds `sources: [SOURCE]` at module
  * evaluation, exactly `waste.ts`'s own arrangement. */
 export const SOURCE = "github-hummingbird/v1";
 export const NEVER_POLLED_SUBJECT = "pending";
-export const STALE_AFTER_MS = 30 * 60 * 60 * 1000;
+export const STALE_AFTER_MS = 6 * 60 * 60 * 1000;
 export const OVERDUE_MULTIPLIER = 3;
+export const MIN_OVERDUE_AFTER_MS = 3 * 60 * 60 * 1000;
 
 /** The `github-hummingbird/v1` payload body — the shape is pinned by
  * `github.rs`'s `parse_workflow_body`; this is its wire form. */
@@ -58,9 +61,21 @@ export function parseWorkflowBody(snapshot: PaneSnapshotDTO | undefined): Workfl
 /** Re-exported from the shell for the same reason `waste.ts` re-exports it. */
 export { isStaleFreshness };
 
-/** This workflow's band, at read time — `github.rs`'s `github_band`. */
-export function githubBand(body: WorkflowBody, nowMs: number): Band {
-  return githubBandFromCore(body, nowMs);
+/** When the poller observed what this row reports — `github.rs`'s
+ * `observed_at_ms`, which is the instant every band call below judges
+ * against. `null` when the row's freshness cannot locate it. */
+export function observedAtMs(nowMs: number, freshness: FreshnessDTO): number | null {
+  return githubObservedAtMsFromCore(nowMs, freshness);
+}
+
+/** This workflow's band, at read time — `github.rs`'s `github_band`.
+ *
+ * `observedAtMs` is when the *poller* looked, not when this reader is
+ * looking; passing `nowMs` here is the bug that made a healthy
+ * every-15-minutes workflow read "cron stalled" for all but the first
+ * 45min after each poll. Build it with [`observedAtMs`]. */
+export function githubBand(body: WorkflowBody, observedAtMs: number | null): Band {
+  return githubBandFromCore(body, observedAtMs);
 }
 
 function ageWords(ageMs: number): string {
@@ -75,8 +90,8 @@ function ageWords(ageMs: number): string {
 }
 
 /** The collapsed row's whole sentence, naming the workflow. */
-export function githubCollapsedHeadline(body: WorkflowBody, nowMs: number): string {
-  const band = githubBand(body, nowMs);
+export function githubCollapsedHeadline(body: WorkflowBody, nowMs: number, observedAtMs: number | null): string {
+  const band = githubBand(body, observedAtMs);
   switch (band) {
     case "live":
       return `${body.displayName} · never run`;
@@ -96,8 +111,8 @@ export function githubCollapsedHeadline(body: WorkflowBody, nowMs: number): stri
 }
 
 /** One glyph naming the band. */
-export function githubGlyph(body: WorkflowBody, nowMs: number): PaneGlyph {
-  const band = githubBand(body, nowMs);
+export function githubGlyph(body: WorkflowBody, observedAtMs: number | null): PaneGlyph {
+  const band = githubBand(body, observedAtMs);
   if (band === "live" || band === "imminent") {
     return { kind: "icon", name: "siren", label: `${body.displayName} ${band === "live" ? "never run" : "stalled"}` };
   }
@@ -197,7 +212,8 @@ export function githubAnswer(subjectKey: string, inputs: QuestionInputs): PaneAn
   // the decided one is what tells the two "genuinely imminent" and
   // "escalated because stale" cases apart, since only `answer.band` and
   // `view.stale` alone cannot.
-  const rawBand = githubBand(view.body, inputs.nowMs);
+  const observedAt = observedAtMs(inputs.nowMs, view.freshness);
+  const rawBand = githubBand(view.body, observedAt);
   if (view.stale && (rawBand === "dormant" || rawBand === "distant")) {
     const heardAgo = view.freshness.kind === "age" ? ageWords(view.freshness.ageMs) : "an unknown time ago";
     return {
@@ -209,7 +225,7 @@ export function githubAnswer(subjectKey: string, inputs: QuestionInputs): PaneAn
 
   return {
     ...answer,
-    collapsedHeadline: githubCollapsedHeadline(view.body, inputs.nowMs),
-    icon: [githubGlyph(view.body, inputs.nowMs)],
+    collapsedHeadline: githubCollapsedHeadline(view.body, inputs.nowMs, observedAt),
+    icon: [githubGlyph(view.body, observedAt)],
   };
 }

@@ -257,11 +257,16 @@ private fun GithubPaneExpanded(
                 }
                 MobilePaneBand.NEAR,
                 MobilePaneBand.DISTANT,
-                MobilePaneBand.DORMANT -> if (body.declaredCadenceMs == null) {
+                MobilePaneBand.DORMANT -> if (
+                    body.declaredCadenceMs == null || pane.answer.band == MobilePaneBand.DISTANT
+                ) {
                     // The overdue judgement could not be made — the card
                     // must say so, not present two green facts unwarned.
+                    // Two ways in: an unreadable cadence, or a row whose
+                    // observation instant could not be located at all
+                    // (`github.rs`'s `observed_at_ms`).
                     Text(
-                        "cadence unreadable",
+                        if (body.declaredCadenceMs == null) "cadence unreadable" else "observed when unknown",
                         style = MaterialTheme.typography.labelSmall,
                         color = warnColor(),
                     )

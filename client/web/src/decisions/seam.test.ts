@@ -68,6 +68,7 @@ import {
   STALE_AFTER_MS as KIMI_STALE_AFTER_MS,
 } from "../screens/kimi-pane/kimi";
 import {
+  MIN_OVERDUE_AFTER_MS,
   NEVER_POLLED_SUBJECT as GITHUB_NEVER_POLLED_SUBJECT,
   OVERDUE_MULTIPLIER,
   SOURCE as GITHUB_SOURCE,
@@ -341,6 +342,7 @@ describe("the seam's literal pane vocabulary, pinned against the core", () => {
     expect(GITHUB_NEVER_POLLED_SUBJECT).toBe(constants.neverPolledSubject);
     expect(GITHUB_STALE_AFTER_MS).toBe(constants.staleAfterMs);
     expect(OVERDUE_MULTIPLIER).toBe(constants.overdueMultiplier);
+    expect(MIN_OVERDUE_AFTER_MS).toBe(constants.minOverdueAfterMs);
   });
 
   it("the uptime pane's constants match the core's", () => {

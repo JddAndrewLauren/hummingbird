@@ -1542,10 +1542,30 @@ pub fn parse_workflow_body_json(snapshot_json: &str) -> String {
     }
 }
 
+/// `observed_at_ms` is when the *poller* looked, never the reader's own
+/// clock — `github::observed_at_ms` builds it off the row's freshness, and
+/// `github::github_band`'s own header states why passing `now_ms` here is
+/// the bug this parameter exists to prevent. `None` (the row's freshness
+/// could not locate the observation) is a judgement that could not be made.
 #[wasm_bindgen]
-pub fn github_band_json(body_json: &str, now_ms: f64) -> String {
+pub fn github_band_json(body_json: &str, observed_at_ms: Option<f64>) -> String {
     match serde_json::from_str::<github::WorkflowBody>(body_json) {
-        Ok(body) => serde_json::to_string(&github::github_band(&body, now_ms as i64)).unwrap(),
+        Ok(body) => {
+            let observed_at_ms = observed_at_ms.map(|ms| ms as i64);
+            serde_json::to_string(&github::github_band(&body, observed_at_ms)).unwrap()
+        }
+        Err(error) => error_json(error.to_string()),
+    }
+}
+
+/// When the poller *observed* what a row reports, off the reader's clock
+/// and the row's own freshness — `github::observed_at_ms`, which is the
+/// only thing that may build [`github_band_json`]'s second argument.
+/// `null` when the freshness cannot locate the observation.
+#[wasm_bindgen]
+pub fn github_observed_at_ms_json(now_ms: f64, freshness_json: &str) -> String {
+    match serde_json::from_str::<panes::inputs::FreshnessFact>(freshness_json) {
+        Ok(freshness) => serde_json::to_string(&github::observed_at_ms(now_ms as i64, freshness)).unwrap(),
         Err(error) => error_json(error.to_string()),
     }
 }
@@ -1581,6 +1601,7 @@ pub fn github_constants_json() -> String {
         "neverPolledSubject": github::NEVER_POLLED_SUBJECT,
         "staleAfterMs": github::STALE_AFTER_MS,
         "overdueMultiplier": github::OVERDUE_MULTIPLIER,
+        "minOverdueAfterMs": github::MIN_OVERDUE_AFTER_MS,
     })
     .to_string()
 }

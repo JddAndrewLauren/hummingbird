@@ -166,8 +166,14 @@ export function kimiRead(nowMs: number): PaneReadDTO {
 
 /** One row per band `githubBand` can produce, keyed by a real workflow file
  * name from `.github/workflows/` — the collapsed-stack case. Every row is
- * comfortably fresh against the 30h stale line, so the fixture shows the
- * bands doing the work, not the staleness escalation on top of them. */
+ * comfortably fresh against the 6h stale line, so the fixture shows the
+ * bands doing the work, not the staleness escalation on top of them.
+ *
+ * **Every instant in a body sits at or before that row's own observation**
+ * (40min ago). A snapshot cannot report a run that happened after the
+ * poller looked, and since `github_band` judges overdue-ness as of the
+ * observation (`github.rs`'s `observed_at_ms`), a fixture that ignored that
+ * would be exercising a state the real lane cannot produce. */
 export function githubRead(nowMs: number): PaneReadDTO {
   function workflowSnapshot(
     key: string,
@@ -186,7 +192,7 @@ export function githubRead(nowMs: number): PaneReadDTO {
       envelope: {
         kind: "ok" as const,
         schema: GITHUB_SOURCE,
-        polledEveryMs: 86_400_000,
+        polledEveryMs: 1_800_000,
         body: JSON.stringify({
           display_name: displayName,
           declared_cadence_ms: body.declaredCadenceMs,
@@ -196,9 +202,10 @@ export function githubRead(nowMs: number): PaneReadDTO {
           last_scheduled_success_at_ms: body.lastScheduledSuccessAtMs,
         }),
       },
-      // Forty minutes old against the poller's own daily cadence — fresh,
-      // same margin `wasteRead`/`kimiRead` use.
-      freshness: { kind: "age" as const, ageMs: 40 * 60_000, declaredCadenceMs: 86_400_000 },
+      // Forty minutes old against the poller's own half-hourly cadence —
+      // fresh, same margin `wasteRead`/`kimiRead` use. This is also the
+      // instant every band below is judged against.
+      freshness: { kind: "age" as const, ageMs: 40 * 60_000, declaredCadenceMs: 1_800_000 },
     };
   }
 
@@ -215,22 +222,23 @@ export function githubRead(nowMs: number): PaneReadDTO {
         lastRunAtMs: null,
         lastScheduledSuccessAtMs: null,
       }),
-      // `imminent` — has run, but its last *scheduled* success is well past
-      // three times its own declared cadence.
+      // `imminent` — has run, but as of the observation its last
+      // *scheduled* success was already well past the overdue threshold
+      // (`MIN_OVERDUE_AFTER_MS`, which is what binds at this cadence).
       workflowSnapshot("calendar-poll.yml", "calendar-poll", {
         declaredCadenceMs: fifteenMin,
         lastRunConclusion: "success",
         lastRunEvent: "schedule",
-        lastRunAtMs: nowMs - 90 * 60_000,
-        lastScheduledSuccessAtMs: nowMs - 90 * 60_000,
+        lastRunAtMs: nowMs - 5 * 60 * 60 * 1000,
+        lastScheduledSuccessAtMs: nowMs - 5 * 60 * 60 * 1000,
       }),
       // `near` — a single recent failure, still on cadence otherwise.
       workflowSnapshot("graph-mail-poll.yml", "graph-mail-poll", {
         declaredCadenceMs: fifteenMin,
         lastRunConclusion: "failure",
         lastRunEvent: "schedule",
-        lastRunAtMs: nowMs - 5 * 60_000,
-        lastScheduledSuccessAtMs: nowMs - 20 * 60_000,
+        lastRunAtMs: nowMs - 45 * 60_000,
+        lastScheduledSuccessAtMs: nowMs - 60 * 60_000,
       }),
       // `distant` — a cron shape (weekly, day-of-week) the hand-rolled
       // parser correctly refuses to guess a cadence for, so the pane says
@@ -249,8 +257,8 @@ export function githubRead(nowMs: number): PaneReadDTO {
         declaredCadenceMs: fifteenMin,
         lastRunConclusion: "success",
         lastRunEvent: "schedule",
-        lastRunAtMs: nowMs - 5 * 60_000,
-        lastScheduledSuccessAtMs: nowMs - 5 * 60_000,
+        lastRunAtMs: nowMs - 45 * 60_000,
+        lastScheduledSuccessAtMs: nowMs - 45 * 60_000,
       }),
     ],
     liveAlerts: [],

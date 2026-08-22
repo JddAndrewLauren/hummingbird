@@ -18,8 +18,18 @@
 //! written.
 //!
 //! **The band is computed here, at read time, from the raw verdict the
-//! poller wrote — never from a precomputed "stalled" flag.** [`WorkflowGap`]
-//! is a structured enum, not a sentence, on [`super::waste::WasteGap`]'s own
+//! poller wrote — never from a precomputed "stalled" flag.** But read time
+//! is not the same instant as *observation* time, and this pane is the one
+//! place in the family where the difference decides the band:
+//! [`github_band`] judges a workflow overdue against
+//! [`observed_at_ms`] — when the poller last looked — rather than against
+//! the reader's `now_ms`. Judging against `now_ms` made every workflow
+//! whose cadence is tighter than the poller's own interval read "cron
+//! stalled" for almost all of the gap between polls, which is a fact about
+//! this poller and not about that workflow. That header's own reasoning is
+//! on [`observed_at_ms`].
+//!
+//! [`WorkflowGap`] is a structured enum, not a sentence, on [`super::waste::WasteGap`]'s own
 //! discipline: `github.ts`'s gap *reasons* ("No answer has been fetched
 //! yet.", "This device doesn't know how to read … yet. Update the app.",
 //! …) are renderings and stay in TS; only the *kind* sinks. Likewise
@@ -41,15 +51,40 @@ pub const SOURCE: &str = "github-hummingbird/v1";
 /// collide with a genuine key.
 pub const NEVER_POLLED_SUBJECT: &str = "pending";
 
-/// ~30h against `github-status.yml`'s own daily cadence — `github.ts`'s own
-/// value and its own reasoning: this pane's whole purpose is catching a dead
-/// cron quickly, so it cannot wait as long as `waste.rs`'s 26h.
-pub const STALE_AFTER_MS: i64 = 30 * 60 * 60 * 1000;
+/// ~6h against `github-status.yml`'s own half-hourly cadence — this pane's
+/// whole purpose is catching a dead cron quickly, so it cannot wait as long
+/// as `waste.rs`'s 26h.
+///
+/// **This was 30h while the poller ran daily.** Since the poller moved to
+/// `*/30` (see `server/github-status/src/body.rs::POLLED_EVERY_MS`), a 30h
+/// tolerance would let the *poller's own* death go unreported for more than
+/// a day — and this threshold now carries more weight than it used to,
+/// because [`github_band`] judges overdue-ness *as of the observation*: the
+/// staleness of that observation is the only thing left saying "this
+/// reading is too old to trust."
+pub const STALE_AFTER_MS: i64 = 6 * 60 * 60 * 1000;
 
 /// A scheduled run is judged overdue once its last success is this many
 /// multiples of its own declared cadence old — `3×`, not `waste.rs`'s
 /// plain multiple, because GitHub Actions' own cron carries more slack.
 pub const OVERDUE_MULTIPLIER: i64 = 3;
+
+/// The floor under the overdue threshold, whatever a workflow's declared
+/// cadence multiplies out to — 3h.
+///
+/// **A declared cadence is not a delivered one.** GitHub does not run a
+/// public repo's `schedule:` on the interval it names; it queues it. Over a
+/// ~70h sample of this repo's own four `*/15` workflows the *delivered*
+/// gap between consecutive scheduled runs was median 31–41min, p95 60–73min
+/// and max 88–106min — so `3 × 15min = 45min` sits *between the median and
+/// the p95*, and bands a perfectly healthy poller `imminent` on a large
+/// minority of reads. The max is what sets the floor: a gap of 88–106min
+/// is a normal one here, so any threshold under ~2h on this repo measures
+/// GitHub's queue, not the workflow's health.
+///
+/// This floor only ever binds for cadences under 1h; a `0 */6` or daily
+/// workflow keeps its own `3×`.
+pub const MIN_OVERDUE_AFTER_MS: i64 = 3 * 60 * 60 * 1000;
 
 /// The `github-hummingbird/v1` payload body — this module's parser is what
 /// pins the shape. [`parse_workflow_body`] reads the raw `snake_case`
@@ -158,13 +193,20 @@ const FAILURE_CONCLUSIONS: [&str; 5] =
     ["failure", "cancelled", "timed_out", "action_required", "startup_failure"];
 
 /// This workflow's band, at read time, from the raw verdict alone —
-/// `githubBand` ported verbatim, including its ordering: never-run
-/// (`live`) outranks overdue-against-cadence (`imminent`), which outranks a
-/// single failed run (`near`), which outranks an unreadable cadence
-/// (`distant`, never `dormant` — see `github.ts`'s own note on why a
-/// judgement that could not run must not read as a judgement that came back
-/// clean), which outranks healthy (`dormant`).
-pub fn github_band(body: &WorkflowBody, now_ms: i64) -> Band {
+/// `githubBand`'s ordering, unchanged: never-run (`live`) outranks
+/// overdue-against-cadence (`imminent`), which outranks a single failed run
+/// (`near`), which outranks an unmade overdue judgement (`distant`, never
+/// `dormant` — see `github.ts`'s own note on why a judgement that could not
+/// run must not read as a judgement that came back clean), which outranks
+/// healthy (`dormant`).
+///
+/// `observed_at_ms` is when the poller looked, not when this reader is
+/// looking — [`observed_at_ms`] builds it, and its header states why that
+/// distinction is what keeps a healthy short-cadence workflow green.
+/// `None` (the row's freshness could not locate the observation) drops the
+/// overdue judgement into the same `distant` arm an unreadable cadence
+/// lands in: both are judgements that could not be made.
+pub fn github_band(body: &WorkflowBody, observed_at_ms: Option<i64>) -> Band {
     if body.last_run_at_ms.is_none() {
         return Band::Live;
     }
@@ -173,23 +215,55 @@ pub fn github_band(body: &WorkflowBody, now_ms: i64) -> Band {
         // manual run must never mask this.
         return Band::Imminent;
     };
-    if let Some(declared_cadence_ms) = body.declared_cadence_ms {
-        let overdue_after_ms = declared_cadence_ms * OVERDUE_MULTIPLIER;
-        if now_ms - last_scheduled_success_at_ms > overdue_after_ms {
-            return Band::Imminent;
+    let judged = match (body.declared_cadence_ms, observed_at_ms) {
+        (Some(declared_cadence_ms), Some(observed_at_ms)) => {
+            let overdue_after_ms = (declared_cadence_ms * OVERDUE_MULTIPLIER).max(MIN_OVERDUE_AFTER_MS);
+            if observed_at_ms - last_scheduled_success_at_ms > overdue_after_ms {
+                return Band::Imminent;
+            }
+            true
         }
-    }
+        _ => false,
+    };
     if let Some(conclusion) = &body.last_run_conclusion {
         if FAILURE_CONCLUSIONS.contains(&conclusion.as_str()) {
             return Band::Near;
         }
     }
-    if body.declared_cadence_ms.is_none() {
+    if !judged {
         // The overdue comparison above never ran — this is a gap in the
-        // judgement, not a clean result of it.
+        // judgement, not a clean result of it. Two ways to get here: an
+        // unrecognised cadence (`cron.rs`'s own refusal), or a snapshot
+        // whose observation instant could not be located at all
+        // ([`observed_at_ms`] on `Freshness::Unknown`).
         return Band::Distant;
     }
     Band::Dormant
+}
+
+/// When the poller *observed* what this snapshot reports, from the reader's
+/// own clock and the row's age — or `None` when the row's freshness cannot
+/// locate it ([`FreshnessFact::Unknown`]).
+///
+/// **This is the instant [`github_band`] judges overdue-ness against, and
+/// the whole point of the split.** `body.last_scheduled_success_at_ms` is
+/// not a fact about now; it is a fact about the last moment
+/// `server/github-status` looked. Comparing it against the reader's `now_ms`
+/// ages the *observation* as if it were the *event*, so every workflow whose
+/// cadence is shorter than the poller's own interval reads `imminent` for
+/// almost the entire gap between polls — a `*/15` workflow judged off a
+/// daily snapshot was green for ~45min out of every 24h and "cron stalled"
+/// for the rest, however healthy it was.
+///
+/// The freshness of the observation itself is not lost by this: it is
+/// [`STALE_AFTER_MS`], escalated in [`github_answer`], which is where "we
+/// have not heard from the poller lately" belongs. The two questions were
+/// conflated before and are now asked separately.
+pub fn observed_at_ms(now_ms: i64, freshness: FreshnessFact) -> Option<i64> {
+    match freshness {
+        FreshnessFact::Unknown => None,
+        FreshnessFact::Age { age_ms, .. } => Some(now_ms - age_ms),
+    }
 }
 
 /// This question's subjects: one per workflow key this source has ever
@@ -276,7 +350,7 @@ pub fn github_answer(subject_key: &str, inputs: &PaneInputs) -> PaneAnswerCore {
         WorkflowResolved::View(view) => view,
     };
 
-    let band = github_band(&view.body, inputs.now_ms);
+    let band = github_band(&view.body, observed_at_ms(inputs.now_ms, view.freshness));
     let band = if view.stale && matches!(band, Band::Dormant | Band::Distant) { Band::Imminent } else { band };
     PaneAnswerCore { answer_state: AnswerState::Answered, band, within_band: None }
 }
@@ -432,13 +506,13 @@ mod tests {
 
     #[test]
     fn bands_a_healthy_on_cadence_workflow_dormant() {
-        assert_eq!(github_band(&healthy_body(), NOW), Band::Dormant);
+        assert_eq!(github_band(&healthy_body(), Some(NOW)), Band::Dormant);
     }
 
     #[test]
     fn bands_the_never_run_auto_disable_shape_live_the_most_severe_reading() {
         let body = WorkflowBody { last_run_at_ms: None, last_scheduled_success_at_ms: None, ..healthy_body() };
-        assert_eq!(github_band(&body, NOW), Band::Live);
+        assert_eq!(github_band(&body, Some(NOW)), Band::Live);
     }
 
     #[test]
@@ -448,32 +522,91 @@ mod tests {
             last_scheduled_success_at_ms: None,
             ..healthy_body()
         };
-        assert_eq!(github_band(&body, NOW), Band::Imminent);
+        assert_eq!(github_band(&body, Some(NOW)), Band::Imminent);
     }
 
     #[test]
     fn bands_overdue_against_the_declared_cadence_imminent_even_with_a_stored_success() {
+        // A daily cadence multiplies out well clear of `MIN_OVERDUE_AFTER_MS`,
+        // so this is the plain `3×` arm.
+        let cadence = 24 * 60 * 60 * 1000;
+        let banded = |last_success_at_ms: i64| {
+            let body = WorkflowBody {
+                declared_cadence_ms: Some(cadence),
+                last_scheduled_success_at_ms: Some(last_success_at_ms),
+                ..healthy_body()
+            };
+            github_band(&body, Some(NOW))
+        };
+        assert_eq!(banded(NOW - cadence * OVERDUE_MULTIPLIER + 1), Band::Dormant);
+        assert_eq!(banded(NOW - cadence * OVERDUE_MULTIPLIER - 1), Band::Imminent);
+    }
+
+    /// The floor's own arm, and the false alarm that put it there: a `*/15`
+    /// workflow's `3 × 15min = 45min` is below GitHub's *delivered* gap on
+    /// this repo (median 31–41min, max 88–106min over ~70h), so a healthy
+    /// poller last seen an hour before the observation must still read
+    /// green. See [`MIN_OVERDUE_AFTER_MS`].
+    #[test]
+    fn floors_the_overdue_threshold_so_githubs_own_queueing_never_reads_as_a_stalled_cron() {
         let cadence = 15 * 60 * 1000;
-        let just_under_threshold = NOW - cadence * OVERDUE_MULTIPLIER + 1;
-        let just_over_threshold = NOW - cadence * OVERDUE_MULTIPLIER - 1;
-        let under = WorkflowBody {
-            declared_cadence_ms: Some(cadence),
-            last_scheduled_success_at_ms: Some(just_under_threshold),
+        assert!(cadence * OVERDUE_MULTIPLIER < MIN_OVERDUE_AFTER_MS, "the floor must bind here");
+        let banded = |last_success_at_ms: i64| {
+            let body = WorkflowBody {
+                declared_cadence_ms: Some(cadence),
+                last_scheduled_success_at_ms: Some(last_success_at_ms),
+                ..healthy_body()
+            };
+            github_band(&body, Some(NOW))
+        };
+        // The worst delivered gap actually observed on this repo, and well
+        // past the old 45min threshold.
+        assert_eq!(banded(NOW - 106 * 60 * 1000), Band::Dormant);
+        assert_eq!(banded(NOW - MIN_OVERDUE_AFTER_MS + 1), Band::Dormant);
+        assert_eq!(banded(NOW - MIN_OVERDUE_AFTER_MS - 1), Band::Imminent);
+    }
+
+    /// The clock-anchor fix, stated as the case that motivated it: the
+    /// poller looked an hour ago and saw a scheduled success a minute
+    /// before that. Judged against the observation the workflow is healthy;
+    /// judged against `now_ms` — which is what this pane did before — the
+    /// same payload reads `imminent` purely because the *poller* has not
+    /// run since.
+    #[test]
+    fn judges_overdue_ness_as_of_the_observation_not_the_readers_own_clock() {
+        let observed_at_ms = NOW - 6 * 60 * 60 * 1000;
+        let body = WorkflowBody {
+            declared_cadence_ms: Some(15 * 60 * 1000),
+            last_scheduled_success_at_ms: Some(observed_at_ms - 60_000),
             ..healthy_body()
         };
-        let over = WorkflowBody {
-            declared_cadence_ms: Some(cadence),
-            last_scheduled_success_at_ms: Some(just_over_threshold),
-            ..healthy_body()
-        };
-        assert_eq!(github_band(&under, NOW), Band::Dormant);
-        assert_eq!(github_band(&over, NOW), Band::Imminent);
+        assert_eq!(github_band(&body, Some(observed_at_ms)), Band::Dormant);
+        assert_eq!(github_band(&body, Some(NOW)), Band::Imminent);
+    }
+
+    /// A snapshot whose observation instant cannot be located is a
+    /// judgement that could not be made — the same `distant` an unreadable
+    /// cadence gets, never `dormant`.
+    #[test]
+    fn bands_distant_never_dormant_when_the_observation_instant_is_unknown() {
+        let band = github_band(&healthy_body(), None);
+        assert_eq!(band, Band::Distant);
+        assert_ne!(band, Band::Dormant);
+    }
+
+    #[test]
+    fn reads_the_observation_instant_off_the_rows_own_freshness() {
+        assert_eq!(
+            observed_at_ms(NOW, FreshnessFact::Age { age_ms: 90_000, declared_cadence_ms: None }),
+            Some(NOW - 90_000),
+        );
+        assert_eq!(observed_at_ms(NOW, FreshnessFact::Unknown), None);
     }
 
     #[test]
     fn bands_a_single_recent_failure_near_less_urgent_than_a_stopped_cron() {
         let body = WorkflowBody { last_run_conclusion: Some("failure".to_string()), ..healthy_body() };
-        assert_eq!(github_band(&body, NOW), Band::Near);
+        assert_eq!(github_band(&body, Some(NOW)), Band::Near);
     }
 
     #[test]
@@ -481,8 +614,8 @@ mod tests {
         use super::super::contract::BAND_ORDER;
         let stopped = WorkflowBody { last_run_at_ms: None, last_scheduled_success_at_ms: None, ..healthy_body() };
         let failed = WorkflowBody { last_run_conclusion: Some("failure".to_string()), ..healthy_body() };
-        let stopped_band = github_band(&stopped, NOW);
-        let failed_band = github_band(&failed, NOW);
+        let stopped_band = github_band(&stopped, Some(NOW));
+        let failed_band = github_band(&failed, Some(NOW));
         let index = |band: Band| BAND_ORDER.iter().position(|b| *b == band).unwrap();
         assert!(index(stopped_band) < index(failed_band));
     }
@@ -494,7 +627,7 @@ mod tests {
             last_scheduled_success_at_ms: Some(NOW - 999_999_999),
             ..healthy_body()
         };
-        let band = github_band(&body, NOW);
+        let band = github_band(&body, Some(NOW));
         assert_eq!(band, Band::Distant);
         assert_ne!(band, Band::Dormant);
     }
@@ -506,7 +639,7 @@ mod tests {
             last_run_conclusion: Some("failure".to_string()),
             ..healthy_body()
         };
-        assert_eq!(github_band(&body, NOW), Band::Near);
+        assert_eq!(github_band(&body, Some(NOW)), Band::Near);
     }
 
     // ----------------------------------------------------------- github_subjects
@@ -618,16 +751,16 @@ mod tests {
     }
 
     #[test]
-    fn bands_stale_at_thirty_hours_against_the_daily_cadence() {
+    fn bands_stale_at_six_hours_against_the_pollers_own_half_hourly_cadence() {
         let fresh_row = inputs_with(vec![snapshot_json(
             FILE_NAME,
             ok_envelope(&body_json(BodyOverrides::default())),
-            serde_json::json!({"kind":"age","ageMs": 29 * 60 * 60 * 1000,"declaredCadenceMs":86400000}),
+            serde_json::json!({"kind":"age","ageMs": STALE_AFTER_MS - 60_000,"declaredCadenceMs":1800000}),
         )]);
         let stale_row = inputs_with(vec![snapshot_json(
             FILE_NAME,
             ok_envelope(&body_json(BodyOverrides::default())),
-            serde_json::json!({"kind":"age","ageMs": 31 * 60 * 60 * 1000,"declaredCadenceMs":86400000}),
+            serde_json::json!({"kind":"age","ageMs": STALE_AFTER_MS + 60_000,"declaredCadenceMs":1800000}),
         )]);
         let fresh_view = match github_facts(FILE_NAME, &fresh_row) {
             WorkflowResolved::View(view) => view,

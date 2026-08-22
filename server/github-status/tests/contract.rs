@@ -86,6 +86,6 @@ fn the_source_agrees_with_the_pane() {
 /// `.github/workflows/github-status.yml`'s cron must agree with this — the
 /// declared cadence `Freshness` reads for the poller's own pane staleness.
 #[test]
-fn polled_every_ms_is_one_day() {
-    assert_eq!(POLLED_EVERY_MS, 24 * 60 * 60 * 1000);
+fn polled_every_ms_is_half_an_hour() {
+    assert_eq!(POLLED_EVERY_MS, 30 * 60 * 1000);
 }

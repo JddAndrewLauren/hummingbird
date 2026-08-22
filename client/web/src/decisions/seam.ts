@@ -183,7 +183,8 @@ export interface DecisionsModule {
   kimi_band_json(availableBalance: number): string;
   kimi_constants_json(): string;
   parse_workflow_body_json(snapshotJson: string): string;
-  github_band_json(bodyJson: string, nowMs: number): string;
+  github_band_json(bodyJson: string, observedAtMs: number | undefined): string;
+  github_observed_at_ms_json(nowMs: number, freshnessJson: string): string;
   github_subjects_json(inputsJson: string): string;
   github_facts_json(subjectKey: string, inputsJson: string): string;
   github_answer_json(subjectKey: string, inputsJson: string): string;
@@ -1694,8 +1695,20 @@ export function parseWorkflowBodyFromCore(
     | { kind: "gap"; gap: WorkflowGap };
 }
 
-export function githubBandFromCore(body: WorkflowBodyCore, nowMs: number): PaneBand {
-  return JSON.parse(required().github_band_json(JSON.stringify(body), nowMs)) as PaneBand;
+/** When the poller *observed* what a row reports — `github.rs`'s
+ * `observed_at_ms`, the only thing that may build `githubBandFromCore`'s
+ * second argument. `null` when the row's freshness cannot locate it. */
+export function githubObservedAtMsFromCore(nowMs: number, freshness: FreshnessDTO): number | null {
+  return JSON.parse(required().github_observed_at_ms_json(nowMs, JSON.stringify(freshness))) as number | null;
+}
+
+/** `observedAtMs` is when the *poller* looked — never `nowMs`. See
+ * `github.rs`'s `observed_at_ms`: judging a workflow overdue against the
+ * reader's own clock is what made every short-cadence workflow read "cron
+ * stalled" between polls. `null` means the row's freshness could not locate
+ * the observation at all. */
+export function githubBandFromCore(body: WorkflowBodyCore, observedAtMs: number | null): PaneBand {
+  return JSON.parse(required().github_band_json(JSON.stringify(body), observedAtMs ?? undefined)) as PaneBand;
 }
 
 export function githubSubjectsFromCore(inputs: PaneInputsSource): string[] {
@@ -1719,6 +1732,7 @@ export interface GithubConstants {
   neverPolledSubject: string;
   staleAfterMs: number;
   overdueMultiplier: number;
+  minOverdueAfterMs: number;
 }
 
 export function githubConstantsFromCore(): GithubConstants {
