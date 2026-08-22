@@ -1,6 +1,12 @@
 # ADR-0031: Calendar write is one credential at the authority, gated on a token id
 
 **Status:** accepted · 2026-08-20
+**amended 2026-08-21 by [ADR-0032](0032-email-sourced-standing-questions-are-answered-by-the-agent-arm.md):**
+the calendar write this ADR minted is now also the write half of a standing
+question — the agent writes `SCPS …` events extracted from forwarded club
+mail, under a title convention the pane reads. "There is no Google
+credential on this machine" is narrowed there: the gateway holds one for
+the agent's own forwarded-mail inbox, and nothing else.
 **Context:** giving the OpenClaw agent (ADR-0029) Google Calendar write.
 Extends [ADR-0028](0028-the-web-host-mints-its-google-token-at-the-authority.md)
 with a second, write-scoped sibling route over its own credential (that

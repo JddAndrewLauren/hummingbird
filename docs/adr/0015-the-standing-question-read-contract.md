@@ -23,6 +23,12 @@ database and the pane's rules share a runtime; a core with no tzdb splits it
 into a two-phase answer, and an unresolvable zone becomes a core decision
 rather than a host fallback. The invariant — a civil date is never stored as
 an instant, and resolves at read time — is untouched.
+· **amended 2026-08-21 by
+[ADR-0032](0032-email-sourced-standing-questions-are-answered-by-the-agent-arm.md):**
+a standing question may be fed by the OpenClaw agent rather than a poller —
+events on the calendar under a title convention, a phrase in a
+month-stamped binding — and so have no `fetched_at` to band stale on; the
+SCPS question itself is written inline below by the slice that ships it.
 **Amendments to this ADR follow [the pointer convention](README.md):** what
 a later ADR changed is written in *that* ADR, and named here only.
 **Context:** the standing-question seam grilling of 2026-08-10, opened on
