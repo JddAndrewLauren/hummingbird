@@ -28,6 +28,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -41,6 +42,10 @@ import uniffi.hummingbird_ffi_mobile.MobileRaceFacts
 import uniffi.hummingbird_ffi_mobile.MobileRaceGap
 import uniffi.hummingbird_ffi_mobile.MobileRaceResolved
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
+import uniffi.hummingbird_ffi_mobile.MobileScpsEvent
+import uniffi.hummingbird_ffi_mobile.MobileScpsKind
+import uniffi.hummingbird_ffi_mobile.MobileScpsQuestFact
+import uniffi.hummingbird_ffi_mobile.MobileScpsResolved
 import uniffi.hummingbird_ffi_mobile.MobileWasteGap
 import uniffi.hummingbird_ffi_mobile.MobileWasteResolved
 import uniffi.hummingbird_ffi_mobile.MobileWasteStream
@@ -66,6 +71,14 @@ import uniffi.hummingbird_ffi_mobile.MobileWeekendResolved
 // location or "a trip" — see `PaneAnswers.kt`'s `vacationTripHeadline` for
 // the same recorded divergence. The shell's collapsed headline is the
 // honest whole story until the seam grows the name the web derives.
+//
+// **SCPS (#694) got its own card**, `ScpsPaneExpanded.tsx` ported: the next
+// event (kind, time, location, notes), the Photo Quest line, and any
+// further `SCPS `-titled events beneath. The card TITLE carries kind and
+// topic only (`scpsCardTitle`, ported); the day and time live on a separate
+// meta line beneath it — `ScpsPaneExpanded.tsx`'s own rule (restated from
+// `VacationPaneExpanded.tsx`): a title repeating the meta line's facts
+// would say the same thing twice.
 //
 // **Nothing here decides.** Bands, answer states and facts arrive on the
 // pane; the words reuse `PaneAnswers.kt`'s ports (`wasteCollapsedHeadline`
@@ -93,6 +106,7 @@ internal fun NowPaneExpanded(
             WeekendPaneExpanded(pane, facts.resolved, onSetScheduledDate)
         // No card by choice, not for want of a lane — see the file header.
         is MobilePaneFacts.Vacation -> Unit
+        is MobilePaneFacts.Scps -> ScpsPaneExpanded(facts.resolved, nowMs)
         is MobilePaneFacts.Kimi,
         is MobilePaneFacts.Github,
         is MobilePaneFacts.Uptime,
@@ -219,6 +233,181 @@ private fun HomeworkPaneExpanded(resolved: MobileHomeworkResolved, link: String?
                     modifier = Modifier.size(15.dp),
                 )
             }
+        }
+    }
+}
+
+// ------------------------------------------------------------------ scps
+
+/** `KIND_LABEL` in `scps.ts`, ported — the contract's own rule that an
+ * unrecognised `SCPS ` title reads as the literal lowercase word "event". */
+private val SCPS_KIND_LABEL: Map<MobileScpsKind, String> = mapOf(
+    MobileScpsKind.MEETING to "Meeting",
+    MobileScpsKind.ACTIVITY to "Activity",
+    MobileScpsKind.HAPPY_HOUR to "Happy Hour",
+    MobileScpsKind.EVENT to "event",
+)
+
+private val SCPS_WEEKDAY_NAMES = listOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+
+private val SCPS_MONTH_NAMES = listOf(
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+
+/** `monthName` in `scps.ts`, ported — `"January"` for `"2026-09"`'s `09`. */
+internal fun scpsMonthName(monthToken: String): String {
+    val month = monthToken.drop(5).take(2).toIntOrNull()
+    return SCPS_MONTH_NAMES.getOrNull((month ?: 0) - 1) ?: monthToken
+}
+
+/** `scpsTimeLabel` in `scps.ts`, ported — local wall time at the device's
+ * own zone (the same one `ScpsEvent.startMs` already resolved against),
+ * `"9:00am"`: no space, lowercase, never the localized `DateTimeFormatter`
+ * spelling `raceClock` uses for the race card. */
+internal fun scpsTimeLabel(atMs: Long, zone: ZoneId = ZoneId.systemDefault()): String {
+    val at = Instant.ofEpochMilli(atMs).atZone(zone)
+    val hour24 = at.hour
+    val minutes = at.minute.toString().padStart(2, '0')
+    val hour12 = if (hour24 % 12 == 0) 12 else hour24 % 12
+    val ampm = if (hour24 >= 12) "pm" else "am"
+    return "$hour12:$minutes$ampm"
+}
+
+/** `scpsDayLabel` in `scps.ts`, ported — "today" · "tomorrow" · "Sat" ·
+ * "9 Mar", off the event's own `daysUntil`/`startDate`, never the device
+ * clock recomputed here. */
+internal fun scpsDayLabel(event: MobileScpsEvent): String {
+    if (event.inProgress || event.daysUntil <= 0L) return "today"
+    if (event.daysUntil == 1L) return "tomorrow"
+    if (event.daysUntil < 7L) {
+        val weekday = LocalDate.parse(event.startDate).dayOfWeek.value % 7
+        return SCPS_WEEKDAY_NAMES[weekday]
+    }
+    val (_, month, day) = event.startDate.split("-")
+    val abbrev = SCPS_MONTH_NAMES.getOrNull(month.toInt() - 1)?.take(3) ?: month
+    return "${day.toInt()} $abbrev"
+}
+
+/** `scpsCardTitle` in `scps.ts`, ported — kind and topic only, no day or
+ * time: the meta line beneath this title owns those (the file header's own
+ * rule). Only the collapsed row's `scpsEventHeadline` (`PaneAnswers.kt`)
+ * carries the full sentence. */
+internal fun scpsCardTitle(event: MobileScpsEvent): String {
+    if (event.kind == MobileScpsKind.HAPPY_HOUR && event.inProgress) {
+        return "SCPS Happy Hour in progress"
+    }
+    val topic = if (!event.topic.isNullOrBlank()) " — ${event.topic}" else ""
+    return "SCPS ${SCPS_KIND_LABEL.getValue(event.kind)}$topic"
+}
+
+/** `scpsQuestLine` in `scps.ts`, ported — the current month's phrase, the
+ * last-posted one named against its own month, or the plain "unset" line. */
+internal fun scpsQuestLine(quest: MobileScpsQuestFact, nowMs: Long, zone: ZoneId = ZoneId.systemDefault()): String =
+    when (quest) {
+        is MobileScpsQuestFact.Current -> "Photo Quest — ${quest.phrase}"
+        is MobileScpsQuestFact.Other -> {
+            val today = Instant.ofEpochMilli(nowMs).atZone(zone).toLocalDate()
+            val currentMonth = scpsMonthName(String.format(Locale.US, "%04d-%02d", today.year, today.monthValue))
+            "No quest posted for $currentMonth; last: ${quest.phrase} (${scpsMonthName(quest.month)})"
+        }
+        MobileScpsQuestFact.None -> "No quest set"
+    }
+
+@Composable
+private fun ScpsLaterEvent(event: MobileScpsEvent) {
+    // Two lines, `HomeworkItemLine`'s precedent — `scpsCardTitle` already
+    // spends " — " on the kind/topic relation, so reusing it here for the
+    // title/day relation would read as the same separator meaning two
+    // different things on one line.
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            scpsCardTitle(event),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            scpsDayLabel(event),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun ScpsPaneExpanded(resolved: MobileScpsResolved?, nowMs: Long) {
+    // `resolved == null` mirrors `scps.rs`'s "never unbound" rule: this
+    // pane has no setup step to be unbound from, so the only reason there
+    // is nothing to draw is an unacquired calendar read — the same line
+    // `ScpsPaneExpanded.tsx`'s own empty state uses.
+    val facts = when (resolved) {
+        null -> {
+            Text(
+                "Nothing to show until this device has read its calendars.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return
+        }
+        // The zone bridge could not resolve a fact this pane needed —
+        // unreachable in practice on a device that just resolved `nowMs`
+        // into a `today`, but named rather than swallowed by an `else`.
+        is MobileScpsResolved.Gap -> {
+            Text(
+                "Nothing to show until this device has read its calendars.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return
+        }
+        is MobileScpsResolved.Facts -> resolved.facts
+    }
+    val next = facts.next
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (next == null) {
+            Text("No SCPS event scheduled.", style = MaterialTheme.typography.headlineSmall)
+        } else {
+            Text(scpsCardTitle(next), style = MaterialTheme.typography.headlineSmall)
+            Text(
+                "${scpsDayLabel(next)} · ${scpsTimeLabel(next.startMs)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            val location = next.location
+            if (location != null) {
+                Text(
+                    location,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            val notes = next.notes
+            if (!notes.isNullOrBlank()) {
+                Text(
+                    notes,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Text(
+            scpsQuestLine(facts.quest, nowMs),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (facts.later.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                for (event in facts.later) {
+                    ScpsLaterEvent(event)
+                }
+            }
+        }
+        if (facts.stale) {
+            Text(
+                staleWords(facts.freshness),
+                style = MaterialTheme.typography.labelSmall,
+                color = warnColor(),
+            )
         }
     }
 }

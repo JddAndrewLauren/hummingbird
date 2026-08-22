@@ -102,6 +102,10 @@ export interface CalendarEventDTO {
   status: "confirmed" | "tentative" | "cancelled";
   providerUpdatedAtMs: number;
   htmlLink: string | null;
+  /** The provider's free-text body (Google's `description`) — added for
+   * the SCPS pane (#693, ADR-0032), whose expanded view shows the writer's
+   * own get-together/set-up notes. */
+  description: string | null;
 }
 
 /** The answer to one `getCalendarEvents` request (issue #267) — three

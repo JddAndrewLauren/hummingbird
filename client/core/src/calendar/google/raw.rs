@@ -24,6 +24,7 @@ pub struct RawEvent {
     pub status: String,
     pub summary: Option<String>,
     pub location: Option<String>,
+    pub description: Option<String>,
     pub organizer: Option<RawOrganizer>,
     pub start: Option<RawEventDateTime>,
     pub end: Option<RawEventDateTime>,

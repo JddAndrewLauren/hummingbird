@@ -71,6 +71,7 @@ function event(overrides: {
     status: overrides.status ?? "confirmed",
     providerUpdatedAtMs: overrides.startMs,
     htmlLink: null,
+    description: null,
   };
 }
 

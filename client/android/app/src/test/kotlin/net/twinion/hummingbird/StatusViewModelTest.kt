@@ -68,6 +68,7 @@ class StatusViewModelTest {
         MobileStandingQuestion.WEEKEND ->
             MobilePaneFacts.Weekend(resolved = MobileWeekendResolved.Gap(gap = MobileWeekendGap.NOT_CONNECTED))
         MobileStandingQuestion.VACATION -> MobilePaneFacts.Vacation(resolved = null)
+        MobileStandingQuestion.SCPS -> MobilePaneFacts.Scps(resolved = null)
         MobileStandingQuestion.RACE ->
             MobilePaneFacts.Race(
                 setup = MobileRaceSetup.UNSET,

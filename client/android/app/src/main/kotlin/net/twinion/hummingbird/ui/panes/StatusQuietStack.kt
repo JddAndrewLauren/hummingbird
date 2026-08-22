@@ -120,7 +120,7 @@ private val UPTIME_ICONS = mapOf(
 )
 
 /** Which glyph identifies a pane. Exhaustive over [MobileStandingQuestion]
- * with the five Now arms erroring exactly as `paneLabel` does — a ninth
+ * with the six Now arms erroring exactly as `paneLabel` does — a tenth
  * question is a compile error here, not a blank chip. */
 private fun statusPaneIcon(pane: MobileRankedPane): Int = when (pane.standingQuestion) {
     MobileStandingQuestion.KIMI -> R.drawable.ic_circle_dollar_sign
@@ -128,6 +128,7 @@ private fun statusPaneIcon(pane: MobileRankedPane): Int = when (pane.standingQue
     MobileStandingQuestion.UPTIME -> UPTIME_ICONS[pane.subjectKey] ?: R.drawable.ic_server
     MobileStandingQuestion.REACHABILITY -> R.drawable.ic_smartphone
     MobileStandingQuestion.HOMEWORK,
+    MobileStandingQuestion.SCPS,
     MobileStandingQuestion.WASTE,
     MobileStandingQuestion.WEEKEND,
     MobileStandingQuestion.VACATION,

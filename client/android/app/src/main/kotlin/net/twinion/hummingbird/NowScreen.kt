@@ -211,6 +211,8 @@ internal fun selectedPaneIsEmitted(
  * ninth question still trips this `when`. */
 private fun nowPaneLabel(pane: MobileRankedPane): String = when (pane.standingQuestion) {
     MobileStandingQuestion.HOMEWORK -> "What's my homework"
+    // ADR-0032 part 5's own decision table names this literal.
+    MobileStandingQuestion.SCPS -> "SCPS"
     MobileStandingQuestion.WASTE -> "Bin collection"
     MobileStandingQuestion.WEEKEND -> "This weekend"
     MobileStandingQuestion.VACATION -> "Next trip"

@@ -18,6 +18,9 @@ import uniffi.hummingbird_ffi_mobile.MobileRaceResolved
 import uniffi.hummingbird_ffi_mobile.MobileRaceSetup
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 import uniffi.hummingbird_ffi_mobile.MobileKimiResolved
+import uniffi.hummingbird_ffi_mobile.MobileScpsEvent
+import uniffi.hummingbird_ffi_mobile.MobileScpsKind
+import uniffi.hummingbird_ffi_mobile.MobileScpsResolved
 import uniffi.hummingbird_ffi_mobile.MobileTrip
 import uniffi.hummingbird_ffi_mobile.MobileTripPhase
 import uniffi.hummingbird_ffi_mobile.MobileVacationResolved
@@ -56,6 +59,7 @@ import uniffi.hummingbird_ffi_mobile.MobileWorkflowResolved
 /** The collapsed row's whole sentence for one ranked pane. */
 internal fun paneHeadline(pane: MobileRankedPane, nowMs: Long): String = when (val facts = pane.facts) {
     is MobilePaneFacts.Homework -> homeworkHeadline(facts.resolved)
+    is MobilePaneFacts.Scps -> scpsHeadline(pane, facts.resolved)
     is MobilePaneFacts.Waste -> wasteHeadline(pane, facts.setup, facts.resolved)
     is MobilePaneFacts.Weekend -> weekendHeadline(pane, facts.resolved)
     is MobilePaneFacts.Vacation -> vacationHeadline(pane, facts.resolved)
@@ -72,6 +76,7 @@ internal fun paneHeadline(pane: MobileRankedPane, nowMs: Long): String = when (v
  * shell applies [MAX_GLYPHS]. */
 internal fun paneGlyphs(pane: MobileRankedPane, nowMs: Long): List<PaneGlyph> = when (val facts = pane.facts) {
     is MobilePaneFacts.Homework -> homeworkGlyphs(facts.resolved)
+    is MobilePaneFacts.Scps -> emptyList()
     is MobilePaneFacts.Waste -> wasteGlyphs(pane, facts.setup, facts.resolved)
     is MobilePaneFacts.Weekend -> weekendGlyphs(pane, facts.resolved)
     is MobilePaneFacts.Vacation -> emptyList()
@@ -321,6 +326,51 @@ private fun weekendGlyphs(pane: MobileRankedPane, resolved: MobileWeekendResolve
             glyphs
         }
     }
+}
+
+// ------------------------------------------------------------------ scps
+
+/** `scps.ts`'s `scpsHeadline`, ported at collapsed-row depth only (#693):
+ * the day and the topic, never the exact clock time or the Photo Quest —
+ * that finer body is #694's own scope (Android's expanded card), the same
+ * "no card yet" line `NowPanesExpanded.kt`'s `Vacation` arm already draws.
+ * Never `unbound` here — `scps.rs`'s own rule, ADR-0015's #693 amendment. */
+private fun scpsHeadline(pane: MobileRankedPane, resolved: MobileScpsResolved?): String {
+    when (pane.answer.answerState) {
+        MobilePaneAnswerState.UNBOUND, MobilePaneAnswerState.BOUND_BUT_UNACQUIRED ->
+            return "Waiting for the first calendar sync"
+        MobilePaneAnswerState.ANSWERED -> Unit
+    }
+    return when (resolved) {
+        null -> "Waiting for the first calendar sync"
+        is MobileScpsResolved.Gap -> "Waiting for the first calendar sync"
+        is MobileScpsResolved.Facts -> scpsEventHeadline(resolved.facts.next)
+    }
+}
+
+private fun scpsEventHeadline(next: MobileScpsEvent?): String {
+    if (next == null) return "No SCPS event scheduled"
+    if (next.kind == MobileScpsKind.HAPPY_HOUR && next.inProgress) {
+        return "SCPS Happy Hour in progress"
+    }
+    val kindWord = when (next.kind) {
+        MobileScpsKind.MEETING -> "Meeting"
+        MobileScpsKind.ACTIVITY -> "Activity"
+        MobileScpsKind.HAPPY_HOUR -> "Happy Hour"
+        MobileScpsKind.EVENT -> "event"
+    }
+    // An if-chain rather than a `when { … else -> }` — `PaneShellStructuralTest`
+    // bans a wildcard arm anywhere in this file (`homeworkCollapsedHeadline`'s
+    // own precedent above).
+    val day = if (next.inProgress || next.daysUntil <= 0) {
+        "today"
+    } else if (next.daysUntil == 1L) {
+        "tomorrow"
+    } else {
+        "in ${next.daysUntil} days"
+    }
+    val topic = if (!next.topic.isNullOrBlank()) " — ${next.topic}" else ""
+    return "SCPS $kindWord $day$topic"
 }
 
 // -------------------------------------------------------------- vacation

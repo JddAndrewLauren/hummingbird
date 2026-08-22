@@ -231,6 +231,51 @@ binding editor is not somewhere a reader goes unprompted. Bound-but-
 unacquired renders as a **gap**, not as absence (race prototype finding 5)
 — adding a series to the binding must not look like it did nothing.
 
+*Amended 2026-08-21 (#693, ADR-0032): a question may read the calendar arm
+with no per-question calendar binding at all, and may be written by the
+agent rather than by a poller.* `SCPS` — "when is the next SCPS event, and
+what is this month's Photo Quest" — is the tenth standing question, and
+ADR-0032 decided it is answered by the OpenClaw agent (ADR-0029) rather
+than a poller: the agent reads forwarded club email and writes straight
+into two places every pane already reads, the operator's own Google
+Calendar and one `settings` binding. This ADR gains four consequences from
+it, none touched by ADR-0032's own record:
+
+1. **The calendar-arm source, unlike `vacation`'s or `weekend`'s.** SCPS
+   declares `sources: []` and one `calendarRequests` interval (#267) over
+   the **standard** horizon — 6 hours behind now, 90 days ahead, the same
+   window `CalendarHorizon::Standard` polls — but, unlike `vacation`, names
+   no calendar-id binding to designate *which* calendar to read: it reads
+   every non-cancelled event on every calendar the device already polls,
+   selecting by the `SCPS ` title prefix alone (three kinds — `Meeting`,
+   `Activity`, `Happy Hour` — plus a catch-all `event`). That is a
+   deliberate declined alternative (a dedicated calendar plus its own
+   binding was offered and rejected: the operator wants these events on the
+   calendar they already look at, and the binding plumbing across three
+   clients would buy nothing the prefix does not).
+2. **The binding it does read is a display-only phrase, not a source.**
+   `scps-quest` (`bindings::BindingKey::ScpsQuest`) holds `Text` of the
+   shape `YYYY-MM <phrase>` — the Photo Quest, with its own month folded
+   into the value because a binding's value is all a pane ever sees (no
+   `updatedAt` reaches it). Shown only when its month equals the device's
+   current civil month; never a source consequence 1's calendar read is
+   filtered against, and never a reason the band moves.
+3. **`unbound` is unreachable here too, on `Homework`'s own precedent —
+   but by a different route.** `Homework` never binds at all; `SCPS` binds
+   `scps-quest`, but that binding names no calendar to designate, so there
+   is no missing-setup state to report. `!calendar_connected` and an unread
+   calendar arm both read as `bound-but-unacquired` — "waiting for the
+   first calendar sync," the same words `vacation`'s own unread arm uses —
+   and an empty window is `answered` + `dormant` ("No SCPS event
+   scheduled"), on `none_in_horizon`'s own reasoning in the table above.
+4. **This question carries no `fetched_at` at all**, because it has no
+   `context_snapshots` row and no poller — the agent's writes land as an
+   ordinary calendar event and an ordinary CAS-guarded binding write, both
+   already timestamped by their own tables. Its evidence of freshness is
+   the calendar mirror's own read freshness (the same `FreshnessFact`
+   `vacation`/`weekend` already carry) and the quest's month token, not a
+   second staleness clock this ADR would otherwise have to define.
+
 ## Collapse
 
 Every pane is collapsible and collapses itself by default in `dormant` and

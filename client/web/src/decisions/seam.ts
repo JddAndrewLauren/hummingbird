@@ -225,6 +225,10 @@ export interface DecisionsModule {
   vacation_view_json(inputsJson: string, zoneFactsJson: string): string;
   vacation_answer_json(inputsJson: string, zoneFactsJson: string): string;
   vacation_constants_json(): string;
+  scps_zone_queries_json(inputsJson: string): string;
+  scps_view_json(inputsJson: string, zoneFactsJson: string): string;
+  scps_answer_json(inputsJson: string, zoneFactsJson: string): string;
+  scps_constants_json(): string;
   device_zone(): string;
 }
 
@@ -2210,6 +2214,69 @@ export interface VacationConstants {
 
 export function vacationConstantsFromCore(): VacationConstants {
   return JSON.parse(required().vacation_constants_json()) as VacationConstants;
+}
+
+// -- scps (#693, ADR-0032) ---------------------------------------------------
+
+export type ScpsKindCore = "meeting" | "activity" | "happy_hour" | "event";
+
+export interface ScpsEventCore {
+  id: string;
+  kind: ScpsKindCore;
+  topic: string | null;
+  startMs: number;
+  endMs: number;
+  startDate: string;
+  location: string | null;
+  notes: string | null;
+  daysUntil: number;
+  inProgress: boolean;
+}
+
+export type ScpsQuestFactCore =
+  | { kind: "none" }
+  | { kind: "current"; phrase: string }
+  | { kind: "other"; month: string; phrase: string };
+
+export function scpsZoneQueriesFromCore(inputs: PaneInputsSource): ZoneQuery[] {
+  return JSON.parse(required().scps_zone_queries_json(paneInputsPayload(inputs))) as ZoneQuery[];
+}
+
+export type ScpsGap = { gap: "unresolvableZone" };
+
+export interface ScpsFacts {
+  next: ScpsEventCore | null;
+  later: ScpsEventCore[];
+  quest: ScpsQuestFactCore;
+  freshness: FreshnessDTO;
+  stale: boolean;
+}
+
+export type ScpsResolved = ({ kind: "facts" } & ScpsFacts) | { kind: "gap"; gap: ScpsGap };
+
+export function scpsViewFromCore(inputs: PaneInputsSource, facts: ZoneFacts): ScpsResolved | null {
+  return JSON.parse(
+    required().scps_view_json(paneInputsPayload(inputs), JSON.stringify(facts)),
+  ) as ScpsResolved | null;
+}
+
+export function scpsAnswerFromCore(inputs: PaneInputsSource, facts: ZoneFacts): PaneAnswerCore {
+  return JSON.parse(
+    required().scps_answer_json(paneInputsPayload(inputs), JSON.stringify(facts)),
+  ) as PaneAnswerCore;
+}
+
+export interface ScpsConstants {
+  subjectKey: string;
+  calendarRequestKey: string;
+  questBindingKey: string;
+  horizonBeforeMs: number;
+  horizonAfterDays: number;
+  staleAfterMs: number;
+}
+
+export function scpsConstantsFromCore(): ScpsConstants {
+  return JSON.parse(required().scps_constants_json()) as ScpsConstants;
 }
 
 /** `hummingbird_core::decisions::panes::zone::DEVICE_ZONE` — the sentinel

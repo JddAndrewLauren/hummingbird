@@ -126,6 +126,7 @@ class StatusChipRowTest {
                 resolved = MobileWorkflowResolved.Gap(MobileWorkflowGap.NotFetched),
             )
         MobileStandingQuestion.HOMEWORK,
+        MobileStandingQuestion.SCPS,
         MobileStandingQuestion.WASTE,
         MobileStandingQuestion.WEEKEND,
         MobileStandingQuestion.VACATION,

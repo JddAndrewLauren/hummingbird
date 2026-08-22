@@ -67,6 +67,19 @@ pub enum BindingKey {
     /// operator's own authority, set once and synced to every device —
     /// never in git.
     HomeworkLink,
+    /// This month's SCPS Photo Quest phrase (#693, ADR-0032) — `Text` of
+    /// the shape `YYYY-MM <phrase>`, first whitespace-delimited token the
+    /// month, the rest (trimmed) the phrase
+    /// (`decisions::panes::scps::scps_quest`'s own parser).
+    ///
+    /// **The agent writes this one, not the operator.** ADR-0032 part 4:
+    /// the OpenClaw agent extracts the club's monthly Photo Quest from
+    /// forwarded email and `PUT`s it here under CAS, the first binding
+    /// written by anything other than a human through the Settings editor.
+    /// It stays `Text` (not a JSON object) so that editor can still
+    /// hand-edit it — a shape only the pane's own parser gives further
+    /// meaning to, on `BindingValue::Text`'s existing contract.
+    ScpsQuest,
 }
 
 impl BindingKey {
@@ -78,6 +91,7 @@ impl BindingKey {
         BindingKey::TripsCalendar,
         BindingKey::CityWastePage,
         BindingKey::HomeworkLink,
+        BindingKey::ScpsQuest,
     ];
 
     /// The `settings.key` this binding is stored under — the wire spelling
@@ -88,6 +102,7 @@ impl BindingKey {
             BindingKey::TripsCalendar => "trips-calendar",
             BindingKey::CityWastePage => "city-waste-page",
             BindingKey::HomeworkLink => "homework-link",
+            BindingKey::ScpsQuest => "scps-quest",
         }
     }
 
@@ -197,7 +212,8 @@ mod tests {
                 "race-series",
                 "trips-calendar",
                 "city-waste-page",
-                "homework-link"
+                "homework-link",
+                "scps-quest"
             ]
         );
     }

@@ -3,6 +3,7 @@ import { homeworkQuestion } from "../homework-pane/question";
 import { kimiQuestion } from "../kimi-pane/question";
 import { raceQuestion } from "../race-pane/question";
 import { reachabilityQuestion } from "../reachability-pane/question";
+import { scpsQuestion } from "../scps-pane/question";
 import { uptimeQuestion } from "../uptime-pane/question";
 import { wasteQuestion } from "../waste-pane/question";
 import { vacationQuestion } from "../vacation-pane/question";
@@ -30,6 +31,7 @@ import { orderPanes } from "./sort";
 
 export const QUESTIONS: Record<StandingQuestion, QuestionDef> = {
   homework: homeworkQuestion,
+  scps: scpsQuestion,
   waste: wasteQuestion,
   weekend: weekendQuestion,
   vacation: vacationQuestion,

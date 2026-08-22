@@ -39,6 +39,7 @@ function allDay(
     status: "confirmed",
     providerUpdatedAtMs: 0,
     htmlLink: null,
+    description: null,
   };
 }
 

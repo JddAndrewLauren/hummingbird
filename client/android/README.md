@@ -338,7 +338,15 @@ web's is, and **not** through a row component: the web's first cut used
 characters in the 320px aside, so both clients draw a title and a meta line
 instead. **Weekend renders its own card since #564/#621** — the merged
 per-day entries `weekend.rs` now sinks, plus the plan chips that write a
-do-date through `MobileTaskHost.setScheduledDate`. **Vacation still renders
+do-date through `MobileTaskHost.setScheduledDate`. **SCPS renders its own
+card since #694**, `ScpsPaneExpanded.tsx` ported: the next `SCPS `-titled
+event's kind and topic as the title, a `day · time` meta line beneath it
+(never repeating the title — the same "two of the same fact" rule
+`VacationPaneExpanded.tsx` states), its location and notes when present,
+the Photo Quest line, and any further events in the window beneath. Read-
+only and unbound-free, `scps.rs`'s own "never unbound" rule — the card's
+only empty state is "nothing to show until this device has read its
+calendars", never a setup prompt. **Vacation still renders
 none**, and that is a scope line rather than a missing lane: `MobileTrip`
 carries no event title, so a card would name every trip by its location or
 "a trip" (`PaneAnswers.kt`'s `vacationTripHeadline` records the same
@@ -1082,6 +1090,58 @@ per round 5's lesson — and note the pane's check is a full 48dp target only
 when it is not clipped by the viewport edge, so measure it scrolled into
 view or a clipped 15px node reads as a layout defect it is not.
 
+### The SCPS pane's pass (2026-08-21, round 1 review fixes, #694/PR #700)
+
+Pixel 10 Pro Fold, real device (`58041FDCG000N1`), debug build from a **clean**
+`./gradlew clean assembleDebug` (see Finding 1 below for why plain
+`assembleDebug` was not enough). Two of the three states this pane can be in
+were reached and screencapped:
+
+- **Dormant, no quest.** `scps-quest` unset — collapsed row "SCPS · No SCPS
+  event scheduled" (green dot), expanded card "No SCPS event scheduled." +
+  "No quest set". (Round 0's capture, carried forward — the round-1 pass
+  found nothing wrong with it and it needed no retake, since it predates the
+  `jniLibs` staleness in Finding 1: it was taken after that clean build in
+  round 0 too.)
+- **Dormant event, current-month quest set.** Settings' `scps-quest` row was
+  set on-device to `2026-08 Impressions of Venice` (the `YYYY-MM <phrase>`
+  format `scps.rs`'s `scps_quest` parser requires — a bare phrase with no
+  month token parses to `None`, which is why the first attempt at this,
+  `Impressions of Venice` with no month prefix, still read "No quest set"
+  after saving and syncing). Once the value round-tripped through the
+  mutation queue (Settings' own "queued" badge clears, then Sync now),
+  Now's SCPS card read "No SCPS event scheduled." + **"Photo Quest —
+  Impressions of Venice"** — the `Current` quest branch and the populated
+  quest wording, both proven live. This also stands as the AC 3 text
+  round-trip with spaces: the value was typed via `adb shell input text`
+  with `%s` for the spaces, screencapped mid-edit showing "Impressions of
+  Venice" intact in the field, saved, and re-read back from the same row
+  after a cold relaunch.
+
+**Not reached: a populated event card** (a real `SCPS `-titled calendar
+event). Doing that write against the device's real, live-synced Google
+Calendar (`john@twinion.net`'s production calendar) is out of scope for an
+agent to do unilaterally — see the PR body's operator hand-off for the exact
+steps to close this one criterion by hand.
+
+Two findings, both pre-existing and outside this PR's diff:
+
+1. **A stale `jniLibs/arm64-v8a/libhummingbird_ffi_mobile.so` in a shared
+   worktree silently shadows whatever `scps-quest` landed in.** Filed as
+   #701 — `./gradlew assembleDebug`/`testDebugUnitTest` alone do not
+   reliably re-trigger the `cargoNdkBuild` `Exec` task, so an installed APK
+   can carry a native library older than the source tree. `./gradlew clean
+   assembleDebug` is the only build in this session observed to always run
+   it (its own log line, `> Task :app:cargoNdkBuild`, is the tell — its
+   absence means the stale `.so` shipped again). Any capture taken before a
+   clean build in an affected worktree needs a retake, not just a re-read.
+2. **The `scps-quest` Settings row intermittently failed to render** in the
+   previous session (round 0). Not reproduced in this session — every
+   visit to Settings across ~15 navigations rendered the row — but it was
+   also not chased down, since it is the generic `Core::bindings()` /
+   `SettingsViewModel` list this PR does not touch. Left as `#701`'s second,
+   lower-confidence half rather than its own ticket, since neither session
+   has a reliable repro.
 ### The quiet stack's own run (#689, 2026-08-21)
 
 Supersedes checks 21 and 22's 2026-08-19 evidence for this screen. Run on
