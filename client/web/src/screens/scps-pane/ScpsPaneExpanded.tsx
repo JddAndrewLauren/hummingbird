@@ -4,8 +4,8 @@ import { EmptyState } from "../../components/feedback/EmptyState";
 import { FitText } from "../questions/FitText";
 import type { QuestionInputs } from "../questions/contract";
 import {
+  scpsCardTitle,
   scpsDayLabel,
-  scpsHeadline,
   scpsQuestLine,
   scpsTimeLabel,
   scpsView,
@@ -15,6 +15,14 @@ import {
 // The SCPS pane's own expanded rendering (#693, ADR-0032) — the next event
 // (kind, time, location, notes), the Photo Quest, and any further `SCPS `
 // events still in the window.
+//
+// **The meta line owns the day and time; the title never repeats them.**
+// `scpsHeadline` is the collapsed row's whole sentence (kind, day, time,
+// topic in one line, because the row has no second line); rendering it here
+// above a `day · time` meta line would state the same fact twice —
+// `VacationPaneExpanded.tsx`'s "a badge repeating the headline would be two
+// of the same fact". So this card titles with `scpsCardTitle` (kind and
+// topic only) and says the day and time exactly once, in the meta line.
 //
 // **Plain title + meta lines, never `ItemRow`.** The aside's 320px
 // ellipsises a title-plus-chips row down to nothing (memory: "ItemRow
@@ -32,7 +40,7 @@ function LaterEvent({ event }: { event: ScpsEvent }) {
     <div style={{ display: "flex", gap: "var(--space-3)", alignItems: "baseline" }}>
       <Icon name="calendar" size={13} style={{ position: "relative", top: 2 }} />
       <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
-        {scpsHeadline(event)}
+        {scpsCardTitle(event)}
         <span className="hb-meta" style={{ marginLeft: "var(--space-3)" }}>
           {scpsDayLabel(event)}
         </span>
@@ -83,7 +91,7 @@ export function ScpsPaneExpanded({ inputs }: { subjectKey: string; inputs: Quest
               color: "var(--text-primary)",
             }}
           >
-            {scpsHeadline(next)}
+            {scpsCardTitle(next)}
           </FitText>
           <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
             {scpsDayLabel(next)} · {scpsTimeLabel(next.startMs)}

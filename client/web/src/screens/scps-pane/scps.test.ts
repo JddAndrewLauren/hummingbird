@@ -7,6 +7,7 @@ import {
   monthName,
   scpsAnswer,
   scpsCalendarInterval,
+  scpsCardTitle,
   scpsCollapsedHeadline,
   scpsHeadline,
   scpsQuestLine,
@@ -146,6 +147,29 @@ describe("scpsHeadline", () => {
 
   it("reads dormant as 'No SCPS event scheduled'", () => {
     expect(scpsHeadline(null)).toBe("No SCPS event scheduled");
+  });
+});
+
+describe("scpsCardTitle", () => {
+  function nextOf(event: CalendarEventDTO, nowMs: number) {
+    const next = scpsView(withEvents([event], { nowMs }))?.next;
+    if (next == null) {
+      throw new Error("fixture produced no next event");
+    }
+    return next;
+  }
+
+  it("titles with kind and topic only — the day and time belong to the meta line", () => {
+    const event = timed("e1", "SCPS Meeting: Impressions of Venice", "2026-03-01T14:00", "2026-03-01T16:00");
+    expect(scpsCardTitle(nextOf(event, nowAt("2026-03-01", 9)))).toBe(
+      "SCPS Meeting — Impressions of Venice",
+    );
+  });
+
+  it("keeps the in-progress happy hour sentence, and drops an absent topic's dash", () => {
+    const event = timed("e1", "SCPS Happy Hour", "2026-03-01T17:00", "2026-03-01T19:00");
+    expect(scpsCardTitle(nextOf(event, nowAt("2026-03-01", 18)))).toBe("SCPS Happy Hour in progress");
+    expect(scpsCardTitle(nextOf(event, nowAt("2026-03-01", 9)))).toBe("SCPS Happy Hour");
   });
 });
 

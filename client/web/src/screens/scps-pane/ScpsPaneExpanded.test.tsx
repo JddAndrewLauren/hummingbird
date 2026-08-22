@@ -101,9 +101,28 @@ describe("ScpsPaneExpanded (mounted through RankedRegion)", () => {
         scpsEvent("e3", "SCPS Happy Hour", 10, 17, 18),
       ],
     });
-    expect(screen.getByText(/SCPS Meeting today/)).toBeTruthy();
-    expect(screen.getByText(/SCPS Activity/)).toBeTruthy();
+    expect(screen.getByText(/SCPS Meeting — A/)).toBeTruthy();
+    expect(screen.getByText(/SCPS Activity — B/)).toBeTruthy();
     expect(screen.getByText(/SCPS Happy Hour/)).toBeTruthy();
+  });
+
+  it("says the next event's day and time exactly once — the meta line owns them", () => {
+    mount({
+      events: [
+        scpsEvent("e1", "SCPS Meeting: Impressions of Venice", 0, 14, 16),
+        scpsEvent("e2", "SCPS Activity: B", 1, 9, 12),
+      ],
+    });
+    // The card title carries kind and topic only; day and time live in the
+    // meta line beneath it, and in that one place. A regression that puts
+    // the full headline back above the meta line doubles both counts.
+    expect(screen.getByText("SCPS Meeting — Impressions of Venice")).toBeTruthy();
+    expect(screen.getByText("today · 2:00pm")).toBeTruthy();
+    expect(screen.getAllByText(/2:00pm/)).toHaveLength(1);
+    expect(screen.getAllByText(/today/)).toHaveLength(1);
+    // A further event carries its day label once, with no time at all.
+    expect(screen.getAllByText(/tomorrow/)).toHaveLength(1);
+    expect(screen.queryAllByText(/9:00am/)).toHaveLength(0);
   });
 
   it("names the horizon's dormant state when nothing is scheduled, on hand click", () => {
@@ -129,7 +148,10 @@ describe("ScpsPaneExpanded (mounted through RankedRegion)", () => {
   });
 
   it("shows the current month's Photo Quest phrase", () => {
-    const today = new Date(NOW_MS).toISOString().slice(0, 7);
+    // The device's civil month, the same basis the pane compares against —
+    // `toISOString()` would read the UTC month and flake at a month boundary.
+    const civilNow = new Date(NOW_MS);
+    const today = `${civilNow.getFullYear()}-${String(civilNow.getMonth() + 1).padStart(2, "0")}`;
     mount({
       events: [],
       bindings: [

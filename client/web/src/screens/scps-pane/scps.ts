@@ -120,6 +120,19 @@ export function scpsHeadline(next: ScpsEvent | null): string {
   return `SCPS ${KIND_LABEL[next.kind]} ${scpsDayLabel(next)} ${scpsTimeLabel(next.startMs)}${topic}`;
 }
 
+/** The expanded card's own title — the kind and topic with no day or time,
+ * because the meta line beneath it owns those (`VacationPaneExpanded.tsx`'s
+ * rule: a line repeating the headline is two of the same fact, and the
+ * 320px aside wants a plain title + meta line). Only the collapsed row,
+ * which has no second line, carries the full `scpsHeadline` sentence. */
+export function scpsCardTitle(event: ScpsEvent): string {
+  if (event.kind === "happy_hour" && event.inProgress) {
+    return "SCPS Happy Hour in progress";
+  }
+  const topic = event.topic !== null && event.topic.trim().length > 0 ? ` — ${event.topic}` : "";
+  return `SCPS ${KIND_LABEL[event.kind]}${topic}`;
+}
+
 /** The collapsed row's meta: `"Quest: <phrase>"` appended when the quest's
  * month is the current civil month, on the repo's own middot-join
  * convention (`race.ts`'s/`github.ts`'s collapsed headlines) — nothing
