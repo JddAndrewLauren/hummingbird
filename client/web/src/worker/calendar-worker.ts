@@ -73,6 +73,7 @@ interface RawCalendarEvent {
   status: "confirmed" | "tentative" | "cancelled";
   provider_updated_at_ms: number;
   html_link: string | null;
+  description: string | null;
 }
 
 interface RawCalendarEventsResponse {
@@ -103,6 +104,7 @@ function mapCalendarEvent(raw: RawCalendarEvent): CalendarEventDTO {
     status: raw.status,
     providerUpdatedAtMs: raw.provider_updated_at_ms,
     htmlLink: raw.html_link,
+    description: raw.description,
   };
 }
 

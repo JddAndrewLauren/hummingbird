@@ -85,6 +85,7 @@ internal fun StatusPaneExpanded(pane: MobileRankedPane, nowMs: Long) {
         is MobilePaneFacts.Uptime -> UptimePaneExpanded(pane, facts.resolved)
         is MobilePaneFacts.Reachability -> ReachabilityPaneExpanded(facts.facts)
         is MobilePaneFacts.Homework,
+        is MobilePaneFacts.Scps,
         is MobilePaneFacts.Waste,
         is MobilePaneFacts.Weekend,
         is MobilePaneFacts.Vacation,

@@ -276,6 +276,7 @@ mod tests {
             status: EventStatus::Confirmed,
             provider_updated_at_ms: start_ms,
             html_link: None,
+            description: None,
         }
     }
 
@@ -465,6 +466,7 @@ mod tests {
                 "status",
                 "provider_updated_at_ms",
                 "html_link",
+                "description",
             ] {
                 assert!(
                     event.get(key).is_some(),

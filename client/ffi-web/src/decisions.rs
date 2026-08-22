@@ -1457,7 +1457,7 @@ pub fn sync_status_summary_json(input_json: &str) -> String {
 // values, never a rendered sentence; each pane's own TS module composes its
 // words from these.
 
-use hummingbird_core::decisions::panes::{kimi, github, homework, uptime, reachability, race, vacation, weekend, zone};
+use hummingbird_core::decisions::panes::{kimi, github, homework, scps, uptime, reachability, race, vacation, weekend, zone};
 
 /// `hummingbird_core::decisions::panes::zone::DEVICE_ZONE` — the sentinel
 /// `zone-bridge.ts`'s `resolveZone` special-cases to mean "the reader's own
@@ -1891,6 +1891,45 @@ pub fn vacation_constants_json() -> String {
     .to_string()
 }
 
+// -- scps (#693, ADR-0032) ---------------------------------------------------
+
+#[wasm_bindgen]
+pub fn scps_zone_queries_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => queries_json(scps::scps_zone_queries(&inputs)),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn scps_view_json(inputs_json: &str, zone_facts_json: &str) -> String {
+    match (parse_inputs(inputs_json), parse_zone_facts(zone_facts_json)) {
+        (Ok(inputs), Ok(facts)) => serde_json::to_string(&scps::scps_view(&inputs, &facts)).unwrap(),
+        (Err(error), _) | (_, Err(error)) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn scps_answer_json(inputs_json: &str, zone_facts_json: &str) -> String {
+    match (parse_inputs(inputs_json), parse_zone_facts(zone_facts_json)) {
+        (Ok(inputs), Ok(facts)) => serde_json::to_string(&scps::scps_answer(&inputs, &facts)).unwrap(),
+        (Err(error), _) | (_, Err(error)) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn scps_constants_json() -> String {
+    serde_json::json!({
+        "subjectKey": scps::SUBJECT_KEY,
+        "calendarRequestKey": scps::CALENDAR_REQUEST_KEY,
+        "questBindingKey": scps::SCPS_QUEST_BINDING_KEY,
+        "horizonBeforeMs": scps::HORIZON_BEFORE_MS,
+        "horizonAfterDays": scps::HORIZON_AFTER_DAYS,
+        "staleAfterMs": scps::STALE_AFTER_MS,
+    })
+    .to_string()
+}
+
 // -- homework (#675) --------------------------------------------------------
 //
 // Three exports rather than two: the zone queries cross on their own door
@@ -2318,12 +2357,13 @@ mod tests {
         let inputs = waste_inputs(BODY, bound_page());
         let now: serde_json::Value =
             serde_json::from_str(&rank_panes_json(&inputs, FACTS, "now")).unwrap();
-        // #534 grew Now to four questions (waste/weekend/vacation/race) and
-        // #675 added homework as a fifth; this fixture only binds waste's
-        // own page, so the rest rank unbound (or, for homework, on the zone
-        // bridge's own gap) rather than vanishing — ADR-0017's own rule.
+        // #534 grew Now to four questions (waste/weekend/vacation/race),
+        // #675 added homework as a fifth, and #693 added scps as a sixth;
+        // this fixture only binds waste's own page, so the rest rank
+        // unbound (or, for homework/scps, on the zone bridge's own gap)
+        // rather than vanishing — ADR-0017's own rule.
         let now = now.as_array().unwrap();
-        assert_eq!(now.len(), 5);
+        assert_eq!(now.len(), 6);
         assert!(now.iter().any(|pane| pane["question"] == "homework"));
         let waste = now.iter().find(|pane| pane["question"] == "waste").unwrap();
         assert_eq!(waste["paneKey"], serde_json::json!("waste:collection"));
@@ -2380,7 +2420,7 @@ mod tests {
         assert_eq!(pane_band_order_json(), r#"["live","imminent","near","distant","dormant"]"#);
         assert_eq!(
             pane_question_order_json(),
-            r#"["homework","waste","weekend","vacation","race","kimi","github","uptime","reachability"]"#,
+            r#"["homework","scps","waste","weekend","vacation","race","kimi","github","uptime","reachability"]"#,
         );
         let constants: serde_json::Value =
             serde_json::from_str(&waste_constants_json()).unwrap();

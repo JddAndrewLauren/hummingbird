@@ -732,6 +732,7 @@ mod tests {
             when: CalendarEventWhenFacts::Timed { start_ms, end_ms },
             location: None,
             status: CalendarEventStatusFact::Confirmed,
+            description: None,
         }
     }
 
@@ -746,6 +747,7 @@ mod tests {
             },
             location: None,
             status: CalendarEventStatusFact::Confirmed,
+            description: None,
         }
     }
 

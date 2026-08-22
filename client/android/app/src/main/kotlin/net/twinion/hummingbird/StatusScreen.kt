@@ -66,6 +66,7 @@ private fun paneLabel(pane: MobileRankedPane): String = when (pane.standingQuest
     MobileStandingQuestion.UPTIME -> "Uptime — ${pane.subjectKey}"
     MobileStandingQuestion.REACHABILITY -> "Device reachability"
     MobileStandingQuestion.HOMEWORK,
+    MobileStandingQuestion.SCPS,
     MobileStandingQuestion.WASTE,
     MobileStandingQuestion.WEEKEND,
     MobileStandingQuestion.VACATION,

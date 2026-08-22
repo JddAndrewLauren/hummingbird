@@ -184,6 +184,7 @@ pub fn map_event(raw: &RawEvent, calendar_id: &str) -> Result<Option<EventRecord
         status,
         provider_updated_at_ms,
         html_link: raw.html_link.clone(),
+        description: raw.description.clone(),
     }))
 }
 
@@ -312,6 +313,7 @@ mod tests {
             original_start_time: None,
             updated: Some("2024-01-01T00:00:00.000Z".to_string()),
             html_link: Some("https://calendar.google.com/event?eid=abc".to_string()),
+            description: Some("Coffee and standup notes.".to_string()),
         }
     }
 
