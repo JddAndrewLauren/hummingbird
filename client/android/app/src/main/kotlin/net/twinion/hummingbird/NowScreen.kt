@@ -93,7 +93,7 @@ import uniffi.hummingbird_ffi_mobile.NowItemRecord
 
 /** [MobileFrontierAxis]'s switch label — `AXIS_LABEL` in
  * `FrontierColumns.tsx`, ported. */
-internal val AXIS_LABEL: Map<MobileFrontierAxis, String> = mapOf(
+private val AXIS_LABEL: Map<MobileFrontierAxis, String> = mapOf(
     MobileFrontierAxis.CONTEXT to "Context",
     MobileFrontierAxis.PROJECT to "Project",
     MobileFrontierAxis.SIZE to "Size",

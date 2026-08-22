@@ -112,6 +112,26 @@ class WindowWidthStructuralTest {
     }
 
     @Test
+    fun `Now's wide branch renders the lane board as one entry of its one list`() {
+        // The one hole a JVM suite would otherwise leave: delete the wide
+        // branch and every other test stays green — only a device pass
+        // notices the unfolded board reverting to a stretched single stack.
+        // The key is load-bearing too: the dirty-Back handler scrolls to it
+        // when a column-ranked pane is open on a wide window.
+        val nowScreen = source("NowScreen.kt")
+        val flat = nowScreen.replace(Regex("""\s+"""), " ")
+        assertTrue(
+            "NowScreen's populated branch must emit the lane board as the WIDE_BOARD_KEY " +
+                "entry on a wide window, and keep the phone loop as the other arm",
+            flat.contains("if (wide) item(key = WIDE_BOARD_KEY) { FrontierLaneBoard("),
+        )
+        assertTrue(
+            "and the phone branch must remain the else arm, byte-identical",
+            flat.contains("} else for (column in currentBoard.columns) {"),
+        )
+    }
+
+    @Test
     fun `the grid shape and the lane board stay off the single-column surfaces`() {
         // Status is a panes surface, not an item list, and the detail/
         // takeover/settings screens are forms — the operator scoped
