@@ -2,6 +2,7 @@ package net.twinion.hummingbird
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -13,16 +14,15 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -65,12 +65,16 @@ import uniffi.hummingbird_ffi_mobile.syncStatusSummary
 // `NowScreen.kt`'s own three panes now share — see that file's own header
 // for why `paneLabel` alone stays per-caller.
 //
-// Replaces the debug `ProofScreen`. Most of its affordances moved to
-// Settings in #535; the one that did not — the "Manage device token in
-// Settings" link — moves here instead (#536 review). `Routes.SETTINGS`
-// also has a permanent More-sheet entry since #541; this link stays as a
-// second, contextual door, the same way `StatusScreen`'s own review
-// requested it.
+// Replaces the debug `ProofScreen`. Its affordances all live in Settings
+// now: the standing "Manage device token in Settings" link this screen
+// carried from #536 is **gone**, because `Routes.SETTINGS` has had a
+// permanent More-sheet entry since #541 and a second standing door bought
+// nothing but the anchored footer that held it — which cost the panes 64dp
+// of viewport it could not scroll into. The one Settings door left on this
+// screen is contextual and conditional: a pane that answered nothing draws
+// its own "Open Settings" (`StatusQuietStack`'s `ProblemCard`), which is
+// exactly the credential gap worth offering it for, so [onGoToSettings]
+// stays a parameter.
 
 /** One pane's label, from its [MobileStandingQuestion] and its subject —
  * a rendering choice, never a decision: which words name "the GitHub pane"
@@ -98,12 +102,11 @@ fun StatusScreen(
     syncTick: Int = 0,
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
-    /** `ProofScreen`'s one incidental door onto Settings, carried forward
-     * (#536 review). [Routes.SETTINGS] has a permanent More-sheet entry
-     * since #541; this link stays as a second, contextual door — a device
-     * with no token reaches the one screen that can enter one
-     * (`SettingsScreen`'s own token card) from the surface that told it
-     * so, this file's own header. */
+    /** The door a pane opens when it has no answer at all — drawn only
+     * inside `StatusQuietStack`'s `ProblemCard`, never as a standing link
+     * on this screen (this file's own header on why the footer one went).
+     * A device with no token reaches the one screen that can enter one
+     * (`SettingsScreen`'s own token card) from the pane that told it so. */
     onGoToSettings: () -> Unit,
     /** The sync strip's two inputs, threaded from `AppRoot` exactly as
      * `SettingsScreen` already takes them — this screen samples no sync
@@ -148,12 +151,7 @@ fun StatusScreen(
                     .contentMaxWidth()
                     // Top 12dp, not the outer 24dp: with the title gone the
                     // panes sit directly under the app row.
-                    .padding(start = 20.dp, top = 10.dp, end = 20.dp, bottom = 24.dp)
-                    // A fixed inset, unlike the list screens' scrolled
-                    // clearance: the Settings link below the weighted list is
-                    // anchored, not scrolled, so only shrinking the viewport
-                    // keeps it clear of the Capture FAB.
-                    .padding(bottom = 64.dp),
+                    .padding(start = 20.dp, top = 10.dp, end = 20.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 // The screen's own caption. The app icon and wordmark are
@@ -181,19 +179,21 @@ fun StatusScreen(
                     // before the first load lands too.
                     StatusState.Loading -> Column(
                         modifier = Modifier
-                            .weight(1f, fill = false)
+                            .weight(1f)
                             .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
                         CircularProgressIndicator()
+                        CoreFooter(apiVersion = null)
                     }
-                    // `weight(fill = false)`, never a bare `LazyColumn`: an
-                    // unweighted lazy list in a `Column` measures against the
-                    // whole remaining height, and enough GitHub/uptime panes
-                    // then push the Settings link below the viewport with
-                    // nothing to scroll it back into view. Weighted, the link
-                    // is measured first and the panes take what is left;
-                    // `fill = false` keeps a short list from stranding the link
-                    // at the bottom of the screen.
+                    // `weight(1f)`, never a bare `LazyColumn`: an unweighted
+                    // lazy list in a `Column` measures against the whole
+                    // remaining height and the outer `Column` then has none
+                    // left to give. Weighted and *filling* — where #689's
+                    // version deliberately did not fill, to measure an
+                    // anchored Settings link first — the panes get every
+                    // pixel between the caption and the screen edge, and the
+                    // footer scrolls with them instead of being reserved for.
                     is StatusState.Loaded -> {
                         // `partition`, never a comparator: both halves come out
                         // in the order the seam ranked them, which is the one
@@ -202,8 +202,12 @@ fun StatusScreen(
                             StatusPartition.isProblem(it.answer)
                         }
                         LazyColumn(
-                            modifier = Modifier.weight(1f, fill = false),
+                            modifier = Modifier.weight(1f),
                             verticalArrangement = Arrangement.spacedBy(14.dp),
+                            // The last row scrolls clear of the Capture FAB —
+                            // the list screens' own convention, now that this
+                            // screen scrolls to its bottom edge like them.
+                            contentPadding = PaddingValues(bottom = 64.dp),
                         ) {
                             item(key = "sync-strip") {
                                 // The in-process values win when this
@@ -249,33 +253,34 @@ fun StatusScreen(
                                 },
                                 onGoToSettings = onGoToSettings,
                             )
+                            // The core line is the list's last row now, not
+                            // an anchored block below it: with the list
+                            // filling there is no boundary left to clip it
+                            // at, and nothing under it worth reserving
+                            // height for.
+                            item(key = "core-footer") {
+                                CoreFooter(apiVersion = current.apiVersion)
+                            }
                         }
-                    }
-                }
-
-                // The footer is anchored beside the Settings link, not the
-                // last item of the weighted list: inside it the core line
-                // is clipped at the list's own boundary, which reads as a
-                // half-drawn glyph rather than as something to scroll to.
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    Text(
-                        (state as? StatusState.Loaded)?.apiVersion
-                            ?.let { "api v$it · core ready" }
-                            ?: "starting core…",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    TextButton(onClick = onGoToSettings) {
-                        Text("Manage device token in Settings")
                     }
                 }
             }
         }
     }
+}
+
+/** The core's own line — the api version it answered, or that it has not
+ * answered yet. Drawn as the pane list's last scrolling row (and under the
+ * first-load spinner), never anchored: see this file's header. */
+@Composable
+private fun CoreFooter(apiVersion: UInt?) {
+    Text(
+        apiVersion?.let { "api v$it · core ready" } ?: "starting core…",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.fillMaxWidth(),
+        textAlign = TextAlign.Center,
+    )
 }
 
 /** [MobileSyncStatusTone]'s colour — `SettingsScreen`'s own four-arm

@@ -85,9 +85,10 @@ import uniffi.hummingbird_ffi_mobile.syncStatusSummary
 // `AppRoot`'s own `sync("user")`, for the same reason: one cadence, one
 // writer.
 //
-// **The route has a permanent More-sheet entry since #541**, alongside its
-// pre-existing incidental door — `StatusScreen`'s own "Manage device token
-// in Settings" link (#536 review), which stays.
+// **The More sheet's entry is the only standing door onto this route.**
+// `StatusScreen`'s "Manage device token in Settings" link (#536 review) was
+// the second one; it is gone, and the one Status door left is conditional —
+// an unanswered pane's own "Open Settings" (`StatusQuietStack`).
 
 @Composable
 fun SettingsScreen(

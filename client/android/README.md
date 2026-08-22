@@ -690,9 +690,9 @@ app data. Every run therefore ends with the phone un-credentialed and the
 *next* run failing three cases with `no device token on this device` —
 which is the check's own named error doing its job, not a regression.
 Re-install (`./gradlew installDebug`) and paste the token from
-`hummingbird-device-pixel-fold` again before the next run, from Status's
-"Manage device token in Settings" link (#535 moved the field itself off
-Status). Checks 1–18 are unaffected only because nothing in them runs an
+`hummingbird-device-pixel-fold` again before the next run, from Settings'
+own DEVICE TOKEN card, reached through the More sheet (#535 moved the field
+itself off Status, and Status's standing link to Settings is gone too). Checks 1–18 are unaffected only because nothing in them runs an
 instrumented suite.
 
 You need the device on USB, a `device`-scope token for **this** device (there
@@ -706,8 +706,10 @@ Rules matter too: an ingested alert raises kind **`alert_raised`**, not
 needs rules on `alert_raised` keyed on `source` and `severity`.
 
 1. `./gradlew installDebug`, launch, grant `POST_NOTIFICATIONS`.
-2. From Status, follow "Manage device token in Settings" and paste the
-   token there (#535 — Status itself carries no token field). The verdict
+2. Open Settings from the More sheet and paste the token into its DEVICE
+   TOKEN card (#535 — Status itself carries no token field, and no standing
+   link to Settings either; an unanswered pane's own "Open Settings" is the
+   only door left on that screen). The verdict
    is Settings' own SYNC card, not Status: it reads `Held — device token
    needed` before the paste and carries a `Sync now` button, and the DEVICE
    TOKEN card above it flips to `This device has a token`. Status shows no
@@ -889,8 +891,10 @@ costs the device token every run.
 21. **All nine screens.** Status reads as the **quiet stack** since #689:
     a mono `status` caption under the app bar, the sync strip, one
     accent-bordered card per announcing pane in the seam's own order, and
-    one quiet card whose 44dp chips open a detail in place — with the core
-    line and the Settings link anchored, centred, at the foot. Four on the
+    one quiet card whose 44dp chips open a detail in place, and the core
+    line as the list's own last row — **nothing anchored below the list**,
+    which is the tell that the pane list now reaches the bottom edge and
+    that the standing Settings link is gone. Four on the
     bar — Now, Triage, Alerts, Status —
     and Done, Ledger, Rules, Settings, Routes in the More sheet, with
     "Search everything" below the screen list (a gesture, outside
