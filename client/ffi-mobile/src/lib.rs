@@ -5081,6 +5081,14 @@ impl MobileTaskHost {
         let intervals = [
             (weekend::CALENDAR_REQUEST_KEY, weekend::weekend_calendar_interval(now_ms, zone)),
             (vacation::CALENDAR_REQUEST_KEY, vacation::vacation_calendar_interval(now_ms, zone)),
+            // #693: wired in alongside its two siblings the day it landed —
+            // unlike the Android *card* (Compose UI, #694's own scope,
+            // `NowPanesExpanded.kt`'s `MobilePaneFacts.Scps -> Unit`), this
+            // is the same read-model plumbing `weekend`/`vacation` already
+            // get, and leaving it out would make `MobilePaneFacts::Scps`
+            // permanently `{ resolved: None }` on every device for no
+            // reason connected to #694's own scope.
+            (scps::CALENDAR_REQUEST_KEY, scps::scps_calendar_interval(now_ms, zone)),
         ];
         for (key, interval) in intervals {
             let Some(interval) = interval else { continue };

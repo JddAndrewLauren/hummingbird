@@ -1,5 +1,5 @@
 //! The standing-question panes' decision half (#533/M4, ADR-0025) — the
-//! pane shell contract, the cross-pane sort, the zone bridge, and all nine
+//! pane shell contract, the cross-pane sort, the zone bridge, and all ten
 //! real panes.
 //!
 //! # Why this family exists
@@ -272,12 +272,14 @@ mod tests {
         };
         let ranked = rank_panes(Surface::Now, &inputs, &facts);
         // Waste (bound and answered) and homework (answered, and dormant on
-        // an empty mirror — #675: nobody binds it), plus scps (answered,
-        // dormant — no calendar connected here either, but scps has no
-        // `unbound` arm at all, #693), plus weekend/vacation/race, each
-        // unbound in this fixture (no calendar connected, no race-series
-        // binding) — all still ranked, per ADR-0017's "a pane nobody has
-        // bound yet must still be discoverable" rule.
+        // an empty mirror — #675: nobody binds it), plus scps
+        // (bound-but-unacquired — this fixture never connects a calendar,
+        // and scps's own calendar read has therefore not landed either; it
+        // has no `unbound` arm at all to fall into instead, #693), plus
+        // weekend/vacation/race, each unbound in this fixture (no calendar
+        // connected, no race-series binding) — all still ranked, per
+        // ADR-0017's "a pane nobody has bound yet must still be
+        // discoverable" rule.
         assert_eq!(ranked.len(), 6);
         let homework = ranked.iter().find(|pane| pane.question == "homework").unwrap();
         assert_eq!(homework.answer.answer_state, AnswerState::Answered);

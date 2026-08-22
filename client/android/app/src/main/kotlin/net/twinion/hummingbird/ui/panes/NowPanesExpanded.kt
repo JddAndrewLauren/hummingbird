@@ -93,6 +93,10 @@ internal fun NowPaneExpanded(
             WeekendPaneExpanded(pane, facts.resolved, onSetScheduledDate)
         // No card by choice, not for want of a lane — see the file header.
         is MobilePaneFacts.Vacation -> Unit
+        // Slice 2 (#693) sank the decision core-side only; the Android card
+        // is slice 3's own scope (#694) — the same "no card yet" shape
+        // `Vacation`'s own arm above already uses, not a regression.
+        is MobilePaneFacts.Scps -> Unit
         is MobilePaneFacts.Kimi,
         is MobilePaneFacts.Github,
         is MobilePaneFacts.Uptime,
