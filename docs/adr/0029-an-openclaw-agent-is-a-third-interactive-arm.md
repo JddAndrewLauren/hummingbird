@@ -9,6 +9,13 @@ alone. Its device token is unchanged and still the only credential file on
 that machine; what changed is what that one token can reach. The skill
 tables and the credential section here read as three skills; the fourth is
 in ADR-0031 and in `docs/openclaw.md`.
+**amended 2026-08-21 by [ADR-0032](0032-email-sourced-standing-questions-are-answered-by-the-agent-arm.md):**
+the agent gained a **fifth** skill, `openclaw/scps/`, and with it a mail
+ingress of its own — a mailbox the operator auto-forwards to, watched by a
+Gmail push hook — making it the writer behind the SCPS standing question.
+The credential section here still reads as one credential file on the
+gateway; the per-mailbox Google credential is ADR-0032's and
+`docs/openclaw.md`'s.
 **Context:** #609, the OpenClaw-integration grilling session (that issue
 holds the decision list). Extends the two-arm skill posture `docs/runner.md` records for
 `microtask` (#272/#307/#317) and `grill-me` (#350) with a third arm, and
