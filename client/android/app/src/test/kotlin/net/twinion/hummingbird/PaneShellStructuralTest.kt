@@ -100,23 +100,42 @@ class PaneShellStructuralTest {
     }
 
     @Test
-    fun `the ViewModels own the collapse state, resolved through PaneCollapse, never a remember`() {
-        for (name in listOf("NowViewModel.kt", "StatusViewModel.kt")) {
-            val src = source(name)
-            assertTrue(
-                "$name must own the override map",
-                src.contains("_paneOverrides"),
-            )
-            assertTrue(
-                "$name must toggle through PaneCollapse.write",
-                src.contains("PaneCollapse.write("),
-            )
-        }
-        for (name in listOf("NowScreen.kt", "StatusScreen.kt")) {
-            val src = source(name)
-            assertTrue(
-                "$name must resolve a pane's collapse through PaneCollapse.resolve",
-                src.contains("PaneCollapse.resolve("),
+    fun `the ViewModels own what is open, never a remember`() {
+        // The rule is one: the state that says what a reader has opened
+        // lives on the ViewModel, because a `remember {}` loses it on the
+        // configuration change a fold is (the recorded defect). The two
+        // surfaces now hold *different* state under it — Now still has
+        // per-pane, band-stamped collapse; Status has one open chip since
+        // its quiet stack (#689) — so this checks each for its own.
+        val nowViewModel = source("NowViewModel.kt")
+        assertTrue(
+            "NowViewModel must own the band-stamped override map",
+            nowViewModel.contains("_paneOverrides"),
+        )
+        assertTrue(
+            "NowViewModel must toggle through PaneCollapse.write",
+            nowViewModel.contains("PaneCollapse.write("),
+        )
+        assertTrue(
+            "NowScreen must resolve a pane's collapse through PaneCollapse.resolve",
+            source("NowScreen.kt").contains("PaneCollapse.resolve("),
+        )
+
+        val statusViewModel = source("StatusViewModel.kt")
+        assertTrue(
+            "StatusViewModel must own the open chip",
+            statusViewModel.contains("_expandedKey"),
+        )
+        assertTrue(
+            "StatusViewModel must write the open chip through PanePrefs",
+            statusViewModel.contains("writeExpandedFn"),
+        )
+        // The half a green build would not catch: the selection sliding back
+        // into the composition, where a fold drops it.
+        for (name in listOf("StatusScreen.kt", "ui/panes/StatusQuietStack.kt")) {
+            assertFalse(
+                "$name must hold no selection in a remember — a fold would lose it",
+                Regex("""remember\s*\{""").containsMatchIn(source(name)),
             )
         }
     }

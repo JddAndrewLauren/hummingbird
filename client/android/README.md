@@ -886,7 +886,12 @@ costs the device token every run.
     `client/android` (about a minute with the toolchain warm), then check 2
     above. The mirror is populated when Now's Context facets carry real
     values and the waste pane leaves `Not set up yet`.
-21. **All nine screens.** Four on the bar — Now, Triage, Alerts, Status —
+21. **All nine screens.** Status reads as the **quiet stack** since #689:
+    a mono `status` caption under the app bar, the sync strip, one
+    accent-bordered card per announcing pane in the seam's own order, and
+    one quiet card whose 44dp chips open a detail in place — with the core
+    line and the Settings link anchored, centred, at the foot. Four on the
+    bar — Now, Triage, Alerts, Status —
     and Done, Ledger, Rules, Settings, Routes in the More sheet, with
     "Search everything" below the screen list (a gesture, outside
     `NavDestination`; Recall renders no bottom bar at all, which is the
@@ -912,7 +917,33 @@ costs the device token every run.
     The web renders it as a "This device" line that reads like a page
     header rather than a pane — count it, or you will report a missing
     pane. Measured 2026-08-19: six panes, identical order both sides —
-    reachability, Uptime ×3, Kimi, GitHub.
+    reachability, Uptime ×3, Kimi, GitHub. **Since #689 read the order
+    across both halves**: the announcing cards first, then the quiet card's
+    chip row, each in the seam's order. The web draws the same panes as a
+    tile board (ADR-0033), so the two clients' *shapes* now differ on
+    purpose — the set, order and band are still what this check compares.
+
+### The quiet stack's own run (#689, 2026-08-21)
+
+Supersedes checks 21 and 22's 2026-08-19 evidence for this screen. Run on
+the physical Fold, both display states:
+
+23. **A chip's selection survives a fold and an app restart.** Tap a quiet
+    chip, confirm its detail opens under the divider, then fold or unfold
+    and confirm the same chip is still selected and still open. Kill and
+    relaunch the app and confirm it *again* — the selection is a
+    `PanePrefs` key, not composition state, and the recorded fold/unfold
+    defect is exactly what this catches. Verified 2026-08-21 on the Fold,
+    cover → inner and back, plus a relaunch.
+24. **Animations off means instant, not stuck.** With Developer options'
+    animator duration scale at zero, opening and closing a chip must be
+    immediate and never leave the card at a part-height. (`expandSpec()`
+    reads that scale itself.)
+25. **An uncredentialed phone shows no quiet card at all.** Every pane
+    announces, because a gap and an unbound pane both announce by design —
+    "N as expected" must never count something nobody has polled. The
+    "Open Settings" button on an unbound card is the door check 2 depends
+    on, and it is on the card, not behind a chip.
 23. **Now's panes, and the weekend do-date write** (#537). The three panes
     below the queue render through the same shell Status uses. The write
     half **is runnable since #564/#621**: connect a calendar in Settings,

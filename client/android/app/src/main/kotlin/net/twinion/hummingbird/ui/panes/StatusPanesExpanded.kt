@@ -77,13 +77,18 @@ private fun GapBody(reason: String) {
  * over every facts arm the way `StatusScreen.kt`'s `paneLabel` is, so a
  * Now-surface question reaching this slot is a loud error, never a blank
  * expansion. */
+/** @param headline whether this content draws the pane's own headline.
+ * `PaneRow`'s expanded form has no headline of its own, so it does. The
+ * quiet stack's cards draw `paneHeadline` themselves, in the card's header
+ * row beside the pane's icon and its band word — so they pass `false`, and
+ * the same sentence is not set twice, two lines apart. */
 @Composable
-internal fun StatusPaneExpanded(pane: MobileRankedPane, nowMs: Long) {
+internal fun StatusPaneExpanded(pane: MobileRankedPane, nowMs: Long, headline: Boolean = true) {
     when (val facts = pane.facts) {
-        is MobilePaneFacts.Kimi -> KimiPaneExpanded(pane, facts.resolved)
-        is MobilePaneFacts.Github -> GithubPaneExpanded(pane, facts.resolved, nowMs)
-        is MobilePaneFacts.Uptime -> UptimePaneExpanded(pane, facts.resolved)
-        is MobilePaneFacts.Reachability -> ReachabilityPaneExpanded(facts.facts)
+        is MobilePaneFacts.Kimi -> KimiPaneExpanded(pane, facts.resolved, headline)
+        is MobilePaneFacts.Github -> GithubPaneExpanded(pane, facts.resolved, nowMs, headline)
+        is MobilePaneFacts.Uptime -> UptimePaneExpanded(pane, facts.resolved, headline)
+        is MobilePaneFacts.Reachability -> ReachabilityPaneExpanded(facts.facts, headline)
         is MobilePaneFacts.Homework,
         is MobilePaneFacts.Waste,
         is MobilePaneFacts.Weekend,
@@ -108,7 +113,11 @@ internal fun kimiGapReason(gap: MobileKimiGap): String = when (gap) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun KimiPaneExpanded(pane: MobileRankedPane, resolved: MobileKimiResolved) {
+private fun KimiPaneExpanded(
+    pane: MobileRankedPane,
+    resolved: MobileKimiResolved,
+    headline: Boolean,
+) {
     // No setup arm (`KimiPaneExpanded.tsx`'s own note): this question has
     // no per-device binding to point Settings at, so "never polled yet" is
     // the whole story, whatever the answer state says.
@@ -120,17 +129,19 @@ private fun KimiPaneExpanded(pane: MobileRankedPane, resolved: MobileKimiResolve
         is MobileKimiResolved.Facts -> resolved.facts
     }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            "${formatUsd(facts.availableBalance)} left",
-            style = MaterialTheme.typography.headlineSmall,
-            color = when (pane.answer.band) {
-                MobilePaneBand.LIVE -> MaterialTheme.colorScheme.error
-                MobilePaneBand.IMMINENT -> MaterialTheme.colorScheme.error
-                MobilePaneBand.NEAR -> warnColor()
-                MobilePaneBand.DISTANT -> MaterialTheme.colorScheme.onSurface
-                MobilePaneBand.DORMANT -> MaterialTheme.colorScheme.onSurface
-            },
-        )
+        if (headline) {
+            Text(
+                "${formatUsd(facts.availableBalance)} left",
+                style = MaterialTheme.typography.headlineSmall,
+                color = when (pane.answer.band) {
+                    MobilePaneBand.LIVE -> MaterialTheme.colorScheme.error
+                    MobilePaneBand.IMMINENT -> MaterialTheme.colorScheme.error
+                    MobilePaneBand.NEAR -> warnColor()
+                    MobilePaneBand.DISTANT -> MaterialTheme.colorScheme.onSurface
+                    MobilePaneBand.DORMANT -> MaterialTheme.colorScheme.onSurface
+                },
+            )
+        }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(
                 "voucher ${formatUsd(facts.voucherBalance)}",
@@ -196,6 +207,7 @@ private fun GithubPaneExpanded(
     pane: MobileRankedPane,
     resolved: MobileWorkflowResolved,
     nowMs: Long,
+    headline: Boolean,
 ) {
     val view = when (resolved) {
         is MobileWorkflowResolved.Gap -> {
@@ -206,20 +218,22 @@ private fun GithubPaneExpanded(
     }
     val body = view.body
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            body.displayName,
-            style = MaterialTheme.typography.titleLarge,
-            color = when (pane.answer.band) {
-                MobilePaneBand.LIVE -> MaterialTheme.colorScheme.error
-                // The recorded deviation (`PaneAnswers.kt`'s header):
-                // imminent-and-stale reads as stale, not stalled.
-                MobilePaneBand.IMMINENT ->
-                    if (view.stale) warnColor() else MaterialTheme.colorScheme.error
-                MobilePaneBand.NEAR -> warnColor()
-                MobilePaneBand.DISTANT -> warnColor()
-                MobilePaneBand.DORMANT -> MaterialTheme.colorScheme.onSurface
-            },
-        )
+        if (headline) {
+            Text(
+                body.displayName,
+                style = MaterialTheme.typography.titleLarge,
+                color = when (pane.answer.band) {
+                    MobilePaneBand.LIVE -> MaterialTheme.colorScheme.error
+                    // The recorded deviation (`PaneAnswers.kt`'s header):
+                    // imminent-and-stale reads as stale, not stalled.
+                    MobilePaneBand.IMMINENT ->
+                        if (view.stale) warnColor() else MaterialTheme.colorScheme.error
+                    MobilePaneBand.NEAR -> warnColor()
+                    MobilePaneBand.DISTANT -> warnColor()
+                    MobilePaneBand.DORMANT -> MaterialTheme.colorScheme.onSurface
+                },
+            )
+        }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(
                 githubLastRunWords(
@@ -307,7 +321,11 @@ internal fun uptimeObservationWords(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun UptimePaneExpanded(pane: MobileRankedPane, resolved: MobileProbeResolved) {
+private fun UptimePaneExpanded(
+    pane: MobileRankedPane,
+    resolved: MobileProbeResolved,
+    headline: Boolean,
+) {
     val facts = when (resolved) {
         is MobileProbeResolved.Gap -> {
             GapBody(uptimeGapReason(resolved.gap))
@@ -317,20 +335,22 @@ private fun UptimePaneExpanded(pane: MobileRankedPane, resolved: MobileProbeReso
     }
     val body = facts.body
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            facts.serviceId,
-            style = MaterialTheme.typography.titleLarge,
-            color = when (pane.answer.band) {
-                MobilePaneBand.LIVE -> MaterialTheme.colorScheme.error
-                MobilePaneBand.NEAR -> warnColor()
-                // Imminence for this question only ever comes from
-                // staleness (`uptime.ts`'s own note) — the stale line below
-                // carries it, so the name stays undramatised.
-                MobilePaneBand.IMMINENT -> MaterialTheme.colorScheme.onSurface
-                MobilePaneBand.DISTANT -> MaterialTheme.colorScheme.onSurface
-                MobilePaneBand.DORMANT -> MaterialTheme.colorScheme.onSurface
-            },
-        )
+        if (headline) {
+            Text(
+                facts.serviceId,
+                style = MaterialTheme.typography.titleLarge,
+                color = when (pane.answer.band) {
+                    MobilePaneBand.LIVE -> MaterialTheme.colorScheme.error
+                    MobilePaneBand.NEAR -> warnColor()
+                    // Imminence for this question only ever comes from
+                    // staleness (`uptime.ts`'s own note) — the stale line below
+                    // carries it, so the name stays undramatised.
+                    MobilePaneBand.IMMINENT -> MaterialTheme.colorScheme.onSurface
+                    MobilePaneBand.DISTANT -> MaterialTheme.colorScheme.onSurface
+                    MobilePaneBand.DORMANT -> MaterialTheme.colorScheme.onSurface
+                },
+            )
+        }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(
                 "expected ${
@@ -378,13 +398,17 @@ private fun UptimePaneExpanded(pane: MobileRankedPane, resolved: MobileProbeReso
 // ---------------------------------------------------------- reachability
 
 @Composable
-private fun ReachabilityPaneExpanded(facts: MobileReachabilityFacts?) {
+private fun ReachabilityPaneExpanded(facts: MobileReachabilityFacts?, headline: Boolean) {
     if (facts == null) {
         // The shell's headline already says "Never synced on this device."
         // — this is the web card's body sentence under it.
         GapBody("No successful authority sync is recorded for this device.")
         return
     }
+    // This pane's whole answer IS its headline — there is no supporting
+    // detail under it, so when the card draws the headline this body has
+    // nothing left to say and says nothing rather than repeating it.
+    if (!headline) return
     Text(
         reachabilityHeadline(
             ReachabilityWords(facts.ageMs, facts.stale, facts.latestAttemptLanded),

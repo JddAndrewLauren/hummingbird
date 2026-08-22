@@ -532,7 +532,11 @@ file.
 **Built, and deliberately ungated here.** `client/android/` has had a code
 root since M0 (#141) and now renders thirteen screens — the nine the bottom
 nav and its More sheet reach (Now, Status, Alerts, Rules, Triage, Done,
-Ledger, Settings, Routes; #532/#541), Recall (#542), and three deeper
+Ledger, Settings, Routes; #532/#541 — **Status is the design handoff's
+"quiet stack" since #689**: announcing panes as accent cards in the seam's
+order, everything else folded into one card of 44dp chips whose detail opens
+in place, which is ADR-0017 decision 1 executed rather than the web's tile
+board of ADR-0033), Recall (#542), and three deeper
 destinations a row or a notification opens (alert detail, item detail, the
 Grill takeover) — plus the capture box and the notification lane's own shade
 UI. Several have grown well past a list of rows: capture is a full field set
