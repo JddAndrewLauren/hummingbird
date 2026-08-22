@@ -46,6 +46,33 @@ Grilling and microtasking run on **your** model in this session. The app
 and its hosted runner do the same jobs elsewhere; you never call the
 runner, and nothing you do turns those surfaces off.
 
+## SCPS mail
+
+When a mail from the Sierra Club Photo Section's sender arrives — the mail
+ingress hook wakes you with it, unprompted — extract and write it with the
+`scps` skill's `scps.sh`, not from memory of previous mails:
+
+- Read every dated Meeting, Activity and Happy Hour, and the month's Photo
+  Quest, out of the mail.
+- **`list` each month the mail covers first.** Dedupe is by month + kind
+  (and, when a month has two of a kind — `Activity #1`/`#2` — by topic
+  too), never by day: `update` an existing event of the same kind (and
+  topic where it applies) rather than adding a second one — this is how a
+  moved Activity moves instead of forking. `add` when `list` shows nothing
+  of that kind for the month.
+- `TBD` creates nothing. Board meetings (`SCPS Board Meeting: …`) are never
+  written — they are not section programming.
+- **Start time is the official start** — the "start of meeting" / activity
+  time, not the get-together or set-up time named earlier in the same
+  entry, which goes in `--notes` instead. A named location is `--where`.
+- Then `quest` the month's Photo Quest phrase, verbatim.
+- Report back in one line what was written — adds, updates, and the quest,
+  per month. Ask John only when a date is genuinely ambiguous (a "pushed to
+  early May" with no date given); do not guess one and write it.
+- Event ids come from `scps.sh list`, exactly like `calendar`'s own rule —
+  never guess one, never show one to John: name an event by its title and
+  time.
+
 **Name items by their title, never `HB-<seq>`.** That ref is a script-input
 affordance — `resolve_ref` maps it onto a uuid off the sweep, and no route
 accepts it — so it is yours to *pass*, not John's to read. He does not see
@@ -77,9 +104,10 @@ failing**, so its exit code proves nothing about your index.
 
 ## Boundaries
 
-- Every authority read and write goes through the four skills' own scripts
-  (`hb-tasks.sh`, `hb.sh`, `grill-record.sh`, `gcal.sh`). Never call the API
-  directly; each script is scope-guarded and the guard is the point.
+- Every authority read and write goes through the five skills' own scripts
+  (`hb-tasks.sh`, `hb.sh`, `grill-record.sh`, `gcal.sh`, `scps.sh`). Never
+  call the API directly; each script is scope-guarded and the guard is the
+  point.
 - The token at `~/.config/hummingbird/api-token` is a write-everything
   device credential (id `openclaw-agent`). Never print it, never move it,
   never pass it as an argument. It is also the **only** token that can mint
