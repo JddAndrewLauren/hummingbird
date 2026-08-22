@@ -298,3 +298,141 @@
     font-size: 16px !important;
   }
 }
+
+/* ---- The Status board (the design handoff's expanding tiles) ----
+   Classes, not inline objects, for this file's founding reason: a class rule
+   loses to an element's own `style` attribute at equal importance, so the
+   phone rules below could never win against inline grid columns.
+
+   Two literals worth naming. The tile's 112px floor has no token — it is a
+   measure of "an icon, a name and a fact, with air", the same way
+   `--row-height`'s siblings are measured. And the handoff's 10px gap / 14px
+   tile padding are off the 2/4/6/8/12/16 scale, so they snap to `--space-5`
+   and `--space-4` rather than introducing two off-scale values. */
+.hb-status-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-5);
+}
+
+.hb-status-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+}
+
+.hb-status-strip-tone {
+  margin-left: auto;
+}
+
+.hb-status-grid {
+  display: grid;
+  gap: var(--space-5);
+  margin-top: var(--space-4);
+  /* Dense packing so the row a two-column tile leaves half-open is filled by
+     the next tile that fits, rather than leaving a hole mid-board. */
+  grid-auto-flow: dense;
+}
+
+.hb-status-grid-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.hb-status-grid-5 {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.hb-status-tile {
+  min-height: 112px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  transition:
+    box-shadow var(--dur-fast) var(--ease-flit),
+    transform var(--dur-fast) var(--ease-flit);
+}
+
+.hb-status-tile-wide {
+  grid-column: span 2;
+}
+
+.hb-status-tile-button,
+.hb-status-tile-button-open {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+
+.hb-status-tile-button {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  position: relative;
+  text-align: center;
+}
+
+.hb-status-tile-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  width: 100%;
+}
+
+.hb-status-tile-headline {
+  font: var(--weight-bold) 20px/1.1 var(--font-display);
+  letter-spacing: var(--tracking-heading);
+}
+
+.hb-status-tile-band {
+  margin-left: auto;
+}
+
+.hb-status-tile-name {
+  font: var(--weight-semibold) 13px/1.2 var(--font-sans);
+  color: var(--text-primary);
+}
+
+/* The compact fact clamps rather than growing the tile: the whole sentence
+   is in the button's accessible name and in the expanded body, so nothing is
+   hidden from a reader who needs it. */
+.hb-status-fact {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.hb-status-dot {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--status-done-fg);
+}
+
+.hb-status-tile-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+@media (max-width: 640px) {
+  /* Two columns on a phone, so an expanded tile spanning two is the full
+     width — the same "the open one gets the room" reading the wide board
+     gives, at the width where four or five tiles across would be unreadable. */
+  .hb-status-grid-4,
+  .hb-status-grid-5 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

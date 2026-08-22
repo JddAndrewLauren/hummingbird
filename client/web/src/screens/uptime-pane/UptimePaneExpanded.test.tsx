@@ -3,14 +3,21 @@
 // #315's own wiring gate, on `GithubPaneExpanded.test.tsx`'s reasoning: a
 // mounted screen, not an inspected module, proving a real `context_snapshots`
 // row per declared service reaches the DOM through `StatusScreen` ->
-// `RankedRegion` -> the registry -> this pane's `Expanded`, and that a
-// probe that cannot tell the truth never renders as healthy on either the
-// collapsed row or the expanded card.
+// `StatusBoard` -> the registry -> this pane's body, and that a probe that
+// cannot tell the truth never renders as healthy on either the compact tile
+// or the open one.
+//
+// Two things the board changed about how this reads. A compact tile splits
+// the pane's collapsed sentence into its two types, so the whole sentence is
+// no longer one text node — it is the tile button's accessible name, which is
+// what these tests now assert (and what a screen reader actually hears). And
+// a tile stays compact until the reader opens it, so a test about what the
+// pane's own body says has to open it first.
 
 import { describe, expect, it } from "vitest";
 import { StatusScreen } from "../StatusScreen";
 import type { PaneReadDTO, PaneSnapshotDTO } from "../../store/protocol";
-import { render, screen, taskState } from "../../test/component";
+import { fireEvent, render, screen, taskState } from "../../test/component";
 import { SOURCE } from "./uptime";
 
 const NOW_MS = 1_700_000_000_000;
@@ -39,11 +46,16 @@ function read(snapshots: PaneSnapshotDTO[]): PaneReadDTO {
   return { source: SOURCE, snapshots, liveAlerts: [] };
 }
 
+/** Open one tile by the pane it names. */
+function openTile(name: RegExp): void {
+  fireEvent.click(screen.getByRole("button", { name }));
+}
+
 describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
   it("renders the never-polled gap when nothing has been read yet", () => {
     render(
       <StatusScreen
-        onScreen={() => {}}
+        online
         task={taskState()}
         nowMs={NOW_MS}
         calendarReads={{}}
@@ -62,7 +74,7 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
 
     render(
       <StatusScreen
-        onScreen={() => {}}
+        online
         task={taskState({ paneReads: { [SOURCE]: rows } })}
         nowMs={NOW_MS}
         calendarReads={{}}
@@ -70,9 +82,9 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
       />,
     );
 
-    expect(screen.getByText("authority · 401 as expected")).toBeTruthy();
-    expect(screen.getByText("web · 200 as expected")).toBeTruthy();
-    expect(screen.getByText("runner · 401 as expected")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /authority · 401 as expected/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /web · 200 as expected/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /runner · 401 as expected/ })).toBeTruthy();
   });
 
   /** The class of bug that sank #314 twice: an unparseable/unreachable
@@ -85,7 +97,7 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
 
     render(
       <StatusScreen
-        onScreen={() => {}}
+        online
         task={taskState({ paneReads: { [SOURCE]: rows } })}
         nowMs={NOW_MS}
         calendarReads={{}}
@@ -93,11 +105,10 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
       />,
     );
 
-    // The collapsed sentence must NOT be what rendered — this pane is open,
-    // proven by finding the card's own runner heading (a collapsed row
-    // renders no expanded content at all, `RankedRegion`'s own split).
-    expect(screen.queryByText(/runner · unreachable/)).toBeNull();
-    expect(screen.getByText("runner")).toBeTruthy();
+    // Compact, the fault is already a coloured glance word rather than a
+    // healthy-looking one; opened, the body names the transport error itself.
+    expect(screen.getByRole("button", { name: /runner · unreachable/ })).toBeTruthy();
+    openTile(/runner · unreachable/);
     expect(screen.getByText("unreachable — connection refused")).toBeTruthy();
     expect(screen.getByText("unreachable")).toBeTruthy();
   });
@@ -109,7 +120,7 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
 
     render(
       <StatusScreen
-        onScreen={() => {}}
+        online
         task={taskState({ paneReads: { [SOURCE]: rows } })}
         nowMs={NOW_MS}
         calendarReads={{}}
@@ -117,7 +128,7 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
       />,
     );
 
-    expect(screen.getByText("runner")).toBeTruthy();
+    openTile(/runner · reachable/);
     expect(screen.getByText("reachable when it should be off")).toBeTruthy();
   });
 
@@ -131,7 +142,7 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
 
     render(
       <StatusScreen
-        onScreen={() => {}}
+        online
         task={taskState({ paneReads: { [SOURCE]: rows } })}
         nowMs={NOW_MS}
         calendarReads={{}}
@@ -139,7 +150,9 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
       />,
     );
 
-    expect(screen.getByText("runner · off, as expected")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /runner · off, as expected/ }),
+    ).toBeTruthy();
   });
 
   /** The card's `near` arm — an `expected: "on"` service whose door is open
@@ -153,7 +166,7 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
 
     render(
       <StatusScreen
-        onScreen={() => {}}
+        online
         task={taskState({ paneReads: { [SOURCE]: rows } })}
         nowMs={NOW_MS}
         calendarReads={{}}
@@ -161,10 +174,12 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
       />,
     );
 
-    // Open, not collapsed: the collapsed sentence is absent and the card's
-    // own heading plus its raw observation are present.
-    expect(screen.queryByText(/authority · unexpected status/)).toBeNull();
-    expect(screen.getByText("authority")).toBeTruthy();
+    // The lesser fault still has to be named rather than read as fine: the
+    // compact tile says so, and the open one shows the raw observation.
+    expect(
+      screen.getByRole("button", { name: /authority · unexpected status/ }),
+    ).toBeTruthy();
+    openTile(/authority · unexpected status/);
     expect(screen.getByText("answered 500 (wanted 401)")).toBeTruthy();
     expect(screen.getByText("unexpected status")).toBeTruthy();
   });
@@ -183,7 +198,7 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
 
     render(
       <StatusScreen
-        onScreen={() => {}}
+        online
         task={taskState({ paneReads: { [SOURCE]: rows } })}
         nowMs={NOW_MS}
         calendarReads={{}}
@@ -191,7 +206,7 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
       />,
     );
 
-    expect(screen.getByText("web")).toBeTruthy();
+    openTile(/web ·/);
     expect(screen.getByText("stale — as of 5h ago")).toBeTruthy();
   });
 
@@ -208,7 +223,7 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
 
     render(
       <StatusScreen
-        onScreen={() => {}}
+        online
         task={taskState({ paneReads: { [SOURCE]: rows } })}
         nowMs={NOW_MS}
         calendarReads={{}}
@@ -216,7 +231,7 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
       />,
     );
 
-    expect(screen.getByText("web")).toBeTruthy();
+    openTile(/web ·/);
     expect(screen.getByText("stale — age unknown")).toBeTruthy();
   });
 
@@ -227,7 +242,7 @@ describe("UptimePaneExpanded, mounted inside StatusScreen", () => {
 
     render(
       <StatusScreen
-        onScreen={() => {}}
+        online
         task={taskState({ paneReads: { [SOURCE]: rows } })}
         nowMs={NOW_MS}
         calendarReads={{}}

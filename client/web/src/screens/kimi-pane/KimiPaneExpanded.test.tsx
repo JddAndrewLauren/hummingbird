@@ -9,7 +9,7 @@
 import { describe, expect, it } from "vitest";
 import { StatusScreen } from "../StatusScreen";
 import type { PaneReadDTO, PaneSnapshotDTO } from "../../store/protocol";
-import { render, screen, taskState } from "../../test/component";
+import { fireEvent, render, screen, taskState } from "../../test/component";
 import { SNAPSHOT_KEY, SOURCE } from "./kimi";
 
 const NOW_MS = 1_700_000_000_000;
@@ -33,6 +33,13 @@ function read(snapshots: PaneSnapshotDTO[] = [snapshot()]): PaneReadDTO {
   return { source: SOURCE, snapshots, liveAlerts: [] };
 }
 
+/** Open one tile by the pane it names — the board draws tiles compact until
+ * the reader opens one, so a test about what the pane's own body says has to
+ * open it first. */
+function openTile(name: RegExp): void {
+  fireEvent.click(screen.getByRole("button", { name }));
+}
+
 describe("KimiPaneExpanded, mounted inside StatusScreen", () => {
   // `available_balance: 4.10` bands "near" (`kimiBand`), which is not
   // dormant — `collapse.ts`'s `defaultCollapsed` therefore renders this pane
@@ -42,7 +49,7 @@ describe("KimiPaneExpanded, mounted inside StatusScreen", () => {
   it("renders the answered pane open, not the never-polled placeholder gap", () => {
     render(
       <StatusScreen
-        onScreen={() => {}}
+        online
         task={taskState({ paneReads: { [SOURCE]: read() } })}
         nowMs={NOW_MS}
         calendarReads={{}}
@@ -51,18 +58,17 @@ describe("KimiPaneExpanded, mounted inside StatusScreen", () => {
     );
 
     const kimiButton = screen.getByRole("button", { name: /kimi balance/i });
-    // The expanded pane's own headline — never the collapsed row's banded
-    // sentence, since this pane is not collapsed here. Asserted on the
-    // Kimi row's own button, not on the whole screen: other status questions
-    // can legitimately still be gaps, and only the Kimi row itself must not.
+    // Asserted on the Kimi tile's own button, not on the whole screen: other
+    // status questions can legitimately still be gaps, and only this one must
+    // not. Its balance is on the tile compact, with no click needed.
     expect(kimiButton.textContent).not.toMatch(/No answer yet/);
-    expect(screen.getByText("$4.10 left")).toBeTruthy();
+    expect(kimiButton.textContent).toMatch(/\$4\.10 — running low/);
   });
 
   it("shows the voucher/cash split, flagging the negative cash position", () => {
     render(
       <StatusScreen
-        onScreen={() => {}}
+        online
         task={taskState({ paneReads: { [SOURCE]: read() } })}
         nowMs={NOW_MS}
         calendarReads={{}}
@@ -70,6 +76,7 @@ describe("KimiPaneExpanded, mounted inside StatusScreen", () => {
       />,
     );
 
+    openTile(/kimi balance/i);
     expect(screen.getByText(/voucher \$5\.10/)).toBeTruthy();
     expect(screen.getByText(/cash -\$1\.00/)).toBeTruthy();
     expect(screen.getByText("cash owed")).toBeTruthy();
@@ -78,7 +85,7 @@ describe("KimiPaneExpanded, mounted inside StatusScreen", () => {
   it("still renders the never-polled gap honestly when no snapshot has landed", () => {
     render(
       <StatusScreen
-        onScreen={() => {}}
+        online
         task={taskState()}
         nowMs={NOW_MS}
         calendarReads={{}}

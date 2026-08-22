@@ -2,7 +2,12 @@ import { Badge } from "../../components/core/Badge";
 import { Card } from "../../components/core/Card";
 import { EmptyState } from "../../components/feedback/EmptyState";
 import type { QuestionInputs } from "../questions/contract";
-import { NEVER_POLLED_SUBJECT, uptimeBand, uptimeGapReason, uptimeView } from "./uptime";
+import {
+  NEVER_POLLED_SUBJECT,
+  uptimeBand,
+  uptimeGapReason,
+  uptimeView,
+} from "./uptime";
 
 // The uptime pane's own expanded rendering — `GithubPaneExpanded`'s shape,
 // carried over: a headline first, the raw observation below it, freshness
@@ -14,16 +19,27 @@ import { NEVER_POLLED_SUBJECT, uptimeBand, uptimeGapReason, uptimeView } from ".
 // unexpectedly-answering service that should be off — never a silently
 // green card behind a red collapsed row.
 
-export function UptimePaneExpanded({
+/** The pane's content, with no `Card` of its own — what the Status board's
+ * expanded tile draws inside the one card it already is. `*PaneExpanded`
+ * below is this plus Now's card. */
+/** Whether this body draws its own headline.
+ *
+ * Now's card does (it is the pane's whole rendering there). The Status
+ * board's expanded tile does not: that tile's header row already carries the
+ * pane's decided `collapsedHeadline`, so a body that drew its own would say
+ * the same thing twice, two lines apart. */
+export function UptimePaneBody({
   subjectKey,
   inputs,
+  headline = true,
 }: {
   subjectKey: string;
   inputs: QuestionInputs;
+  headline?: boolean;
 }) {
   if (subjectKey === NEVER_POLLED_SUBJECT) {
     return (
-      <Card padding="var(--space-3)">
+      <>
         <EmptyState
           compact
           icon="cloud-fog"
@@ -31,14 +47,14 @@ export function UptimePaneExpanded({
           title="No answer yet"
           body="Nothing has polled this yet."
         />
-      </Card>
+      </>
     );
   }
 
   const view = uptimeView(subjectKey, inputs);
   if (view === null) {
     return (
-      <Card padding="var(--space-3)">
+      <>
         <EmptyState
           compact
           icon="cloud-fog"
@@ -46,7 +62,7 @@ export function UptimePaneExpanded({
           title="No answer yet"
           body={uptimeGapReason(subjectKey, inputs)}
         />
-      </Card>
+      </>
     );
   }
 
@@ -55,24 +71,29 @@ export function UptimePaneExpanded({
   const ageMs = freshness.kind === "age" ? freshness.ageMs : null;
 
   return (
-    <Card
-      padding="var(--space-5)"
-      style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-4)",
+      }}
     >
-      <p
-        style={{
-          font: "var(--weight-bold) 20px/1.1 var(--font-display)",
-          letterSpacing: "var(--tracking-heading)",
-          color:
-            band === "live"
-              ? "var(--status-danger-fg)"
-              : band === "near"
-                ? "var(--status-warn-fg)"
-                : "var(--text-primary)",
-        }}
-      >
-        {serviceId}
-      </p>
+      {headline ? (
+        <p
+          style={{
+            font: "var(--weight-bold) 20px/1.1 var(--font-display)",
+            letterSpacing: "var(--tracking-heading)",
+            color:
+              band === "live"
+                ? "var(--status-danger-fg)"
+                : band === "near"
+                  ? "var(--status-warn-fg)"
+                  : "var(--text-primary)",
+          }}
+        >
+          {serviceId}
+        </p>
+      ) : null}
 
       <div
         style={{
@@ -96,7 +117,8 @@ export function UptimePaneExpanded({
           <Badge tone="danger" mono>
             unreachable
           </Badge>
-        ) : body.expected === "on" && body.observedStatus !== body.expectStatus ? (
+        ) : body.expected === "on" &&
+          body.observedStatus !== body.expectStatus ? (
           <Badge tone="warn" mono>
             unexpected status
           </Badge>
@@ -105,9 +127,31 @@ export function UptimePaneExpanded({
 
       {stale ? (
         <span className="hb-meta" style={{ color: "var(--status-warn-fg)" }}>
-          {ageMs === null ? "stale — age unknown" : `stale — as of ${Math.floor(ageMs / 3_600_000)}h ago`}
+          {ageMs === null
+            ? "stale — age unknown"
+            : `stale — as of ${Math.floor(ageMs / 3_600_000)}h ago`}
         </span>
       ) : null}
+    </div>
+  );
+}
+
+export function UptimePaneExpanded({
+  subjectKey,
+  inputs,
+}: {
+  subjectKey: string;
+  inputs: QuestionInputs;
+}) {
+  // The gap arm sits tighter than the answered one, exactly as it did when
+  // this component held both trees itself. Re-reading the (pure) view to
+  // pick the padding costs a call and keeps the two arms' chrome unchanged.
+  const gap =
+    subjectKey === NEVER_POLLED_SUBJECT ||
+    uptimeView(subjectKey, inputs) === null;
+  return (
+    <Card padding={gap ? "var(--space-3)" : "var(--space-5)"}>
+      <UptimePaneBody subjectKey={subjectKey} inputs={inputs} />
     </Card>
   );
 }
