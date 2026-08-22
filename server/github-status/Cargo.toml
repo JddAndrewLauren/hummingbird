@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 # The out-of-process poller behind the `github-hummingbird/v1` standing
-# question (#314, ADR-0017 decision 2): once a day it reads this repo's own
+# question (#314, ADR-0017 decision 2): every half hour it reads this repo's own
 # GitHub Actions run history for every workflow that carries a `schedule:`
 # trigger, and writes one `context_snapshots` row per workflow — the
 # 60-day-auto-disable tell the four evaluated-stream pollers otherwise have
@@ -31,9 +31,9 @@ hummingbird-domain = { path = "../domain" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-# `main.rs` only. Blocking by design: this is a one-shot process run once a
-# day, so an async runtime would be pure ceremony — every poller here gives
-# the same reasoning.
+# `main.rs` only. Blocking by design: this is a one-shot process run every
+# half hour, so an async runtime would be pure ceremony — every poller here
+# gives the same reasoning.
 [dependencies.ureq]
 version = "3"
 default-features = false
