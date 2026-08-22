@@ -316,11 +316,22 @@ internal fun scpsQuestLine(quest: MobileScpsQuestFact, nowMs: Long, zone: ZoneId
 
 @Composable
 private fun ScpsLaterEvent(event: MobileScpsEvent) {
-    Text(
-        "${scpsCardTitle(event)} — ${scpsDayLabel(event)}",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
+    // Two lines, `HomeworkItemLine`'s precedent — `scpsCardTitle` already
+    // spends " — " on the kind/topic relation, so reusing it here for the
+    // title/day relation would read as the same separator meaning two
+    // different things on one line.
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            scpsCardTitle(event),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            scpsDayLabel(event),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 @Composable
