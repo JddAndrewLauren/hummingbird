@@ -112,6 +112,7 @@ export type Surface = "now" | "status";
  * list someone has to remember to update. */
 export type StandingQuestion =
   | "homework"
+  | "scps"
   | "waste"
   | "weekend"
   | "vacation"
@@ -132,9 +133,13 @@ export type StandingQuestion =
  * work the reader personally owes, so when two panes tie on band and
  * `withinBand` it is the one that should be read first. Pinned against
  * `hummingbird_core::decisions::panes::contract::QUESTION_ORDER` by
- * `seam.test.ts`, which is what stops the two lists drifting. */
+ * `seam.test.ts`, which is what stops the two lists drifting.
+ *
+ * `scps` is declared second (#693) — directly after `homework`, before
+ * `waste` — the slot ADR-0032's own grilling session settled on. */
 export const QUESTION_ORDER: readonly StandingQuestion[] = [
   "homework",
+  "scps",
   "waste",
   "weekend",
   "vacation",

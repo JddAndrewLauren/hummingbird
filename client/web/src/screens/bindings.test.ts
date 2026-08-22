@@ -25,7 +25,13 @@ describe("bindingCopy", () => {
     // The pin against a key gaining a row with no words on it. The
     // vocabulary itself lives in `hummingbird_core::bindings::BindingKey` —
     // this asserts the copy keeps up with it, not the other way round.
-    for (const key of ["race-series", "trips-calendar", "city-waste-page", "homework-link"]) {
+    for (const key of [
+      "race-series",
+      "trips-calendar",
+      "city-waste-page",
+      "homework-link",
+      "scps-quest",
+    ]) {
       const copy = bindingCopy(binding({ key }));
       expect(copy.label).not.toBe(key);
       expect(copy.help.length).toBeGreaterThan(0);

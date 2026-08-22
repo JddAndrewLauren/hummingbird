@@ -84,7 +84,7 @@ describe("requiredCalendarRequests", () => {
     // calendar-lane question, and it grew again with #121's — proof the
     // union mechanism, not a fixed list, is what decides this.
     const requests = requiredCalendarRequests(1_000);
-    expect(requests.map((request) => request.key)).toEqual(["weekend", "vacation"]);
+    expect(requests.map((request) => request.key)).toEqual(["scps", "weekend", "vacation"]);
     for (const request of requests) {
       expect(request.endMs).toBeGreaterThan(request.startMs);
       expect(request.startDate).toEqual(expect.any(String));

@@ -662,6 +662,7 @@ describe("NowScreen — the calendar-reads arm (#267/#122)", () => {
           status: "confirmed",
           providerUpdatedAtMs: testNowMs - 900,
           htmlLink: null,
+          description: null,
         },
       ],
       freshness: { kind: "age", ageMs: 60_000, declaredCadenceMs: 900_000 },

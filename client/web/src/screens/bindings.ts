@@ -41,6 +41,12 @@ const BINDING_COPY: Record<string, BindingCopy> = {
     label: "Homework session link",
     help: "The meeting link the homework answer offers. Kept here, not in the code — it carries a passcode.",
   },
+  // Written by the OpenClaw agent (ADR-0032 part 4), not typed here in the
+  // ordinary case — the editor still lets the operator hand-correct it.
+  "scps-quest": {
+    label: "SCPS Photo Quest",
+    help: "This month's Photo Quest phrase, as \"YYYY-MM phrase\" — normally set by the agent from forwarded club email.",
+  },
 };
 
 /** Copy for one binding row. A key this build cannot write still gets a row

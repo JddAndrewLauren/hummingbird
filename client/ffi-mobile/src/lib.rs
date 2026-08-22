@@ -95,7 +95,7 @@ use hummingbird_core::decisions::panes::inputs::{
 use hummingbird_core::freshness::Freshness;
 use hummingbird_core::decisions::panes::zone::{ZoneFact, ZoneFacts, ZoneQuery};
 use hummingbird_core::decisions::panes::{
-    github, homework, kimi, race, reachability, uptime, vacation, waste, weekend,
+    github, homework, kimi, race, reachability, scps, uptime, vacation, waste, weekend,
 };
 use hummingbird_core::pane::PaneEnvelope;
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
@@ -2014,6 +2014,7 @@ fn map_surface(surface: MobileSurface) -> Surface {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum MobileStandingQuestion {
     Homework,
+    Scps,
     Waste,
     Weekend,
     Vacation,
@@ -2029,6 +2030,7 @@ pub enum MobileStandingQuestion {
 fn map_standing_question(question: StandingQuestion) -> MobileStandingQuestion {
     match question {
         StandingQuestion::Homework => MobileStandingQuestion::Homework,
+        StandingQuestion::Scps => MobileStandingQuestion::Scps,
         StandingQuestion::Waste => MobileStandingQuestion::Waste,
         StandingQuestion::Weekend => MobileStandingQuestion::Weekend,
         StandingQuestion::Vacation => MobileStandingQuestion::Vacation,
@@ -2519,6 +2521,116 @@ fn map_vacation_resolved(resolved: vacation::VacationResolved) -> MobileVacation
     }
 }
 
+/// [`scps::ScpsKind`], mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileScpsKind {
+    Meeting,
+    Activity,
+    HappyHour,
+    Event,
+}
+
+fn map_scps_kind(kind: scps::ScpsKind) -> MobileScpsKind {
+    match kind {
+        scps::ScpsKind::Meeting => MobileScpsKind::Meeting,
+        scps::ScpsKind::Activity => MobileScpsKind::Activity,
+        scps::ScpsKind::HappyHour => MobileScpsKind::HappyHour,
+        scps::ScpsKind::Event => MobileScpsKind::Event,
+    }
+}
+
+/// [`scps::ScpsEvent`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileScpsEvent {
+    pub id: String,
+    pub kind: MobileScpsKind,
+    pub topic: Option<String>,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub start_date: String,
+    pub location: Option<String>,
+    pub notes: Option<String>,
+    pub days_until: i64,
+    pub in_progress: bool,
+}
+
+fn map_scps_event(event: scps::ScpsEvent) -> MobileScpsEvent {
+    MobileScpsEvent {
+        id: event.id,
+        kind: map_scps_kind(event.kind),
+        topic: event.topic,
+        start_ms: event.start_ms,
+        end_ms: event.end_ms,
+        start_date: event.start_date,
+        location: event.location,
+        notes: event.notes,
+        days_until: event.days_until,
+        in_progress: event.in_progress,
+    }
+}
+
+/// [`scps::ScpsQuestFact`], mirrored.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileScpsQuestFact {
+    None,
+    Current { phrase: String },
+    Other { month: String, phrase: String },
+}
+
+fn map_scps_quest_fact(quest: scps::ScpsQuestFact) -> MobileScpsQuestFact {
+    match quest {
+        scps::ScpsQuestFact::None => MobileScpsQuestFact::None,
+        scps::ScpsQuestFact::Current { phrase } => MobileScpsQuestFact::Current { phrase },
+        scps::ScpsQuestFact::Other { month, phrase } => MobileScpsQuestFact::Other { month, phrase },
+    }
+}
+
+/// [`scps::ScpsGap`], mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileScpsGap {
+    UnresolvableZone,
+}
+
+/// [`scps::ScpsFacts`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileScpsFacts {
+    pub next: Option<MobileScpsEvent>,
+    pub later: Vec<MobileScpsEvent>,
+    pub quest: MobileScpsQuestFact,
+    pub stale: bool,
+    pub freshness: MobilePaneFreshness,
+}
+
+/// [`scps::ScpsResolved`], mirrored. Not boxed the way the core's own
+/// `ScpsResolved::Facts` is: `uniffi::Enum` has no established boxed-field
+/// precedent in this file (unlike the core-only enum, which answers only to
+/// `clippy::large_enum_variant`), so this arm is allowed instead.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+#[allow(clippy::large_enum_variant)]
+pub enum MobileScpsResolved {
+    Facts { facts: MobileScpsFacts },
+    Gap { gap: MobileScpsGap },
+}
+
+fn map_scps_resolved(resolved: scps::ScpsResolved) -> MobileScpsResolved {
+    match resolved {
+        scps::ScpsResolved::Facts(facts) => MobileScpsResolved::Facts {
+            facts: MobileScpsFacts {
+                next: facts.next.map(map_scps_event),
+                later: facts.later.into_iter().map(map_scps_event).collect(),
+                quest: map_scps_quest_fact(facts.quest),
+                stale: facts.stale,
+                freshness: map_pane_freshness(facts.freshness),
+            },
+        },
+        scps::ScpsResolved::Gap { gap } => MobileScpsResolved::Gap {
+            gap: match gap {
+                scps::ScpsGap::UnresolvableZone => MobileScpsGap::UnresolvableZone,
+            },
+        },
+    }
+}
+
 /// [`race::RaceSession`], mirrored.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct MobileRaceSession {
@@ -2948,6 +3060,11 @@ pub enum MobilePaneFacts {
     /// facts at all (`homework.rs`'s own header). `None` is "nothing bound,
     /// or what is bound is not a web URL" — the host draws no button.
     Homework { resolved: MobileHomeworkResolved, link: Option<String> },
+    /// `None` while unacquired — `scps.rs`'s own "never unbound" rule
+    /// (#693): unlike `Vacation`'s `None`, which can mean either
+    /// unacquired or genuinely unbound, this pane has no unbound arm at
+    /// all, so `None` here means only "waiting for the first sync".
+    Scps { resolved: Option<MobileScpsResolved> },
     Waste { setup: MobileWasteSetup, resolved: MobileWasteResolved },
     Weekend { resolved: MobileWeekendResolved },
     Vacation { resolved: Option<MobileVacationResolved> },
@@ -3279,6 +3396,9 @@ fn mobile_pane_facts_of(
             resolved: map_homework_resolved(homework::homework_facts(inputs, zone)),
             link: homework::homework_link(inputs),
         },
+        StandingQuestion::Scps => MobilePaneFacts::Scps {
+            resolved: scps::scps_view(inputs, zone).map(map_scps_resolved),
+        },
         StandingQuestion::Waste => MobilePaneFacts::Waste {
             setup: map_waste_setup(waste::waste_setup(inputs)),
             resolved: map_waste_resolved(waste::waste_facts(inputs, zone)),
@@ -3491,6 +3611,7 @@ fn to_calendar_event_facts(event: &EventRecord) -> CalendarEventFacts {
             EventStatus::Tentative => CalendarEventStatusFact::Tentative,
             EventStatus::Cancelled => CalendarEventStatusFact::Cancelled,
         },
+        description: event.description.clone(),
     }
 }
 
@@ -9138,18 +9259,21 @@ mod settings_tests {
         // vanishing (`panes::mod`'s own "a pane nobody has bound yet must
         // still be discoverable" rule).
         //
-        // Homework (#675) is the fifth. It has no binding to be unset, so
-        // its own unanswerable state is the zone bridge's gap rather than
-        // `unbound` — this caller resolved nothing, which is the honest
-        // "this host answered no queries" case and not a setup prompt.
+        // Homework (#675) and scps (#693) are the fifth and sixth. Neither
+        // has a binding to be unset, so their own unanswerable state is the
+        // zone bridge's gap rather than `unbound` — this caller resolved
+        // nothing, which is the honest "this host answered no queries" case
+        // and not a setup prompt (scps has no setup prompt at all —
+        // `scps.rs`'s own "never unbound" rule).
         let host = pane_host("panes-now-fresh").await;
         let ranked = host.rank_panes(MobileSurface::Now, 1_000, Vec::new(), MobileSyncFacts::default()).await;
-        assert_eq!(ranked.len(), 5);
+        assert_eq!(ranked.len(), 6);
         let questions: Vec<MobileStandingQuestion> = ranked.iter().map(|pane| pane.standing_question).collect();
         assert_eq!(
             questions,
             vec![
                 MobileStandingQuestion::Homework,
+                MobileStandingQuestion::Scps,
                 MobileStandingQuestion::Waste,
                 MobileStandingQuestion::Weekend,
                 MobileStandingQuestion::Vacation,
@@ -9158,13 +9282,13 @@ mod settings_tests {
         );
         assert!(ranked
             .iter()
-            .filter(|pane| pane.standing_question != MobileStandingQuestion::Homework)
+            .filter(|pane| pane.standing_question != MobileStandingQuestion::Homework
+                && pane.standing_question != MobileStandingQuestion::Scps)
             .all(|pane| pane.answer.answer_state == MobilePaneAnswerState::Unbound));
-        let homework = ranked
-            .iter()
-            .find(|pane| pane.standing_question == MobileStandingQuestion::Homework)
-            .unwrap();
-        assert_eq!(homework.answer.answer_state, MobilePaneAnswerState::BoundButUnacquired);
+        for question in [MobileStandingQuestion::Homework, MobileStandingQuestion::Scps] {
+            let pane = ranked.iter().find(|pane| pane.standing_question == question).unwrap();
+            assert_eq!(pane.answer.answer_state, MobilePaneAnswerState::BoundButUnacquired);
+        }
     }
 
     #[test]
@@ -9811,6 +9935,7 @@ mod settings_tests {
                     MobileStandingQuestion::Homework => {
                         matches!(pane.facts, MobilePaneFacts::Homework { .. })
                     }
+                    MobileStandingQuestion::Scps => matches!(pane.facts, MobilePaneFacts::Scps { .. }),
                     MobileStandingQuestion::Waste => matches!(pane.facts, MobilePaneFacts::Waste { .. }),
                     MobileStandingQuestion::Weekend => matches!(pane.facts, MobilePaneFacts::Weekend { .. }),
                     MobileStandingQuestion::Vacation => matches!(pane.facts, MobilePaneFacts::Vacation { .. }),

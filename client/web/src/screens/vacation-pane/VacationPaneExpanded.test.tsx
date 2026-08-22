@@ -42,6 +42,7 @@ function tripEvent(title: string, startInDays: number, lengthDays: number): Cale
     status: "confirmed",
     providerUpdatedAtMs: 0,
     htmlLink: null,
+    description: null,
   };
 }
 

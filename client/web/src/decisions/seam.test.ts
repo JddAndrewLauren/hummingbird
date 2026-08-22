@@ -32,6 +32,7 @@ import {
   resolveBackendSelectionFromCore,
   paneBandOrderFromCore,
   paneQuestionOrderFromCore,
+  scpsConstantsFromCore,
   SIZES,
   sizeOptionsFromCore,
   uptimeConstantsFromCore,
@@ -97,6 +98,14 @@ import {
   STALE_AFTER_MS as VACATION_STALE_AFTER_MS,
   SUBJECT_KEY as VACATION_SUBJECT_KEY,
 } from "../screens/vacation-pane/vacation";
+import {
+  CALENDAR_REQUEST_KEY as SCPS_CALENDAR_REQUEST_KEY,
+  HORIZON_AFTER_DAYS as SCPS_HORIZON_AFTER_DAYS,
+  HORIZON_BEFORE_MS as SCPS_HORIZON_BEFORE_MS,
+  QUEST_BINDING_KEY as SCPS_QUEST_BINDING_KEY,
+  STALE_AFTER_MS as SCPS_STALE_AFTER_MS,
+  SUBJECT_KEY as SCPS_SUBJECT_KEY,
+} from "../screens/scps-pane/scps";
 import { DEVICE_ZONE } from "../screens/questions/zone-bridge";
 import { loadDecisionsForTest } from "../test/wasm-setup";
 import type { StepDTO, TaskItemDTO } from "../store/protocol";
@@ -373,6 +382,16 @@ describe("the seam's literal pane vocabulary, pinned against the core", () => {
     expect(HORIZON_BEFORE_DAYS).toBe(constants.horizonBeforeDays);
     expect(HORIZON_AHEAD_DAYS).toBe(constants.horizonAheadDays);
     expect(VACATION_STALE_AFTER_MS).toBe(constants.staleAfterMs);
+  });
+
+  it("the scps pane's constants match the core's", () => {
+    const constants = scpsConstantsFromCore();
+    expect(SCPS_SUBJECT_KEY).toBe(constants.subjectKey);
+    expect(SCPS_CALENDAR_REQUEST_KEY).toBe(constants.calendarRequestKey);
+    expect(SCPS_QUEST_BINDING_KEY).toBe(constants.questBindingKey);
+    expect(SCPS_HORIZON_BEFORE_MS).toBe(constants.horizonBeforeMs);
+    expect(SCPS_HORIZON_AFTER_DAYS).toBe(constants.horizonAfterDays);
+    expect(SCPS_STALE_AFTER_MS).toBe(constants.staleAfterMs);
   });
 
   // `zone-bridge.ts`'s `DEVICE_ZONE` special-cases exactly this string to

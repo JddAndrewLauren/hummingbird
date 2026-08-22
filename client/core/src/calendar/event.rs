@@ -92,6 +92,11 @@ pub struct EventRecord {
     /// updated this event.
     pub provider_updated_at_ms: i64,
     pub html_link: Option<String>,
+    /// The provider's free-text event body (Google's `description`) —
+    /// added for the SCPS pane (#693, ADR-0032), whose expanded view shows
+    /// the writer's own get-together/set-up notes. `None` for a provider
+    /// event with no body, distinct from an empty one.
+    pub description: Option<String>,
 }
 
 #[cfg(test)]
@@ -110,6 +115,7 @@ mod tests {
             status: EventStatus::Confirmed,
             provider_updated_at_ms: 1_699_999_000_000,
             html_link: Some("https://calendar.google.com/event?eid=abc".to_string()),
+            description: Some("Bring your own board.".to_string()),
         }
     }
 

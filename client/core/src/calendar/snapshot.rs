@@ -48,6 +48,7 @@ mod tests {
             status: EventStatus::Confirmed,
             provider_updated_at_ms: 1_699_999_000_000,
             html_link: None,
+            description: None,
         }
     }
 

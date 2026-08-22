@@ -50,6 +50,7 @@ pub mod inputs;
 pub mod kimi;
 pub mod race;
 pub mod reachability;
+pub mod scps;
 pub mod sort;
 pub mod uptime;
 pub mod vacation;
@@ -73,9 +74,12 @@ pub use zone::{ZoneFact, ZoneFacts, ZoneQuery};
 /// question **born** here rather than sunk from the web, and the first
 /// keyed on the operator's own items rather than an outside source. The
 /// web reads the same list to know which questions it may stop answering
-/// itself.
-pub const SUNK: [(StandingQuestion, Surface); 9] = [
+/// itself. #693 added a tenth — [`scps`], the second question keyed on the
+/// calendar arm with no per-question calendar binding (`weekend`'s own
+/// shape, restated in `scps.rs`'s module header).
+pub const SUNK: [(StandingQuestion, Surface); 10] = [
     (StandingQuestion::Homework, Surface::Now),
+    (StandingQuestion::Scps, Surface::Now),
     (StandingQuestion::Waste, Surface::Now),
     (StandingQuestion::Weekend, Surface::Now),
     (StandingQuestion::Vacation, Surface::Now),
@@ -100,6 +104,7 @@ pub fn zone_queries(surface: Surface, inputs: &PaneInputs) -> Vec<ZoneQuery> {
         }
         let asked = match question {
             StandingQuestion::Homework => homework::homework_zone_queries(inputs),
+            StandingQuestion::Scps => scps::scps_zone_queries(inputs),
             StandingQuestion::Waste => waste::waste_zone_queries(inputs),
             StandingQuestion::Weekend => weekend::weekend_zone_queries(inputs.now_ms),
             StandingQuestion::Vacation => vacation::vacation_zone_queries(inputs),
@@ -139,6 +144,9 @@ pub fn rank_panes(
         let answered: Vec<(String, PaneAnswerCore)> = match question {
             StandingQuestion::Homework => {
                 vec![(homework::SUBJECT_KEY.to_string(), homework::homework_answer(inputs, facts))]
+            }
+            StandingQuestion::Scps => {
+                vec![(scps::SUBJECT_KEY.to_string(), scps::scps_answer(inputs, facts))]
             }
             StandingQuestion::Waste => {
                 vec![(waste::SNAPSHOT_KEY.to_string(), waste::waste_answer(inputs, facts))]
@@ -264,14 +272,18 @@ mod tests {
         };
         let ranked = rank_panes(Surface::Now, &inputs, &facts);
         // Waste (bound and answered) and homework (answered, and dormant on
-        // an empty mirror — #675: nobody binds it), plus weekend/vacation/
-        // race, each unbound in this fixture (no calendar connected, no
-        // race-series binding) — all still ranked, per ADR-0017's "a pane
-        // nobody has bound yet must still be discoverable" rule.
-        assert_eq!(ranked.len(), 5);
+        // an empty mirror — #675: nobody binds it), plus scps (answered,
+        // dormant — no calendar connected here either, but scps has no
+        // `unbound` arm at all, #693), plus weekend/vacation/race, each
+        // unbound in this fixture (no calendar connected, no race-series
+        // binding) — all still ranked, per ADR-0017's "a pane nobody has
+        // bound yet must still be discoverable" rule.
+        assert_eq!(ranked.len(), 6);
         let homework = ranked.iter().find(|pane| pane.question == "homework").unwrap();
         assert_eq!(homework.answer.answer_state, AnswerState::Answered);
         assert_eq!(homework.answer.band, Band::Dormant);
+        let scps = ranked.iter().find(|pane| pane.question == "scps").unwrap();
+        assert_eq!(scps.answer.answer_state, AnswerState::BoundButUnacquired);
         let waste = ranked.iter().find(|pane| pane.question == "waste").unwrap();
         assert_eq!(waste.pane_key, "waste:collection");
         assert_eq!(waste.answer.answer_state, AnswerState::Answered);
@@ -289,16 +301,19 @@ mod tests {
         let ranked = rank_panes(Surface::Now, &inputs, &ZoneFacts::default());
         // Every Now question is unanswerable in this fixture (waste's page
         // cleared, no calendar, no race series, and no resolved device
-        // zone) — all five still rank.
-        assert_eq!(ranked.len(), 5);
-        // Homework has no binding to be unset, so its unanswerable state is
-        // the bridge's own gap rather than `unbound`: there is no setup
-        // prompt to route anyone to (`homework.rs`'s `homework_answer`).
-        let homework = ranked.iter().find(|pane| pane.question == "homework").unwrap();
-        assert_eq!(homework.answer.answer_state, AnswerState::BoundButUnacquired);
+        // zone) — all six still rank.
+        assert_eq!(ranked.len(), 6);
+        // Homework and scps have no binding to be unset, so their
+        // unanswerable state is the bridge's own gap rather than `unbound`:
+        // there is no setup prompt to route anyone to (`homework.rs`'s
+        // `homework_answer`; `scps.rs`'s own "never unbound" rule).
+        for question in ["homework", "scps"] {
+            let pane = ranked.iter().find(|pane| pane.question == question).unwrap();
+            assert_eq!(pane.answer.answer_state, AnswerState::BoundButUnacquired, "{question}");
+        }
         assert!(ranked
             .iter()
-            .filter(|pane| pane.question != "homework")
+            .filter(|pane| pane.question != "homework" && pane.question != "scps")
             .all(|pane| pane.answer.answer_state == AnswerState::Unbound));
     }
 

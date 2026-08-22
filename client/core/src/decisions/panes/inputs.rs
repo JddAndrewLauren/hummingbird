@@ -185,6 +185,11 @@ pub struct CalendarEventFacts {
     pub when: CalendarEventWhenFacts,
     pub location: Option<String>,
     pub status: CalendarEventStatusFact,
+    /// The provider's free-text body — added for [`super::scps`] (#693,
+    /// ADR-0032), the first pane whose expanded view shows an event's own
+    /// notes rather than only its title/when/location.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// `CalendarEventWhenDTO` verbatim — an all-day arm carries civil dates and

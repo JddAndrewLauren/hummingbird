@@ -202,6 +202,7 @@ describe("handleCalendarRequest", () => {
               status: "confirmed",
               provider_updated_at_ms: 900,
               html_link: null,
+              description: null,
             },
             {
               provider_event_id: "evt-2",
@@ -214,6 +215,7 @@ describe("handleCalendarRequest", () => {
               status: "confirmed",
               provider_updated_at_ms: 900,
               html_link: null,
+              description: null,
             },
           ],
           freshness: { state: "age", age_ms: 60_000, declared_cadence_ms: 900_000 },
@@ -252,6 +254,7 @@ describe("handleCalendarRequest", () => {
               status: "confirmed",
               providerUpdatedAtMs: 900,
               htmlLink: null,
+              description: null,
             },
             {
               providerEventId: "evt-2",
@@ -267,6 +270,7 @@ describe("handleCalendarRequest", () => {
               status: "confirmed",
               providerUpdatedAtMs: 900,
               htmlLink: null,
+              description: null,
             },
           ],
           freshness: { kind: "age", ageMs: 60_000, declaredCadenceMs: 900_000 },
