@@ -12,11 +12,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -43,6 +42,8 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.ui.LocalWideWindow
+import net.twinion.hummingbird.ui.adaptiveGridCells
 import net.twinion.hummingbird.ui.contentMaxWidth
 import net.twinion.hummingbird.ui.theme.Crimson100
 import net.twinion.hummingbird.ui.theme.Crimson600
@@ -121,6 +122,7 @@ fun AlertsScreen(
     val loading by viewModel.loading.collectAsState()
     val statusLine by viewModel.statusLine.collectAsState()
     val dark = LocalHbDark.current
+    val wide = LocalWideWindow.current
 
     suspend fun reload() {
         viewModel.refresh(System.currentTimeMillis())
@@ -157,7 +159,9 @@ fun AlertsScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .contentMaxWidth()
+                    // Uncapped on a wide window: the grid's columns are what
+                    // the 880dp cap would otherwise fold back to one.
+                    .contentMaxWidth(capped = !wide)
                     // Top 12dp, not the outer 24dp: with the title gone the
                     // health rows sit directly under the app row.
                     .padding(start = 24.dp, top = 12.dp, end = 24.dp, bottom = 24.dp),
@@ -197,8 +201,13 @@ fun AlertsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    else -> LazyColumn(
+                    // A grid since the unfolded slice: one fixed column on
+                    // the phone — today's list exactly — adaptive columns on
+                    // a wide window (`adaptiveGridCells`).
+                    else -> LazyVerticalGrid(
+                        columns = adaptiveGridCells(),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
                         // The last row scrolls clear of the Capture FAB.
                         contentPadding = PaddingValues(bottom = 64.dp),
                     ) {

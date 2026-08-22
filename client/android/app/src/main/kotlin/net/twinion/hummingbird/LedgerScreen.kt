@@ -7,8 +7,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -31,6 +31,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.ui.StageBadge
+import net.twinion.hummingbird.ui.adaptiveGridCells
 import net.twinion.hummingbird.ui.theme.LocalHbDark
 import uniffi.hummingbird_ffi_mobile.MobileLedgerRowRecord
 import uniffi.hummingbird_ffi_mobile.MobileLedgerRowState
@@ -107,8 +108,13 @@ fun LedgerScreen(
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                else -> LazyColumn(
+                // A grid since the unfolded slice: one fixed column on the
+                // phone — today's list exactly — adaptive columns on a wide
+                // window (`adaptiveGridCells`).
+                else -> LazyVerticalGrid(
+                    columns = adaptiveGridCells(),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     // The last row scrolls clear of the Capture FAB.
                     contentPadding = PaddingValues(bottom = 64.dp),
                 ) {

@@ -38,8 +38,8 @@ class ChromeScrollStructuralTest {
     fun `the chrome connection hangs on the one Scaffold and reads consumed, never available`() {
         val src = source("MainActivity.kt")
         assertTrue(
-            "the Scaffold carries the nested-scroll hook",
-            src.contains("modifier = Modifier.nestedScroll(chrome.connection)"),
+            "the Scaffold carries the nested-scroll hook (weight(1f) is the rail Row's split)",
+            src.contains("modifier = Modifier.weight(1f).nestedScroll(chrome.connection)"),
         )
         assertTrue(
             "the accumulator reads what the child actually scrolled",

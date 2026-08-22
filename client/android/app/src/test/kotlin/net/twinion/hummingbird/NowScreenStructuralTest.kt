@@ -40,6 +40,12 @@ class NowScreenStructuralTest {
         repoFile("client/android/app/src/main/kotlin/net/twinion/hummingbird/NowRow.kt")
     }
 
+    // The wide board (the unfolded slice) draws the same columns through
+    // its own file, so the no-re-derivation gate reads it too.
+    private val laneBoardSrc by lazy {
+        repoFile("client/android/app/src/main/kotlin/net/twinion/hummingbird/NowLaneBoard.kt")
+    }
+
     @Test
     fun `NowViewModel imports the real uniffi nowBoard binding, and a complete-only act door`() {
         assertTrue(
@@ -109,6 +115,7 @@ class NowScreenStructuralTest {
             "NowScreen.kt" to nowScreenSrc,
             "NowRow.kt" to nowRowSrc,
             "NowViewModel.kt" to nowViewModelSrc,
+            "NowLaneBoard.kt" to laneBoardSrc,
         )) {
             assertFalse(
                 "$name must not implement its own comparator (sortedBy/sortWith)",
@@ -298,7 +305,7 @@ class NowScreenStructuralTest {
                 nowScreenSrc.contains(triangle),
             )
         }
-        val header = Regex("""private fun ColumnHeader\([\s\S]*?\n}""")
+        val header = Regex("""internal fun ColumnHeader\([\s\S]*?\n}""")
             .find(nowScreenSrc)
             ?.value
             ?: error("could not locate ColumnHeader in NowScreen.kt")

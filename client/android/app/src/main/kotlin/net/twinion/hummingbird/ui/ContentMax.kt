@@ -18,8 +18,18 @@ private val CONTENT_MAX = 880.dp
  * than any phone), the unfolded display stops stretching rows across its
  * whole width (`responsive.css`'s `.hb-single-column`, ported). Callers
  * chain it after their fill/inset padding and before their own content
- * padding. */
-fun Modifier.contentMaxWidth(): Modifier =
-    wrapContentWidth(Alignment.CenterHorizontally)
-        .widthIn(max = CONTENT_MAX)
-        .fillMaxWidth()
+ * padding.
+ *
+ * [capped] = false is the multi-column screens' opt-out: a screen whose
+ * wide form packs lanes or grid columns needs the whole width the cap
+ * exists to withhold, so it passes `!LocalWideWindow.current` and keeps
+ * the cap — unchanged by construction — on the phone. Everything
+ * single-column keeps the default. */
+fun Modifier.contentMaxWidth(capped: Boolean = true): Modifier =
+    if (capped) {
+        wrapContentWidth(Alignment.CenterHorizontally)
+            .widthIn(max = CONTENT_MAX)
+            .fillMaxWidth()
+    } else {
+        fillMaxWidth()
+    }

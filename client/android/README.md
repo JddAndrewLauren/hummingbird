@@ -101,6 +101,16 @@ CI is `.github/workflows/android.yml` (Gradle side) plus `client.yml`
 
 ## The bottom nav and the More sheet (M3/#532, completed M4/#541)
 
+**One nav form per width** since the unfolded slice: past `ui/WindowWidth.kt`'s
+640dp breakpoint (the web `breakpoints.ts`'s `PHONE_MAX_WIDTH_PX`, dp-for-px,
+pinned by `WindowWidthStructuralTest`) the bottom bar never mounts and
+`NavRail.kt`'s `HbNavRail` sits left of the Scaffold instead, carrying all
+nine destinations with no More item — web-rail parity, which makes the More
+sheet phone-only by construction. Both forms share the same
+top-level-route visibility rule and the same `goToTab` door; the rail never
+hides with the chrome (it costs the content no height). Below the
+breakpoint everything in this section is as it was.
+
 `MainActivity.kt`'s `NavDestination` is the one route list the app's
 navigation surface generates from — the same "one list, two derived halves"
 rule `client/web/src/shell/nav-bar.ts`'s `ON_THE_BAR` follows, ported rather
@@ -128,6 +138,39 @@ carries a Recall entry (#541) below the screen list, deliberately outside
 placeholder; #542 replaced the body with the real search-as-you-type
 surface (below). `NavigationStructuralTest` asserts full route
 reachability and that the notification doors below survived the churn.
+
+### The unfolded layout (the wide side of the one breakpoint)
+
+Past 640dp the list screens reflow rather than stretch. `AppRoot` provides
+`LocalWideWindow` once (`ui/WindowWidth.kt`, the `LocalHbDark` shape) from a
+`Configuration` read that cannot go stale — fold/unfold recreates the
+Activity. Three consumers:
+
+- **Now packs lanes.** `FrontierLanes.kt` is a verbatim port of the web's
+  `frontier-lanes.ts` (`laneCountFor`/`packLanes`, LANE_MIN 240 / GAP 24 —
+  `FrontierLanesTest` mirrors that file's tests and pins its constants);
+  `NowLaneBoard.kt` renders the packed lanes out of `NowScreen.kt`'s own
+  pieces as ONE entry of the screen's one lazy list, so the one-scroll rule
+  (#537) holds — the lanes inside are non-scrolling. Width comes from a
+  `BoxWithConstraints` above the list (the web's ResizeObserver, made
+  native); the Blocked section and the panes stay full-width entries below,
+  and the dirty-Back handler scrolls to the board entry when the open pane
+  lives inside it.
+- **Triage/Done/Ledger/Alerts become adaptive grids.**
+  `adaptiveGridCells()` is `GridCells.Fixed(1)` on the phone — today's
+  list exactly — and `GridCells.Adaptive(320.dp)` wide; non-row entries
+  (Triage's detail pane, loading/empty) span every lane via
+  `GridItemSpan(maxLineSpan)`. Item keys are unchanged, so fold/unfold
+  state retention is too. This deliberately exceeds PWA parity (the web
+  keeps these single-column past 880px) — operator decision, recorded in
+  the unfolded slice's plan.
+- **Status and the form screens stay single-column**
+  (`WindowWidthStructuralTest` refuses a grid there).
+
+`AdaptiveGridWidthTest` is the measuring half (the `ChoiceRowWrappingTest`
+rig: `@GraphicsMode(NATIVE)`, width qualifiers, a 320dp control case);
+JVM green is still not UI evidence here — the Fold AVD/hardware pass with
+`adb shell cmd device_state 2|0` is (operator rule a717c13).
 
 ### The Done and Ledger screens (M3, #532)
 
@@ -397,8 +440,10 @@ Operator feedback on the iteration, applied as six slices on top of it:
   dirty-draft confirmation. The polish pass then took the pencils out —
   see below.)
 - **Width parity.** `ui/ContentMax.kt` caps the bar-tab screens' content
-  at the web's `--content-max` (880dp), centred — the unfolded display
-  stops stretching rows across its whole width.
+  at the web's `--content-max` (880dp), centred. Since the unfolded slice
+  the cap is the phone/single-column story only: the five list screens pass
+  `capped = !LocalWideWindow.current` and reflow instead (below), so the
+  unfolded display is no longer "the same layout, wider".
 - **The capture-sheet mic (#611).** `speech/Dictation.kt` extracted from
   `CaptureActivity` (`DictationHost` + `DictationFailure` + the
   raw-transcript listener, ADR-0022 invariants intact); the sheet wires

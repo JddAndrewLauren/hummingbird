@@ -6,6 +6,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -58,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.ui.LocalWideWindow
 import net.twinion.hummingbird.ui.contentMaxWidth
 import net.twinion.hummingbird.ui.panes.NowPaneExpanded
 import net.twinion.hummingbird.ui.panes.PaneCollapse
@@ -110,7 +112,7 @@ private val FRONTIER_AXES: List<MobileFrontierAxis> = listOf(
 
 /** Display text for the column of items naming no value on the live axis
  * — `NO_VALUE_LABEL` in `FrontierColumns.tsx`, ported. */
-private val NO_VALUE_LABEL: Map<MobileFrontierAxis, String> = mapOf(
+internal val NO_VALUE_LABEL: Map<MobileFrontierAxis, String> = mapOf(
     MobileFrontierAxis.CONTEXT to "No context",
     MobileFrontierAxis.PROJECT to "No project",
     MobileFrontierAxis.SIZE to "No size",
@@ -145,7 +147,13 @@ private fun blockedReasonLabel(titles: List<String>): String = when (titles.size
 
 /** Cards shown per column before the "N more" affordance — `COLUMN_CAP` in
  * `FrontierColumns.tsx`, ported verbatim. */
-private const val COLUMN_CAP = 6
+internal const val COLUMN_CAP = 6
+
+/** The wide board's one list key: on a wide window the whole lane-packed
+ * board (`FrontierLaneBoard`) is a single entry of the screen's one lazy
+ * list, so this — not the pane's own key — is what the dirty-Back handler
+ * scrolls to for a column-ranked pane there. */
+private const val WIDE_BOARD_KEY = "board-wide"
 
 /** Which of a capped column's items the board draws: [COLUMN_CAP]'s own
  * first N, plus the open pane's item wherever it ranks. The pane lives in
@@ -281,6 +289,9 @@ fun NowScreen(
     val selectedId by viewModel.selectedItemId.collectAsState()
     val statusLine by viewModel.statusLine.collectAsState()
     val dark = LocalHbDark.current
+    // The provided width answer (`ui/WindowWidth.kt`): whether the board
+    // packs lanes and the content cap comes off. Never re-derived here.
+    val wide = LocalWideWindow.current
     val listState = rememberLazyListState()
 
     // The panel's own ViewModel, by the panel's own key — the SAME
@@ -304,8 +315,20 @@ fun NowScreen(
     // pane is currently off screen (`visibleItemsInfo` holds the viewport,
     // not the list).
     var lastSeenPanePosition by remember(selectedId) { mutableStateOf<Int?>(null) }
-    LaunchedEffect(listState, selectedId) {
-        val key = selectedId?.let { selectedItemKey(it) } ?: return@LaunchedEffect
+    // Which list entry holds the open pane. On the phone that is the
+    // selected row's own slot; on a wide window a column-ranked pane lives
+    // INSIDE the one lane-board entry, so [WIDE_BOARD_KEY] is what Back has
+    // to scroll to there — a blocked row's pane keeps a slot of its own on
+    // both widths (the Blocked section stays a full-width list either way).
+    fun paneListKey(id: String): String =
+        if (wide && board?.columns?.any { column -> column.items.any { it.id == id } } == true) {
+            WIDE_BOARD_KEY
+        } else {
+            selectedItemKey(id)
+        }
+    val paneKey = selectedId?.let { paneListKey(it) }
+    LaunchedEffect(listState, paneKey) {
+        val key = paneKey ?: return@LaunchedEffect
         snapshotFlow {
             listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == key }?.index
         }.collect { index -> if (index != null) lastSeenPanePosition = index }
@@ -341,7 +364,7 @@ fun NowScreen(
         val paneIndex = selectedId
             ?.takeIf { selectedPaneIsEmitted(board, collapsed, it) }
             ?.let { id ->
-                val key = selectedItemKey(id)
+                val key = paneListKey(id)
                 listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == key }?.index
                     ?: lastSeenPanePosition
             }
@@ -408,7 +431,9 @@ fun NowScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .contentMaxWidth()
+                    // Uncapped on a wide window: the lane board is what the
+                    // 880dp cap would otherwise squeeze back to two lanes.
+                    .contentMaxWidth(capped = !wide)
                     // No screen title: the bottom bar already names this tab,
                     // so the axis strip is the first thing under the app row
                     // (top 12dp, not the outer 24dp, to keep them adjacent).
@@ -493,104 +518,205 @@ fun NowScreen(
                 // somewhere else entirely (index 0), and it was the jump
                 // itself that made the first tap and the second tap look
                 // like different gestures.
-                LazyColumn(
-                    state = listState,
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    // The last row scrolls clear of the Capture FAB.
-                    contentPadding = PaddingValues(bottom = 64.dp),
-                ) {
-                    // The opened item, INSIDE the board, which keeps rendering
-                    // around it — never an early return of the panel instead of
-                    // the frontier (ADR-0021 decision 7 / #404: the board
-                    // vanishing on tap was the bug). The panel lives in its own
-                    // file, so acting/editing/steps stay one implementation with
-                    // the notification door's full-screen route.
-                    // The pane is NOT an entry of its own here: it is
-                    // rendered in the selected row's own slot, further
-                    // down, so tapping a card expands *that card* rather
-                    // than adding a block at the top of the board
-                    // (operator decision 2026-08-20). What it replaced was
-                    // an `item(key = "selected-item-$id")` at index 0 plus
-                    // an `animateScrollToItem(0)` on every selection
-                    // change, which read as two different gestures
-                    // depending on where the list happened to be scrolled:
-                    // the first tap yanked the board to the top and left
-                    // the tapped row far below the pane that was supposed
-                    // to be about it, while a second tap — with the list
-                    // already at 0 — dropped the new pane roughly where
-                    // the finger was and looked like the expansion it was
-                    // not.
-                    when {
-                        loading && currentBoard == null -> item(key = "loading") { CircularProgressIndicator() }
-                        currentBoard == null ||
-                            (currentBoard.columns.isEmpty() && currentBoard.blocked.isEmpty()) ->
-                            item(key = "empty") {
-                                Text(
-                                    // "Nothing matches what you picked" and
-                                    // "nothing is startable" are different facts
-                                    // and must not look alike
-                                    // (`FrontierColumns.tsx`'s own empty-result
-                                    // branch, ADR-0021 decision 5's whole reason
-                                    // for never persisting the filter): a
-                                    // facet-emptied board says so, rather than
-                                    // reporting an empty frontier it is not.
-                                    if (facets.count() > 0) {
-                                        "Nothing matches what you picked."
-                                    } else {
-                                        // Honesty over reassurance (README): an
-                                        // empty frontier is reported as a fact,
-                                        // not apologised for.
-                                        "Nothing on the frontier."
-                                    },
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        else -> {
-                            for (column in currentBoard.columns) {
-                                val key = column.value ?: ""
-                                val isCollapsed = collapsed.contains(key)
-                                val heading = if (column.value == null) {
-                                    NO_VALUE_LABEL[axis] ?: "No value"
-                                } else {
-                                    column.label ?: "Project ${column.value}"
-                                }
-
-                                item(key = "header-$key") {
-                                    ColumnHeader(
-                                        heading = heading,
-                                        count = column.items.size,
-                                        collapsed = isCollapsed,
-                                        onToggleCollapsed = {
-                                            scope.launch { viewModel.toggleCollapsed(key) }
+                // The wide board's width, measured — the web's ResizeObserver made
+                // native. `maxWidth` is this content column's own bound (the 24dp
+                // gutters are already inside it); an unbounded first frame answers
+                // null, which `laneCountFor` reads as one lane per column.
+                BoxWithConstraints {
+                    val boardWidthDp =
+                        if (constraints.hasBoundedWidth) maxWidth.value.toInt() else null
+                    LazyColumn(
+                        state = listState,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        // The last row scrolls clear of the Capture FAB.
+                        contentPadding = PaddingValues(bottom = 64.dp),
+                    ) {
+                        // The opened item, INSIDE the board, which keeps rendering
+                        // around it — never an early return of the panel instead of
+                        // the frontier (ADR-0021 decision 7 / #404: the board
+                        // vanishing on tap was the bug). The panel lives in its own
+                        // file, so acting/editing/steps stay one implementation with
+                        // the notification door's full-screen route.
+                        // The pane is NOT an entry of its own here: it is
+                        // rendered in the selected row's own slot, further
+                        // down, so tapping a card expands *that card* rather
+                        // than adding a block at the top of the board
+                        // (operator decision 2026-08-20). What it replaced was
+                        // an `item(key = "selected-item-$id")` at index 0 plus
+                        // an `animateScrollToItem(0)` on every selection
+                        // change, which read as two different gestures
+                        // depending on where the list happened to be scrolled:
+                        // the first tap yanked the board to the top and left
+                        // the tapped row far below the pane that was supposed
+                        // to be about it, while a second tap — with the list
+                        // already at 0 — dropped the new pane roughly where
+                        // the finger was and looked like the expansion it was
+                        // not.
+                        when {
+                            loading && currentBoard == null -> item(key = "loading") { CircularProgressIndicator() }
+                            currentBoard == null ||
+                                (currentBoard.columns.isEmpty() && currentBoard.blocked.isEmpty()) ->
+                                item(key = "empty") {
+                                    Text(
+                                        // "Nothing matches what you picked" and
+                                        // "nothing is startable" are different facts
+                                        // and must not look alike
+                                        // (`FrontierColumns.tsx`'s own empty-result
+                                        // branch, ADR-0021 decision 5's whole reason
+                                        // for never persisting the filter): a
+                                        // facet-emptied board says so, rather than
+                                        // reporting an empty frontier it is not.
+                                        if (facets.count() > 0) {
+                                            "Nothing matches what you picked."
+                                        } else {
+                                            // Honesty over reassurance (README): an
+                                            // empty frontier is reported as a fact,
+                                            // not apologised for.
+                                            "Nothing on the frontier."
                                         },
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
-
-                                if (!isCollapsed) {
-                                    val isExpanded = expanded.contains(key)
-                                    // The cap, plus its one exception for the
-                                    // open pane — decided by
-                                    // [cappedColumnRows], which is where that
-                                    // rule is stated and tested.
-                                    val visible = if (isExpanded) {
-                                        column.items
+                            else -> {
+                                // On a wide window the whole lane-packed board is
+                                // ONE entry of this list (`NowLaneBoard.kt`, the
+                                // web's frontier-lanes port): the lanes inside it
+                                // are non-scrolling, so the screen keeps its one
+                                // scroll (#537). The Blocked section and the panes
+                                // below stay full-width entries on both widths.
+                                // The phone branch is today's loop, untouched.
+                                if (wide) item(key = WIDE_BOARD_KEY) {
+                                    FrontierLaneBoard(
+                                        board = currentBoard,
+                                        axis = axis,
+                                        collapsed = collapsed,
+                                        expanded = expanded,
+                                        selectedId = selectedId,
+                                        dark = dark,
+                                        syncTick = syncTick,
+                                        boardWidthDp = boardWidthDp,
+                                        onToggleCollapsed = { key ->
+                                            scope.launch { viewModel.toggleCollapsed(key) }
+                                        },
+                                        onToggleExpanded = { key -> viewModel.toggleExpanded(key) },
+                                        onSelect = { id -> viewModel.selectItem(id) },
+                                        onComplete = { id ->
+                                            scope.launch {
+                                                viewModel.complete(
+                                                    id,
+                                                    nowDeadlineShaped(),
+                                                    System.currentTimeMillis(),
+                                                )
+                                            }
+                                        },
+                                        onCloseItem = { viewModel.closeItem() },
+                                        onGrill = onGrill,
+                                        onMutated = { scope.launch { reload() } },
+                                        onSubmitted = {
+                                            viewModel.closeItem()
+                                            scope.launch { reload() }
+                                        },
+                                    )
+                                } else for (column in currentBoard.columns) {
+                                    val key = column.value ?: ""
+                                    val isCollapsed = collapsed.contains(key)
+                                    val heading = if (column.value == null) {
+                                        NO_VALUE_LABEL[axis] ?: "No value"
                                     } else {
-                                        cappedColumnRows(column.items, selectedId)
+                                        column.label ?: "Project ${column.value}"
                                     }
-                                    val hidden = column.items.size - visible.size
 
-                                    for (record in visible) {
-                                        if (record.id == selectedId) {
-                                            // **In the row's own place.** The
-                                            // key is the pane's, not the
-                                            // row's, so `listState` can find
-                                            // it (the dirty-Back handler
-                                            // above) without knowing which
-                                            // column it landed in.
-                                            item(key = selectedItemKey(record.id)) {
+                                    item(key = "header-$key") {
+                                        ColumnHeader(
+                                            heading = heading,
+                                            count = column.items.size,
+                                            collapsed = isCollapsed,
+                                            onToggleCollapsed = {
+                                                scope.launch { viewModel.toggleCollapsed(key) }
+                                            },
+                                        )
+                                    }
+
+                                    if (!isCollapsed) {
+                                        val isExpanded = expanded.contains(key)
+                                        // The cap, plus its one exception for the
+                                        // open pane — decided by
+                                        // [cappedColumnRows], which is where that
+                                        // rule is stated and tested.
+                                        val visible = if (isExpanded) {
+                                            column.items
+                                        } else {
+                                            cappedColumnRows(column.items, selectedId)
+                                        }
+                                        val hidden = column.items.size - visible.size
+
+                                        for (record in visible) {
+                                            if (record.id == selectedId) {
+                                                // **In the row's own place.** The
+                                                // key is the pane's, not the
+                                                // row's, so `listState` can find
+                                                // it (the dirty-Back handler
+                                                // above) without knowing which
+                                                // column it landed in.
+                                                item(key = selectedItemKey(record.id)) {
+                                                    SelectedItemCard(
+                                                        itemId = record.id,
+                                                        syncTick = syncTick,
+                                                        onClose = { viewModel.closeItem() },
+                                                        onGrill = onGrill,
+                                                        onMutated = { scope.launch { reload() } },
+                                                        onSubmitted = {
+                                                            viewModel.closeItem()
+                                                            scope.launch { reload() }
+                                                        },
+                                                    )
+                                                }
+                                            } else {
+                                                item(key = "$key-${record.id}") {
+                                                    NowRow(
+                                                        record = record.asRowModel(),
+                                                        dark = dark,
+                                                        selected = false,
+                                                        onOpen = { viewModel.selectItem(record.id) },
+                                                        onComplete = {
+                                                            scope.launch {
+                                                                viewModel.complete(
+                                                                    record.id,
+                                                                    nowDeadlineShaped(),
+                                                                    System.currentTimeMillis(),
+                                                                )
+                                                            }
+                                                        },
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        if (hidden > 0 || (isExpanded && column.items.size > COLUMN_CAP)) {
+                                            item(key = "more-$key") {
+                                                TextButton(onClick = { viewModel.toggleExpanded(key) }) {
+                                                    Text(if (isExpanded) "Show fewer" else "$hidden more")
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (currentBoard.blocked.isNotEmpty()) {
+                                    item(key = "blocked-header") {
+                                        ColumnHeader(
+                                            heading = "Blocked",
+                                            count = currentBoard.blocked.size,
+                                            collapsed = false,
+                                            onToggleCollapsed = null,
+                                        )
+                                    }
+                                    for (entry in currentBoard.blocked) {
+                                        if (entry.item.id == selectedId) {
+                                            item(key = selectedItemKey(entry.item.id)) {
                                                 SelectedItemCard(
-                                                    itemId = record.id,
+                                                    itemId = entry.item.id,
                                                     syncTick = syncTick,
                                                     onClose = { viewModel.closeItem() },
                                                     onGrill = onGrill,
@@ -602,16 +728,16 @@ fun NowScreen(
                                                 )
                                             }
                                         } else {
-                                            item(key = "$key-${record.id}") {
-                                                NowRow(
-                                                    record = record.asRowModel(),
+                                            item(key = "blocked-${entry.item.id}") {
+                                                BlockedRow(
+                                                    entry = entry,
                                                     dark = dark,
                                                     selected = false,
-                                                    onOpen = { viewModel.selectItem(record.id) },
+                                                    onOpen = { viewModel.selectItem(entry.item.id) },
                                                     onComplete = {
                                                         scope.launch {
                                                             viewModel.complete(
-                                                                record.id,
+                                                                entry.item.id,
                                                                 nowDeadlineShaped(),
                                                                 System.currentTimeMillis(),
                                                             )
@@ -621,86 +747,32 @@ fun NowScreen(
                                             }
                                         }
                                     }
-
-                                    if (hidden > 0 || (isExpanded && column.items.size > COLUMN_CAP)) {
-                                        item(key = "more-$key") {
-                                            TextButton(onClick = { viewModel.toggleExpanded(key) }) {
-                                                Text(if (isExpanded) "Show fewer" else "$hidden more")
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (currentBoard.blocked.isNotEmpty()) {
-                                item(key = "blocked-header") {
-                                    ColumnHeader(
-                                        heading = "Blocked",
-                                        count = currentBoard.blocked.size,
-                                        collapsed = false,
-                                        onToggleCollapsed = null,
-                                    )
-                                }
-                                for (entry in currentBoard.blocked) {
-                                    if (entry.item.id == selectedId) {
-                                        item(key = selectedItemKey(entry.item.id)) {
-                                            SelectedItemCard(
-                                                itemId = entry.item.id,
-                                                syncTick = syncTick,
-                                                onClose = { viewModel.closeItem() },
-                                                onGrill = onGrill,
-                                                onMutated = { scope.launch { reload() } },
-                                                onSubmitted = {
-                                                    viewModel.closeItem()
-                                                    scope.launch { reload() }
-                                                },
-                                            )
-                                        }
-                                    } else {
-                                        item(key = "blocked-${entry.item.id}") {
-                                            BlockedRow(
-                                                entry = entry,
-                                                dark = dark,
-                                                selected = false,
-                                                onOpen = { viewModel.selectItem(entry.item.id) },
-                                                onComplete = {
-                                                    scope.launch {
-                                                        viewModel.complete(
-                                                            entry.item.id,
-                                                            nowDeadlineShaped(),
-                                                            System.currentTimeMillis(),
-                                                        )
-                                                    }
-                                                },
-                                            )
-                                        }
-                                    }
                                 }
                             }
                         }
-                    }
 
-                    // #537: the now-surface panes — waste/weekend/vacation/race
-                    // — below the queue, the same placement the web's own aside
-                    // stacks into at 390px (this issue's own "the parity
-                    // reference, not a simplification" line). Appended whatever
-                    // the queue's own state above was (loading, empty,
-                    // populated): the panes are a separate crossing
-                    // ([NowViewModel.loadPanes]), never gated on the board's.
-                    nowPaneSection(
-                        panes = panes,
-                        nowMs = panesNowMs,
-                        collapsed = { pane ->
-                            PaneCollapse.resolve(paneOverrides, pane.paneKey, pane.answer)
-                        },
-                        onToggle = { pane ->
-                            scope.launch { viewModel.togglePaneCollapsed(pane) }
-                        },
-                        onGoToSettings = onGoToSettings,
-                        onSetScheduledDate = { itemId, date ->
-                            scope.launch { viewModel.setScheduledDate(itemId, date, panesNowMs) }
-                        },
-                    )
+                        // #537: the now-surface panes — waste/weekend/vacation/race
+                        // — below the queue, the same placement the web's own aside
+                        // stacks into at 390px (this issue's own "the parity
+                        // reference, not a simplification" line). Appended whatever
+                        // the queue's own state above was (loading, empty,
+                        // populated): the panes are a separate crossing
+                        // ([NowViewModel.loadPanes]), never gated on the board's.
+                        nowPaneSection(
+                            panes = panes,
+                            nowMs = panesNowMs,
+                            collapsed = { pane ->
+                                PaneCollapse.resolve(paneOverrides, pane.paneKey, pane.answer)
+                            },
+                            onToggle = { pane ->
+                                scope.launch { viewModel.togglePaneCollapsed(pane) }
+                            },
+                            onGoToSettings = onGoToSettings,
+                            onSetScheduledDate = { itemId, date ->
+                                scope.launch { viewModel.setScheduledDate(itemId, date, panesNowMs) }
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -941,7 +1013,7 @@ private fun selectedItemKey(itemId: String) = "selected-item-$itemId"
  * no pane — which is also how Back ends up with nothing to scroll to. So
  * the host closes the selection on a landed submit, then reloads. */
 @Composable
-private fun SelectedItemCard(
+internal fun SelectedItemCard(
     itemId: String,
     syncTick: Int,
     onClose: () -> Unit,
@@ -986,7 +1058,7 @@ private fun SelectedItemCard(
  * design system's ICONOGRAPHY rule is "Unicode as icons: never". A section
  * with no toggle draws no mark at all rather than a disabled-looking one. */
 @Composable
-private fun ColumnHeader(
+internal fun ColumnHeader(
     heading: String,
     count: Int,
     collapsed: Boolean,

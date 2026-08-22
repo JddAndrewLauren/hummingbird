@@ -185,31 +185,38 @@ class TriageScreenStructuralTest {
     }
 
     @Test
-    fun `the opened capture expands at index 0 of the one LazyColumn, the Now pattern`() {
+    fun `the opened capture expands at index 0 of the one grid, the Now pattern`() {
         // Same inline-expansion shape as NowScreen: the pane is an item
-        // INSIDE the queue's LazyColumn, above the rows, which keep
-        // rendering below — and the pane IS `ItemDetailPanel`. The separate
-        // seeded editor is gone: one panel, one draft, one patch rule, with
-        // #360 kept by the mode above instead of by a second
-        // implementation.
+        // INSIDE the queue's one scrollable — a LazyVerticalGrid since the
+        // unfolded slice, one fixed column on the phone — above the rows,
+        // which keep rendering below, and the pane IS `ItemDetailPanel`.
+        // The separate seeded editor is gone: one panel, one draft, one
+        // patch rule, with #360 kept by the mode above instead of by a
+        // second implementation.
         //
         // The slot key **names the item**, and a constant one is a defect,
         // not a style: it makes the panel's disposal-and-recompose land on
         // the same `SaveableStateHolder` slot, which handed item B the state
         // item A saved there (`README`'s "The title-edit trap").
         assertTrue(
-            "the opened capture must be the LazyColumn's per-item selected-item entry",
-            screenSrc.contains("item(key = \"selected-item-\$id\")"),
+            "the opened capture must be the grid's per-item selected-item entry",
+            screenSrc.contains("key = \"selected-item-\$id\""),
         )
         assertFalse(
             "and the key must not go back to a constant — that is the leak",
-            screenSrc.contains("item(key = \"selected-item\")"),
+            screenSrc.contains("key = \"selected-item\""),
         )
-        val lazyColumn = screenSrc.indexOf("LazyColumn(")
-        val pane = screenSrc.indexOf("item(key = \"selected-item-")
+        val paneKeyAt = screenSrc.indexOf("key = \"selected-item-\$id\"")
+        val paneSpanAt = screenSrc.indexOf("span = { GridItemSpan(maxLineSpan) }", paneKeyAt)
+        assertTrue(
+            "the pane must span every grid lane — full width whatever the column count",
+            paneKeyAt >= 0 && paneSpanAt in paneKeyAt..(paneKeyAt + 300),
+        )
+        val lazyColumn = screenSrc.indexOf("LazyVerticalGrid(")
+        val pane = screenSrc.indexOf("key = \"selected-item-")
         val rows = screenSrc.indexOf("NowRow(")
-        assertTrue("TriageScreen must keep one LazyColumn", lazyColumn >= 0)
-        assertTrue("the pane item must sit inside the LazyColumn", pane > lazyColumn)
+        assertTrue("TriageScreen must keep one LazyVerticalGrid", lazyColumn >= 0)
+        assertTrue("the pane item must sit inside the grid", pane > lazyColumn)
         assertTrue("the queue's rows must render after the pane item", rows > pane)
         assertTrue(
             "the expanded pane must be the shared ItemDetailPanel",
@@ -258,8 +265,8 @@ class TriageScreenStructuralTest {
             ),
         )
         val handler = screenSrc.indexOf("BackHandler(")
-        val lazyColumn = screenSrc.indexOf("LazyColumn(")
-        assertTrue("the guard must be registered above the LazyColumn, never inside an item", handler in 0 until lazyColumn)
+        val lazyColumn = screenSrc.indexOf("LazyVerticalGrid(")
+        assertTrue("the guard must be registered above the grid, never inside an item", handler in 0 until lazyColumn)
         assertTrue(
             "the guard must ask the panel's own ViewModel, under the panel's own key",
             screenSrc.contains(

@@ -261,6 +261,13 @@ tasks.withType<Test>().configureEach {
     // ON_THE_BAR set would otherwise leave the bar-set pin UP-TO-DATE.
     inputs.file(File(repoRoot, "client/web/src/shell/nav-bar.ts"))
         .withPropertyName("navBarTs")
+    // Same fix for WindowWidthStructuralTest and FrontierLanesTest (the
+    // unfolded slice): both pin against web shell sources that sit outside
+    // this Gradle project.
+    inputs.file(File(repoRoot, "client/web/src/shell/breakpoints.ts"))
+        .withPropertyName("breakpointsTs")
+    inputs.file(File(repoRoot, "client/web/src/screens/frontier-lanes.ts"))
+        .withPropertyName("frontierLanesTs")
 }
 
 // ---------------------------------------------------------------------------
