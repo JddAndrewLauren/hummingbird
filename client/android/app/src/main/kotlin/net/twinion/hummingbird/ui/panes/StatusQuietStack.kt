@@ -1,7 +1,9 @@
 package net.twinion.hummingbird.ui.panes
 
 import android.provider.Settings
-import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.tween
@@ -16,7 +18,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -27,6 +30,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -42,6 +46,7 @@ import net.twinion.hummingbird.ui.theme.Ember200
 import net.twinion.hummingbird.ui.theme.LocalHbDark
 import net.twinion.hummingbird.ui.theme.Moss600
 import net.twinion.hummingbird.ui.theme.StatusDoneFgDark
+import uniffi.hummingbird_ffi_mobile.MobilePaneAnswer
 import uniffi.hummingbird_ffi_mobile.MobilePaneAnswerState
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
@@ -82,6 +87,27 @@ private fun accentQuietBorder(): Color =
 @Composable
 private fun doneColor(): Color = if (LocalHbDark.current) StatusDoneFgDark else Moss600
 
+/** An announcing card's headline colour.
+ *
+ * **Not simply `bandColor`.** The core bands every gap `Dormant`
+ * (`panes/uptime.rs`, `github.rs`, `kimi.rs`, `reachability.rs` all answer
+ * `BoundButUnacquired` + `Band::Dormant`), and `bandColor`'s `DORMANT` arm
+ * is the *healthy green* — so an un-polled phone would say "No answer yet"
+ * in success green inside an alert border, which is the exact reading
+ * [StatusPartition] exists to prevent. A pane with no answer has no band
+ * worth colouring: it gets the ordinary text colour, and the card's own
+ * accent border is what marks it as wanting attention.
+ *
+ * `PaneRow` never had this problem because it kept band colour in the 10dp
+ * dot and drew its headline in `onSurface`. */
+@Composable
+private fun headlineColor(answer: MobilePaneAnswer): Color =
+    if (answer.answerState == MobilePaneAnswerState.ANSWERED) {
+        bandColor(answer.band, LocalHbDark.current)
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+
 /** The uptime services' own glyphs, by subject. A map with a default, not a
  * `when` over a `String`: a `when` would need an `else ->` arm, and this
  * screen's drift rule is that no arm is a wildcard. A service this build has
@@ -118,11 +144,16 @@ private fun statusPaneIcon(pane: MobileRankedPane): Int = when (pane.standingQue
 @Composable
 private fun expandSpec(): FiniteAnimationSpec<IntSize> {
     val context = LocalContext.current
-    val scale = Settings.Global.getFloat(
-        context.contentResolver,
-        Settings.Global.ANIMATOR_DURATION_SCALE,
-        1f,
-    )
+    // Remembered: this is a `ContentResolver` read, and unremembered it ran
+    // on every recomposition — every chip tap — for a value that changes
+    // only when the operator changes a system setting.
+    val scale = remember(context) {
+        Settings.Global.getFloat(
+            context.contentResolver,
+            Settings.Global.ANIMATOR_DURATION_SCALE,
+            1f,
+        )
+    }
     return if (scale == 0f) tween(1) else tween(200, easing = CubicBezierEasing(.2f, .8f, .2f, 1f))
 }
 
@@ -168,7 +199,6 @@ private fun ProblemCard(
     nowMs: Long,
     onGoToSettings: () -> Unit,
 ) {
-    val dark = LocalHbDark.current
     Card(
         shape = CardShape,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -188,12 +218,12 @@ private fun ProblemCard(
                     painterResource(statusPaneIcon(pane)),
                     contentDescription = null,
                     modifier = Modifier.size(18.dp),
-                    tint = bandColor(pane.answer.band, dark),
+                    tint = headlineColor(pane.answer),
                 )
                 Text(
                     paneHeadline(pane, nowMs),
                     style = MaterialTheme.typography.titleLarge,
-                    color = bandColor(pane.answer.band, dark),
+                    color = headlineColor(pane.answer),
                     modifier = Modifier.weight(1f),
                 )
                 Text(
@@ -208,10 +238,14 @@ private fun ProblemCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             StatusPaneExpanded(pane, nowMs, headline = false)
-            // The one door a pane with no binding has. It is why an unbound
-            // pane announces rather than folding into a chip
-            // ([StatusPartition]'s own note).
-            if (pane.answer.answerState == MobilePaneAnswerState.UNBOUND) {
+            // The door for a pane that has no answer. Gated on "not
+            // answered" rather than on `UNBOUND`: **no Status question can
+            // ever be unbound** — none has a per-device binding
+            // (`panes/mod.rs`'s own test), so they answer
+            // `BoundButUnacquired` and an `UNBOUND` branch here is a button
+            // nobody can reach. A credential gap is exactly when Settings is
+            // worth offering.
+            if (pane.answer.answerState != MobilePaneAnswerState.ANSWERED) {
                 TextButton(onClick = onGoToSettings) { Text("Open Settings") }
             }
         }
@@ -239,9 +273,16 @@ internal fun QuietChip(
             // The name is the pane's, not the glyph's: an icon-only target
             // with no accessible name is a blank box to TalkBack, the same
             // rule `PaneGlyphMark` states.
-            .toggleable(
-                value = selected,
-                onValueChange = { onToggle() },
+            //
+            // `selectable`, not `toggleable`: a toggle publishes a
+            // ToggleableState, which TalkBack reads as "ticked / not
+            // ticked" — wrong for one-of-many, and doubly odd beside
+            // `Role.Tab`. Selection is what this row actually models, and
+            // the enclosing row is a `selectableGroup()` so position-in-set
+            // is announced with it.
+            .selectable(
+                selected = selected,
+                onClick = onToggle,
                 role = Role.Tab,
             ),
     ) {
@@ -264,7 +305,7 @@ internal fun QuietChip(
  * detail of whichever chip is open. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun QuietCard(
+internal fun QuietCard(
     quiet: List<MobileRankedPane>,
     label: (MobileRankedPane) -> String,
     nowMs: Long,
@@ -276,7 +317,7 @@ private fun QuietCard(
         shape = CardShape,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        modifier = Modifier.fillMaxWidth().animateContentSize(expandSpec()),
+        modifier = Modifier.fillMaxWidth(),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -308,6 +349,7 @@ private fun QuietCard(
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.selectableGroup(),
             ) {
                 for (pane in quiet) {
                     QuietChip(
@@ -318,25 +360,52 @@ private fun QuietCard(
                     )
                 }
             }
-            if (open != null) {
-                HorizontalDivider(
-                    thickness = 1.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant,
-                )
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        label(open),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        paneHeadline(open, nowMs),
-                        style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    StatusPaneExpanded(open, nowMs, headline = false)
+            // The animation sits on the detail region, not on the card: a
+            // `LazyColumn` disposes an off-screen item, so an
+            // `animateContentSize` on the card itself re-ran from its
+            // initial measurement every time the card scrolled back into
+            // view — the card visibly grew on scroll-back — and it fought
+            // the lazy list's own measurement besides.
+            AnimatedVisibility(
+                visible = open != null,
+                enter = expandVertically(expandSpec()),
+                exit = shrinkVertically(expandSpec()),
+            ) {
+                // Held across the exit animation so the detail does not
+                // blank before it has finished collapsing.
+                val shown = remember(open) { open }
+                if (shown != null) {
+                    QuietDetail(shown, label, nowMs)
                 }
             }
+        }
+    }
+}
+
+/** One open chip's detail, under the divider. */
+@Composable
+private fun QuietDetail(
+    pane: MobileRankedPane,
+    label: (MobileRankedPane) -> String,
+    nowMs: Long,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        HorizontalDivider(
+            thickness = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant,
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                label(pane),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                paneHeadline(pane, nowMs),
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            StatusPaneExpanded(pane, nowMs, headline = false)
         }
     }
 }

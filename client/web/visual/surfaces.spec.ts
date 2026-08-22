@@ -388,11 +388,15 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     // executable: one `kimi-balance/v1` gauge, five `github-hummingbird/v1`
     // workflow rows, three `uptime/v1` service rows, plus one quiet,
     // device-local `reachability` answer. `StatusBoard` gives every pane one
-    // tile, and every tile exactly one toggle button (`aria-expanded`,
-    // compact or open) and no other per-pane hook — no `role="region"`, no
-    // test id — so that attribute, scoped to the page's one `<main>`
-    // landmark, is what gets counted.
-    await expect(page.getByRole("main").locator("[aria-expanded]")).toHaveCount(10);
+    // tile and no other per-pane hook — no `role="region"`, no test id — so
+    // `data-tile-tone`, which both tile arms carry, is what counts them.
+    await expect(page.getByRole("main").locator("[data-tile-tone]")).toHaveCount(10);
+    // **Nine toggles, not ten.** An answered reachability pane has nothing
+    // beneath its headline to disclose, so its tile is drawn without a
+    // toggle rather than with one that opens onto an empty card; the seed
+    // answers that pane, so exactly one tile is missing its `aria-expanded`.
+    // A tenth appearing here means the empty expansion came back.
+    await expect(page.getByRole("main").locator("[aria-expanded]")).toHaveCount(9);
     // Both grids are labelled and counted, so a group that silently lost its
     // panes cannot pass as a board that simply has fewer tiles.
     await expect(page.getByText(/^infra · \d+ subjects?$/)).toBeVisible();

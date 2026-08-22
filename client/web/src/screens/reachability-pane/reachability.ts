@@ -53,6 +53,20 @@ export function reachabilityView(inputs: QuestionInputs): ReachabilityView | nul
   };
 }
 
+/** Whether this pane has anything to say *under* its headline.
+ *
+ * Alone among the status questions, it usually does not: "Synced 12m ago" is
+ * the entire answer, and the other three carry facts beneath theirs (a
+ * workflow's last run, a probe's observation, a balance's split). Only the
+ * gap arm has a body — the sentence explaining why there is no answer.
+ *
+ * The Status board reads this to decide whether to offer a disclosure
+ * control at all. A toggle that opens onto nothing is worse than no toggle:
+ * it reads as a broken control rather than as a pane with nothing to add. */
+export function reachabilityHasDetail(inputs: QuestionInputs): boolean {
+  return reachabilityView(inputs) === null;
+}
+
 export function reachabilityAnswer(inputs: QuestionInputs): PaneAnswer {
   const view = reachabilityView(inputs);
   const answer = reachabilityAnswerFromCore(paneInputs(inputs));

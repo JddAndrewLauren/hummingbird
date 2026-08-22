@@ -14,6 +14,7 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.width
+import net.twinion.hummingbird.ui.panes.QuietCard
 import net.twinion.hummingbird.ui.panes.QuietChip
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 import org.junit.Assert.assertTrue
@@ -99,7 +100,9 @@ class StatusChipRowTest {
 
     private fun pane(question: MobileStandingQuestion, label: String) = MobileRankedPane(
         standingQuestion = question,
-        subjectKey = label,
+        // The real subject key, so `UPTIME_ICONS`' lookup is exercised
+        // rather than always missing into the question's default.
+        subjectKey = label.substringAfter(" — ", label),
         paneKey = "${question.name.lowercase()}:$label",
         answer = MobilePaneAnswer(
             answerState = MobilePaneAnswerState.ANSWERED,
@@ -130,26 +133,38 @@ class StatusChipRowTest {
         -> error("a Now-surface question has no chip on Status: $question")
     }
 
+    /** The **production** quiet card, not a replica of its chip row.
+     *
+     * The first version of this file declared its own `FlowRow` with the
+     * same arrangement, which meant that changing `QuietCard` to a plain
+     * `Row` — the exact defect the negative control characterises — left
+     * every test here green. A gate that measures its own fixture measures
+     * nothing. */
     @Composable
-    private fun Chips(
-        panes: List<Pair<MobileStandingQuestion, String>>,
-        wrapping: Boolean,
-    ) {
+    private fun Card(panes: List<Pair<MobileStandingQuestion, String>>) {
         HummingbirdTheme {
-            if (wrapping) {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    for ((question, label) in panes) {
-                        QuietChip(pane(question, label), label, selected = false, onToggle = {})
-                    }
-                }
-            } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for ((question, label) in panes) {
-                        QuietChip(pane(question, label), label, selected = false, onToggle = {})
-                    }
+            val ranked = panes.map { (question, label) -> pane(question, label) to label }
+            val labels = ranked.associate { (p, label) -> p.paneKey to label }
+            QuietCard(
+                quiet = ranked.map { it.first },
+                // `paneLabel`'s words, as the screen passes them — the chip's
+                // accessible name is the pane's label, not its subject key.
+                label = { labels.getValue(it.paneKey) },
+                nowMs = 0L,
+                expandedKey = null,
+                onToggleChip = {},
+            )
+        }
+    }
+
+    /** The unwrapped counterfactual, kept local because no production code
+     * has this shape — it exists only to prove the measurement can fail. */
+    @Composable
+    private fun UnwrappedRow(panes: List<Pair<MobileStandingQuestion, String>>) {
+        HummingbirdTheme {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                for ((question, label) in panes) {
+                    QuietChip(pane(question, label), label, selected = false, onToggle = {})
                 }
             }
         }
@@ -157,7 +172,7 @@ class StatusChipRowTest {
 
     @Test
     fun `every chip keeps its 44dp target at the Fold's cover width`() {
-        composeTestRule.setContent { Chips(sixPanes, wrapping = true) }
+        composeTestRule.setContent { Card(sixPanes) }
 
         for (label in labels) {
             composeTestRule.onNodeWithContentDescription(label).assertWidthIsAtLeast(44.dp)
@@ -167,7 +182,7 @@ class StatusChipRowTest {
 
     @Test
     fun `the row wraps rather than squeezing, so every chip keeps its target`() {
-        composeTestRule.setContent { Chips(tenPanes, wrapping = true) }
+        composeTestRule.setContent { Card(tenPanes) }
 
         // Not "the last chip stays inside the edge": a `Row` *clips* rather
         // than overflowing, so that assertion is true of the broken layout
@@ -188,7 +203,7 @@ class StatusChipRowTest {
      * leave the wrap test green while measuring nothing. */
     @Test
     fun `a plain Row squeezes its trailing chips below the touch target`() {
-        composeTestRule.setContent { Chips(tenPanes, wrapping = false) }
+        composeTestRule.setContent { UnwrappedRow(tenPanes) }
 
         val last = composeTestRule
             .onNodeWithContentDescription(tenPanes.last().second)

@@ -25,11 +25,16 @@ object StatusPartition {
      *   "as expected", so hiding it behind a chip would make the quiet
      *   card's "N as expected" a lie. It gets a card and says, in its own
      *   words, why it has nothing.
-     * - **An unbound pane announces**, which is what keeps its "Open
-     *   Settings" door on screen. On a device with no token that means the
-     *   whole screen is problem cards and there is no quiet card at all —
-     *   the honest reading, and the one `client/android/README.md`'s
-     *   hardware check 2 already describes.
+     * - **A pane that has not been answered announces**, which is what
+     *   keeps its "Open Settings" door on screen. Note what this is *not*
+     *   gated on: **no Status question can ever be `UNBOUND`.** None of the
+     *   four has a per-device binding to be unbound from
+     *   (`panes/mod.rs`'s own test), so every gap here is
+     *   `BOUND_BUT_UNACQUIRED`, and a rule written against `UNBOUND` would
+     *   be a rule that never fires. On a device with no credentials that
+     *   means the whole screen is announcing cards and there is no quiet
+     *   card at all — the honest reading, and the one
+     *   `client/android/README.md`'s hardware check 2 describes.
      *
      * Exhaustive over [MobilePaneBand] with no `else ->` arm, this screen's
      * own drift rule: a sixth band is a compile error here rather than a

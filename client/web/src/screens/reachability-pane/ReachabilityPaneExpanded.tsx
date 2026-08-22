@@ -1,5 +1,5 @@
 import { Card } from "../../components/core/Card";
-import { EmptyState } from "../../components/feedback/EmptyState";
+import { PaneGap } from "../questions/PaneGap";
 import type { QuestionInputs } from "../questions/contract";
 import { reachabilityView } from "./reachability";
 
@@ -23,10 +23,8 @@ export function ReachabilityPaneBody({
   const view = reachabilityView(inputs);
   if (view === null) {
     return (
-      <EmptyState
-        compact
-        icon="cloud-fog"
-        headingLevel={3}
+      <PaneGap
+        headline={headline}
         title="Never synced on this device."
         body="No successful authority sync is recorded for this device."
       />

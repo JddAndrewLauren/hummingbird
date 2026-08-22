@@ -17,6 +17,17 @@ import { StatusBoard } from "./status-board/StatusBoard";
 
 const NOW_MS = 1_700_000_000_000;
 
+/** The "This device" tile, whichever arm it is drawn as. An answered
+ * reachability pane has nothing to disclose beneath its headline, so its
+ * tile is a plain `div` with no toggle — a role query would miss it. */
+function reachabilityTile(): Element {
+  const tile = [...document.querySelectorAll("[data-tile-tone]")].find((node) =>
+    /this device/i.test(node.getAttribute("aria-label") ?? ""),
+  );
+  if (!tile) throw new Error("no reachability tile on screen");
+  return tile;
+}
+
 // Derived from the registry, not hardcoded, so a later status question does
 // not require a second label roster in its component test. Asserting
 // non-empty keeps this from degenerating into a tautology against an empty
@@ -112,11 +123,7 @@ describe("StatusScreen", () => {
     );
 
     expect(screen.getByText("Synced 1m ago")).toBeTruthy();
-    expect(
-      screen
-        .getByRole("button", { name: /this device/i })
-        .getAttribute("data-tile-tone"),
-    ).toBe("quiet");
+    expect(reachabilityTile().getAttribute("data-tile-tone")).toBe("quiet");
 
     rerender(
       <StatusScreen
@@ -139,11 +146,7 @@ describe("StatusScreen", () => {
     // the reader — so what must change is the tile's *treatment*, and a
     // change that showed up only in colour would leave this green.
     expect(screen.getByText("Last synced 7m ago")).toBeTruthy();
-    expect(
-      screen
-        .getByRole("button", { name: /this device/i })
-        .getAttribute("data-tile-tone"),
-    ).toBe("danger");
+    expect(reachabilityTile().getAttribute("data-tile-tone")).toBe("danger");
   });
 
   it("opens one tile at a time, and remembers which through a remount", () => {

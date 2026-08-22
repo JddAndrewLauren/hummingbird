@@ -13,6 +13,7 @@ import net.twinion.hummingbird.core.CoreHolder
 import net.twinion.hummingbird.core.SyncHistoryStore
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 import uniffi.hummingbird_ffi_mobile.MobileSurface
+import uniffi.hummingbird_ffi_mobile.MobileSyncFacts
 
 /** What the Status screen is showing — [Loading] until the first rank has
  * landed, which is real and reachable (the seam crossing is a JNI call
@@ -24,14 +25,19 @@ sealed interface StatusState {
 
     /** [rankedAtMs] is the clock the rank was taken at — what the shell's
      * age/countdown words render against. [queueDepth] and [apiVersion] are
-     * read in the same crossing as the rank, so the sync strip and the
-     * footer describe the same instant the panes do rather than a later
-     * one. */
+     * separate seam crossings taken beside the rank — not one atomic read,
+     * and not claimed to be: they are read together so the strip and the
+     * footer describe the same moment the panes do, within a millisecond,
+     * which is all this screen needs. */
     data class Loaded(
         val panes: List<MobileRankedPane>,
         val rankedAtMs: Long,
         val queueDepth: UInt?,
         val apiVersion: UInt?,
+        /** This device's own durable sync history — what the sync strip
+         * falls back to on a cold start, so it cannot contradict the
+         * reachability pane beside it. */
+        val syncFacts: MobileSyncFacts?,
     ) : StatusState
 }
 
@@ -53,6 +59,7 @@ class StatusViewModel(
     private val writeExpandedFn: suspend (String?) -> Unit = {},
     private val queueDepthFn: suspend () -> UInt? = { null },
     private val apiVersionFn: suspend () -> UInt? = { null },
+    private val syncFactsFn: suspend () -> MobileSyncFacts? = { null },
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<StatusState>(StatusState.Loading)
@@ -82,6 +89,7 @@ class StatusViewModel(
                 rankedAtMs = nowMs,
                 queueDepth = queueDepthFn(),
                 apiVersion = apiVersionFn(),
+                syncFacts = syncFactsFn(),
             )
             _statusLine.value = null
             if (!expandedKeyLoaded) {
@@ -130,6 +138,7 @@ class StatusViewModel(
                 },
                 queueDepthFn = { core().queueDepth() },
                 apiVersionFn = { core().apiVersion() },
+                syncFactsFn = { SyncHistoryStore.load(appContext) },
             )
         }
 

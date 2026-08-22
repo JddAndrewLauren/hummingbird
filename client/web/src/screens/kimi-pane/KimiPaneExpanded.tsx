@@ -1,6 +1,6 @@
 import { Badge } from "../../components/core/Badge";
 import { Card } from "../../components/core/Card";
-import { EmptyState } from "../../components/feedback/EmptyState";
+import { PaneGap } from "../questions/PaneGap";
 import type { QuestionInputs } from "../questions/contract";
 import { formatUsd, kimiBand, kimiGapReason, kimiView } from "./kimi";
 
@@ -37,10 +37,8 @@ export function KimiPaneBody({
     // so "never polled yet" is the whole story.
     return (
       <>
-        <EmptyState
-          compact
-          icon="cloud-fog"
-          headingLevel={3}
+        <PaneGap
+          headline={headline}
           title="No balance answer yet"
           body={kimiGapReason(inputs)}
         />

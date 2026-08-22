@@ -28,10 +28,16 @@ const SEPARATOR = " · ";
 export function tileParts(label: string, collapsedHeadline: string): TileParts {
   const at = collapsedHeadline.indexOf(SEPARATOR);
   if (at === -1) return { name: label, fact: collapsedHeadline };
-  return {
-    name: collapsedHeadline.slice(0, at),
-    fact: collapsedHeadline.slice(at + SEPARATOR.length),
-  };
+  const name = collapsedHeadline.slice(0, at).trim();
+  const fact = collapsedHeadline.slice(at + SEPARATOR.length);
+  // An empty head is reachable from real data: both separator-bearing
+  // families interpolate a server-supplied string there (a workflow's
+  // `display_name`, a probe's `serviceId`), and an absent one would leave a
+  // blank bold line and an accessible name reading "GitHub workflows —  ·
+  // never run". The question's own label is always a true thing to say.
+  if (name === "")
+    return { name: label, fact: fact === "" ? collapsedHeadline : fact };
+  return { name, fact };
 }
 
 /** A tile's treatment. Four arms rather than the handoff's healthy/problem

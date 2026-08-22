@@ -43,9 +43,17 @@ import { homeworkHeadline, homeworkLink, homeworkView } from "./homework";
  * to two characters names nothing. */
 function OtherItem({ item }: { item: HomeworkItemCore }) {
   return (
-    <div style={{ display: "flex", gap: "var(--space-3)", alignItems: "baseline" }}>
-      <Icon name="scroll-text" size={13} style={{ position: "relative", top: 2 }} />
-      <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
+    <div
+      style={{ display: "flex", gap: "var(--space-3)", alignItems: "baseline" }}
+    >
+      <Icon
+        name="scroll-text"
+        size={13}
+        style={{ position: "relative", top: 2 }}
+      />
+      <span
+        style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}
+      >
         {item.title}
         {item.deadline === null ? null : (
           <span className="hb-meta" style={{ marginLeft: "var(--space-3)" }}>
@@ -78,7 +86,11 @@ function HomeworkCard({
   return (
     <Card
       padding={padding}
-      style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-3)",
+      }}
     >
       {children}
       {link === null ? null : (
@@ -97,7 +109,12 @@ function HomeworkCard({
   );
 }
 
-export function HomeworkPaneExpanded({ inputs }: { subjectKey: string; inputs: QuestionInputs }) {
+export function HomeworkPaneExpanded({
+  inputs,
+}: {
+  subjectKey: string;
+  inputs: QuestionInputs;
+}) {
   const facts = homeworkView(inputs);
   const link = homeworkLink(inputs);
   if (facts === null) {
@@ -167,7 +184,9 @@ export function HomeworkPaneExpanded({ inputs }: { subjectKey: string; inputs: Q
       {facts.others.length === 0 ? null : (
         <>
           <span className="hb-meta" style={{ color: "var(--text-muted)" }}>
-            {facts.others.length === 1 ? "1 more open" : `${facts.others.length} more open`}
+            {facts.others.length === 1
+              ? "1 more open"
+              : `${facts.others.length} more open`}
           </span>
           {facts.others.map((item) => (
             <OtherItem key={item.id} item={item} />

@@ -78,12 +78,15 @@ private fun GapBody(reason: String) {
  * Now-surface question reaching this slot is a loud error, never a blank
  * expansion. */
 /** @param headline whether this content draws the pane's own headline.
- * `PaneRow`'s expanded form has no headline of its own, so it does. The
- * quiet stack's cards draw `paneHeadline` themselves, in the card's header
- * row beside the pane's icon and its band word — so they pass `false`, and
- * the same sentence is not set twice, two lines apart. */
+ *
+ * Both callers pass `false` today — the quiet stack's announcing card and
+ * its open chip each draw `paneHeadline` themselves, beside the pane's icon
+ * and its band word, so a body that drew its own would say the same sentence
+ * twice two lines apart. The parameter is kept rather than inlined because
+ * it is what makes that split explicit at the call site; there is no default,
+ * so a third host has to choose rather than inherit. */
 @Composable
-internal fun StatusPaneExpanded(pane: MobileRankedPane, nowMs: Long, headline: Boolean = true) {
+internal fun StatusPaneExpanded(pane: MobileRankedPane, nowMs: Long, headline: Boolean) {
     when (val facts = pane.facts) {
         is MobilePaneFacts.Kimi -> KimiPaneExpanded(pane, facts.resolved, headline)
         is MobilePaneFacts.Github -> GithubPaneExpanded(pane, facts.resolved, nowMs, headline)

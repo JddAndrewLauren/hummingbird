@@ -206,11 +206,20 @@ fun StatusScreen(
                             verticalArrangement = Arrangement.spacedBy(14.dp),
                         ) {
                             item(key = "sync-strip") {
+                                // The in-process values win when this
+                                // session has synced; otherwise the device's
+                                // own durable history does. Without that
+                                // fallback a cold start read "Not yet
+                                // synced" directly above a reachability pane
+                                // saying "Synced 4m ago" — two readings of
+                                // one fact, on one screen, disagreeing.
                                 val summary = syncStatusSummary(
                                     MobileSyncStatusInput(
                                         online = NetworkStatus.isOnline(context),
-                                        lastSyncOutcomeKind = lastSyncOutcomeKind,
-                                        lastSyncAtMs = lastSyncAtMs,
+                                        lastSyncOutcomeKind = lastSyncOutcomeKind
+                                            ?: current.syncFacts?.latestOutcomeKind,
+                                        lastSyncAtMs = lastSyncAtMs
+                                            ?: current.syncFacts?.latestInformativeAtMs,
                                         queueDepth = current.queueDepth ?: 0u,
                                         nowMs = current.rankedAtMs,
                                     ),

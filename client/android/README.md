@@ -923,27 +923,6 @@ costs the device token every run.
     tile board (ADR-0033), so the two clients' *shapes* now differ on
     purpose — the set, order and band are still what this check compares.
 
-### The quiet stack's own run (#689, 2026-08-21)
-
-Supersedes checks 21 and 22's 2026-08-19 evidence for this screen. Run on
-the physical Fold, both display states:
-
-23. **A chip's selection survives a fold and an app restart.** Tap a quiet
-    chip, confirm its detail opens under the divider, then fold or unfold
-    and confirm the same chip is still selected and still open. Kill and
-    relaunch the app and confirm it *again* — the selection is a
-    `PanePrefs` key, not composition state, and the recorded fold/unfold
-    defect is exactly what this catches. Verified 2026-08-21 on the Fold,
-    cover → inner and back, plus a relaunch.
-24. **Animations off means instant, not stuck.** With Developer options'
-    animator duration scale at zero, opening and closing a chip must be
-    immediate and never leave the card at a part-height. (`expandSpec()`
-    reads that scale itself.)
-25. **An uncredentialed phone shows no quiet card at all.** Every pane
-    announces, because a gap and an unbound pane both announce by design —
-    "N as expected" must never count something nobody has polled. The
-    "Open Settings" button on an unbound card is the door check 2 depends
-    on, and it is on the card, not behind a chip.
 23. **Now's panes, and the weekend do-date write** (#537). The three panes
     below the queue render through the same shell Status uses. The write
     half **is runnable since #564/#621**: connect a calendar in Settings,
@@ -1098,6 +1077,31 @@ captured count (12 → 11); the pane's own mark-done check does the same
 per round 5's lesson — and note the pane's check is a full 48dp target only
 when it is not clipped by the viewport edge, so measure it scrolled into
 view or a clipped 15px node reads as a layout defect it is not.
+
+### The quiet stack's own run (#689, 2026-08-21)
+
+Supersedes checks 21 and 22's 2026-08-19 evidence for this screen. Run on
+the physical Fold, both display states:
+
+28. **A chip's selection survives a fold and an app restart.** Tap a quiet
+    chip, confirm its detail opens under the divider, then fold or unfold
+    and confirm the same chip is still selected and still open. Kill and
+    relaunch the app and confirm it *again* — the selection is a
+    `PanePrefs` key, not composition state, and the recorded fold/unfold
+    defect is exactly what this catches. Verified 2026-08-21 on the Fold,
+    cover → inner and back, plus a relaunch.
+29. **Animations off means instant, not stuck.** With Developer options'
+    animator duration scale at zero, opening and closing a chip must be
+    immediate and never leave the card at a part-height. (`expandSpec()`
+    reads that scale itself.)
+30. **An uncredentialed phone shows no quiet card at all.** Every pane
+    announces, because a gap announces by design — "N as expected" must
+    never count something nobody has polled. Check two things that only
+    this state shows: the headlines read in the ordinary text colour, **not
+    green** (the core bands every gap `dormant`, and dormant is the healthy
+    colour everywhere else — this screen deliberately does not use it for a
+    pane with no answer), and each announcing card carries its own "Open
+    Settings" button, which is the door check 2 depends on.
 
 ## In place, not at the top (2026-08-20)
 

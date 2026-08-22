@@ -147,7 +147,13 @@ class PaneContentStructuralTest {
         )
         assertTrue(
             "an open chip's detail must render the pane's own facts",
-            quietStack.contains("StatusPaneExpanded(open, nowMs, headline = false)"),
+            quietStack.contains("StatusPaneExpanded(pane, nowMs, headline = false)"),
+        )
+        // Two call sites, not one: the announcing card and the open chip.
+        assertTrue(
+            "both hosts must draw the pane's facts",
+            Regex("""StatusPaneExpanded\(pane, nowMs, headline = false\)""")
+                .findAll(quietStack).count() == 2,
         )
         val hits = listOf(
             "StatusScreen.kt",

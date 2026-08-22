@@ -132,10 +132,18 @@ class PaneShellStructuralTest {
         )
         // The half a green build would not catch: the selection sliding back
         // into the composition, where a fold drops it.
+        //
+        // Scoped to the *selection*, not to `remember` at all. The first
+        // spelling of this pin forbade every `remember {` in the file, which
+        // banned ordinary memoisation — the correct fix for a per-composition
+        // `ContentResolver` read failed this test. A pin that blocks the right
+        // change is a pin with the wrong teeth.
         for (name in listOf("StatusScreen.kt", "ui/panes/StatusQuietStack.kt")) {
+            val src = source(name)
             assertFalse(
-                "$name must hold no selection in a remember — a fold would lose it",
-                Regex("""remember\s*\{""").containsMatchIn(source(name)),
+                "$name must not hold the open chip in a remember — a fold would lose it",
+                Regex("""remember[^\n]*\{[^\n]*(expandedKey|selected)""").containsMatchIn(src) ||
+                    Regex("""(expandedKey|selected)\s*(:[^=]*)?=\s*remember""").containsMatchIn(src),
             )
         }
     }

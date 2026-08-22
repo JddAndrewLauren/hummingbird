@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useState } from "react";
 import { Card } from "../../components/core/Card";
 import { Icon } from "../../components/core/Icon";
@@ -7,6 +8,7 @@ import type { QuestionInputs, RankedPane } from "../questions/contract";
 import { QUESTION_ORDER } from "../questions/contract";
 import { QUESTIONS, rankPanes } from "../questions/registry";
 import { ReachabilityPaneBody } from "../reachability-pane/ReachabilityPaneExpanded";
+import { reachabilityHasDetail } from "../reachability-pane/reachability";
 import type { StorageLike } from "../storage";
 import { UptimePaneBody } from "../uptime-pane/UptimePaneExpanded";
 import {
@@ -109,6 +111,18 @@ function PaneBody({
   }
 }
 
+/** Whether this pane has anything to disclose beneath its headline.
+ *
+ * Three of the four always do. Reachability usually does not — "Synced 12m
+ * ago" is its whole answer — so it is drawn as a plain tile with no toggle
+ * rather than one that opens onto an empty card. The predicate is the pane
+ * module's own (`reachabilityHasDetail`), not a judgement made here. */
+function hasDetail(pane: RankedPane, inputs: QuestionInputs): boolean {
+  return pane.question === "reachability"
+    ? reachabilityHasDetail(inputs)
+    : true;
+}
+
 const TONE_COLOR: Record<TileTone, string> = {
   quiet: "var(--text-secondary)",
   warn: "var(--status-warn-fg)",
@@ -124,6 +138,55 @@ function ringColor(tone: TileTone): string | null {
   if (tone === "danger")
     return "color-mix(in oklab, var(--status-danger-fg) 75%, transparent)";
   return null;
+}
+
+/** The tile's own control: a `button` when there is something to open, a
+ * plain `div` when there is not. Both carry the tile's accessible name and
+ * its test hooks, so a pane that cannot be opened is still announced and
+ * still photographed — it simply has no `aria-expanded` to lie with. */
+function Toggle({
+  openable,
+  open,
+  detailId,
+  label,
+  tone,
+  band,
+  onToggle,
+  children,
+}: {
+  openable: boolean;
+  open: boolean;
+  detailId: string;
+  label: string;
+  tone: TileTone;
+  band: RankedPane["answer"]["band"];
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  const shared = {
+    "aria-label": label,
+    "data-tile-tone": tone,
+    "data-band": band,
+    className: open ? "hb-status-tile-button-open" : "hb-status-tile-button",
+  } as const;
+  if (!openable) {
+    return (
+      <div {...shared} role="group">
+        {children}
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      aria-controls={open ? detailId : undefined}
+      onClick={onToggle}
+      {...shared}
+    >
+      {children}
+    </button>
+  );
 }
 
 function StatusTile({
@@ -145,12 +208,18 @@ function StatusTile({
   const tone = tileTone(pane.answer);
   const ring = ringColor(tone);
   const icon = tileIcon(pane);
+  const openable = hasDetail(pane, inputs);
+  const open = expanded && openable;
+  const detailId = `hb-status-detail-${pane.paneKey.replace(/[^a-zA-Z0-9-]/g, "-")}`;
+  // The subject is worth announcing only when it is not the label said twice
+  // — the same guard the detail line below uses.
+  const spoken = name === definition.label ? fact : `${name} · ${fact}`;
 
   return (
     <Card
-      padding={expanded ? "var(--space-5)" : "var(--space-4) var(--space-3)"}
-      accent={expanded}
-      className={`hb-status-tile${expanded ? " hb-status-tile-wide" : ""}`}
+      padding={open ? "var(--space-5)" : "var(--space-4) var(--space-3)"}
+      accent={open}
+      className={`hb-status-tile${open ? " hb-status-tile-wide" : ""}`}
       style={
         // `Card` sets the `border` shorthand, so the ring has to replace it
         // wholesale: mixing shorthand and longhand on one element drops values
@@ -158,21 +227,20 @@ function StatusTile({
         ring === null ? undefined : { border: `1.5px solid ${ring}` }
       }
     >
-      {/* One button per tile, and the only `aria-expanded` on the board —
-          the whole tile is the toggle, so the compact form has no separate
-          hit target and the expanded form has no second one. */}
-      <button
-        type="button"
-        aria-expanded={expanded}
-        aria-label={`${definition.label} — ${name} · ${fact}`}
-        data-tile-tone={tone}
-        data-band={pane.answer.band}
-        onClick={onToggle}
-        className={
-          expanded ? "hb-status-tile-button-open" : "hb-status-tile-button"
-        }
+      {/* One control per tile, and the only `aria-expanded` on the board.
+          A pane with nothing beneath its headline gets a plain `div`
+          instead: a disclosure control that discloses nothing reads as a
+          broken one. */}
+      <Toggle
+        openable={openable}
+        open={open}
+        detailId={detailId}
+        label={`${definition.label} — ${spoken}`}
+        tone={tone}
+        band={pane.answer.band}
+        onToggle={onToggle}
       >
-        {expanded ? (
+        {open ? (
           <span className="hb-status-tile-head">
             <Icon name={icon} size={18} color={TONE_COLOR[tone]} />
             <span
@@ -208,9 +276,9 @@ function StatusTile({
             {tone === "quiet" ? <span className="hb-status-dot" /> : null}
           </>
         )}
-      </button>
-      {expanded ? (
-        <div className="hb-status-tile-detail">
+      </Toggle>
+      {open ? (
+        <div className="hb-status-tile-detail" id={detailId}>
           {/* The full pane name, to say which subject the headline is about.
               A question with one subject has nothing to disambiguate — its
               tile is already named by its label — and "Kimi balance —
@@ -225,6 +293,11 @@ function StatusTile({
       ) : null}
     </Card>
   );
+}
+
+/** A group name as an id fragment. */
+function slug(group: StatusGroup): string {
+  return group.replace(/[^a-z]+/gi, "-").toLowerCase();
 }
 
 /** Layout order: the declared question order, then the subject. Identity
@@ -306,10 +379,17 @@ export function StatusBoard({
         // empty grid.
         if (!members || members.length === 0) return null;
         return (
-          <section key={group}>
-            <span className="hb-meta">
+          <section
+            key={group}
+            aria-labelledby={`hb-status-group-${slug(group)}`}
+          >
+            {/* A heading, not a styled span: an unnamed `section` is not a
+                landmark, so the two groups — the one piece of structure this
+                board adds — were invisible to a screen reader, which heard
+                ten tiles in a flat list. */}
+            <h2 className="hb-meta" id={`hb-status-group-${slug(group)}`}>
               {group} · {subjectCount(members.length)}
-            </span>
+            </h2>
             <div
               className={`hb-status-grid ${group === "infra" ? "hb-status-grid-4" : "hb-status-grid-5"}`}
             >

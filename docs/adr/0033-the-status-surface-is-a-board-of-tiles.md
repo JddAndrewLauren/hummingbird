@@ -26,18 +26,21 @@ reinterpreted**. Two things change with it:
   not by expanding.
 - **Identity ordering replaces the captured sample.** A tile's position is
   its group, then the declared question order, then its subject. Band is not
-  in that list, so a band change cannot move a tile at all.
+  in that list, so a band change cannot move a tile at all. The open tile
+  takes a **full row** rather than two columns for the same reason: a
+  two-column tile that cannot fit its row wraps, and the hole it leaves pulls
+  a later tile up into it, so opening one tile moved its neighbours.
 
 **Why the original rejection no longer binds.** ADR-0017 feared two specific
 things, and both are answerable on the record rather than by assertion.
 
 *"Every tile stays visible all the time, and the five-plus infra panes #314
 anticipates crowd out anything actually wrong."* The compact tile is the
-answer: a pane that is fine renders as an icon, a name, a muted age and a
-6px dot, and a pane that is not renders the same size with a band-coloured
-ring and its fault in words (`cron stalled`, `unreachable — connect
-timeout`). Nothing is hidden and nothing shouts; ten panes fit above the
-fold at every width the gate photographs. The crowding the ADR feared was of
+answer: a pane that is fine renders as an icon, a name, one muted line of
+its own words and a 6px dot, and a pane that is not renders the same size
+with a band-coloured ring and its fault in words (`stalled, last ok 1h ago`,
+`unreachable — connect timeout`). Nothing is hidden and nothing shouts; ten
+panes fit above the fold at every width the gate photographs. The crowding the ADR feared was of
 *expanded* rows, which is what collapse-when-dormant existed to prevent —
 and the board has no expanded rows to crowd with.
 
@@ -66,9 +69,21 @@ of decided panes, two renderings, chosen per surface.
 
 The pane contract (ADR-0015), the surface axis and the registry filter
 (ADR-0017 decisions 2-4), the band vocabulary, `AnswerState`'s three arms,
-the sort, and every pane's own words. The four panes' expanded bodies are
-the same components Now renders, reached through an `XPaneBody` export that
-is the existing tree minus the card the tile already is.
+the sort, and every pane's own words — no sentence on this surface was
+rewritten for it.
+
+The four panes' expanded bodies are the same components Now renders, reached
+through an `XPaneBody` export. Stated precisely, because "verbatim" was
+claimed here first and was not true: a body drops the card the tile already
+is, and drops its own headline, because the tile's header carries the pane's
+decided sentence and a body that drew it too would say one thing twice. What
+that leaves is the supporting facts. For reachability it leaves *nothing* —
+"Synced 12m ago" is that pane's whole answer — so its tile is drawn with no
+disclosure control at all rather than one that opens onto an empty card, and
+it is the one tile on the board with no `aria-expanded`.
+
+A gap keeps its own arm throughout: its reason is the one thing its tile has
+not already said, so an opened gap shows the reason and not the heading.
 
 One rule this surface keeps by a different mechanism: **never an empty list
 pretending to be all quiet**. The board has no loading arm, because it needs

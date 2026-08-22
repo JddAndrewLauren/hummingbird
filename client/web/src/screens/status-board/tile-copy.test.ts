@@ -40,6 +40,21 @@ describe("the Status board's compact copy", () => {
     });
   });
 
+  // Reachable from real data: an empty `display_name` in a workflow payload,
+  // or a truncated one, puts the separator at the head.
+  it("keeps the label when the sentence starts with the separator", () => {
+    expect(tileParts("GitHub workflows", " · never run")).toEqual({
+      name: "GitHub workflows",
+      fact: "never run",
+    });
+  });
+
+  it("says something when the sentence is nothing but a separator", () => {
+    const { name, fact } = tileParts("Uptime", " · ");
+    expect(name).toBe("Uptime");
+    expect(fact.trim()).not.toBe("");
+  });
+
   it("rewrites no words at all", () => {
     const headline =
       "gmail-poll · cadence unreadable, last scheduled success 6h ago";

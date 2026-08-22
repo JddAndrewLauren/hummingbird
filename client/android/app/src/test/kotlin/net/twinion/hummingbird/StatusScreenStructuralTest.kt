@@ -84,6 +84,24 @@ class StatusScreenStructuralTest {
     }
 
     @Test
+    fun `an announcing card never wears the healthy band colour`() {
+        // The core bands every gap `Dormant`, and `bandColor`'s DORMANT arm
+        // is the healthy green — so a card that coloured itself by band
+        // alone drew "No answer yet" in success green inside an alert
+        // border, which is the one reading this screen exists to prevent.
+        // The device this was built on had live poller data, so no capture
+        // and no hardware run could show it; this is the gate instead.
+        assertTrue(
+            "the quiet stack must route its headline colour through a helper that reads answerState",
+            stackSrc.contains("fun headlineColor(") && stackSrc.contains("MobilePaneAnswerState.ANSWERED"),
+        )
+        assertFalse(
+            "a card must not take bandColor for its headline without checking answerState first",
+            Regex("""(tint|color) = bandColor\(""").containsMatchIn(stackSrc),
+        )
+    }
+
+    @Test
     fun `the quiet stack splits by partition, and the split reads a decided answer`() {
         // `partition {}` is the whole reason the quiet stack can show two
         // groups without a comparator: it preserves the seam's order inside
