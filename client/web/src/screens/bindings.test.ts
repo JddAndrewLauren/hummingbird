@@ -10,6 +10,7 @@ import {
   canSubmitBinding,
   groupBindingsByQuestion,
   questionLabelForBinding,
+  questionSwitchWriteError,
   sameBindingValue,
 } from "./bindings";
 
@@ -224,5 +225,92 @@ describe("questionLabelForBinding", () => {
 
   it("answers null for a key no question claims", () => {
     expect(questionLabelForBinding(ROSTER, "some-future-binding")).toBeNull();
+  });
+});
+
+// -- the off switch (#715, ADR-0034) ----------------------------------------
+
+describe("groupBindingsByQuestion — the off switch", () => {
+  it("reads an unread switch list as 'no answer', never as everything-on", () => {
+    // The default argument is the one the fold takes before the first
+    // `questionSwitches` broadcast. `null`, not `true`: a roster that drew
+    // ten toggles from a list it had not read would state a fact about the
+    // workspace, and the first one to flip would look like a bug.
+    const grouped = groupBindingsByQuestion(ROSTER, []);
+    expect(grouped.groups.map((group) => group.enabled)).toEqual([null, null, null]);
+    expect(grouped.groups.map((group) => group.pending)).toEqual([false, false, false]);
+  });
+
+  it("carries each question's own enabled and pending state", () => {
+    const grouped = groupBindingsByQuestion(ROSTER, [], [
+      { question: "waste", enabled: true, pending: false },
+      { question: "weekend", enabled: false, pending: true },
+      { question: "race", enabled: true, pending: false },
+    ]);
+    expect(grouped.groups.map((group) => group.enabled)).toEqual([true, false, true]);
+    expect(grouped.groups.map((group) => group.pending)).toEqual([false, true, false]);
+  });
+
+  it("reads a question absent from the list as 'no answer for it', not as on", () => {
+    // The demo-world asymmetry: a hand-authored list is a subset, and a
+    // question it forgot must not be drawn with a toggle nobody answered
+    // for — the shape of the copy bug #714 shipped.
+    const grouped = groupBindingsByQuestion(ROSTER, [], [
+      { question: "waste", enabled: false, pending: false },
+    ]);
+    expect(grouped.groups.map((group) => group.enabled)).toEqual([false, null, null]);
+  });
+
+  it("matches switches by question, never by position", () => {
+    const grouped = groupBindingsByQuestion(ROSTER, [], [
+      { question: "race", enabled: false, pending: false },
+      { question: "waste", enabled: true, pending: false },
+      { question: "weekend", enabled: true, pending: false },
+    ]);
+    expect(grouped.groups.map((group) => [group.question, group.enabled])).toEqual([
+      ["waste", true],
+      ["weekend", true],
+      ["race", false],
+    ]);
+  });
+});
+
+describe("questionSwitchWriteError", () => {
+  it("says nothing when there is no write, it succeeded, or it was another question's", () => {
+    expect(questionSwitchWriteError(null, "race")).toBeNull();
+    expect(
+      questionSwitchWriteError(
+        { seed: "s", question: "race", kind: "ok", error: null },
+        "race",
+      ),
+    ).toBeNull();
+    expect(
+      questionSwitchWriteError(
+        { seed: "s", question: "waste", kind: "failed", error: "nope" },
+        "race",
+      ),
+    ).toBeNull();
+  });
+
+  it("gives every non-ok outcome words on its own question's row", () => {
+    expect(
+      questionSwitchWriteError(
+        { seed: "s", question: "race", kind: "unknown_question", error: null },
+        "race",
+      ),
+    ).toMatch(/doesn't know that question/i);
+    expect(
+      questionSwitchWriteError({ seed: "s", question: "race", kind: "busy", error: null }, "race"),
+    ).toMatch(/busy/i);
+    expect(
+      questionSwitchWriteError(
+        { seed: "s", question: "race", kind: "failed", error: "disk full" },
+        "race",
+      ),
+    ).toBe("disk full");
+    // A `failed` with no detail still says something rather than nothing.
+    expect(
+      questionSwitchWriteError({ seed: "s", question: "race", kind: "failed", error: null }, "race"),
+    ).toMatch(/didn't save/i);
   });
 });

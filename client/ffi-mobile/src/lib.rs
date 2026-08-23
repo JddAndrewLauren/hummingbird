@@ -85,7 +85,7 @@ use hummingbird_core::decisions::{
     available_actions, can_grill, can_mark_done, frontier, panes, queue, roster, rules, urgency,
 };
 use hummingbird_core::decisions::panes::contract::{
-    AnswerState, Band, PaneAnswerCore, StandingQuestion, Surface,
+    AnswerState, Band, PaneAnswerCore, StandingQuestion, Surface, QUESTION_ORDER,
 };
 use hummingbird_core::decisions::panes::inputs::{
     BindingFact, BindingValueFact, CalendarEventFacts, CalendarEventStatusFact,
@@ -2086,6 +2086,23 @@ fn map_standing_question(question: StandingQuestion) -> MobileStandingQuestion {
     }
 }
 
+/// [`map_standing_question`]'s inverse — also wildcard-free, so an
+/// eleventh question fails to compile in both directions.
+fn unmap_standing_question(question: MobileStandingQuestion) -> StandingQuestion {
+    match question {
+        MobileStandingQuestion::Homework => StandingQuestion::Homework,
+        MobileStandingQuestion::Scps => StandingQuestion::Scps,
+        MobileStandingQuestion::Waste => StandingQuestion::Waste,
+        MobileStandingQuestion::Weekend => StandingQuestion::Weekend,
+        MobileStandingQuestion::Vacation => StandingQuestion::Vacation,
+        MobileStandingQuestion::Race => StandingQuestion::Race,
+        MobileStandingQuestion::Kimi => StandingQuestion::Kimi,
+        MobileStandingQuestion::Github => StandingQuestion::Github,
+        MobileStandingQuestion::Uptime => StandingQuestion::Uptime,
+        MobileStandingQuestion::Reachability => StandingQuestion::Reachability,
+    }
+}
+
 /// One standing-question roster entry (#714, ADR-0034 decision 4), mirrored
 /// as a `uniffi::Record`.
 ///
@@ -3453,6 +3470,10 @@ fn mobile_pane_inputs(
         calendar_connected: calendar.connected,
         items,
         sync: to_sync_facts(sync),
+        // #715: passed straight through as `Core` decided it — the phone
+        // honours a question switched off in the browser without being able
+        // to change it (ADR-0034 decision 4; #716 renders the toggle).
+        disabled_questions: core.disabled_questions(),
     }
 }
 
@@ -3947,6 +3968,59 @@ impl MobileTaskHost {
             .await
             .core
             .set_binding(&seed, key, &value, now_ms)
+            .await
+            .map_err(|error| MobileSetBindingError::WriteFailed {
+                detail: error.to_string(),
+            })
+    }
+
+    /// Every standing question's off switch (#715, ADR-0034), per
+    /// [`Core::question_switches`] — in `QUESTION_ORDER`, every question
+    /// present whether it has a row or not, and each carrying whether an
+    /// unconfirmed local write is overlaid on it.
+    ///
+    /// An **applied result**, this seam's own rule: Kotlin receives the
+    /// assembled list and never the absence-means-enabled reading behind
+    /// it. Pair it with [`question_roster`] for the labels — the roster is
+    /// a constant of the build and this is device state, which is why they
+    /// are two doors (`decisions::questions`'s own header).
+    ///
+    /// **Android does not render this yet** (#716); the door lands here so
+    /// that slice is rendering-only.
+    pub async fn question_switches(&self) -> Vec<MobileQuestionSwitch> {
+        self.inner
+            .lock()
+            .await
+            .core
+            .question_switches()
+            .iter()
+            .map(to_question_switch_record)
+            .collect()
+    }
+
+    /// Switches one standing question on or off (#715), per
+    /// [`Core::set_question_enabled`] — which overlays, so a following
+    /// [`MobileTaskHost::question_switches`] reports the new state and
+    /// `pending` immediately.
+    ///
+    /// The question crosses as this seam's own enum rather than a wire
+    /// string, so there is no vocabulary to typo and no "unknown question"
+    /// outcome to model — the `BindingKey::parse` rejection
+    /// [`MobileTaskHost::set_binding`] needs is bought here by the type.
+    /// The seed is minted internally ([`mint_mutation_seed`]), as every
+    /// mutation door added since #529 does.
+    pub async fn set_question_enabled(
+        &self,
+        question: MobileStandingQuestion,
+        enabled: bool,
+        now_ms: i64,
+    ) -> Result<(), MobileSetBindingError> {
+        let seed = mint_mutation_seed("question-enabled", now_ms);
+        self.inner
+            .lock()
+            .await
+            .core
+            .set_question_enabled(&seed, unmap_standing_question(question), enabled, now_ms)
             .await
             .map_err(|error| MobileSetBindingError::WriteFailed {
                 detail: error.to_string(),
@@ -5999,6 +6073,42 @@ pub struct MobileBindingRecord {
     pub known: bool,
     pub pending: bool,
     pub value: MobileBindingValue,
+}
+
+/// One question's off switch (#715), mirrored as a `uniffi::Record`.
+///
+/// `question` crosses as this seam's own enum, not the wire string a
+/// [`hummingbird_core::question_switch::QuestionSwitch`] carries, so a
+/// Kotlin `when` over the roster and over the switches matches the same
+/// vocabulary. `pending` is the read-time overlay fact
+/// [`MobileBindingRecord::pending`] already carries, and means the same
+/// thing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct MobileQuestionSwitch {
+    pub question: MobileStandingQuestion,
+    pub enabled: bool,
+    pub pending: bool,
+}
+
+fn to_question_switch_record(
+    switch: &hummingbird_core::question_switch::QuestionSwitch,
+) -> MobileQuestionSwitch {
+    MobileQuestionSwitch {
+        // `Core::question_switches` walks `QUESTION_ORDER` itself, so every
+        // spelling it emits is one `StandingQuestion::as_str` produced —
+        // the same reasoning `standing_question_of` states for `SUNK`.
+        question: map_standing_question(
+            QUESTION_ORDER
+                .iter()
+                .copied()
+                .find(|question| question.as_str() == switch.question)
+                .unwrap_or_else(|| {
+                    panic!("Core::question_switches produced an unknown question {:?}", switch.question)
+                }),
+        ),
+        enabled: switch.enabled,
+        pending: switch.pending,
+    }
 }
 
 fn to_binding_record(binding: &Binding) -> MobileBindingRecord {
@@ -9304,6 +9414,105 @@ mod settings_tests {
             .find(|entry| entry.question == MobileStandingQuestion::Weekend)
             .expect("weekend is listed");
         assert!(weekend.bindings.is_empty());
+    }
+
+
+    // ------------------------------------------------ the off switch (#715)
+
+    #[tokio::test]
+    async fn a_fresh_device_reports_every_question_on_with_nothing_written() {
+        let host = pane_host("switches-fresh").await;
+        let switches = host.question_switches().await;
+
+        assert_eq!(switches.len(), 10);
+        // Same order as the roster, so #716 can zip the two lists.
+        let questions: Vec<MobileStandingQuestion> =
+            switches.iter().map(|switch| switch.question).collect();
+        let roster: Vec<MobileStandingQuestion> =
+            question_roster().into_iter().map(|entry| entry.question).collect();
+        assert_eq!(questions, roster);
+        assert!(switches.iter().all(|switch| switch.enabled));
+        assert!(switches.iter().all(|switch| !switch.pending));
+    }
+
+    /// #715's Android criterion, which is a seam test rather than a screen:
+    /// the phone honours a question switched off — without yet being able
+    /// to switch one itself (#716 renders the control). Both halves of
+    /// "hidden and unpolled" are checked, since `rank_panes` and
+    /// `pane_zone_queries` are two separate doors.
+    #[tokio::test]
+    async fn switching_a_question_off_removes_its_pane_from_this_seam() {
+        let host = pane_host("switches-hide").await;
+        let before = host
+            .rank_panes(MobileSurface::Now, 1_000, Vec::new(), MobileSyncFacts::default())
+            .await;
+        assert!(before
+            .iter()
+            .any(|pane| pane.standing_question == MobileStandingQuestion::Weekend));
+
+        host.set_question_enabled(MobileStandingQuestion::Weekend, false, 1_000)
+            .await
+            .unwrap();
+
+        let switch = host
+            .question_switches()
+            .await
+            .into_iter()
+            .find(|switch| switch.question == MobileStandingQuestion::Weekend)
+            .expect("weekend is listed");
+        assert!(!switch.enabled);
+        assert!(switch.pending, "the write has not drained yet, and says so");
+
+        let after = host
+            .rank_panes(MobileSurface::Now, 1_000, Vec::new(), MobileSyncFacts::default())
+            .await;
+        assert_eq!(after.len(), before.len() - 1);
+        assert!(!after
+            .iter()
+            .any(|pane| pane.standing_question == MobileStandingQuestion::Weekend));
+
+        // The unpolled half: weekend is the question that asks for the
+        // rolling window, so its queries must go with its pane.
+        let queries = host.pane_zone_queries(MobileSurface::Now, 1_000).await;
+        let before_queries = pane_host("switches-hide-baseline")
+            .await
+            .pane_zone_queries(MobileSurface::Now, 1_000)
+            .await;
+        assert!(
+            queries.len() < before_queries.len(),
+            "a question nobody can see must not cost the host a zone lookup"
+        );
+    }
+
+    #[tokio::test]
+    async fn switching_a_question_back_on_restores_its_pane() {
+        let host = pane_host("switches-restore").await;
+        host.set_question_enabled(MobileStandingQuestion::Race, false, 1_000)
+            .await
+            .unwrap();
+        host.set_question_enabled(MobileStandingQuestion::Race, true, 2_000)
+            .await
+            .unwrap();
+
+        let ranked = host
+            .rank_panes(MobileSurface::Now, 3_000, Vec::new(), MobileSyncFacts::default())
+            .await;
+        assert!(ranked
+            .iter()
+            .any(|pane| pane.standing_question == MobileStandingQuestion::Race));
+    }
+
+    #[tokio::test]
+    async fn a_switch_row_is_not_offered_to_the_bindings_editor() {
+        let host = pane_host("switches-not-a-binding").await;
+        host.set_question_enabled(MobileStandingQuestion::Kimi, false, 1_000)
+            .await
+            .unwrap();
+
+        let keys: Vec<String> =
+            host.bindings().await.into_iter().map(|binding| binding.key).collect();
+        assert!(keys.contains(&"race-series".to_string()));
+        assert!(!keys.iter().any(|key| key.starts_with("question-enabled-")));
     }
 
     // -------------------------------------------------------------- panes (#536)

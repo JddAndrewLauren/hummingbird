@@ -848,6 +848,7 @@ mod tests {
             calendar_connected: true,
             items,
             sync: Default::default(),
+            disabled_questions: Vec::new(),
         }
     }
 

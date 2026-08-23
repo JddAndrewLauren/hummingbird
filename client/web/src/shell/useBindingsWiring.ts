@@ -1,6 +1,12 @@
 import { useEffect } from "react";
 import type { CoreStatus } from "../store/store";
-import { requestBindings, setBinding, type WorkerLike } from "../store/worker-client";
+import {
+  requestBindings,
+  requestQuestionSwitches,
+  setBinding,
+  setQuestionEnabled,
+  type WorkerLike,
+} from "../store/worker-client";
 
 // #118's bindings wiring: requests every standing-question binding once the
 // core is ready, and again after every sync cycle — the same "refresh once
@@ -15,6 +21,10 @@ import { requestBindings, setBinding, type WorkerLike } from "../store/worker-cl
 // anything.
 
 export interface BindingsWiring {
+  /** #715: switches one standing question on or off. Does not wait for
+   * `setQuestionEnabledResult` — `worker-client.ts` re-requests the switches
+   * itself behind a successful one, the same shape `setBinding` uses. */
+  setQuestionEnabled: (question: string, enabled: boolean) => void;
   /** Sends one binding write. The caller decides whether the draft is worth
    * sending (`screens/bindings.ts`'s `canSubmitBinding`); this trusts it and
    * enqueues, exactly as `useCaptureWiring` does. Does not wait for
@@ -38,6 +48,10 @@ export function useBindingsWiring(
       return;
     }
     requestBindings(worker);
+    // #715's switches ride the same refresh: they are `settings` rows too,
+    // so a completed cycle is exactly when another device's toggle can have
+    // arrived and when this device's own write stops being `pending`.
+    requestQuestionSwitches(worker);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, syncOutcomeSeq]);
 
@@ -47,7 +61,22 @@ export function useBindingsWiring(
       const seed = mintBindingSeed(key, nowMs);
       setBinding(worker, seed, key, value, nowMs);
     },
+    setQuestionEnabled: (question: string, enabled: boolean) => {
+      const nowMs = Date.now();
+      setQuestionEnabled(worker, mintQuestionSwitchSeed(question, nowMs), question, enabled, nowMs);
+    },
   };
+}
+
+/** Mints this toggle's seed — [`mintBindingSeed`]'s twin, and deterministic
+ * for the same reason: the `settings` row a question switch writes is
+ * identified by the question itself, so retrying the identical intent (same
+ * question, same `nowMs`) must reproduce the identical queue entry rather
+ * than enqueue a second one. Distinct from a binding's seed by the
+ * `:question:` infix, so the two vocabularies cannot collide on a key that
+ * happens to share a name. */
+export function mintQuestionSwitchSeed(question: string, nowMs: number): string {
+  return `${question}:question:${nowMs}`;
 }
 
 /** Mints this binding write's seed. Deterministic — `client/core/src/

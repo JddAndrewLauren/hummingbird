@@ -198,7 +198,8 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     onSelectBackend: setBackendSelection,
   });
   const { submitCapture } = useCaptureWiring(worker, status, task.syncOutcomeSeq);
-  const { setBinding: handleSetBinding } = useBindingsWiring(worker, status, task.syncOutcomeSeq);
+  const { setBinding: handleSetBinding, setQuestionEnabled: handleSetQuestionEnabled } =
+    useBindingsWiring(worker, status, task.syncOutcomeSeq);
   const { createRule: handleCreateRule, patchRule: handlePatchRule } = useRulesWiring(
     worker,
     status,
@@ -689,6 +690,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               onForgetTaskToken={() => void handleForgetTaskToken()}
               task={task}
               onSetBinding={handleSetBinding}
+              onSetQuestionEnabled={handleSetQuestionEnabled}
               online={online}
               syncNowMs={syncNowMs}
               onDownloadMirror={handleDownloadMirror}

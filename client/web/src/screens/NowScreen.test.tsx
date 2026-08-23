@@ -17,8 +17,9 @@
 // watch the item leave every live query, then walk `TaskState.pending` the
 // way `worker-client.ts` really walks it, and assert the row comes back.
 
+import { cleanup } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { NowScreen } from "./NowScreen";
+import { NowScreen, realQuestionInputs } from "./NowScreen";
 import { QUESTION_ORDER } from "./questions/contract";
 import { QUESTIONS } from "./questions/registry";
 import { questionLabel } from "./questions/roster";
@@ -1973,5 +1974,78 @@ describe("NowScreen — the Grill takeover (#359)", () => {
   it("offers Resume grill for an item already carrying a draft", () => {
     renderNow(taskState({ frontier: [itemDTO({ id: "i1", title: "Email the council", stage: "ready" })], grillDraftItemIds: ["i1"] }), "i1", fakeGrill());
     expect(screen.getByRole("button", { name: "Resume grill" })).toBeDefined();
+  });
+});
+
+describe("NowScreen — a question switched off (#715, ADR-0034)", () => {
+  it("threads the core's switches through as `disabledQuestions`, applied not re-derived", () => {
+    // Straight through `realQuestionInputs`, which is what makes this a
+    // delivery test rather than a mapping one: nothing between the store and
+    // the pane decides what "off" means.
+    const off = realQuestionInputs(
+      taskState({
+        questionSwitches: [
+          { question: "weekend", enabled: false, pending: true },
+          { question: "race", enabled: true, pending: false },
+        ],
+      }),
+      {},
+      false,
+    );
+    expect(off.disabledQuestions).toEqual(["weekend"]);
+  });
+
+  it("reads unread switches as nothing disabled yet, never as everything off", () => {
+    // The one round trip between mount and the first `questionSwitches`
+    // broadcast. A question that flickered off there would be worse than one
+    // that appears a beat before it is switched off.
+    expect(realQuestionInputs(taskState(), {}, false).disabledQuestions).toEqual([]);
+  });
+
+  it("stops rendering a question's pane in the aside once it is switched off", () => {
+    // The acceptance criterion end to end, through the real screen: the
+    // weekend pane is in the aside, and switching weekend off takes it out.
+    renderNow(taskState({ questionSwitches: [{ question: "weekend", enabled: true, pending: false }] }));
+    const label = questionLabel("weekend");
+    expect(screen.getAllByText(label).length).toBeGreaterThan(0);
+
+    cleanup();
+    renderNow(
+      taskState({ questionSwitches: [{ question: "weekend", enabled: false, pending: false }] }),
+    );
+    expect(screen.queryByText(label)).toBeNull();
+  });
+  it("says nothing is being asked when every question on the surface is off", () => {
+    // A state no surface could be in before ADR-0034, and the one a reader
+    // caused themselves — a blank region here would be the quietly-empty
+    // answer ADR-0015 rules out.
+    renderNow(
+      taskState({
+        questionSwitches: QUESTION_ORDER.map((question) => ({
+          question,
+          enabled: false,
+          pending: false,
+        })),
+      }),
+    );
+
+    const aside = screen.getByRole("complementary", { name: "Standing questions" });
+    expect(within(aside).getByText("Nothing is being asked")).toBeDefined();
+    expect(within(aside).getByText(/switched off/i)).toBeDefined();
+    // And it names the one place that undoes it.
+    expect(within(aside).getByText(/Settings/)).toBeDefined();
+  });
+
+  it("draws no such line while any question is still asked", () => {
+    renderNow(
+      taskState({
+        questionSwitches: QUESTION_ORDER.map((question) => ({
+          question,
+          enabled: question === "race",
+          pending: false,
+        })),
+      }),
+    );
+    expect(screen.queryByText("Nothing is being asked")).toBeNull();
   });
 });

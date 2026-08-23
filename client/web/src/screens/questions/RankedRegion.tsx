@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { EmptyState } from "../../components/feedback/EmptyState";
 import { Icon } from "../../components/core/Icon";
 import type { Screen } from "../../shell/screens";
 import {
@@ -217,6 +218,23 @@ export function RankedRegion({
         override,
         sample.panes.map((pane) => pane.paneKey),
       ),
+    );
+  }
+
+  // #715: a state this region could not be in before ADR-0034 — every
+  // question on this surface switched off. Said rather than left blank: a
+  // region that renders nothing at all is the quietly-empty answer ADR-0015
+  // rules out, and here it would be one the reader themselves caused and has
+  // exactly one place to undo.
+  if (sample.panes.length === 0) {
+    return (
+      <EmptyState
+        compact
+        icon="bell-off"
+        headingLevel={2}
+        title="Nothing is being asked"
+        body="Every standing question for this surface is switched off. Turn one back on under Standing questions in Settings."
+      />
     );
   }
 

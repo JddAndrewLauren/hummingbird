@@ -525,6 +525,11 @@ mod wasm_bindings {
     // is an answer — and the wrong one. Busy says nothing at all.
     const BUSY_BINDINGS: &str = r#"{"kind":"busy","bindings":[]}"#;
     const BUSY_SET_BINDING: &str = r#"{"kind":"busy","error":null}"#;
+    // #715: same "no answer, never an empty one" contract as BUSY_BINDINGS
+    // — an empty switch list would read as "no questions", and a screen
+    // defaulting that to all-on would state a fact it had not read.
+    const BUSY_QUESTION_SWITCHES: &str = r#"{"kind":"busy","switches":[]}"#;
+    const BUSY_SET_QUESTION_ENABLED: &str = r#"{"kind":"busy","error":null}"#;
     // #140: same "no answer, never an empty one" contract as BUSY_BINDINGS.
     const BUSY_RULES: &str = r#"{"kind":"busy","rules":[]}"#;
     const BUSY_CREATE_RULE: &str = r#"{"kind":"busy","id":null,"error":null}"#;
@@ -1368,6 +1373,48 @@ mod wasm_bindings {
                 inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("SetBindingResponse serializes"),
+                ))
+            })
+        }
+
+        /// Every standing question's off switch (#715), as JSON:
+        /// `{"kind": "ok"|"busy", "switches": [{"question": string,
+        /// "enabled": bool, "pending": bool}]}` — in `QUESTION_ORDER`,
+        /// every question present whether it has a row or not.
+        #[wasm_bindgen(js_name = questionSwitches)]
+        pub fn question_switches(&self) -> String {
+            match self.inner.host.borrow().as_ref() {
+                Some(host) => serde_json::to_string(&host.question_switches())
+                    .expect("QuestionSwitchListResponse serializes"),
+                None => BUSY_QUESTION_SWITCHES.to_string(),
+            }
+        }
+
+        /// Switches one standing question on or off (#715), as one
+        /// absolute-value CAS `PUT` on that question's own row. Resolves to
+        /// JSON: `{"kind": "ok"|"unknown_question"|"failed"|"busy",
+        /// "error": string|null}`. `question` is the wire spelling,
+        /// resolved by name — never a raw `settings` key.
+        #[wasm_bindgen(js_name = setQuestionEnabled)]
+        pub fn set_question_enabled(
+            &self,
+            seed: String,
+            question: String,
+            enabled: bool,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.check_out() else {
+                    return Ok(JsValue::from_str(BUSY_SET_QUESTION_ENABLED));
+                };
+                let response = host
+                    .set_question_enabled(&seed, &question, enabled, now_ms as i64)
+                    .await;
+                inner.check_in(host);
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response)
+                        .expect("SetQuestionEnabledResponse serializes"),
                 ))
             })
         }

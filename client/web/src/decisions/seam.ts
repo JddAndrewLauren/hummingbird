@@ -1308,6 +1308,11 @@ export interface PaneInputsSource {
     latestInformativeAtMs: number | null;
     lastSuccessfulAtMs: number | null;
   };
+  /** #715: which standing questions are switched off, as their wire
+   * spellings. Optional and absent-means-none, `PaneInputs`'
+   * `#[serde(default)]` on the other side of the same crossing. A question
+   * in this list contributes no `ZoneQuery` and no ranked pane. */
+  disabledQuestions?: string[];
 }
 
 function paneInputsPayload(inputs: PaneInputsSource): string {
@@ -1323,6 +1328,7 @@ function paneInputsPayload(inputs: PaneInputsSource): string {
       latestInformativeAtMs: inputs.sync?.latestInformativeAtMs ?? null,
       lastSuccessfulAtMs: inputs.sync?.lastSuccessfulAtMs ?? null,
     },
+    disabledQuestions: inputs.disabledQuestions ?? [],
   });
 }
 

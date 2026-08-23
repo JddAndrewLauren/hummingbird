@@ -43,9 +43,12 @@ export const QUESTIONS: Record<StandingQuestion, QuestionDef> = {
 };
 
 /** `QUESTION_ORDER`, filtered to the questions declared for one surface
- * (ADR-0017 decision 1) — the one filter `rankPanes` and `requiredSources`
- * both apply, so the two can never disagree about which questions belong to
- * a view. */
+ * (ADR-0017 decision 1) — the surface filter `rankPanes` and
+ * `requiredSources` both apply, so the two can never disagree about which
+ * questions belong to a view.
+ *
+ * The **off switch** is a second filter and is applied only by `rankPanes`,
+ * through `askedQuestionsFor` below, which states why. */
 function questionsFor(surface: Surface): StandingQuestion[] {
   return QUESTION_ORDER.filter((question) => QUESTIONS[question].surface === surface);
 }
@@ -115,15 +118,40 @@ export function panesFrom(
   return orderPanes(panes, order);
 }
 
-/** Every question declared for one surface, every subject, ranked (ADR-0015's
- * cross-pane order, ADR-0017's per-surface filter). A view never ranks a
- * question its surface cannot show — `NowScreen`'s aside asks for `"now"`,
- * the Status screen for `"status"`, and neither reads the other's panes.
+/** `questionsFor`, minus every question switched off (#715, ADR-0034) —
+ * the second filter, applied only on the ranking path.
+ *
+ * Deliberately **not** folded into `questionsFor` itself, which
+ * `requiredSources` also reads. Off means hidden, silent and unpolled, and
+ * the third of those is about the *server* poller (ADR-0034 decision 1's
+ * own table): a pane read is `Core::pane_read`, a synchronous read of rows
+ * this device has already pulled, so narrowing it would save no traffic and
+ * would only mean a re-enabled question rendering "not read yet" until the
+ * next wiring pass. The `sources` union stays the whole vocabulary's.
+ *
+ * The filter itself decides nothing: `disabledQuestions` is the applied
+ * result `Core::question_switches` handed the host. */
+function askedQuestionsFor(surface: Surface, inputs: QuestionInputs): StandingQuestion[] {
+  const off = inputs.disabledQuestions ?? [];
+  return questionsFor(surface).filter((question) => !off.includes(question));
+}
+
+/** Every question declared for one surface **and still switched on**, every
+ * subject, ranked (ADR-0015's cross-pane order, ADR-0017's per-surface
+ * filter, ADR-0034's off switch). A view never ranks a question its surface
+ * cannot show — `NowScreen`'s aside asks for `"now"`, the Status screen for
+ * `"status"`, and neither reads the other's panes.
+ *
+ * A switched-off question emits nothing at all here — not a dormant pane,
+ * not a sentinel. That is not a weakening of ADR-0015's "a pane nobody has
+ * bound yet must still be discoverable": the question is listed, by name
+ * and with its state on show, in Settings' roster, which is the
+ * precondition ADR-0034 made the switch legal on.
  *
  * Pure and clock-free beyond the `nowMs` on `inputs` — which is what lets
  * `RankedRegion` capture one ranking in state and re-sample it on its own
  * terms, and what lets the demo fixture rank a hand-authored world through
  * the very same code the real region uses. */
 export function rankPanes(inputs: QuestionInputs, surface: Surface): RankedPane[] {
-  return panesFrom(QUESTIONS, questionsFor(surface), inputs);
+  return panesFrom(QUESTIONS, askedQuestionsFor(surface, inputs), inputs);
 }

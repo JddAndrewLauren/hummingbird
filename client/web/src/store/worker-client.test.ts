@@ -62,6 +62,7 @@ const initialTask: TaskState = {
   search: null,
   done: null,
   bindings: null,
+  questionSwitches: null,
   kindRegistry: null,
   rules: null,
   lastRuleWrite: null,
@@ -80,6 +81,7 @@ const initialTask: TaskState = {
   grillDraftItemIds: [],
   grillDraftByItem: {},
   lastBindingWrite: null,
+  lastQuestionSwitchWrite: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
   lastSuccessfulSyncAtMs: null,
@@ -582,6 +584,70 @@ describe("attachWorkerClient", () => {
 
     expect(store.getSnapshot().task.lastBindingWrite?.kind).toBe("unknown_key");
     expect(worker.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("records a successful setQuestionEnabledResult and re-reads the switches", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "setQuestionEnabledResult",
+        seed: "seed-q-1",
+        question: "weekend",
+        kind: "ok",
+        error: null,
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastQuestionSwitchWrite).toEqual({
+      seed: "seed-q-1",
+      question: "weekend",
+      kind: "ok",
+      error: null,
+    });
+    // `Core::set_question_enabled` overlays, so the re-read settles the
+    // toggle without waiting for a cycle — `setBindingResult`'s own shape.
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getQuestionSwitches" });
+  });
+
+  it("records a refused setQuestionEnabledResult without re-requesting anything", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "setQuestionEnabledResult",
+        seed: "seed-q-2",
+        question: "fantasy",
+        kind: "unknown_question",
+        error: 'unrecognised standing question "fantasy"',
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastQuestionSwitchWrite?.kind).toBe("unknown_question");
+    expect(worker.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("lands the question switches, distinguishing them from never having read any", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    expect(store.getSnapshot().task.questionSwitches).toBeNull();
+
+    worker.onmessage?.({
+      data: {
+        type: "questionSwitches",
+        switches: [{ question: "weekend", enabled: false, pending: true }],
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.questionSwitches).toEqual([
+      { question: "weekend", enabled: false, pending: true },
+    ]);
   });
 
   it("lands a pane read under its own source, and only grows what was asked for", () => {

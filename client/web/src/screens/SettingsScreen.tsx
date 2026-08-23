@@ -4,8 +4,10 @@ import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
 import { CalendarPicker } from "../components/domain/CalendarPicker";
+import { Icon } from "../components/core/Icon";
 import { Input } from "../components/forms/Input";
 import { Select } from "../components/forms/Select";
+import { Switch } from "../components/forms/Switch";
 import { connectErrorCopy } from "../calendar/connect-error";
 import { toggleCalendarId, unavailableSelectedIds } from "../calendar/selection";
 import { AUTO_SELECTION, BACKEND_REGISTRY } from "../skills/backend-registry";
@@ -18,8 +20,15 @@ import {
   canSubmitBinding,
   groupBindingsByQuestion,
   questionLabelForBinding,
+  questionSwitchWriteError,
   sameBindingValue,
 } from "./bindings";
+import { ControlButton, SECTION_TOGGLE_HOVER, sectionToggleStyle } from "./ControlButton";
+import {
+  readExpandedQuestions,
+  toggleExpandedQuestion,
+  writeExpandedQuestions,
+} from "./question-prefs";
 import { questionRoster } from "./questions/roster";
 import { APP_VERSION } from "../shell/build-version";
 import { coreInstanceLabel } from "../shell/status-label";
@@ -35,6 +44,7 @@ import {
   syncStatusToneWord,
 } from "../shell/sync-status";
 import type { BindingDTO, DeadLetterEntryDTO, LedgerRowDTO } from "../store/protocol";
+import type { StorageLike } from "./storage";
 import type { CalendarState, CoreStatus, TaskState } from "../store/store";
 import type { TaskTokenSubmitOutcome } from "../task/token";
 import { formatEnteredAt, taskQueueStatusCopy, type TaskTokenUiState } from "../task/token-ui";
@@ -56,6 +66,12 @@ const BACKEND_OPTIONS = [
   { value: AUTO_SELECTION, label: "Auto" },
   ...BACKEND_REGISTRY.map((entry) => ({ value: entry.id, label: entry.label })),
 ];
+
+/** The leftovers group's own key in the device-local open-rows set
+ * (`question-prefs.ts`). Not a question, so it can never collide with one:
+ * the vocabulary is closed and every member of it is kebab-case with no
+ * dot. */
+export const OTHER_ROWS_KEY = "other.settings-rows";
 
 function isThemePreference(value: string): value is ThemePreference {
   return value === "system" || value === "light" || value === "dark";
@@ -274,22 +290,41 @@ function BindingRow({
   );
 }
 
-/** One question's group in the `Standing questions` section (#714): the
- * question in the reader's own words, where it renders, and the binding
- * rows that answer it indented beneath.
+/** One question's group in the `Standing questions` section (#714, made a
+ * disclosure with a toggle at #715): the question in the reader's own words,
+ * where it renders, whether it is switched on, and — once opened — its
+ * toggle and the binding rows that answer it.
  *
- * A group with no rows still renders. The roster is the one place a
- * question can be seen when its own pane is quiet — ADR-0034 decision 4
- * makes that load-bearing — so "nothing to set here" is a fact worth
- * stating, not a reason to omit the question. */
+ * **Collapsed by default, and the collapse state is device-local**
+ * (`question-prefs.ts`). Ten questions each with a value line, a field and a
+ * Save button is a screenful nobody reads; and `bindings.rs` is explicit
+ * that a collapse state is never a binding, which matters more here than
+ * anywhere else in the app because the row it belongs to is the one whose
+ * *toggle* does sync.
+ *
+ * **A group with no rows still renders, and still opens.** The roster is the
+ * one place a question can be seen when its own pane is quiet — ADR-0034
+ * decision 4 makes that load-bearing — so "nothing to set here" is a fact
+ * worth stating, and a question with no binding is still switchable.
+ *
+ * The heading stays an `h3` and keeps its own accessible name: the
+ * disclosure button lives *inside* it (`FrontierColumns.tsx`'s own idiom, by
+ * way of `sectionToggleStyle`), so the section's heading structure is
+ * unchanged and nothing new competes with the question's name. */
 function QuestionGroup({
   heading,
   meta,
   note,
   rows,
   missing,
+  enabled,
+  pending,
+  switchError,
+  expanded,
+  onToggleExpanded,
   lastBindingWrite,
   onSetBinding,
+  onSetEnabled,
 }: {
   heading: string;
   /** The mono meta word beside the heading — the surface this question
@@ -301,22 +336,74 @@ function QuestionGroup({
   /** Keys this question declares that the reader was handed no row for —
    * a different fact from having none, and said as one. */
   missing: string[];
+  /** `null` for a group that is not a question (the leftovers) and for one
+   * whose switch this reader has not been handed — no toggle is drawn
+   * either way, rather than one guessed at. */
+  enabled: boolean | null;
+  pending: boolean;
+  /** The last `setQuestionEnabled` failure for THIS question, already
+   * matched and worded (`questionSwitchWriteError`). */
+  switchError: string | null;
+  expanded: boolean;
+  onToggleExpanded: () => void;
   lastBindingWrite: TaskState["lastBindingWrite"];
   onSetBinding?: (key: string, value: string) => void;
+  /** Absent (a core that never came up) draws the toggle read-only rather
+   * than one that silently does nothing — `onSetBinding`'s own contract. */
+  onSetEnabled?: (enabled: boolean) => void;
 }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: "var(--space-4)" }}>
+      {/* Wraps rather than squeezing: at 390px a question carrying both
+          state badges left the heading two words wide. The badges taking
+          their own line is the honest trade — the question's name is what
+          the row is for. */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "var(--space-4)",
+          flexWrap: "wrap",
+        }}
+      >
         {/* h3 under the section's h2 — `--type-body-strong` is the size
-            token, not the level. */}
-        <h3 style={{ font: "var(--type-body-strong)", color: "var(--text-primary)" }}>
-          {heading}
+            token, not the level. The button is inside the heading so the
+            heading keeps the question's name as its own accessible name. */}
+        <h3 style={{ margin: 0, flex: "1 1 14rem", minWidth: 0, font: "inherit" }}>
+          <ControlButton
+            aria-expanded={expanded}
+            onClick={onToggleExpanded}
+            baseStyle={sectionToggleStyle(!expanded)}
+            hoverStyle={SECTION_TOGGLE_HOVER}
+          >
+            <Icon
+              name="chevron-down"
+              size={14}
+              style={{
+                color: "var(--text-muted)",
+                transform: expanded ? "none" : "rotate(-90deg)",
+                transition: "transform var(--dur-fast) var(--ease-flit)",
+              }}
+            />
+            <span style={{ flex: 1, minWidth: 0 }}>{heading}</span>
+          </ControlButton>
         </h3>
+        {/* Both state words stay readable while the row is shut. A question
+            switched off is discoverable only here (ADR-0034's consequences),
+            so "off" must never be a fact you have to expand a row to find. */}
+        {enabled === false ? (
+          <Badge dot mono tone="neutral">
+            off
+          </Badge>
+        ) : null}
+        {pending ? (
+          <Badge dot mono tone="warn">
+            queued
+          </Badge>
+        ) : null}
         <span className="hb-meta">{meta}</span>
       </div>
-      {rows.length === 0 && missing.length === 0 ? (
-        <p style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}>{note}</p>
-      ) : (
+      {expanded ? (
         // Indented behind a hairline rather than nested in a second Card:
         // the rows belong to the question above them, and the design system
         // caps a region at two card elevations.
@@ -329,6 +416,32 @@ function QuestionGroup({
             borderLeft: "1px solid var(--border-subtle)",
           }}
         >
+          {enabled === null ? null : (
+            <>
+              <Switch
+                aria-label={`Asked — ${heading}`}
+                label="Asked"
+                hint="Off hides this question's panes, silences its alerts and stops it being polled."
+                checked={enabled}
+                onChange={
+                  onSetEnabled === undefined
+                    ? undefined
+                    : (event) => onSetEnabled(event.target.checked)
+                }
+              />
+              {switchError ? (
+                <p
+                  role="alert"
+                  style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}
+                >
+                  {switchError}
+                </p>
+              ) : null}
+            </>
+          )}
+          {rows.length === 0 && missing.length === 0 ? (
+            <p style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}>{note}</p>
+          ) : null}
           {rows.map((binding) => (
             <BindingRow
               key={binding.key}
@@ -338,15 +451,12 @@ function QuestionGroup({
             />
           ))}
           {missing.map((key) => (
-            <p
-              key={key}
-              style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}
-            >
+            <p key={key} style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}>
               No settings row for <span className="hb-meta">{key}</span> yet.
             </p>
           ))}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -460,6 +570,15 @@ export interface SettingsScreenProps {
    * binding read-only rather than a Save button that silently does
    * nothing. */
   onSetBinding?: (key: string, value: string) => void;
+  /** #715's toggle write. Absent (a core that never came up) draws every
+   * question's switch read-only, `onSetBinding`'s own contract. */
+  onSetQuestionEnabled?: (question: string, enabled: boolean) => void;
+  /** Injected storage for this screen's one device-local view preference —
+   * which question rows are open (`question-prefs.ts`). Defaults to
+   * `localStorage` when the environment has one, so a caller that passes
+   * nothing (every test that mounts this screen without the prop) behaves
+   * exactly as before. */
+  storage?: StorageLike;
   online: boolean;
   syncNowMs: number;
   onDownloadMirror: () => void;
@@ -486,6 +605,8 @@ export function SettingsScreen({
   onForgetTaskToken,
   task,
   onSetBinding,
+  onSetQuestionEnabled,
+  storage,
   online,
   syncNowMs,
   onDownloadMirror,
@@ -516,7 +637,26 @@ export function SettingsScreen({
   // raw key only if nothing claims it — a state the core's own test rules
   // out, said honestly rather than guessed at.
   const roster = questionRoster();
-  const groupedBindings = groupBindingsByQuestion(roster, task.bindings ?? []);
+  const groupedBindings = groupBindingsByQuestion(
+    roster,
+    task.bindings ?? [],
+    task.questionSwitches,
+  );
+
+  // #715: which question rows are open, device-local. Resolved once, the
+  // same way `NowScreen` resolves its own — a caller that passes nothing
+  // gets `localStorage` where there is one, and a session-only preference
+  // where there is not.
+  const resolvedStorage =
+    storage ?? (typeof localStorage === "undefined" ? undefined : localStorage);
+  const [expandedQuestions, setExpandedQuestions] = useState<ReadonlySet<string>>(() =>
+    readExpandedQuestions(resolvedStorage),
+  );
+  const toggleQuestionRow = (question: string) => {
+    const next = toggleExpandedQuestion(expandedQuestions, question);
+    setExpandedQuestions(next);
+    writeExpandedQuestions(resolvedStorage, next);
+  };
   const tripsQuestionLabel =
     questionLabelForBinding(roster, TRIPS_CALENDAR_BINDING_KEY) ?? TRIPS_CALENDAR_BINDING_KEY;
   const polledIds = calendarIsDemo
@@ -588,8 +728,21 @@ export function SettingsScreen({
                   note="Nothing to set — this question reads no source anyone chose."
                   rows={group.rows}
                   missing={group.missing}
+                  enabled={group.enabled}
+                  pending={group.pending}
+                  switchError={questionSwitchWriteError(
+                    task.lastQuestionSwitchWrite,
+                    group.question,
+                  )}
+                  expanded={expandedQuestions.has(group.question)}
+                  onToggleExpanded={() => toggleQuestionRow(group.question)}
                   lastBindingWrite={task.lastBindingWrite}
                   onSetBinding={onSetBinding}
+                  onSetEnabled={
+                    onSetQuestionEnabled === undefined
+                      ? undefined
+                      : (enabled) => onSetQuestionEnabled(group.question, enabled)
+                  }
                 />
               ))}
               {/* Rows in the table that no question claims — in practice the
@@ -603,6 +756,13 @@ export function SettingsScreen({
                   note=""
                   rows={groupedBindings.other}
                   missing={[]}
+                  // Not a question: nothing switches it on or off, and it
+                  // is nobody's `lastQuestionSwitchWrite`.
+                  enabled={null}
+                  pending={false}
+                  switchError={null}
+                  expanded={expandedQuestions.has(OTHER_ROWS_KEY)}
+                  onToggleExpanded={() => toggleQuestionRow(OTHER_ROWS_KEY)}
                   lastBindingWrite={task.lastBindingWrite}
                   onSetBinding={onSetBinding}
                 />

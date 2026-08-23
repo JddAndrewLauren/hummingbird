@@ -33,6 +33,8 @@ const TASK_REQUEST_TYPES: Record<TaskWorkerRequest["type"], true> = {
   getGrillDraftItemIds: true,
   setBinding: true,
   getBindings: true,
+  setQuestionEnabled: true,
+  getQuestionSwitches: true,
   getKindRegistry: true,
   getRules: true,
   createRule: true,

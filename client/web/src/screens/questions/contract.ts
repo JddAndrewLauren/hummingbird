@@ -217,6 +217,26 @@ export interface QuestionInputs {
    * (`deadline`/`scheduledDate`/`stage`) off the same list `NowScreen`
    * already renders. */
   items: TaskItemDTO[];
+  /** Which standing questions are switched off (#715, ADR-0034), as their
+   * wire spellings — `Core::question_switches`' applied result, threaded
+   * through unmodified. Empty is the ordinary case, and means every
+   * question is asked.
+   *
+   * Read by `registry.ts`'s `questionsFor`, which is the one filter both
+   * `rankPanes` and `requiredSources` apply, so a switched-off question can
+   * never be ranked on one path and skipped on the other. This client
+   * decides nothing about it: absence-means-enabled and
+   * a-value-I-cannot-read-means-enabled are both settled core-side, in
+   * `client/core/src/question_switch.rs`.
+   *
+   * **Optional, and absent means nothing is disabled** — `PaneInputs`'
+   * `#[serde(default)]` on the Rust side of the same crossing, spelled the
+   * same way here. It is the one field on this interface no *pane* reads,
+   * so a per-pane fixture that omits it is stating something true rather
+   * than skipping something; the real host (`realQuestionInputs`) always
+   * sets it, and forgetting to would leave every question asked, which is
+   * the direction ADR-0034 chose to fail in. */
+  disabledQuestions?: string[];
   nowMs: number;
 }
 
@@ -264,6 +284,12 @@ export interface QuestionDef {
    * An **unbound** question still returns one sentinel subject: an unbound
    * pane must render its setup prompt, and a question that vanished when
    * nobody had bound it would be a question nobody could ever discover.
+   *
+   * **A question switched off is never asked this at all** (#715,
+   * ADR-0034): `rankPanes` drops it before reaching the registry. That is
+   * not a weakening of the rule above — an off question is listed by name,
+   * with its state on show, in Settings' roster, which is the precondition
+   * ADR-0034 made the switch legal on. Nothing here has to know.
    *
    * **The same rule extends to the never-polled case (ADR-0017, #311).** A
    * question whose subjects have never been acquired — no poller has run
