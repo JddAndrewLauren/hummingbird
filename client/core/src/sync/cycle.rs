@@ -2398,7 +2398,7 @@ mod tests {
 
     mod observed {
         use super::*;
-        use crate::diagnostics::context::DiagnosticsContext;
+        use crate::diagnostics::context::{DiagnosticSession, DiagnosticsContext};
         use crate::diagnostics::route::{is_valid_header_value, CorrelationHeaders};
         use crate::diagnostics::test_support::{
             FailingSink, NeverResolvingChangesTransport, RecordingClock, RecordingSink,
@@ -2422,7 +2422,8 @@ mod tests {
                 log: &CallLog::default(),
                 responses: Mutex::new(vec![].into()),
             };
-            let diagnostics = DiagnosticsContext::new(&sink, &clock, "session-1", "cycle-1", "core", "test", 1_000);
+            let session = DiagnosticSession::new("session-1", 0);
+            let diagnostics = DiagnosticsContext::new(&sink, &clock, &session, "cycle-1", "core", "test", 1_000);
             let mut cycle = SyncCycle::new(MemorySnapshotStore::default(), MemorySnapshotStore::default());
 
             let running = cycle.run_observed(&read, &write, "token", 1_000, Trigger::User, true, 0.0, &diagnostics);
@@ -2477,7 +2478,8 @@ mod tests {
                 log: &CallLog::default(),
                 responses: Mutex::new(vec![].into()),
             };
-            let diagnostics = DiagnosticsContext::new(&sink, &clock, "session-1", "cycle-1", "core", "test", 1_000);
+            let session = DiagnosticSession::new("session-1", 0);
+            let diagnostics = DiagnosticsContext::new(&sink, &clock, &session, "cycle-1", "core", "test", 1_000);
             let mut cycle = SyncCycle::new(MemorySnapshotStore::default(), MemorySnapshotStore::default());
 
             let running = cycle.run_observed(&read, &write, "token", 1_000, Trigger::User, true, 0.0, &diagnostics);
@@ -2508,7 +2510,8 @@ mod tests {
                 log: &log,
                 responses: Mutex::new(vec![].into()),
             };
-            let diagnostics = DiagnosticsContext::new(&sink, &clock, "session-1", "cycle-1", "core", "test", 1_000);
+            let session = DiagnosticSession::new("session-1", 0);
+            let diagnostics = DiagnosticsContext::new(&sink, &clock, &session, "cycle-1", "core", "test", 1_000);
             let mut cycle = SyncCycle::new(MemorySnapshotStore::default(), MemorySnapshotStore::default());
 
             let outcome = cycle
@@ -2563,7 +2566,9 @@ mod tests {
                 log: &CallLog::default(),
                 responses: Mutex::new(vec![].into()),
             };
-            let diagnostics = DiagnosticsContext::new(&sink, &clock, "session-1", "cycle-abc123", "core", "test", 1_000);
+            let session = DiagnosticSession::new("session-1", 0);
+            let diagnostics =
+                DiagnosticsContext::new(&sink, &clock, &session, "cycle-abc123", "core", "test", 1_000);
             let mut cycle = SyncCycle::new(MemorySnapshotStore::default(), MemorySnapshotStore::default());
 
             cycle
@@ -2577,6 +2582,20 @@ mod tests {
             for id in cycle_ids.iter().chain(request_ids.iter()) {
                 assert!(is_valid_header_value(id), "{id} must satisfy the header-value pattern");
             }
+
+            // Review round 1, finding 1: the same minted id must also land
+            // on the recorded events themselves, not just the header.
+            let events = sink.events();
+            let http_started = events
+                .iter()
+                .find(|e| matches!(e.event, DiagnosticEvent::HttpStarted { .. }))
+                .expect("http.started must have been recorded");
+            assert_eq!(http_started.request_id.as_deref(), Some("cycle-abc123-0"));
+            let http_finished = events
+                .iter()
+                .find(|e| matches!(e.event, DiagnosticEvent::HttpFinished { .. }))
+                .expect("http.finished must have been recorded");
+            assert_eq!(http_finished.request_id.as_deref(), Some("cycle-abc123-0"));
         }
 
         /// #706 acceptance: "a serialized fixture of a full cycle's events
@@ -2594,7 +2613,8 @@ mod tests {
                 log: &log,
                 responses: Mutex::new(vec![ok(200, r#"{"id":"secret-entity-id-99","title":"buy oat milk","version":2}"#)].into()),
             };
-            let diagnostics = DiagnosticsContext::new(&sink, &clock, "session-1", "cycle-1", "core", "test", 1_000);
+            let session = DiagnosticSession::new("session-1", 0);
+            let diagnostics = DiagnosticsContext::new(&sink, &clock, &session, "cycle-1", "core", "test", 1_000);
             let mut cycle = SyncCycle::new(MemorySnapshotStore::default(), MemorySnapshotStore::default());
             cycle.queue.enqueue(QueueEntry {
                 id: "m-1".to_string(),

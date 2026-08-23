@@ -8,7 +8,11 @@
 
 /// The four correlation headers every observed sync HTTP call carries. The
 /// authority validates each value against [`is_valid_header_value`]'s same
-/// pattern — `[A-Za-z0-9_-]{1,80}`.
+/// pattern — `[A-Za-z0-9_-]{1,80}`. [`sanitize_header_value`] is what
+/// actually enforces that pattern on the client side, at the one place
+/// (`DiagnosticsContext::correlation_headers`) every attached value passes
+/// through — see that function's docs for why a bare `is_valid_header_value`
+/// check with no call site would be a claim this module could not back up.
 pub const HEADER_CYCLE_ID: &str = "X-Hummingbird-Cycle-Id";
 pub const HEADER_REQUEST_ID: &str = "X-Hummingbird-Request-Id";
 pub const HEADER_CLIENT_PLATFORM: &str = "X-Hummingbird-Client-Platform";
@@ -29,10 +33,8 @@ pub struct CorrelationHeaders<'a> {
 }
 
 /// `[A-Za-z0-9_-]{1,80}` — the shape every one of the four header values
-/// must satisfy, checked here rather than trusted, since a caller-minted
-/// cycle id or a host-supplied build string is exactly the kind of value
-/// that can carry something unexpected (a stray `/`, an empty string) if
-/// this crate never checks it.
+/// must satisfy. A pure predicate; [`sanitize_header_value`] is the
+/// enforcement point that actually calls it on every attached value.
 pub fn is_valid_header_value(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 80
@@ -41,19 +43,54 @@ pub fn is_valid_header_value(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
+/// The one enforcement point: returns `value` unchanged when it already
+/// satisfies [`is_valid_header_value`], or the fixed sentinel `"invalid"`
+/// (itself a valid header value) otherwise. A caller-minted cycle id or a
+/// host-supplied build string is exactly the kind of value that can carry
+/// something unexpected (a stray `/`, an empty string, a crash-reporter's
+/// stack trace pasted into a build field by accident) — substituting a
+/// sentinel rather than dropping the header keeps all four headers present
+/// on every request, which is what #711's authority-side validation can
+/// rely on, at the cost of a `"invalid"` that is honestly less useful than
+/// the real value would have been.
+/// [`crate::diagnostics::context::DiagnosticsContext::correlation_headers`]
+/// is this function's only call site, and every header a transport ever
+/// attaches goes through it.
+pub fn sanitize_header_value(value: &str) -> &str {
+    if is_valid_header_value(value) {
+        value
+    } else {
+        "invalid"
+    }
+}
+
 /// Reduces a concrete path to its route template: every path segment that
 /// is not made up entirely of ASCII letters and underscores is replaced
-/// with `:id`. Every static segment in this API's own routes (`api`,
-/// `items`, `changes`, `sweep`, `blocked_by`, `fog`, `grills`, ...) is
-/// lowercase letters and underscores; every entity id this app mints
-/// (`sweep.py`'s `deterministic_v4`, and the uuids the authority assigns)
-/// contains a hyphen or a digit, so this rule draws the boundary exactly
-/// where "is this an entity id" needs it drawn, without a route table to
-/// keep in sync as new resources are added.
+/// with `:id` — **except** the one segment after `settings`, kept concrete
+/// as `sync::write::paths::setting`'s own docs name it: a settings key
+/// (`race-series`, `question-enabled-race`, `theme`, ...) is drawn from a
+/// small, fixed, non-secret vocabulary, not a per-instance entity id, so
+/// redacting it destroys diagnostic detail (which setting failed to sync)
+/// for no privacy benefit — and because several settings keys are
+/// hyphenated, the general "letters and underscores only" rule would
+/// otherwise template `/api/settings/race-series` while leaving
+/// `/api/settings/theme` untouched, degrading exactly the setting whose key
+/// most needs to stay visible to debug. Every other static segment in this
+/// API's own routes (`api`, `items`, `changes`, `sweep`, `blocked_by`,
+/// `fog`, `grills`, ...) really is just lowercase letters and underscores;
+/// every entity id this app mints (`sweep.py`'s `deterministic_v4`, and the
+/// uuids the authority assigns) contains a hyphen or a digit, so the
+/// general rule still draws the boundary correctly everywhere else,
+/// without a route table to keep in sync as new resources are added.
 pub fn route_template(path: &str) -> String {
-    path.split('/')
-        .map(|segment| {
-            if segment.is_empty()
+    let segments: Vec<&str> = path.split('/').collect();
+    segments
+        .iter()
+        .enumerate()
+        .map(|(index, segment)| {
+            let previous_is_settings = index > 0 && segments[index - 1] == "settings";
+            if previous_is_settings
+                || segment.is_empty()
                 || segment.chars().all(|c| c.is_ascii_alphabetic() || c == '_')
             {
                 segment.to_string()
@@ -100,6 +137,32 @@ mod tests {
         assert_eq!(route_template("/api/changes"), "/api/changes");
     }
 
+    /// Pins the exact case review round 1 found broken: a hyphenated
+    /// settings key must survive concrete, the same as an unhyphenated one
+    /// — `sync::write::paths::setting("race-series")` and
+    /// `setting("question-enabled-race")` are both real keys in this tree
+    /// today (`lib.rs`'s settings handlers).
+    #[test]
+    fn a_hyphenated_settings_key_survives_concrete_same_as_an_unhyphenated_one() {
+        assert_eq!(route_template("/api/settings/race-series"), "/api/settings/race-series");
+        assert_eq!(
+            route_template("/api/settings/question-enabled-race"),
+            "/api/settings/question-enabled-race"
+        );
+        assert_eq!(route_template("/api/settings/theme"), "/api/settings/theme");
+    }
+
+    /// An entity id one level *past* the settings key is still templated —
+    /// the exemption is exactly one segment wide, not "everything under
+    /// `/api/settings`".
+    #[test]
+    fn only_the_segment_immediately_after_settings_is_exempt() {
+        assert_eq!(
+            route_template("/api/settings/race-series/a-1"),
+            "/api/settings/race-series/:id"
+        );
+    }
+
     #[test]
     fn a_valid_header_value_accepts_letters_digits_underscore_and_hyphen() {
         assert!(is_valid_header_value("cycle-1_ABC123"));
@@ -120,5 +183,17 @@ mod tests {
     fn a_header_value_with_a_disallowed_character_is_rejected() {
         assert!(!is_valid_header_value("has a space"));
         assert!(!is_valid_header_value("has/a/slash"));
+    }
+
+    #[test]
+    fn sanitize_passes_a_valid_value_through_unchanged() {
+        assert_eq!(sanitize_header_value("cycle-1"), "cycle-1");
+    }
+
+    #[test]
+    fn sanitize_replaces_an_invalid_value_with_the_sentinel() {
+        assert_eq!(sanitize_header_value("1.2.3 (dev build)"), "invalid");
+        assert_eq!(sanitize_header_value(""), "invalid");
+        assert!(is_valid_header_value(sanitize_header_value("1.2.3 (dev build)")));
     }
 }

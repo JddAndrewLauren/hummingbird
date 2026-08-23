@@ -4481,8 +4481,9 @@ mod tests {
 
         let sink = crate::diagnostics::test_support::RecordingSink::default();
         let clock = crate::diagnostics::test_support::RecordingClock::default();
+        let session = crate::diagnostics::DiagnosticSession::new("s-1", 0);
         let diagnostics =
-            crate::diagnostics::DiagnosticsContext::new(&sink, &clock, "s-1", "c-1", "core", "test", 2_000);
+            crate::diagnostics::DiagnosticsContext::new(&sink, &clock, &session, "c-1", "core", "test", 2_000);
         let held_read = ScriptedRead::default();
         let held_write = ScriptedWrite::default();
         let held = core
@@ -4503,8 +4504,9 @@ mod tests {
         core.push_api_key("token");
         let sink = crate::diagnostics::test_support::RecordingSink::default();
         let clock = crate::diagnostics::test_support::RecordingClock::default();
+        let session = crate::diagnostics::DiagnosticSession::new("s-1", 0);
         let diagnostics =
-            crate::diagnostics::DiagnosticsContext::new(&sink, &clock, "s-1", "c-1", "core", "test", 1_000);
+            crate::diagnostics::DiagnosticsContext::new(&sink, &clock, &session, "c-1", "core", "test", 1_000);
         let read = ScriptedRead::sweep_only(vec![Ok(empty_sweep_body(1))]);
         let write = ScriptedWrite::new(vec![]);
 

@@ -33,8 +33,11 @@
 //! - [`route`]: the pure route-templating function and the correlation
 //!   header names/validation the transports below attach.
 //! - [`clock`]: [`DiagnosticClock`], the caller-injected time/wait seam.
-//! - [`context`]: [`DiagnosticsContext`], the per-cycle bundle (sink, clock,
-//!   session id, cycle id, the per-cycle request-id ordinal) plus the
+//! - [`context`]: [`context::DiagnosticSession`] (the session-scoped `seq`
+//!   counter and monotonic origin, built once per session) and
+//!   [`DiagnosticsContext`] (the per-cycle bundle built from a session for
+//!   each cycle: sink, clock, cycle id, the per-cycle request-id ordinal)
+//!   plus the
 //!   [`context::InstrumentedChangesTransport`]/[`context::InstrumentedMutationTransport`]
 //!   decorators that attach headers and emit `http.*` around a real call —
 //!   used only by [`crate::sync::cycle::SyncCycle::run_observed`], so the
@@ -53,7 +56,7 @@ pub mod route;
 pub mod test_support;
 
 pub use clock::DiagnosticClock;
-pub use context::DiagnosticsContext;
+pub use context::{DiagnosticSession, DiagnosticsContext};
 pub use failure::FailureClass;
 
 use serde::{Deserialize, Serialize};
@@ -79,7 +82,11 @@ pub enum Source {
 
 /// The envelope every diagnostic event is wrapped in, whatever host or
 /// family produced it. `seq` and `elapsed_ms` are monotonic *within one
-/// [`DiagnosticSink`]* (a single session's stream); `wall_clock_ms` is
+/// [`context::DiagnosticSession`]* — a session outlives any single sync
+/// cycle, so `seq` keeps counting and `elapsed_ms`'s origin stays fixed
+/// across every [`DiagnosticsContext`] (one per cycle) that session builds;
+/// see [`context::DiagnosticSession`]'s own docs for why this crate needed
+/// that two-tier split rather than counting per cycle. `wall_clock_ms` is
 /// caller-supplied (this crate reuses the sync cycle's own `now_ms` rather
 /// than sampling a second clock) and exists for human correlation against
 /// real-world time, not for ordering — `seq` is what orders.
@@ -88,9 +95,9 @@ pub struct DiagnosticEventV1 {
     pub schema_version: u32,
     pub seq: u64,
     pub wall_clock_ms: i64,
-    /// Milliseconds since [`DiagnosticClock::monotonic_ms`]'s first reading
-    /// this session took — a caller-supplied *origin*, not a duration this
-    /// module samples on its own initiative. See [`DiagnosticsContext`].
+    /// Milliseconds since [`context::DiagnosticSession::new`]'s
+    /// caller-supplied origin — never sampled by this module itself. See
+    /// [`context::DiagnosticSession`].
     pub elapsed_ms: u64,
     pub session_id: String,
     pub source: Source,
@@ -334,13 +341,67 @@ mod tests {
 
     /// One instance of every [`DiagnosticEvent`] family, so the field-name
     /// rejection test below is a structural claim about the whole enum, not
-    /// one call site. **Mutation-tested**: adding a field named `title` to
-    /// e.g. `SyncStarted` here made
-    /// `no_payload_ever_carries_a_forbidden_field_name` fail, confirming
-    /// the check actually inspects payload content rather than passing
-    /// vacuously — reverted before landing this test.
+    /// one call site.
+    ///
+    /// **Exhaustiveness-enforced (review round 1, finding 6):** `canonical`
+    /// re-matches each fixture below against `DiagnosticEvent` with **no
+    /// wildcard arm**. Adding a variant to `DiagnosticEvent` makes
+    /// `canonical` fail to compile — `error[E0004]: non-exhaustive
+    /// patterns` — until an arm (and, right next to it, a fixture in the
+    /// array below) exists for it, so a new family can no longer skip this
+    /// test by simply never being added to a hand-maintained list with
+    /// nothing forcing anyone back to it.
+    ///
+    /// **Mutation-tested twice**: (1) adding a field named `title` to e.g.
+    /// `SyncStarted` made `no_payload_ever_carries_a_forbidden_field_name`
+    /// fail; (2) commenting out the `PushReceived` arm below reproduces
+    /// `error[E0004]` at this function, pinning that the match really is
+    /// exhaustive rather than accidentally carrying a stray wildcard. Both
+    /// reverted before landing this test.
     fn one_of_every_event_variant() -> Vec<DiagnosticEvent> {
-        vec![
+        fn canonical(event: DiagnosticEvent) -> DiagnosticEvent {
+            match event {
+                DiagnosticEvent::SessionStarted => DiagnosticEvent::SessionStarted,
+                DiagnosticEvent::SyncStarted { force_full_sweep } => {
+                    DiagnosticEvent::SyncStarted { force_full_sweep }
+                }
+                DiagnosticEvent::SyncPhaseStarted { phase } => DiagnosticEvent::SyncPhaseStarted { phase },
+                DiagnosticEvent::SyncPhaseFinished { phase } => DiagnosticEvent::SyncPhaseFinished { phase },
+                DiagnosticEvent::SyncFinished { outcome } => DiagnosticEvent::SyncFinished { outcome },
+                DiagnosticEvent::HttpStarted { method, route } => {
+                    DiagnosticEvent::HttpStarted { method, route }
+                }
+                DiagnosticEvent::HttpFinished {
+                    method,
+                    route,
+                    status,
+                    failure,
+                } => DiagnosticEvent::HttpFinished {
+                    method,
+                    route,
+                    status,
+                    failure,
+                },
+                DiagnosticEvent::CoreWaitStarted => DiagnosticEvent::CoreWaitStarted,
+                DiagnosticEvent::CoreAcquired => DiagnosticEvent::CoreAcquired,
+                DiagnosticEvent::CoreBusy => DiagnosticEvent::CoreBusy,
+                DiagnosticEvent::CoreReleased => DiagnosticEvent::CoreReleased,
+                DiagnosticEvent::OperationRequested => DiagnosticEvent::OperationRequested,
+                DiagnosticEvent::OperationLocalCommit => DiagnosticEvent::OperationLocalCommit,
+                DiagnosticEvent::OperationFinished { outcome } => {
+                    DiagnosticEvent::OperationFinished { outcome }
+                }
+                DiagnosticEvent::OperationSlow => DiagnosticEvent::OperationSlow,
+                DiagnosticEvent::OperationStalled => DiagnosticEvent::OperationStalled,
+                DiagnosticEvent::NetworkChanged { online } => DiagnosticEvent::NetworkChanged { online },
+                DiagnosticEvent::WorkerStarted => DiagnosticEvent::WorkerStarted,
+                DiagnosticEvent::WorkerFinished { outcome } => DiagnosticEvent::WorkerFinished { outcome },
+                DiagnosticEvent::PushReceived => DiagnosticEvent::PushReceived,
+                // No `_` arm — see this function's doc comment.
+            }
+        }
+
+        [
             DiagnosticEvent::SessionStarted,
             DiagnosticEvent::SyncStarted { force_full_sweep: true },
             DiagnosticEvent::SyncPhaseStarted { phase: SyncPhase::QueueDrain },
@@ -370,6 +431,9 @@ mod tests {
             DiagnosticEvent::WorkerFinished { outcome: OperationOutcome::Success },
             DiagnosticEvent::PushReceived,
         ]
+        .into_iter()
+        .map(canonical)
+        .collect()
     }
 
     /// #706 acceptance: "A redaction test rejects forbidden field names ...
