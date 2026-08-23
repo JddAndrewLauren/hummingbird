@@ -38,6 +38,26 @@
 //! window built off the pivot, which would silently be a UTC weekend
 //! instead of the reader's own.
 //!
+//! # The window shrinks as the weekend is spent
+//!
+//! [`WeekendWindow::days`] used to be `[WeekendDay; 3]` — Friday, Saturday
+//! and Sunday for the whole life of the window, on the reading that the
+//! question is "what are my plans", not "what is left". It is the other
+//! one now: a day leaves the window at its own end (local midnight), so on
+//! Saturday the pane holds Saturday and Sunday, and on Sunday, Sunday
+//! alone. An unfinished item that was due or scheduled on a dropped day
+//! goes with it — there is no carry-forward group, because a day that has
+//! ended is not a plan.
+//!
+//! The cut is here, in [`weekend_window`], rather than in either renderer:
+//! [`in_window`], [`merge_window`], [`count_kinds`], the collapsed
+//! headline, the glyphs, the plan chips and both expanded renderings all
+//! read the window's days, so one `retain` moves all of them and neither
+//! client writes the rule a second time (ADR-0025). What deliberately does
+//! **not** shrink is `start_ms`/`end_ms`/`under_way`, and therefore
+//! [`weekend_band`]/[`weekend_within_band`]: the pane's *band* is a fact
+//! about the whole weekend.
+//!
 //! # What did not sink: `entryUrgency`
 //!
 //! `weekend.ts`'s `entryUrgency` is `computeUrgency(entry.item?.deadline,
@@ -109,8 +129,8 @@ pub const IMMINENT_WITHIN_MS: i64 = 48 * HOUR_MS;
 /// `dormant`.
 pub const NEAR_WITHIN_MS: i64 = 96 * HOUR_MS;
 
-/// One of the window's three days — trimmed to what a decision reads: its
-/// own civil date and the local instants it spans. No `label`/`dateLabel`
+/// One of the window's days — trimmed to what a decision reads: its own
+/// civil date and the local instants it spans. No `label`/`dateLabel`
 /// (rendering) and no `entries` (the module header's own call).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -127,9 +147,17 @@ pub struct WeekendDay {
 pub struct WeekendWindow {
     pub start_ms: i64,
     pub end_ms: i64,
-    /// Always exactly three days — Friday, Saturday, Sunday — even once
-    /// some are in the past: "what are my plans", not "what is left".
-    pub days: [WeekendDay; 3],
+    /// The window's days that have **not yet ended** at the device, in
+    /// window order — Friday, Saturday, Sunday while the weekend is still
+    /// ahead, then shrinking by one as each day's own local midnight
+    /// passes: on Saturday, Saturday and Sunday; on Sunday, Sunday alone.
+    /// A day that has ended is noise, and an unfinished item that was due
+    /// or scheduled on it leaves with it — no carry-forward.
+    ///
+    /// **Never empty**: the rollover to next weekend fires at Sunday
+    /// 20:00, before Sunday's own day end, so Sunday is always still
+    /// ahead of any `now_ms` this window is built for.
+    pub days: Vec<WeekendDay>,
     /// Whether `now_ms` falls inside `[start_ms, end_ms]` — the weekend
     /// answered is the one under way, not the next one.
     pub under_way: bool,
@@ -165,7 +193,7 @@ pub enum WeekendGap {
     UnresolvableZone,
 }
 
-/// What one of the window's three days holds — its own civil date and the
+/// What one of the window's days holds — its own civil date and the
 /// entries that landed on it, already in display order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -241,8 +269,9 @@ pub struct WindowEntry {
 pub struct WeekendFacts {
     pub window: WeekendWindow,
     pub counts: WindowCounts,
-    /// Always exactly three, in window order — Friday, Saturday, Sunday —
-    /// even when some hold nothing.
+    /// One per day still ahead, in window order — [`WeekendWindow::days`]
+    /// verbatim, so this shrinks with it as the weekend is spent — even
+    /// when some hold nothing. Never empty.
     pub days: Vec<WeekendDayEntries>,
 }
 
@@ -309,6 +338,10 @@ pub fn weekend_zone_queries(now_ms: i64) -> Vec<ZoneQuery> {
 /// threshold is computed once, as the current candidate window's own Sunday
 /// 20:00, and if `now_ms` has already passed it the whole window shifts
 /// forward by exactly one week — `weekend.ts`'s own rule, ported verbatim.
+///
+/// `start_ms`/`end_ms`/`under_way` are facts about the **whole** weekend
+/// and never shrink; [`WeekendWindow::days`] does, dropping each day as it
+/// ends at the device (that field's own doc).
 pub fn weekend_window(now_ms: i64, facts: &ZoneFacts) -> Option<WeekendWindow> {
     let today = facts.civil_date(DEVICE_ZONE, now_ms)?;
     let dow = weekday_index(&today)?; // 0 Sun … 6 Sat
@@ -322,7 +355,8 @@ pub fn weekend_window(now_ms: i64, facts: &ZoneFacts) -> Option<WeekendWindow> {
     }
 
     // Friday, Saturday, Sunday, and the day after Sunday — four midnights
-    // resolve the window's start, its three days, and its end in one pass.
+    // resolve the window's start, its three candidate days, and its end in
+    // one pass.
     let day_dates: [CivilDate; 4] = [
         friday.clone(),
         add_civil_days(&friday, 1)?,
@@ -336,11 +370,17 @@ pub fn weekend_window(now_ms: i64, facts: &ZoneFacts) -> Option<WeekendWindow> {
 
     let start_ms = midnights[0] + 17 * HOUR_MS;
     let end_ms = midnights[3] - 1;
-    let days = [
+    let mut days = vec![
         WeekendDay { date: day_dates[0].clone(), start_ms: midnights[0], end_ms: midnights[1] - 1 },
         WeekendDay { date: day_dates[1].clone(), start_ms: midnights[1], end_ms: midnights[2] - 1 },
         WeekendDay { date: day_dates[2].clone(), start_ms: midnights[2], end_ms: midnights[3] - 1 },
     ];
+    // The shrink: a day leaves the window at its own end (local midnight),
+    // because "what is still ahead" is what the operator reads this pane
+    // for. Sunday can never be dropped — the rollover above has already
+    // moved the whole window forward a week by Sunday 20:00 — so this
+    // never empties `days` (the field's own doc).
+    days.retain(|day| day.end_ms >= now_ms);
     let under_way = now_ms >= start_ms && now_ms <= end_ms;
 
     Some(WeekendWindow { start_ms, end_ms, days, under_way })
@@ -351,22 +391,34 @@ pub fn weekend_window(now_ms: i64, facts: &ZoneFacts) -> Option<WeekendWindow> {
 /// sunk by #564 because Android needs the identical window and a second
 /// copy of these bounds is exactly the drift ADR-0025 forbids.
 ///
-/// The lower civil bound is **Friday's own day key**, not `start_ms`'s
-/// (Friday 17:00): an all-day event covering Friday is a fact about the
-/// whole day, and asking from 17:00 would ask about Saturday onwards —
-/// the same reason [`in_window`] uses `days[0].start_ms` below. The upper
-/// civil bound is exclusive, so it is the day after Sunday; `end_ms` is
-/// Sunday 23:59:59.999 and one millisecond later is Monday local midnight.
+/// The lower civil bound is the **first still-ahead day's own day key**,
+/// not `start_ms`'s: an all-day event covering that day is a fact about the
+/// whole day, and asking from 17:00 would ask about the next day onwards —
+/// the same reason [`in_window`] uses the first day's `start_ms` below.
+/// The upper civil bound is exclusive, so it is the day after Sunday;
+/// `end_ms` is Sunday 23:59:59.999 and one millisecond later is Monday
+/// local midnight.
+///
+/// The timed lower bound is raised to that same first day's start once the
+/// window has begun to shrink, so the two arms cannot disagree about which
+/// day the interval opens on: before the weekend the first day is Friday
+/// and its midnight is below Friday 17:00, so this is `start_ms` exactly as
+/// it always was; on Sunday it is Sunday's own midnight rather than a
+/// Friday 17:00 the day columns no longer cover.
 ///
 /// `None` when [`DEVICE_ZONE`] could not be resolved — never a window
-/// built off a UTC pivot (the module header).
+/// built off a UTC pivot (the module header). The `?`s on `first`/`last`
+/// are unreachable by [`WeekendWindow::days`]' never-empty invariant, and
+/// are guards rather than a claim it can happen.
 pub fn weekend_calendar_interval(now_ms: i64, facts: &ZoneFacts) -> Option<CalendarInterval> {
     let window = weekend_window(now_ms, facts)?;
+    let first = window.days.first()?;
+    let last = window.days.last()?;
     Some(CalendarInterval {
-        start_ms: window.start_ms,
+        start_ms: window.start_ms.max(first.start_ms),
         end_ms: window.end_ms,
-        start_date: window.days[0].date.clone(),
-        end_date: add_civil_days(&window.days[2].date, 1)?,
+        start_date: first.date.clone(),
+        end_date: add_civil_days(&last.date, 1)?,
     })
 }
 
@@ -374,10 +426,18 @@ pub fn weekend_calendar_interval(now_ms: i64, facts: &ZoneFacts) -> Option<Calen
 /// `[window.start_ms, window.end_ms]`. `window.start_ms` is Friday
 /// **17:00** (the band's own "has the weekend started" instant), but a
 /// scheduled or due date anchors to the *start* of its day, so the lower
-/// bound here is `days[0].start_ms` (Friday local midnight) — #122's own
-/// review fix, ported verbatim from `weekend.ts`'s `inWindow`.
+/// bound here is the first still-ahead day's own local midnight — #122's
+/// own review fix, ported verbatim from `weekend.ts`'s `inWindow`.
+///
+/// That lower bound is also **what drops an item with its day**: once
+/// Friday has ended, Friday midnight is no longer the bound, so an
+/// unfinished Friday-due item is outside the window and leaves the pane
+/// rather than carrying forward ([`WeekendWindow::days`]' own ruling).
+/// `false` on an empty `days`, which the never-empty invariant rules out.
 fn in_window(ms: i64, window: &WeekendWindow) -> bool {
-    let lower_ms = window.days[0].start_ms;
+    let Some(lower_ms) = window.days.first().map(|day| day.start_ms) else {
+        return false;
+    };
     ms >= lower_ms && ms <= window.end_ms
 }
 
@@ -576,7 +636,7 @@ fn merge_window(
     days
 }
 
-/// Which of the window's three days `ms` falls on, or `None` if it falls on
+/// Which of the window's days `ms` falls on, or `None` if it falls on
 /// none of them. `weekend.ts` reaches its day through a `dayKeyOf(ms)` map
 /// lookup; here the day bounds are already resolved on the window, so the
 /// instant is compared against them directly rather than being re-derived
@@ -854,13 +914,148 @@ mod tests {
         assert!(!window.under_way);
     }
 
+    fn day_dates(window: &WeekendWindow) -> Vec<String> {
+        window.days.iter().map(|day| day.date.clone()).collect()
+    }
+
     #[test]
-    fn always_carries_exactly_three_days_friday_saturday_sunday() {
+    fn carries_all_three_days_while_the_whole_weekend_is_still_ahead() {
         let window = window_at(at(2026, 8, 10, 9, 0));
         assert_eq!(
-            window.days.iter().map(|day| day.date.clone()).collect::<Vec<_>>(),
+            day_dates(&window),
             vec![day_key(2026, 8, 14), day_key(2026, 8, 15), day_key(2026, 8, 16)],
         );
+    }
+
+    #[test]
+    fn still_carries_all_three_days_on_friday_evening_friday_has_not_ended() {
+        // The window is under way and Friday is being spent — but "spent"
+        // is not "ended", and the shrink is keyed to the day's own
+        // midnight, not to the window's 17:00 start.
+        let window = window_at(at(2026, 8, 14, 20, 0));
+        assert!(window.under_way);
+        assert_eq!(
+            day_dates(&window),
+            vec![day_key(2026, 8, 14), day_key(2026, 8, 15), day_key(2026, 8, 16)],
+        );
+    }
+
+    #[test]
+    fn drops_friday_once_friday_has_ended() {
+        let window = window_at(at(2026, 8, 15, 9, 0));
+        assert_eq!(day_dates(&window), vec![day_key(2026, 8, 15), day_key(2026, 8, 16)]);
+    }
+
+    #[test]
+    fn keeps_friday_through_its_own_last_millisecond() {
+        // The boundary is `end_ms >= now_ms`: Friday 23:59:59.999 still
+        // holds Friday, and one millisecond later (Saturday midnight) does
+        // not.
+        let last_ms = at(2026, 8, 15, 0, 0) - 1;
+        assert_eq!(day_dates(&window_at(last_ms)).len(), 3);
+        assert_eq!(day_dates(&window_at(last_ms + 1)).len(), 2);
+    }
+
+    #[test]
+    fn holds_sunday_alone_on_sunday() {
+        let window = window_at(at(2026, 8, 16, 9, 0));
+        assert_eq!(day_dates(&window), vec![day_key(2026, 8, 16)]);
+    }
+
+    #[test]
+    fn is_never_empty_at_sunday_19_59_the_last_instant_before_the_rollover() {
+        // The invariant that replaced "always exactly three": the rollover
+        // fires at Sunday 20:00, before Sunday's own end, so the last
+        // instant this weekend is answered for still has a day in it.
+        let window = window_at(at(2026, 8, 16, 19, 59));
+        assert_eq!(day_dates(&window), vec![day_key(2026, 8, 16)]);
+    }
+
+    #[test]
+    fn is_three_days_again_once_the_rollover_moves_to_next_weekend() {
+        let window = window_at(at(2026, 8, 16, 20, 1));
+        assert_eq!(
+            day_dates(&window),
+            vec![day_key(2026, 8, 21), day_key(2026, 8, 22), day_key(2026, 8, 23)],
+        );
+    }
+
+    #[test]
+    fn the_window_start_and_end_never_shrink_with_the_days() {
+        // Deliberately unchanged: the band is a fact about the whole
+        // weekend, so `start_ms`/`end_ms`/`under_way` stay put while the
+        // day columns go.
+        let sunday = window_at(at(2026, 8, 16, 9, 0));
+        assert_eq!(sunday.start_ms, at(2026, 8, 14, 17, 0));
+        assert_eq!(sunday.end_ms, at(2026, 8, 17, 0, 0) - 1);
+        assert!(sunday.under_way);
+        assert_eq!(weekend_band(&sunday, at(2026, 8, 16, 9, 0)), Band::Live);
+        assert_eq!(weekend_within_band(&sunday), sunday.end_ms);
+    }
+
+    /// Midnight at a device zone that springs forward one hour at
+    /// Saturday 2026-08-15 02:00 local — UTC-8 before, UTC-7 from then.
+    /// Not a real August transition, but the shape of one; August is what
+    /// every other fixture here uses.
+    fn midnight_dst(date: &str) -> i64 {
+        let days = civil_days_between("1970-01-01", date).unwrap();
+        let offset = if date < "2026-08-16" { 8 * HOUR_MS } else { 7 * HOUR_MS };
+        days * 24 * HOUR_MS + offset
+    }
+
+    fn resolve_dst(queries: &[ZoneQuery]) -> ZoneFacts {
+        let mut facts = ZoneFacts::default();
+        for query in queries {
+            match query {
+                ZoneQuery::CivilDate { zone, at_ms } if zone == DEVICE_ZONE => {
+                    // The offset depends on the date the offset decides,
+                    // so guess with the pre-transition one and re-ask once
+                    // if the guess lands on the far side.
+                    let mut date =
+                        add_civil_days("1970-01-01", (at_ms - 8 * HOUR_MS).div_euclid(24 * HOUR_MS))
+                            .unwrap();
+                    if date.as_str() >= "2026-08-16" {
+                        date = add_civil_days(
+                            "1970-01-01",
+                            (at_ms - 7 * HOUR_MS).div_euclid(24 * HOUR_MS),
+                        )
+                        .unwrap();
+                    }
+                    facts.insert(query, ZoneFact::Date(date));
+                }
+                ZoneQuery::Midnight { zone, date } if zone == DEVICE_ZONE => {
+                    facts.insert(query, ZoneFact::Instant(midnight_dst(date)));
+                }
+                _ => {}
+            }
+        }
+        facts
+    }
+
+    #[test]
+    fn a_day_ends_at_its_own_midnight_across_a_dst_transition() {
+        // Saturday is 23 hours long here. The day end is
+        // `next_midnight - 1` off the host's own `midnight_ms`, never
+        // Saturday's midnight plus 24 hours — so the shrink fires an hour
+        // earlier (in elapsed terms) than 24-hour arithmetic would.
+        let true_saturday_end = midnight_dst("2026-08-16") - 1;
+        let naive_saturday_end = midnight_dst("2026-08-15") + 24 * HOUR_MS - 1;
+        assert_eq!(naive_saturday_end - true_saturday_end, HOUR_MS);
+
+        let dates = |now_ms: i64| -> Vec<String> {
+            weekend_window(now_ms, &resolve_dst(&weekend_zone_queries(now_ms)))
+                .expect("window resolves")
+                .days
+                .iter()
+                .map(|day| day.date.clone())
+                .collect()
+        };
+
+        assert_eq!(dates(true_saturday_end), vec!["2026-08-15", "2026-08-16"]);
+        assert_eq!(dates(true_saturday_end + 1), vec!["2026-08-16"]);
+        // The instant 24-hour arithmetic would have called "still
+        // Saturday" is already Sunday.
+        assert_eq!(dates(naive_saturday_end), vec!["2026-08-16"]);
     }
 
     #[test]
@@ -888,6 +1083,23 @@ mod tests {
         assert_eq!(interval.start_date, day_key(2026, 8, 14));
         // ...and ends exclusively on the day after Sunday.
         assert_eq!(interval.end_date, day_key(2026, 8, 17));
+    }
+
+    #[test]
+    fn the_calendar_interval_shrinks_with_the_window_and_its_two_arms_agree() {
+        // Asked on Sunday morning: the civil arm opens on Sunday, and the
+        // timed arm is raised off Friday 17:00 to Sunday's own midnight so
+        // the two do not name different days. The upper bounds are the
+        // whole weekend's, unchanged.
+        let now_ms = at(2026, 8, 16, 9, 0);
+        let facts = resolve(&weekend_zone_queries(now_ms));
+
+        let interval = weekend_calendar_interval(now_ms, &facts).expect("an interval");
+
+        assert_eq!(interval.start_date, day_key(2026, 8, 16));
+        assert_eq!(interval.end_date, day_key(2026, 8, 17));
+        assert_eq!(interval.start_ms, at(2026, 8, 16, 0, 0));
+        assert_eq!(interval.end_ms, at(2026, 8, 17, 0, 0) - 1);
     }
 
     #[test]
@@ -1183,7 +1395,15 @@ mod tests {
         let now_ms = at(2026, 8, 14, 9, 0);
         let facts = resolve(&weekend_zone_queries(now_ms));
         let window = weekend_window(now_ms, &facts).unwrap();
-        let saturday_midnight = window.days[1].start_ms;
+        // Looked up by date, not by index: the window's days are only the
+        // ones still ahead, so an index is a claim about how much of the
+        // weekend is spent.
+        let saturday_midnight = window
+            .days
+            .iter()
+            .find(|day| day.date == day_key(2026, 8, 15))
+            .expect("Saturday is still ahead on Friday morning")
+            .start_ms;
         // An all-day event and a scheduled item both anchor to Saturday's
         // own start, so only the kind tie-break separates them; a day-only
         // deadline resolves to the END of its day (`deadline_sort_key`),
@@ -1231,7 +1451,7 @@ mod tests {
     }
 
     #[test]
-    fn an_answered_pane_carries_exactly_three_days_even_when_they_are_empty() {
+    fn an_answered_pane_carries_the_days_still_ahead_even_when_they_are_empty() {
         let now_ms = at(2026, 8, 14, 9, 0);
         let facts = resolve(&weekend_zone_queries(now_ms));
         let window = weekend_window(now_ms, &facts).unwrap();
@@ -1251,6 +1471,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_answered_pane_on_sunday_carries_sunday_alone() {
+        let now_ms = at(2026, 8, 16, 9, 0);
+        let facts = resolve(&weekend_zone_queries(now_ms));
+        let window = weekend_window(now_ms, &facts).unwrap();
+
+        let days = merge_window(&window, &[], &[], &facts);
+
+        let dates: Vec<&str> = days.iter().map(|day| day.date.as_str()).collect();
+        assert_eq!(dates, vec![day_key(2026, 8, 16).as_str()]);
+    }
+
+    #[test]
+    fn an_unfinished_item_due_on_a_dropped_day_leaves_with_its_day() {
+        // Ruling 2 of the shrink: no carry-forward, no "left over" group.
+        // The same item, same stage, asked twice — present on Friday,
+        // absent on Saturday.
+        let friday_due = item("friday-due", Some(&day_key(2026, 8, 14)), None);
+
+        let on_friday = facts_of(&inputs(at(2026, 8, 14, 9, 0), vec![], vec![friday_due.clone()]));
+        assert_eq!(on_friday.counts.due, 1);
+
+        let on_saturday = facts_of(&inputs(at(2026, 8, 15, 9, 0), vec![], vec![friday_due]));
+        assert_eq!(on_saturday.counts.due, 0);
+        assert!(on_saturday.days.iter().all(|day| day.entries.is_empty()));
+    }
+
+    #[test]
+    fn an_item_scheduled_on_a_dropped_day_leaves_with_it_too() {
+        let friday_plan = item("friday-plan", None, Some(&day_key(2026, 8, 14)));
+
+        let on_friday = facts_of(&inputs(at(2026, 8, 14, 9, 0), vec![], vec![friday_plan.clone()]));
+        assert_eq!(on_friday.counts.scheduled, 1);
+
+        let on_sunday = facts_of(&inputs(at(2026, 8, 16, 9, 0), vec![], vec![friday_plan]));
+        assert_eq!(on_sunday.counts.scheduled, 0);
+    }
+
+    #[test]
+    fn a_saturday_event_survives_saturday_and_goes_on_sunday() {
+        let saturday_lunch = event(at(2026, 8, 15, 12, 0), at(2026, 8, 15, 13, 0));
+
+        let on_saturday_evening =
+            facts_of(&inputs(at(2026, 8, 15, 20, 0), vec![saturday_lunch.clone()], vec![]));
+        assert_eq!(on_saturday_evening.counts.events, 1);
+
+        let on_sunday = facts_of(&inputs(at(2026, 8, 16, 9, 0), vec![saturday_lunch], vec![]));
+        assert_eq!(on_sunday.counts.events, 0);
+    }
+
     // ----------------------------------------------------------- band, live
 
     #[test]
@@ -1263,7 +1533,7 @@ mod tests {
         WeekendWindow {
             start_ms,
             end_ms: start_ms + 3 * 24 * HOUR_MS - 1,
-            days: [
+            days: vec![
                 WeekendDay { date: "2026-08-14".into(), start_ms, end_ms: start_ms },
                 WeekendDay { date: "2026-08-15".into(), start_ms, end_ms: start_ms },
                 WeekendDay { date: "2026-08-16".into(), start_ms, end_ms: start_ms },

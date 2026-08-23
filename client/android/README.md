@@ -941,7 +941,11 @@ costs the device token every run.
     expand the weekend pane, and tap a day chip on a due or scheduled row.
     The chip fills before any network is touched, and the do-date must
     survive a sync. Tapping the filled chip clears it — one control, two
-    directions.
+    directions. **The card's day sections and its chip set are only the
+    days still ahead** — Friday leaves at Friday midnight, so a Sunday run
+    must show Sunday alone, one chip per row, and no Friday or Saturday
+    entry anywhere on it. That is the shrink, and only a device run at a
+    real hour proves the phone's own zone drives it.
 24. **A real grill turn** (#539), from **both** mounts — item detail's
     Grill button and a Triage row's (gated on `canGrill`). One turn must
     show all three: heartbeats **collapsed** (the runner beats every 20s;

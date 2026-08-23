@@ -45,6 +45,13 @@ describe("weekendWindow, pinned against the core's weekend_window", () => {
     ["Sunday 19:59, still under way", at(2026, 8, 16, 19, 59)],
     ["Sunday 20:01, rolled to the following weekend", at(2026, 8, 16, 20, 1)],
     ["mid-Saturday, under way", at(2026, 8, 15, 12, 0)],
+    // The shrink's own boundary, on both sides of it: the two windows have
+    // to agree about *which* days are left, not only about the weekend's
+    // start and end. Friday's last millisecond still holds three days;
+    // Saturday's first holds two; Sunday morning holds one.
+    ["Friday's last millisecond, three days left", at(2026, 8, 15) - 1],
+    ["Saturday's first millisecond, Friday gone", at(2026, 8, 15)],
+    ["Sunday morning, Sunday alone", at(2026, 8, 16, 9, 0)],
     // Band boundaries, exercised at instants distinct from the window
     // scenarios above so the pin also covers the imminent/near/dormant
     // edges rather than only the window's own start/rollover instants.

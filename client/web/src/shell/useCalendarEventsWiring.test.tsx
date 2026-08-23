@@ -73,7 +73,12 @@ describe("useCalendarEventsWiring", () => {
       .find((message) => message.type === "getCalendarEvents");
     expect(request?.startDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(request?.endDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    // Exclusive end, three days wide: Friday through the Monday after.
+    // Exclusive end, so the start is strictly before it. Not a width
+    // assertion: this reads whichever request comes first in
+    // `QUESTION_ORDER`, and the weekend window's own width now varies
+    // with how much of the weekend is left (`weekend.rs`'s
+    // `WeekendWindow::days`). `weekend-pane/question.test.ts` is where
+    // that window's bounds are pinned.
     expect(String(request?.startDate) < String(request?.endDate)).toBe(true);
   });
 

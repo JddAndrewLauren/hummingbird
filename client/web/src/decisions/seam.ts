@@ -2061,7 +2061,8 @@ export interface WeekendDayEntriesCore {
 export interface WeekendFactsCore {
   window: WeekendWindowCore;
   counts: WeekendCountsCore;
-  /** Always exactly three, in window order. */
+  /** One per day still ahead, in window order — `window.days` verbatim,
+   * so this shrinks as the weekend is spent. Never empty. */
   days: WeekendDayEntriesCore[];
 }
 

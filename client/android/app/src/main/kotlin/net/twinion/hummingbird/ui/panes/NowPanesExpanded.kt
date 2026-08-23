@@ -63,7 +63,12 @@ import uniffi.hummingbird_ffi_mobile.MobileWeekendResolved
 // #564/#621, the weekend card. Its entries are `weekend.rs`'s own merged
 // `days` (sunk at #564 precisely so this card and `WeekendPaneExpanded.tsx`
 // cannot disagree about the due-beats-scheduled dedupe), and its plan chips
-// are `MobileTaskHost.setScheduledDate`'s first caller.
+// are `MobileTaskHost.setScheduledDate`'s first caller. That list holds
+// only the days that have not yet ended at the device — it shrinks to
+// Sunday alone by Sunday morning — and this card takes BOTH its day
+// sections and its `dayKeys` (the plan chips' own set) straight off it, so
+// the shrink is inherited rather than re-decided here. `weekend.rs`'s
+// `WeekendWindow::days` is where that rule lives.
 //
 // **Vacation still has no card**, and that is a scope line rather than a
 // missing lane now: the trips themselves cross fine, but `MobileTrip`
