@@ -1,5 +1,7 @@
 package net.twinion.hummingbird
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -125,6 +127,20 @@ fun SettingsScreen(
     val calendarSelections by viewModel.calendarSelections.collectAsState()
 
     suspend fun reload() = viewModel.load()
+
+    // #709: the document-creation contract, not a storage permission and
+    // not a `FileProvider` — the picker itself hands back a `Uri` this
+    // process may write to, with no declared permission at all.
+    val exportDiagnosticsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val bytes = viewModel.exportDiagnostics()
+                context.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+            }
+        }
+    }
 
     // Re-listed whenever the connection state moves: a device that has just
     // connected has a credential the previous list attempt did not, and one
@@ -318,6 +334,39 @@ fun SettingsScreen(
                     )
                     Button(onClick = onSync) {
                         Text("Sync now")
+                    }
+                }
+            }
+
+            SectionTitle("Diagnostics")
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        "A local, on-device journal of what capture, sync and push were doing " +
+                            "relative to each other, kept for 72 hours or 10 MiB. Logs only — " +
+                            "never your items or your token.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                exportDiagnosticsLauncher.launch(
+                                    "hummingbird-diagnostics-${System.currentTimeMillis()}.json",
+                                )
+                            },
+                        ) {
+                            Text("Export diagnostics")
+                        }
+                        OutlinedButton(onClick = { scope.launch { viewModel.clearDiagnostics() } }) {
+                            Text("Clear diagnostics")
+                        }
                     }
                 }
             }

@@ -71,6 +71,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 mod calendar_token;
+mod diagnostics;
 
 use calendar_token::{
     connection_state, mint_calendar_token, CalendarState, MintOutcome, ROTATION_MARGIN_MS,
@@ -6317,6 +6318,106 @@ pub fn is_informative_sync_outcome(kind: String) -> bool {
     settings::is_informative_sync_outcome(&kind)
 }
 
+// -------------------------------------------------------------- #709: diagnostics
+
+/// Mirrors only the handful of [`hummingbird_core::diagnostics::DiagnosticEvent`]
+/// variants Android mints on its own — `session.started` (the mobile FFI
+/// host's own init, `CoreHolder.create`), `worker.started`/`worker.finished`
+/// (`SyncWorker`, around its `run` call) and `push.received`
+/// (`HbMessagingService.onMessageReceived`). Never the whole closed family:
+/// `Core::run_observed`'s own `sync.*`/`http.*`/`operation.*` events are
+/// #710's wiring, once Android calls the observed path at all — this is the
+/// same "mirror a Rust-owned enum, don't redefine it" shape
+/// [`MobileUrgencyBand`]/[`MobileFrontierAxis`] already use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileDiagnosticEvent {
+    SessionStarted,
+    WorkerStarted,
+    WorkerFinished { success: bool },
+    PushReceived,
+}
+
+fn map_mobile_diagnostic_event(
+    event: MobileDiagnosticEvent,
+) -> hummingbird_core::diagnostics::DiagnosticEvent {
+    use hummingbird_core::diagnostics::{DiagnosticEvent, OperationOutcome};
+    match event {
+        MobileDiagnosticEvent::SessionStarted => DiagnosticEvent::SessionStarted,
+        MobileDiagnosticEvent::WorkerStarted => DiagnosticEvent::WorkerStarted,
+        MobileDiagnosticEvent::WorkerFinished { success } => DiagnosticEvent::WorkerFinished {
+            outcome: if success {
+                OperationOutcome::Success
+            } else {
+                OperationOutcome::Failure
+            },
+        },
+        MobileDiagnosticEvent::PushReceived => DiagnosticEvent::PushReceived,
+    }
+}
+
+/// The process-wide diagnostic session state (#709): one per Android
+/// process, matching the recorder it feeds — `seq` keeps counting and
+/// `origin_monotonic_ms` stays fixed for the process's whole life, exactly
+/// [`hummingbird_core::diagnostics::DiagnosticSession`]'s own contract for
+/// what one session is. Held here (not in [`diagnostics`]) so that module's
+/// own tests build a fresh counter per case instead of fighting a
+/// [`std::sync::OnceLock`] only the first test in the binary could ever set.
+struct DiagnosticSessionState {
+    session_id: std::sync::OnceLock<String>,
+    origin_monotonic_ms: AtomicU64,
+    seq: AtomicU64,
+}
+
+static DIAGNOSTIC_SESSION: DiagnosticSessionState = DiagnosticSessionState {
+    session_id: std::sync::OnceLock::new(),
+    origin_monotonic_ms: AtomicU64::new(0),
+    seq: AtomicU64::new(0),
+};
+
+/// Sets the process-wide session's id and the one monotonic reading its
+/// `elapsed_ms` is measured from. Called once, at the mobile FFI host's own
+/// init (`CoreHolder.create`) — which is also where `session.started` gets
+/// minted, immediately after. Idempotent: a later call cannot move the
+/// origin or rename a session already under way, since `seq`/`elapsed_ms`
+/// staying monotonic *within* one session is the whole point of the split
+/// (`hummingbird_core::diagnostics::context`'s own doc).
+#[uniffi::export]
+pub fn diagnostic_init_session(session_id: String, origin_monotonic_ms: u64) {
+    let _ = DIAGNOSTIC_SESSION.session_id.set(session_id);
+    DIAGNOSTIC_SESSION
+        .origin_monotonic_ms
+        .store(origin_monotonic_ms, Ordering::Relaxed);
+}
+
+/// Mints one Android-sourced `DiagnosticEventV1` and returns it serialized
+/// as the exact NDJSON line the Kotlin recorder appends — see
+/// [`diagnostics::event_json`]. `wall_clock_ms` is the caller's own
+/// `System.currentTimeMillis()`; `monotonic_ms` is `SystemClock
+/// .elapsedRealtime()`, measured against the origin [`diagnostic_init_session`]
+/// fixed for this process.
+#[uniffi::export]
+pub fn diagnostic_event_json(
+    wall_clock_ms: i64,
+    monotonic_ms: u64,
+    event: MobileDiagnosticEvent,
+) -> String {
+    let session_id = DIAGNOSTIC_SESSION
+        .session_id
+        .get()
+        .map(String::as_str)
+        .unwrap_or("uninitialized");
+    let origin_monotonic_ms = DIAGNOSTIC_SESSION.origin_monotonic_ms.load(Ordering::Relaxed);
+    let seq = DIAGNOSTIC_SESSION.seq.fetch_add(1, Ordering::Relaxed);
+    diagnostics::event_json(
+        session_id,
+        seq,
+        origin_monotonic_ms,
+        wall_clock_ms,
+        monotonic_ms,
+        map_mobile_diagnostic_event(event),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -10507,5 +10608,41 @@ mod settings_tests {
             facts_of(MobileStandingQuestion::Vacation),
             MobilePaneFacts::Vacation { resolved: None }
         ));
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_ffi_tests {
+    use super::*;
+
+    /// The whole wiring, end to end: `diagnostic_init_session` fixes the
+    /// origin, then `diagnostic_event_json` mints a real, parseable
+    /// `DiagnosticEventV1` line carrying that session id and `source:
+    /// "android"`. A later `diagnostic_init_session` call is a no-op —
+    /// `DIAGNOSTIC_SESSION` is a process-wide `static`, shared with every
+    /// other test in this binary, so this only pins that the *first* id
+    /// this process ever sets is the one that sticks (never asserts an
+    /// exact `seq`, since other tests in this file may run first and share
+    /// the same counter).
+    #[test]
+    fn diagnostic_event_json_carries_the_session_and_android_source() {
+        diagnostic_init_session("ffi-test-session".to_string(), 0);
+        let json = diagnostic_event_json(1_700_000_000_000, 0, MobileDiagnosticEvent::PushReceived);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["session_id"], "ffi-test-session");
+        assert_eq!(value["source"], "android");
+        assert_eq!(value["event"]["name"], "push.received");
+    }
+
+    #[test]
+    fn worker_finished_success_maps_to_the_success_outcome() {
+        diagnostic_init_session("ffi-test-session".to_string(), 0);
+        let json = diagnostic_event_json(
+            0,
+            0,
+            MobileDiagnosticEvent::WorkerFinished { success: true },
+        );
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["event"]["payload"]["outcome"], "success");
     }
 }

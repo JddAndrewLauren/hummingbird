@@ -3,9 +3,11 @@ package net.twinion.hummingbird.push
 import androidx.work.WorkManager
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
+import net.twinion.hummingbird.diagnostics.DiagnosticsRecorder
 import net.twinion.hummingbird.notify.AlertNotification
 import net.twinion.hummingbird.notify.AlertNotifier
 import net.twinion.hummingbird.sync.SyncWorker
+import uniffi.hummingbird_ffi_mobile.MobileDiagnosticEvent
 
 // The FCM entry point (M2/#141). Two jobs: keep the registered token
 // current, and turn an arriving alert into a notification.
@@ -31,6 +33,10 @@ class HbMessagingService : FirebaseMessagingService() {
     // short-lived service the OS may stop the moment it returns.
     override fun onMessageReceived(message: RemoteMessage) {
         super.onMessageReceived(message)
+        // Fire-and-forget (#709): `record` mints and enqueues without
+        // suspending, so this still touches no network and returns from
+        // this short-lived callback exactly as quickly as before.
+        DiagnosticsRecorder.get(applicationContext).record(MobileDiagnosticEvent.PushReceived)
         AlertNotification.from(message.data)?.let {
             AlertNotifier.post(applicationContext, it)
         }

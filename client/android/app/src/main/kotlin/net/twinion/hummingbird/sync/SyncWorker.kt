@@ -9,6 +9,8 @@ import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkerParameters
 import kotlin.random.Random
 import net.twinion.hummingbird.core.CoreHolder
+import net.twinion.hummingbird.diagnostics.DiagnosticsRecorder
+import uniffi.hummingbird_ffi_mobile.MobileDiagnosticEvent
 
 // The background legs of the sync model decided on #141 (grilling
 // 2026-08-14): foreground sync + an OS-deferrable ~hourly WorkManager
@@ -31,6 +33,8 @@ class SyncWorker(context: Context, params: WorkerParameters) :
     CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
+        val recorder = DiagnosticsRecorder.get(applicationContext)
+        recorder.record(MobileDiagnosticEvent.WorkerStarted)
         val core = CoreHolder.get(applicationContext)
         val outcome = core.run(
             System.currentTimeMillis(),
@@ -42,14 +46,20 @@ class SyncWorker(context: Context, params: WorkerParameters) :
         // else (completed, skipped, no_credential, held) is this run done.
         // The core has already recorded its own backoff either way — a
         // Retry here only re-offers the attempt, it cannot bypass that.
-        return when (outcome.kind) {
-            "pull_failed", "persist_failed", "blocked" -> Result.retry()
-            else -> Result.success()
-        }
+        val retryable = outcome.kind in RETRYABLE_OUTCOME_KINDS
+        recorder.record(MobileDiagnosticEvent.WorkerFinished(success = !retryable))
+        return if (retryable) Result.retry() else Result.success()
     }
 
     companion object {
         const val KEY_TRIGGER = "trigger"
+
+        /** The outcomes WorkManager retries (its own backoff, above) —
+         * everything else counts as `worker.finished { success: true }`
+         * for #709's diagnostic event, even "skipped"/"no_credential"/
+         * "held": none of those is a *worker* failure, they are the core
+         * declining to do work this run. */
+        private val RETRYABLE_OUTCOME_KINDS = setOf("pull_failed", "persist_failed", "blocked")
 
         /** The periodic leg's trigger: gated by the core's backoff,
          * exactly the web client's cadence tick — a background refresh is
