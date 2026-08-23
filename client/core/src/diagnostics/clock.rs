@@ -21,7 +21,7 @@ pub const STALLED_AFTER_MS: u64 = 30_000;
 /// network or a store, and a test's implementation can resolve it
 /// immediately (or on a manual trigger) to assert the 5s/30s thresholds
 /// without a real wall-clock wait — see
-/// [`crate::diagnostics::test_support::RecordingTimer`].
+/// [`crate::diagnostics::test_support::RecordingClock`].
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait DiagnosticClock: Send + Sync {

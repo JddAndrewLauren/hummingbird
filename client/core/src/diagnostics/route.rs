@@ -6,9 +6,12 @@
 //! can call this directly and a test can assert its output without ever
 //! constructing a request.
 
-/// The four correlation headers every observed sync HTTP call carries. The
-/// authority validates each value against [`is_valid_header_value`]'s same
-/// pattern — `[A-Za-z0-9_-]{1,80}`. [`sanitize_header_value`] is what
+/// The four correlation headers every observed sync HTTP call carries.
+/// Nothing server-side validates them yet: #711 is the slice that will
+/// teach the authority's request boundary to check each value against
+/// [`is_valid_header_value`]'s pattern — `[A-Za-z0-9_-]{1,80}` — and until
+/// it lands, the client is the only enforcer.
+/// [`sanitize_header_value`] is what
 /// actually enforces that pattern on the client side, at the one place
 /// (`DiagnosticsContext::correlation_headers`) every attached value passes
 /// through — see that function's docs for why a bare `is_valid_header_value`
@@ -82,6 +85,12 @@ pub fn sanitize_header_value(value: &str) -> &str {
 /// uuids the authority assigns) contains a hyphen or a digit, so the
 /// general rule still draws the boundary correctly everywhere else,
 /// without a route table to keep in sync as new resources are added.
+///
+/// **The known limit:** a purely alphabetic id would be left concrete,
+/// indistinguishable from a static segment. No id this app mints is purely
+/// alphabetic (see the sentence above), so the limit is unreachable today —
+/// a future id format without a digit or a hyphen would need a route table
+/// here rather than a tweak to this rule.
 pub fn route_template(path: &str) -> String {
     let segments: Vec<&str> = path.split('/').collect();
     segments

@@ -9,9 +9,10 @@
 //!
 //! **Payloads are closed types, never a string-keyed metadata map.** That is
 //! what makes the redaction rule in [`failure`]/this module's own tests
-//! checkable by grepping a serialized fixture rather than by review habit —
-//! a map could carry anything; a fixed set of typed fields cannot silently
-//! grow a `title` or a `token`.
+//! checkable — by scanning [`DiagnosticEvent`]'s own declaration and by
+//! grepping serialized fixtures — rather than by review habit: a map could
+//! carry anything; a fixed set of typed fields cannot silently grow a
+//! `title` or a `token`.
 //!
 //! **This module has no clock or RNG of its own.** Bare
 //! `wasm32-unknown-unknown` has neither (see `sync/mod.rs`'s seed-minting
@@ -259,8 +260,12 @@ impl DiagnosticSink for NullSink {
 }
 
 /// Field names a payload must never carry (#706's redaction rule) —
-/// checked structurally against a fixture covering every event variant,
-/// not by review habit. Exact JSON key matches, case-insensitive, so a
+/// checked structurally, not by review habit, by two tests that cover
+/// different halves of the claim: `no_variant_declares_a_forbidden_field_name`
+/// scans this enum's whole declaration (every variant, including future
+/// ones), and `no_payload_ever_carries_a_forbidden_field_name` checks real
+/// serialized JSON for the variants that have a fixture. Each test's docs
+/// state what it does not cover. Exact JSON key matches, case-insensitive, so a
 /// legitimate `cycle_id`/`request_id`/`session_id`/`operation_id` (whose
 /// key is not literally one of these words) never false-positives.
 #[cfg(test)]
@@ -339,25 +344,38 @@ mod tests {
         assert_eq!(round_tripped, event);
     }
 
-    /// One instance of every [`DiagnosticEvent`] family, so the field-name
-    /// rejection test below is a structural claim about the whole enum, not
-    /// one call site.
+    /// One instance of every [`DiagnosticEvent`] family known when this was
+    /// written, so [`no_payload_ever_carries_a_forbidden_field_name`] checks
+    /// real serialized JSON — including keys that come from a *nested* type
+    /// (a payload field whose own struct grows a bad field name) rather than
+    /// from this enum's own declaration.
     ///
-    /// **Exhaustiveness-enforced (review round 1, finding 6):** `canonical`
-    /// re-matches each fixture below against `DiagnosticEvent` with **no
-    /// wildcard arm**. Adding a variant to `DiagnosticEvent` makes
-    /// `canonical` fail to compile — `error[E0004]: non-exhaustive
-    /// patterns` — until an arm (and, right next to it, a fixture in the
-    /// array below) exists for it, so a new family can no longer skip this
-    /// test by simply never being added to a hand-maintained list with
-    /// nothing forcing anyone back to it.
+    /// **What the compiler does and does not force here.** `canonical`
+    /// re-matches each fixture against `DiagnosticEvent` with **no wildcard
+    /// arm**, so adding a variant fails to compile — `error[E0004]:
+    /// non-exhaustive patterns` — until an arm exists for it. That forces an
+    /// *arm*; it does **not** force a *fixture*. Review round 2 disproved
+    /// the earlier claim that it did: adding `BrandNewFamily { title:
+    /// String }` plus only the arm the compiler demanded left this array
+    /// untouched and the redaction test still green. Stable Rust cannot
+    /// count an enum's variants (`std::mem::variant_count` is nightly), so
+    /// there is no way to assert this array is complete without either a
+    /// derive dependency or macro-generating the enum — and the enum's
+    /// declaration is the wire contract, which stays hand-written and
+    /// readable.
     ///
-    /// **Mutation-tested twice**: (1) adding a field named `title` to e.g.
-    /// `SyncStarted` made `no_payload_ever_carries_a_forbidden_field_name`
-    /// fail; (2) commenting out the `PushReceived` arm below reproduces
-    /// `error[E0004]` at this function, pinning that the match really is
-    /// exhaustive rather than accidentally carrying a stray wildcard. Both
-    /// reverted before landing this test.
+    /// So the whole-enum guarantee lives in
+    /// [`no_variant_declares_a_forbidden_field_name`] instead, which reads
+    /// this enum's own source text and therefore covers every variant that
+    /// exists, including ones nobody added a fixture for. This array carries
+    /// the value-level half; that test carries the coverage half. **Neither
+    /// one alone closes the rule** — see that test's docs for the residual
+    /// hole it leaves.
+    ///
+    /// **Mutation-tested**: commenting out the `PushReceived` arm below
+    /// reproduces `error[E0004]` at this function, pinning that the match
+    /// really is exhaustive rather than accidentally carrying a stray
+    /// wildcard. Reverted before landing.
     fn one_of_every_event_variant() -> Vec<DiagnosticEvent> {
         fn canonical(event: DiagnosticEvent) -> DiagnosticEvent {
             match event {
@@ -436,10 +454,97 @@ mod tests {
         .collect()
     }
 
+    /// The `DiagnosticEvent` declaration's own source text, from `pub enum
+    /// DiagnosticEvent {` to the column-0 `}` that closes it. Deliberately
+    /// *not* the whole file: [`FORBIDDEN_FIELD_NAMES`] itself lists every
+    /// forbidden word as a literal, so a whole-file scan would always fail.
+    fn diagnostic_event_declaration() -> &'static str {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("pub enum DiagnosticEvent {")
+            .expect("DiagnosticEvent's declaration is in this module's own source");
+        let body = &source[start..];
+        let end = body
+            .find("\n}\n")
+            .expect("DiagnosticEvent's declaration closes with a column-0 brace");
+        &body[..end]
+    }
+
+    /// **The whole-enum half of #706's redaction rule.** Scans
+    /// `DiagnosticEvent`'s own declaration and rejects any forbidden word
+    /// appearing as a bare token on a non-comment line — which catches both
+    /// a field named `title` and a `#[serde(rename = "title")]` on a
+    /// differently-named one. Unlike
+    /// [`no_payload_ever_carries_a_forbidden_field_name`] this enumerates no
+    /// variants, so it covers every variant that exists by construction: a
+    /// new family cannot slip past it by having no fixture, which is exactly
+    /// how the earlier version of this rule was disproved in review round 2.
+    ///
+    /// **Mutation-tested:** adding `BrandNewFamily { title: String }` to the
+    /// enum, with only the arm the compiler demands in
+    /// [`one_of_every_event_variant`] and no fixture, fails *this* test
+    /// (`forbidden field name(s) declared on DiagnosticEvent: ["title"]`)
+    /// where the fixture test passed. Reverted before landing.
+    ///
+    /// **The residual hole, stated honestly.** This is a source-text check,
+    /// so it sees only names written literally in *this* declaration. A
+    /// forbidden key reaching the wire from a *nested* type — a payload
+    /// field like `failure: Option<FailureClass>` whose own struct grows a
+    /// `message` field in another module — is invisible here; that case is
+    /// the fixture test's job, and only for variants that have a fixture. A
+    /// new variant carrying a *new* nested type with a bad field inside it
+    /// is covered by neither, and nothing in stable Rust closes that without
+    /// generating the enum from a macro. All payload types today are the
+    /// closed local enums above plus scalars, so the gap is unreachable at
+    /// present.
+    #[test]
+    fn no_variant_declares_a_forbidden_field_name() {
+        let mut offending = Vec::new();
+        for line in diagnostic_event_declaration().lines() {
+            let line = line.trim();
+            if line.starts_with("//") {
+                continue;
+            }
+            for token in line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                if FORBIDDEN_FIELD_NAMES
+                    .iter()
+                    .any(|forbidden| forbidden.eq_ignore_ascii_case(token))
+                {
+                    offending.push(token.to_string());
+                }
+            }
+        }
+        assert!(
+            offending.is_empty(),
+            "forbidden field name(s) declared on DiagnosticEvent: {offending:?}"
+        );
+    }
+
+    /// The scan above is only as good as the block it reads — pin that the
+    /// extraction really found the enum body and stopped at its end, so a
+    /// future edit that moves the declaration cannot silently reduce
+    /// [`no_variant_declares_a_forbidden_field_name`] to scanning nothing.
+    #[test]
+    fn the_scanned_declaration_is_the_whole_enum_body_and_no_more() {
+        let declaration = diagnostic_event_declaration();
+        assert!(declaration.contains("SessionStarted"));
+        assert!(declaration.contains("PushReceived"));
+        assert!(declaration.contains("force_full_sweep"));
+        // Stops at the enum's own closing brace — the next item in the file
+        // is not in scope.
+        assert!(!declaration.contains("pub trait DiagnosticSink"));
+        assert!(!declaration.contains("FORBIDDEN_FIELD_NAMES"));
+    }
+
     /// #706 acceptance: "A redaction test rejects forbidden field names ...
     /// a future payload field called `title` or `token` fails a test
-    /// rather than a review." See [`one_of_every_event_variant`]'s doc
-    /// comment for the mutation-testing proof this check is not vacuous.
+    /// rather than a review." The value-level half — see
+    /// [`one_of_every_event_variant`] for what this does and does not
+    /// cover, and [`no_variant_declares_a_forbidden_field_name`] for the
+    /// whole-enum half.
+    ///
+    /// **Mutation-tested:** adding a field named `title` to `SyncStarted`
+    /// made this fail. Reverted before landing.
     #[test]
     fn no_payload_ever_carries_a_forbidden_field_name() {
         let mut offending = Vec::new();

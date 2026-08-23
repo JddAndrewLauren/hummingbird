@@ -117,10 +117,14 @@ pub struct DiagnosticsContext<'a> {
 }
 
 impl<'a> DiagnosticsContext<'a> {
-    /// `platform`/`build` are the identity the correlation headers carry —
-    /// see `sync::reqwest_transport::ReqwestSyncTransport::with_client_identity`
-    /// for the transport-level equivalent this context's headers must
-    /// agree with when both are supplied by the same host.
+    /// `platform`/`build` are the identity the correlation headers carry,
+    /// and **this is the only place a host supplies it** — the transports
+    /// hold no copy of their own (see
+    /// `sync::reqwest_transport::ReqwestSyncTransport`'s struct docs), so a
+    /// host slice wiring identity in has exactly one seam and no second one
+    /// that can disagree with it. Both values pass through
+    /// [`crate::diagnostics::route::sanitize_header_value`] in
+    /// [`Self::correlation_headers`] before they ever reach a header.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         sink: &'a dyn DiagnosticSink,
@@ -489,9 +493,11 @@ mod tests {
     }
 
     /// Review round 1, finding 4: an invalid platform/build must never
-    /// reach a header verbatim.
+    /// reach a header verbatim. The `build` is the invalid one here (a
+    /// version string with spaces and parentheses) — `platform` is valid
+    /// and must survive untouched alongside it.
     #[test]
-    fn an_invalid_platform_is_sanitized_before_it_reaches_the_correlation_headers() {
+    fn an_invalid_build_is_sanitized_before_it_reaches_the_correlation_headers() {
         let sink = crate::diagnostics::test_support::RecordingSink::default();
         let clock = RecordingClock::default();
         let session = DiagnosticSession::new("s-1", 0);
@@ -501,6 +507,7 @@ mod tests {
         let headers = diagnostics.correlation_headers("cycle-1-0");
 
         assert_eq!(headers.build, "invalid");
+        assert_eq!(headers.platform, "core");
         assert!(super::super::route::is_valid_header_value(headers.build));
     }
 }

@@ -23,13 +23,13 @@ fn build_url(base_url: &str, path: &str) -> String {
 }
 
 #[derive(Debug, Clone)]
+/// Holds no client identity of its own — see
+/// `sync::reqwest_transport::ReqwestSyncTransport`'s docs for why the
+/// `X-Hummingbird-Client-*` values arrive per call on
+/// [`CorrelationHeaders`] instead.
 pub struct ReqwestMutationTransport {
     client: reqwest::Client,
     base_url: String,
-    /// See `sync::reqwest_transport::ReqwestSyncTransport`'s identical
-    /// fields — same default, same additive setter.
-    platform: String,
-    build: String,
 }
 
 impl ReqwestMutationTransport {
@@ -38,17 +38,7 @@ impl ReqwestMutationTransport {
         Self {
             client,
             base_url: base_url.into(),
-            platform: "unknown".to_string(),
-            build: "unknown".to_string(),
         }
-    }
-
-    /// Sets the `X-Hummingbird-Client-Platform`/`-Build` header values a
-    /// correlated call attaches.
-    pub fn with_client_identity(mut self, platform: impl Into<String>, build: impl Into<String>) -> Self {
-        self.platform = platform.into();
-        self.build = build.into();
-        self
     }
 
     /// Builds the request, attaching the four `X-Hummingbird-*` headers
@@ -164,13 +154,13 @@ mod tests {
 
     #[test]
     fn all_four_correlation_headers_are_attached_when_present() {
-        let transport = ReqwestMutationTransport::new(reqwest::Client::new(), "https://authority.example")
-            .with_client_identity("android", "42");
+        let transport =
+            ReqwestMutationTransport::new(reqwest::Client::new(), "https://authority.example");
         let correlation = CorrelationHeaders {
             cycle_id: "cycle-9",
             request_id: "cycle-9-3",
-            platform: &transport.platform.clone(),
-            build: &transport.build.clone(),
+            platform: "android",
+            build: "42",
         };
         let request = transport
             .request(&create_request(), "token", Some(&correlation))

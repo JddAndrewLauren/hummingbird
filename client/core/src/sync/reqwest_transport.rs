@@ -31,16 +31,18 @@ fn build_sweep_url(base_url: &str) -> String {
 }
 
 #[derive(Debug, Clone)]
+/// This transport holds **no client identity of its own** (#706). The
+/// `X-Hummingbird-Client-Platform`/`-Build` values it attaches arrive per
+/// call, on the [`CorrelationHeaders`] the caller passes in — minted and
+/// sanitized in one place,
+/// [`crate::diagnostics::DiagnosticsContext::correlation_headers`]. A
+/// second, transport-held copy of the same identity was tried and removed
+/// before landing: it was written by a setter and read by nothing on the
+/// production path, which made it a decoy for the host slices (#709/#710)
+/// that have to wire identity in. Wire it into the `DiagnosticsContext`.
 pub struct ReqwestSyncTransport {
     client: reqwest::Client,
     base_url: String,
-    /// Host identity for the `X-Hummingbird-Client-*` headers (#706) — set
-    /// via [`ReqwestSyncTransport::with_client_identity`]. Defaults to
-    /// `"unknown"` (which still satisfies the header-value pattern) rather
-    /// than requiring every existing caller of [`ReqwestSyncTransport::new`]
-    /// to supply one.
-    platform: String,
-    build: String,
 }
 
 impl ReqwestSyncTransport {
@@ -51,18 +53,7 @@ impl ReqwestSyncTransport {
         Self {
             client,
             base_url: base_url.into(),
-            platform: "unknown".to_string(),
-            build: "unknown".to_string(),
         }
-    }
-
-    /// Sets the `X-Hummingbird-Client-Platform`/`-Build` header values a
-    /// correlated call attaches. Additive and optional — see the struct
-    /// docs on why `new` alone still compiles and behaves.
-    pub fn with_client_identity(mut self, platform: impl Into<String>, build: impl Into<String>) -> Self {
-        self.platform = platform.into();
-        self.build = build.into();
-        self
     }
 
     /// Builds the request, attaching the four `X-Hummingbird-*` headers
@@ -200,13 +191,12 @@ mod tests {
     /// exactly as given — built, never sent, so this needs no network.
     #[test]
     fn all_four_correlation_headers_are_attached_when_present() {
-        let transport = ReqwestSyncTransport::new(reqwest::Client::new(), "https://authority.example")
-            .with_client_identity("web", "1.2.3");
+        let transport = ReqwestSyncTransport::new(reqwest::Client::new(), "https://authority.example");
         let correlation = CorrelationHeaders {
             cycle_id: "cycle-1",
             request_id: "cycle-1-0",
-            platform: &transport.platform.clone(),
-            build: &transport.build.clone(),
+            platform: "web",
+            build: "1.2.3",
         };
         let request = transport
             .request(
