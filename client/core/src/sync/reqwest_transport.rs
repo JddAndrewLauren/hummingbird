@@ -7,6 +7,11 @@
 //! function; the request-sending path is exercised end-to-end by the
 //! adapter's fixture tests against a scripted transport.
 
+use crate::diagnostics::route::{
+    CorrelationHeaders, HEADER_CLIENT_BUILD, HEADER_CLIENT_PLATFORM, HEADER_CYCLE_ID,
+    HEADER_REQUEST_ID,
+};
+
 use super::transport::{ChangesTransport, TransportError};
 
 /// Builds the `GET /api/changes?since=N` URL against `base_url` (the
@@ -26,6 +31,15 @@ fn build_sweep_url(base_url: &str) -> String {
 }
 
 #[derive(Debug, Clone)]
+/// This transport holds **no client identity of its own** (#706). The
+/// `X-Hummingbird-Client-Platform`/`-Build` values it attaches arrive per
+/// call, on the [`CorrelationHeaders`] the caller passes in — minted and
+/// sanitized in one place,
+/// [`crate::diagnostics::DiagnosticsContext::correlation_headers`]. A
+/// second, transport-held copy of the same identity was tried and removed
+/// before landing: it was written by a setter and read by nothing on the
+/// production path, which made it a decoy for the host slices (#709/#710)
+/// that have to wire identity in. Wire it into the `DiagnosticsContext`.
 pub struct ReqwestSyncTransport {
     client: reqwest::Client,
     base_url: String,
@@ -42,14 +56,39 @@ impl ReqwestSyncTransport {
         }
     }
 
+    /// Builds the request, attaching the four `X-Hummingbird-*` headers
+    /// when `correlation` is present — split out from [`Self::get`] as a
+    /// synchronous, no-network step so a test can call `.build()` on the
+    /// result and inspect headers without ever sending anything.
+    fn request(
+        &self,
+        url: String,
+        access_token: &str,
+        correlation: Option<&CorrelationHeaders<'_>>,
+    ) -> reqwest::RequestBuilder {
+        let mut builder = self.client.get(url).bearer_auth(access_token);
+        if let Some(correlation) = correlation {
+            builder = builder
+                .header(HEADER_CYCLE_ID, correlation.cycle_id)
+                .header(HEADER_REQUEST_ID, correlation.request_id)
+                .header(HEADER_CLIENT_PLATFORM, correlation.platform)
+                .header(HEADER_CLIENT_BUILD, correlation.build);
+        }
+        builder
+    }
+
     /// One authenticated GET returning the raw body, with the status
     /// preserved on failure — the adapter's unauthorized-vs-transient
-    /// decision reads it.
-    async fn get(&self, url: String, access_token: &str) -> Result<String, TransportError> {
+    /// decision reads it. `correlation`, when present, attaches the four
+    /// `X-Hummingbird-*` headers the authority will later validate.
+    async fn get(
+        &self,
+        url: String,
+        access_token: &str,
+        correlation: Option<&CorrelationHeaders<'_>>,
+    ) -> Result<String, TransportError> {
         let response = self
-            .client
-            .get(url)
-            .bearer_auth(access_token)
+            .request(url, access_token, correlation)
             .send()
             .await
             .map_err(|source| TransportError::new(source.to_string()))?;
@@ -77,12 +116,31 @@ impl ChangesTransport for ReqwestSyncTransport {
         access_token: &str,
         since: i64,
     ) -> Result<String, TransportError> {
-        self.get(build_changes_url(&self.base_url, since), access_token)
+        self.get(build_changes_url(&self.base_url, since), access_token, None)
             .await
     }
 
     async fn fetch_sweep(&self, access_token: &str) -> Result<String, TransportError> {
-        self.get(build_sweep_url(&self.base_url), access_token)
+        self.get(build_sweep_url(&self.base_url), access_token, None)
+            .await
+    }
+
+    async fn fetch_changes_with_headers(
+        &self,
+        access_token: &str,
+        since: i64,
+        headers: &CorrelationHeaders<'_>,
+    ) -> Result<String, TransportError> {
+        self.get(build_changes_url(&self.base_url, since), access_token, Some(headers))
+            .await
+    }
+
+    async fn fetch_sweep_with_headers(
+        &self,
+        access_token: &str,
+        headers: &CorrelationHeaders<'_>,
+    ) -> Result<String, TransportError> {
+        self.get(build_sweep_url(&self.base_url), access_token, Some(headers))
             .await
     }
 }
@@ -113,5 +171,44 @@ mod tests {
             build_sweep_url("https://authority.example"),
             "https://authority.example/api/sweep"
         );
+    }
+
+    /// No headers are attached at all with `correlation: None` — the plain
+    /// (non-observed) call path's exact wire shape, unchanged from before
+    /// this issue.
+    #[test]
+    fn no_correlation_headers_are_attached_without_a_correlation() {
+        let transport = ReqwestSyncTransport::new(reqwest::Client::new(), "https://authority.example");
+        let request = transport
+            .request("https://authority.example/api/sweep".to_string(), "token", None)
+            .build()
+            .unwrap();
+        assert!(request.headers().get(HEADER_CYCLE_ID).is_none());
+        assert!(request.headers().get(HEADER_REQUEST_ID).is_none());
+    }
+
+    /// Every one of the four `X-Hummingbird-*` headers lands on the request
+    /// exactly as given — built, never sent, so this needs no network.
+    #[test]
+    fn all_four_correlation_headers_are_attached_when_present() {
+        let transport = ReqwestSyncTransport::new(reqwest::Client::new(), "https://authority.example");
+        let correlation = CorrelationHeaders {
+            cycle_id: "cycle-1",
+            request_id: "cycle-1-0",
+            platform: "web",
+            build: "1.2.3",
+        };
+        let request = transport
+            .request(
+                "https://authority.example/api/sweep".to_string(),
+                "token",
+                Some(&correlation),
+            )
+            .build()
+            .unwrap();
+        assert_eq!(request.headers().get(HEADER_CYCLE_ID).unwrap(), "cycle-1");
+        assert_eq!(request.headers().get(HEADER_REQUEST_ID).unwrap(), "cycle-1-0");
+        assert_eq!(request.headers().get(HEADER_CLIENT_PLATFORM).unwrap(), "web");
+        assert_eq!(request.headers().get(HEADER_CLIENT_BUILD).unwrap(), "1.2.3");
     }
 }
