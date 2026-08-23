@@ -8,6 +8,7 @@
 
 mod codec;
 mod delivery;
+pub mod diagnostics;
 mod entropy;
 mod fcm;
 mod google_calendar;

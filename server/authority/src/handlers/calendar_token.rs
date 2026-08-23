@@ -24,6 +24,7 @@ pub fn verdict() -> ApiResponse {
         status: 204,
         body: String::new(),
         deliveries: Vec::new(),
+        principal_id: None,
     }
 }
 
@@ -56,6 +57,7 @@ pub fn write_verdict(token_id: &str) -> ApiResponse {
         status: if allowed { 204 } else { 403 },
         body: String::new(),
         deliveries: Vec::new(),
+        principal_id: None,
     }
 }
 

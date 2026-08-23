@@ -21,6 +21,10 @@ mod shim {
     use std::collections::HashMap;
     use std::rc::Rc;
 
+    use hummingbird_authority::diagnostics::{
+        accept_cycle_id, accept_request_id, classify_auth_result, route_template,
+        RequestFinished, RequestReceived,
+    };
     use hummingbird_authority::{
         calendar_secrets_unset, calendar_write_secrets_unset, credential_rejected, forwardable,
         handle, init_schema, revoke_dead_target, run_url, unconfigured, unreachable,
@@ -139,6 +143,42 @@ mod shim {
         }
 
         async fn fetch(&self, mut req: Request) -> Result<Response> {
+            // #711: correlation id resolution and the `request.received`
+            // log happen before any of this function's awaited work
+            // (schema init, alarm scheduling, reading the body, `handle()`
+            // itself) — the same "write the start event before the awaited
+            // operation" shape the client's own `DiagnosticsContext` uses
+            // (`client/core/src/diagnostics/context.rs`'s `http.started`),
+            // so an incomplete span survives a hang anywhere below this
+            // point. `request_id` is resolved exactly once, here, using
+            // this instance's entropy: it is never re-derived with fresh
+            // entropy further down (`ApiRequest::request_id` below is
+            // fed this already-resolved value, and `handle()`'s own
+            // `accept_request_id` call short-circuits on an already-valid
+            // string without drawing entropy again), so the `received`
+            // line, the echoed response header and the `finished` line all
+            // name the exact same request.
+            let start_ms = Date::now().as_millis() as i64;
+            let method = req.method().to_string().to_uppercase();
+            let url = req.url()?;
+            let path = url.path().to_string();
+            let authorization = req.headers().get("authorization")?;
+            let cycle_id_header = req.headers().get("x-hummingbird-cycle-id")?;
+            let request_id_header = req.headers().get("x-hummingbird-request-id")?;
+            let route = route_template(&path);
+            let cycle_id = accept_cycle_id(cycle_id_header.as_deref());
+            let request_id = accept_request_id(request_id_header.as_deref(), &WorkersEntropy);
+            console_log!(
+                "{}",
+                serde_json::to_string(&RequestReceived::new(
+                    cycle_id.clone(),
+                    request_id.clone(),
+                    route.clone(),
+                    method.clone(),
+                ))
+                .expect("RequestReceived serializes")
+            );
+
             let sql = WorkersSql {
                 sql: self.state.storage().sql(),
             };
@@ -151,7 +191,11 @@ mod shim {
                         message: e.message,
                     })
                     .expect("ApiError serializes");
-                    return json_response(500, body);
+                    log_request_finished(
+                        cycle_id, request_id.clone(), route, method, &path, 500, start_ms,
+                        body.len(), None,
+                    );
+                    return with_request_id_header(json_response(500, body), &request_id);
                 }
                 self.schema_ready.set(true);
             }
@@ -167,18 +211,17 @@ mod shim {
             // would ever retry scheduling the alarm.
             ensure_alarm_scheduled(&self.state.storage()).await?;
 
-            let method = req.method().to_string().to_uppercase();
-            let url = req.url()?;
-            let authorization = req.headers().get("authorization")?;
             let body = req.text().await?;
             let now_ms = Date::now().as_millis() as i64;
             let mut api = handle(
                 &ApiRequest {
                     method: &method,
-                    path: url.path(),
+                    path: &path,
                     query: url.query(),
                     body: if body.is_empty() { None } else { Some(&body) },
                     authorization: authorization.as_deref(),
+                    cycle_id: cycle_id_header.as_deref(),
+                    request_id: Some(&request_id),
                 },
                 &HandleContext {
                     now_ms,
@@ -211,12 +254,16 @@ mod shim {
             // needs no second subrequest to reach the DO: this *is* the DO,
             // already inside its own `fetch()`, and there is no cycle
             // forcing the exchange above it.
-            if url.path() == "/api/google/calendar_token" && api.status == 204 {
+            if path == "/api/google/calendar_token" && api.status == 204 {
                 let (status, body) = match &self.calendar {
                     Some(minter) => minter.token_response(now_ms).await,
                     None => calendar_secrets_unset(),
                 };
-                return calendar_json_response(status, body);
+                log_request_finished(
+                    cycle_id, request_id.clone(), route, method, &path, status, start_ms,
+                    body.len(), api.principal_id.clone(),
+                );
+                return with_request_id_header(calendar_json_response(status, body), &request_id);
             }
 
             // The write mint (ADR-0031), the same shape over the write
@@ -225,15 +272,23 @@ mod shim {
             // allowed-holder list, which is the whole gate — a device token
             // that is not the agent's was already answered 403 above, and
             // never reaches this minter.
-            if url.path() == "/api/google/calendar_write_token" && api.status == 204 {
+            if path == "/api/google/calendar_write_token" && api.status == 204 {
                 let (status, body) = match &self.calendar_write {
                     Some(minter) => minter.token_response(now_ms).await,
                     None => calendar_write_secrets_unset(),
                 };
-                return calendar_json_response(status, body);
+                log_request_finished(
+                    cycle_id, request_id.clone(), route, method, &path, status, start_ms,
+                    body.len(), api.principal_id.clone(),
+                );
+                return with_request_id_header(calendar_json_response(status, body), &request_id);
             }
 
-            json_response(api.status, api.body)
+            log_request_finished(
+                cycle_id, request_id.clone(), route, method, &path, api.status, start_ms,
+                api.body.len(), api.principal_id.clone(),
+            );
+            with_request_id_header(json_response(api.status, api.body), &request_id)
         }
 
         /// The DO alarm handler (#138): evaluates every item already held
@@ -376,6 +431,56 @@ mod shim {
         headers.set("content-type", "application/json")?;
         headers.set("cache-control", "no-store")?;
         Ok(Response::ok(body)?.with_status(status).with_headers(headers))
+    }
+
+    /// #711: the accepted (or generated) request id, echoed on every
+    /// response this fetch handles — success, error, and the two calendar
+    /// mints alike — so a client can bind its own span to the server's
+    /// regardless of what the call ended up returning.
+    fn with_request_id_header(resp: Result<Response>, request_id: &str) -> Result<Response> {
+        let mut resp = resp?;
+        resp.headers_mut()
+            .set("X-Hummingbird-Request-Id", request_id)?;
+        Ok(resp)
+    }
+
+    /// The `request.finished` line (#711) — everything decidable
+    /// (`AuthResult` classification, the event's JSON shape) lives in
+    /// `hummingbird_authority::diagnostics`; this only supplies the
+    /// duration (measured from `start_ms`, the instant `fetch()` began)
+    /// and calls `console_log!`. Takes the concrete `path` (not the
+    /// already-templated `route`) only because that is what
+    /// `classify_auth_result` is defined over; every literal segment it
+    /// checks (`admin`) survives templating unchanged either way.
+    #[allow(clippy::too_many_arguments)]
+    fn log_request_finished(
+        cycle_id: Option<String>,
+        request_id: String,
+        route: String,
+        method: String,
+        path: &str,
+        status: u16,
+        start_ms: i64,
+        response_bytes: usize,
+        token_id: Option<String>,
+    ) {
+        let duration_ms = Date::now().as_millis() as i64 - start_ms;
+        let auth_result = classify_auth_result(path, status);
+        console_log!(
+            "{}",
+            serde_json::to_string(&RequestFinished::new(
+                cycle_id,
+                request_id,
+                route,
+                method,
+                status,
+                duration_ms,
+                response_bytes,
+                token_id,
+                auth_result,
+            ))
+            .expect("RequestFinished serializes")
+        );
     }
 
     // ------------------------------------------- the skill-runner proxy

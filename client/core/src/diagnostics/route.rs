@@ -7,10 +7,17 @@
 //! constructing a request.
 
 /// The four correlation headers every observed sync HTTP call carries.
-/// Nothing server-side validates them yet: #711 is the slice that will
-/// teach the authority's request boundary to check each value against
-/// [`is_valid_header_value`]'s pattern — `[A-Za-z0-9_-]{1,80}` — and until
-/// it lands, the client is the only enforcer.
+/// Since #711, the authority's own request boundary
+/// (`server/authority/src/diagnostics.rs`, a separate Rust crate in a
+/// separate Cargo workspace — it cannot call back into this module) checks
+/// `X-Hummingbird-Cycle-Id`/`-Request-Id` against the identical
+/// `[A-Za-z0-9_-]{1,80}` pattern [`is_valid_header_value`] enforces here,
+/// dropping an invalid cycle id and replacing an invalid/missing request id
+/// with a server-generated one rather than trusting either header value.
+/// `-Client-Platform`/`-Client-Build` are not independently validated
+/// server-side — the authority never branches on their content, only logs
+/// alongside the two that are — so this crate's [`sanitize_header_value`]
+/// stays their only enforcement point.
 /// [`sanitize_header_value`] is what
 /// actually enforces that pattern on the client side, at the one place
 /// (`DiagnosticsContext::correlation_headers`) every attached value passes
