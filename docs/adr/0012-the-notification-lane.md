@@ -19,6 +19,13 @@ down. · **amended 2026-08-17 by
 payload fixed by the #141 amendment below gains `source` and `source_key`, so
 a tap can decide what the alert is about without reading the mirror; a
 notification whose alert names an item opens the item, not the alert.
+· **amended 2026-08-23 by
+[ADR-0035](0035-a-ring-is-clamped-to-a-waking-window.md):** a delivery gains
+a *civil* dimension. A ring fires at `deadline − MIN_LEAD` clamped
+backwards into the operator's waking window, and a ring with no waking
+moment in its lead range is not delivered at all — so two rings for one
+alert are no longer guaranteed. Severity, generation and the lifecycle
+gate are untouched.
 **Context:** the push-notifications grilling of 2026-08-09. Companion to
 [ADR-0011](0011-context-ingestion-moves-server-side.md), which owns how
 stream events reach the rule engine; this ADR owns what a rule is, what a

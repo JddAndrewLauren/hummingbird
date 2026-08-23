@@ -29,6 +29,16 @@ a standing question may be fed by the OpenClaw agent rather than a poller —
 events on the calendar under a title convention, a phrase in a
 month-stamped binding — and so have no `fetched_at` to band stale on; the
 SCPS question itself is written inline below by the slice that ships it.
+· **amended 2026-08-23 by
+[ADR-0034](0034-a-standing-question-can-be-switched-off.md):** a standing
+question is no longer *permanently* posed — it may be switched off, which
+means hidden, silent and unpolled at once. The discoverability argument
+below ("a pane that vanished when nobody had bound it would be a question
+nobody could ever discover") is not repealed but rehoused: it assumed the
+surface is the only place a question can be discovered, and the Settings
+roster ADR-0034 requires is what falsifies that assumption. `dormant` is
+untouched and still means *posed and answerable, nothing worth attention
+now*; off is a question not being asked.
 **Amendments to this ADR follow [the pointer convention](README.md):** what
 a later ADR changed is written in *that* ADR, and named here only.
 **Context:** the standing-question seam grilling of 2026-08-10, opened on

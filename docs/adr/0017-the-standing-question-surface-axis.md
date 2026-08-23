@@ -6,6 +6,11 @@ rejected alternative — a fixed grid of health tiles — is adopted for the web
 client, which now renders Status as a labelled tile board with single
 selection and identity ordering rather than as a second `RankedRegion`. The
 Android client's "quiet stack" is decision 1 as written, not an amendment.
+· **amended 2026-08-23 by
+[ADR-0034](0034-a-standing-question-can-be-switched-off.md):** a surface no
+longer renders every question declared for it — a question switched off
+emits no panes on its surface at all. The registry filter this ADR gives a
+surface is unchanged; the toggle sits in front of it.
 **Context:** the 2026-08-12 Status-screen grilling, opened on #310 as the
 first slice of the batch that also carries #311 (the surface axis and the
 filtered registry), #313 (`kimi-balance/v1`), #314 (`github-hummingbird/v1`),
