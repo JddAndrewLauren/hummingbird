@@ -25,6 +25,7 @@ pub mod capture;
 pub mod frontier;
 pub mod notification;
 pub mod panes;
+pub mod questions;
 pub mod queue;
 pub mod roster;
 pub mod rules;
@@ -36,3 +37,6 @@ pub mod vocabulary;
 pub use actions::{applied_stage, available_actions, can_grill, can_mark_done, grill_button_label};
 pub use capture::can_submit_capture;
 pub use notification::{notification_tap_target, TapTarget};
+pub use questions::{
+    question_bindings, question_label, question_roster, question_surface, QuestionRosterEntry,
+};

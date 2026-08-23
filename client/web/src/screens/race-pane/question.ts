@@ -13,7 +13,6 @@ import { RacePaneExpanded } from "./RacePaneExpanded";
  * subject, because the setup prompt is how anyone discovers the question
  * exists. */
 export const raceQuestion: QuestionDef = {
-  label: "When is the next race",
   surface: "now",
   sources: [SOURCE],
   subjects: raceSubjects,

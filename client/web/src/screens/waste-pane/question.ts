@@ -9,7 +9,6 @@ import { WastePaneExpanded } from "./WastePaneExpanded";
  * how anyone discovers the question exists; a pane that vanished until it
  * was configured could never be configured. */
 export const wasteQuestion: QuestionDef = {
-  label: "Which cans go out",
   surface: "now",
   sources: [SOURCE],
   subjects: () => [SNAPSHOT_KEY],

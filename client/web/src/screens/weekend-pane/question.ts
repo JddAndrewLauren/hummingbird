@@ -20,7 +20,6 @@ import { WeekendPaneExpanded } from "./WeekendPaneExpanded";
  * exists — the same "still returns one sentinel subject" contract
  * `wasteQuestion` documents for its own binding. */
 export const weekendQuestion: QuestionDef = {
-  label: "This weekend",
   surface: "now",
   sources: [],
   subjects: () => [SUBJECT_KEY],

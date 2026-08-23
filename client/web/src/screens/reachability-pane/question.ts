@@ -6,7 +6,6 @@ import { SUBJECT_KEY, reachabilityAnswer } from "./reachability";
 // registers no source: authority reachability is inferred from the existing
 // sync cycle and persisted locally, never polled through a second lane.
 export const reachabilityQuestion: QuestionDef = {
-  label: "This device",
   surface: "status",
   sources: [],
   subjects: () => [SUBJECT_KEY],

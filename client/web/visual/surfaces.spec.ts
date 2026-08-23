@@ -308,6 +308,17 @@ async function expectNoHorizontalOverflow(page: Page) {
 // than production's measured zero.
 type ScreenAssertion = (page: Page) => Promise<void>;
 
+/** Settings' `Standing questions` section, minus its leftovers group — the
+ * roster's own headings and nothing else (#714). Counted rather than named
+ * anywhere in this file: the labels are the core's, and spelling one here
+ * would put back the per-client copy the roster exists to delete. */
+function questionHeadings(page: Page) {
+  return page
+    .locator("#standing-questions")
+    .getByRole("heading", { level: 3 })
+    .filter({ hasNotText: "Other settings rows" });
+}
+
 const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
   now: async (page) => {
     // #456: the kit world's hero card and "Also startable" list are gone —
@@ -416,6 +427,18 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     // a real async worker boot rather than fixture latency — hence the
     // longer timeout than the rest of this file needs.
     await expect(page.getByText("trips-calendar")).toBeVisible({ timeout: 15_000 });
+    // #714: the section is a list of QUESTIONS now, each with its binding
+    // rows nested under it, and the list is the core's roster rather than
+    // anything this client declares. Counted rather than named: the count is
+    // the question vocabulary's size, so a question that stopped being
+    // listed fails here instead of passing as a screen that merely looks
+    // similar — and no question's label is spelled in this file, which is
+    // the whole point of the roster.
+    // Filtered, not a bare count: the section also draws an **Other
+    // settings rows** heading whenever a live row belongs to no question,
+    // so a seeded binding with an unwritable key would fail this for a
+    // reason that has nothing to do with the roster.
+    await expect(questionHeadings(page)).toHaveCount(10);
   },
 };
 
@@ -876,6 +899,19 @@ for (const theme of THEMES) {
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
         path: `visual/.captures/now-empty-${testInfo.project.name}-${theme}.png`,
+        fullPage: false,
+      });
+
+      // #714: Settings on a device that has bound nothing. The roster is
+      // now the only place a question can be seen when its own pane is
+      // quiet (ADR-0034), so the frame where NOTHING is set is the one
+      // worth photographing — and it is the frame the `?demo` world above
+      // cannot reach, since that world hand-authors bindings.
+      await show(page, "Settings", testInfo.project.name);
+      await expect(questionHeadings(page)).toHaveCount(10, { timeout: 15_000 });
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({
+        path: `visual/.captures/settings-empty-${testInfo.project.name}-${theme}.png`,
         fullPage: false,
       });
     });

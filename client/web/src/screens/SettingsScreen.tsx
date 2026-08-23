@@ -16,11 +16,18 @@ import {
   bindingValueLabel,
   bindingWriteError,
   canSubmitBinding,
+  groupBindingsByQuestion,
+  questionLabelForBinding,
   sameBindingValue,
 } from "./bindings";
+import { questionRoster } from "./questions/roster";
 import { APP_VERSION } from "../shell/build-version";
 import { coreInstanceLabel } from "../shell/status-label";
-import { effectiveCalendarIds, tripsCalendarId } from "../calendar/selection";
+import {
+  TRIPS_CALENDAR_BINDING_KEY,
+  effectiveCalendarIds,
+  tripsCalendarId,
+} from "../calendar/selection";
 import {
   deadLetterHeading,
   syncStatusLabel,
@@ -267,6 +274,83 @@ function BindingRow({
   );
 }
 
+/** One question's group in the `Standing questions` section (#714): the
+ * question in the reader's own words, where it renders, and the binding
+ * rows that answer it indented beneath.
+ *
+ * A group with no rows still renders. The roster is the one place a
+ * question can be seen when its own pane is quiet — ADR-0034 decision 4
+ * makes that load-bearing — so "nothing to set here" is a fact worth
+ * stating, not a reason to omit the question. */
+function QuestionGroup({
+  heading,
+  meta,
+  note,
+  rows,
+  missing,
+  lastBindingWrite,
+  onSetBinding,
+}: {
+  heading: string;
+  /** The mono meta word beside the heading — the surface this question
+   * renders on, or what the leftover group is. */
+  meta: string;
+  /** Said when the question has nothing to configure at all. */
+  note: string;
+  rows: BindingDTO[];
+  /** Keys this question declares that the reader was handed no row for —
+   * a different fact from having none, and said as one. */
+  missing: string[];
+  lastBindingWrite: TaskState["lastBindingWrite"];
+  onSetBinding?: (key: string, value: string) => void;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: "var(--space-4)" }}>
+        {/* h3 under the section's h2 — `--type-body-strong` is the size
+            token, not the level. */}
+        <h3 style={{ font: "var(--type-body-strong)", color: "var(--text-primary)" }}>
+          {heading}
+        </h3>
+        <span className="hb-meta">{meta}</span>
+      </div>
+      {rows.length === 0 && missing.length === 0 ? (
+        <p style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}>{note}</p>
+      ) : (
+        // Indented behind a hairline rather than nested in a second Card:
+        // the rows belong to the question above them, and the design system
+        // caps a region at two card elevations.
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "var(--space-6)",
+            paddingLeft: "var(--space-5)",
+            borderLeft: "1px solid var(--border-subtle)",
+          }}
+        >
+          {rows.map((binding) => (
+            <BindingRow
+              key={binding.key}
+              binding={binding}
+              writeError={bindingWriteError(lastBindingWrite, binding.key)}
+              onSetBinding={onSetBinding}
+            />
+          ))}
+          {missing.map((key) => (
+            <p
+              key={key}
+              style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}
+            >
+              No settings row for <span className="hb-meta">{key}</span> yet.
+            </p>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** One dead-lettered entry's field-level detail — S9's "1 edit didn't
  * apply" affordance. No dedicated Table component exists in the kit (16
  * components, none of them tabular), so this renders as a bordered list of
@@ -426,6 +510,15 @@ export function SettingsScreen({
   // fixture world has no bindings table to read or real calendars to poll,
   // so it locks nothing.
   const tripsId = calendarIsDemo ? null : tripsCalendarId(task.bindings);
+
+  // #714: the roster is the core's, so both the section below and the
+  // picker's locked-row hint name a question the same way. Falls back to the
+  // raw key only if nothing claims it — a state the core's own test rules
+  // out, said honestly rather than guessed at.
+  const roster = questionRoster();
+  const groupedBindings = groupBindingsByQuestion(roster, task.bindings ?? []);
+  const tripsQuestionLabel =
+    questionLabelForBinding(roster, TRIPS_CALENDAR_BINDING_KEY) ?? TRIPS_CALENDAR_BINDING_KEY;
   const polledIds = calendarIsDemo
     ? demoSelectedIds
     : effectiveCalendarIds(calendar.selectedCalendarIds, tripsId);
@@ -454,8 +547,8 @@ export function SettingsScreen({
                 lockedIds={tripsId === null ? [] : [tripsId]}
                 lockedHint={
                   <>
-                    Polled because it answers <em>How long to the next vacation</em>. Change it
-                    under <a href="#standing-questions">Standing questions</a>.
+                    Polled because it answers <em>{tripsQuestionLabel}</em>. Change it under{" "}
+                    <a href="#standing-questions">Standing questions</a>.
                   </>
                 }
                 onToggle={(id) =>
@@ -484,17 +577,36 @@ export function SettingsScreen({
               style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}
             >
               <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)" }}>
-                What each standing question is about. These are workspace facts — a change here
-                reaches every device on its next sync.
+                Every standing question this build asks, and what each one is set to. These are
+                workspace facts — a change here reaches every device on its next sync.
               </p>
-              {task.bindings.map((binding) => (
-                <BindingRow
-                  key={binding.key}
-                  binding={binding}
-                  writeError={bindingWriteError(task.lastBindingWrite, binding.key)}
+              {groupedBindings.groups.map((group) => (
+                <QuestionGroup
+                  key={group.question}
+                  heading={group.label}
+                  meta={group.surface}
+                  note="Nothing to set — this question reads no source anyone chose."
+                  rows={group.rows}
+                  missing={group.missing}
+                  lastBindingWrite={task.lastBindingWrite}
                   onSetBinding={onSetBinding}
                 />
               ))}
+              {/* Rows in the table that no question claims — in practice the
+                  keys this build cannot write. `Core::bindings` returns them
+                  on purpose (`bindings.rs`), so dropping them here would
+                  hide what is really stored. */}
+              {groupedBindings.other.length === 0 ? null : (
+                <QuestionGroup
+                  heading="Other settings rows"
+                  meta="unclaimed"
+                  note=""
+                  rows={groupedBindings.other}
+                  missing={[]}
+                  lastBindingWrite={task.lastBindingWrite}
+                  onSetBinding={onSetBinding}
+                />
+              )}
             </Card>
           )}
         </Section>

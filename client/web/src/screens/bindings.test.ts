@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BindingDTO } from "../store/protocol";
+import type { QuestionRosterEntry } from "../decisions/seam";
 import {
   bindingCopy,
   bindingDraftSeed,
@@ -7,6 +8,8 @@ import {
   bindingValueLabel,
   bindingWriteError,
   canSubmitBinding,
+  groupBindingsByQuestion,
+  questionLabelForBinding,
   sameBindingValue,
 } from "./bindings";
 
@@ -145,5 +148,81 @@ describe("bindingWriteError", () => {
 describe("bindingSubmitValue", () => {
   it("sends the trimmed value, so stored and compared can never differ by invisible padding", () => {
     expect(bindingSubmitValue("  cal-trips  ")).toBe("cal-trips");
+  });
+});
+
+// A hand-built roster rather than the core's (#714). These two are pure
+// folds over whatever roster they are handed, and the real roster's content
+// is the core's own test — reading it here would make the fold's behaviour
+// depend on the question vocabulary, so a new question would break a test
+// about grouping.
+const ROSTER: QuestionRosterEntry[] = [
+  { question: "waste", label: "Which cans go out", surface: "now", bindings: ["city-waste-page"] },
+  { question: "weekend", label: "This weekend", surface: "now", bindings: [] },
+  { question: "race", label: "When is the next race", surface: "now", bindings: ["race-series"] },
+];
+
+describe("groupBindingsByQuestion", () => {
+  it("nests each row under the question that answers it, in roster order", () => {
+    const grouped = groupBindingsByQuestion(ROSTER, [
+      binding({ key: "race-series" }),
+      binding({ key: "city-waste-page" }),
+    ]);
+
+    expect(grouped.groups.map((group) => group.question)).toEqual(["waste", "weekend", "race"]);
+    expect(grouped.groups[0].rows.map((row) => row.key)).toEqual(["city-waste-page"]);
+    expect(grouped.groups[2].rows.map((row) => row.key)).toEqual(["race-series"]);
+    expect(grouped.other).toEqual([]);
+  });
+
+  it("keeps a question with no bindings, with an empty body", () => {
+    // Not an omission: the roster is the one place a question with nothing
+    // to configure can be seen at all (ADR-0034 decision 4).
+    const grouped = groupBindingsByQuestion(ROSTER, []);
+    expect(grouped.groups.map((group) => group.question)).toEqual(["waste", "weekend", "race"]);
+    const weekend = grouped.groups[1];
+    expect(weekend.rows).toEqual([]);
+    expect(weekend.missing).toEqual([]);
+  });
+
+  it("separates a declared key with no row from a question with nothing to set", () => {
+    // `Core::bindings` returns every key it knows, so in production this
+    // never happens — but the demo world hand-authors a subset, and
+    // reporting "nothing to set" for a question whose row simply did not
+    // arrive would be the flat opposite of true.
+    const grouped = groupBindingsByQuestion(ROSTER, []);
+    expect(grouped.groups[0].missing).toEqual(["city-waste-page"]);
+    expect(grouped.groups[2].missing).toEqual(["race-series"]);
+  });
+
+  it("sends a row no question claims to 'other' rather than dropping it", () => {
+    // `Core::bindings` returns rows this build cannot write on purpose;
+    // losing them here would hide what is really in the table.
+    const unknown = binding({ key: "some-future-binding", known: false });
+    const grouped = groupBindingsByQuestion(ROSTER, [unknown, binding({ key: "race-series" })]);
+    expect(grouped.other).toEqual([unknown]);
+  });
+
+  it("places every input row exactly once, across the groups and the leftovers", () => {
+    const rows = [
+      binding({ key: "race-series" }),
+      binding({ key: "city-waste-page" }),
+      binding({ key: "trips-calendar" }),
+      binding({ key: "some-future-binding", known: false }),
+    ];
+    const grouped = groupBindingsByQuestion(ROSTER, rows);
+    const placed = [...grouped.groups.flatMap((group) => group.rows), ...grouped.other];
+    expect(placed).toHaveLength(rows.length);
+    expect(new Set(placed.map((row) => row.key)).size).toBe(rows.length);
+  });
+});
+
+describe("questionLabelForBinding", () => {
+  it("names the question a key answers", () => {
+    expect(questionLabelForBinding(ROSTER, "race-series")).toBe("When is the next race");
+  });
+
+  it("answers null for a key no question claims", () => {
+    expect(questionLabelForBinding(ROSTER, "some-future-binding")).toBeNull();
   });
 });

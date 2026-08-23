@@ -14,7 +14,6 @@ import { ScpsPaneExpanded } from "./ScpsPaneExpanded";
  * horizon — 6 hours behind now, 90 days ahead, the same window
  * `CalendarHorizon::Standard` polls. */
 export const scpsQuestion: QuestionDef = {
-  label: "Next SCPS event",
   surface: "now",
   sources: [],
   subjects: () => [SUBJECT_KEY],

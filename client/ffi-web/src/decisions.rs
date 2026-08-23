@@ -2016,6 +2016,22 @@ pub fn homework_constants_json() -> String {
     .to_string()
 }
 
+// -------------------------------------------------------------------- #714
+// The standing-question roster (ADR-0034 decision 4).
+
+/// [`hummingbird_core::decisions::question_roster`], JSON-encoded — every
+/// standing question this build asks, with its label, its surface and the
+/// binding keys that answer it, in `QUESTION_ORDER`.
+///
+/// An **applied result**, not the three per-question functions behind it:
+/// a caller that could ask for one question's label could disagree with
+/// the core about which questions exist, which is the per-client table
+/// ADR-0034 decision 4 refuses. Settings reads this list and nothing else.
+#[wasm_bindgen]
+pub fn question_roster_json() -> String {
+    serde_json::to_string(&hummingbird_core::decisions::question_roster()).unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2961,5 +2977,38 @@ mod tests {
     fn relative_age_is_the_core_rule_verbatim() {
         assert_eq!(relative_age(0.0), "just now");
         assert_eq!(relative_age(60_000.0), "1m ago");
+    }
+
+    #[test]
+    fn the_question_roster_crosses_as_the_cores_own_list_in_order() {
+        let crossed: Vec<serde_json::Value> =
+            serde_json::from_str(&question_roster_json()).unwrap();
+        let questions: Vec<&str> = crossed
+            .iter()
+            .map(|entry| entry["question"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            questions,
+            [
+                "homework",
+                "scps",
+                "waste",
+                "weekend",
+                "vacation",
+                "race",
+                "kimi",
+                "github",
+                "uptime",
+                "reachability"
+            ]
+        );
+        // The relation itself, spot-checked at both ends: a bound question
+        // and an unbound one, each with its surface.
+        assert_eq!(crossed[5]["label"], "When is the next race");
+        assert_eq!(crossed[5]["surface"], "now");
+        assert_eq!(crossed[5]["bindings"], serde_json::json!(["race-series"]));
+        assert_eq!(crossed[8]["question"], "uptime");
+        assert_eq!(crossed[8]["surface"], "status");
+        assert_eq!(crossed[8]["bindings"], serde_json::json!([]));
     }
 }

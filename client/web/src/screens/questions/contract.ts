@@ -240,12 +240,13 @@ export interface CalendarEventsRequest {
 
 /** One question's whole implementation, as the shell sees it. */
 export interface QuestionDef {
-  /** The question itself, in the reader's words — "Which cans go out". The
-   * shell draws it (on the collapsed row and above the expanded content), so
-   * every pane in the region is named in the same type at the same place;
-   * `collapsedHeadline` is the *answer*, and a pane that put its own
-   * question in there would say it twice. */
-  label: string;
+  /* The question's own name is NOT here. It is one field of the core's
+   * standing-question roster (#714, ADR-0034 decision 4), read through
+   * `roster.ts`'s `questionLabel` — the shell still draws it in the same
+   * two places (the collapsed row and above the expanded content), it just
+   * no longer stores a per-client copy of it. `collapsedHeadline` remains
+   * the *answer*, and a pane that put its own question in there would say
+   * it twice. */
   /** ADR-0017's surface axis: which ranked region (`NowScreen`'s aside or
    * the Status screen) this question renders into. Read by `registry.ts`'s
    * `rankPanes`/`requiredSources` to filter `QUESTION_ORDER` per view — the

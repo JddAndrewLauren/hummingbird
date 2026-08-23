@@ -11,7 +11,6 @@ import { homeworkAnswer, homeworkSubjects } from "./homework";
  * for this pane and nothing binds it — which is also why its one subject is
  * a fixed sentinel rather than something a binding names. */
 export const homeworkQuestion: QuestionDef = {
-  label: "What's my homework",
   surface: "now",
   sources: [],
   subjects: homeworkSubjects,
