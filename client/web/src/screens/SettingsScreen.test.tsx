@@ -16,6 +16,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { SettingsScreen } from "./SettingsScreen";
 import { connectErrorCopy } from "../calendar/connect-error";
+import { questionRoster } from "./questions/roster";
 import { bindingDTO, fireEvent, itemDTO, render, screen, taskState } from "../test/component";
 import type { BindingDTO, DeadLetterEntryDTO, LedgerRowDTO } from "../store/protocol";
 import type { CalendarState, CoreStatus, TaskState } from "../store/store";
@@ -108,6 +109,21 @@ function renderSettings(options: SettingsOptions = {}) {
     onBackendSelection,
     pull: (next: SettingsOptions) => rerender(tree(next)),
   };
+}
+
+/** The text of the nearest `h3` before `node` in document order — the
+ * question a row is nested under. Read from the rendered DOM rather than
+ * from a test id, because "the row is under the right heading" is exactly
+ * what a reader sees and a `data-` attribute would let drift. */
+function nearestQuestionHeading(node: HTMLElement): string | null {
+  const headings = Array.from(document.querySelectorAll("h3"));
+  let found: string | null = null;
+  for (const heading of headings) {
+    if (heading.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING) {
+      found = heading.textContent;
+    }
+  }
+  return found;
 }
 
 function saveButton(name: RegExp | string = /save/i): HTMLElement {
@@ -285,6 +301,118 @@ describe("SettingsScreen — the bindings editor", () => {
 // reach a throwaway page. This is the gate `src/test/component.tsx` names: `coreId` and
 // `viewOrdinal` could be threaded all the way from the handshake and never
 // rendered, and typecheck would see nothing wrong.
+describe("SettingsScreen — the standing-question roster (#714, ADR-0034)", () => {
+  it("lists every standing question the core knows, in the core's order", () => {
+    // The section's spine is the core's roster, not the bindings table: a
+    // fresh device with nothing set still sees all ten questions.
+    renderSettings({ bindings: [] });
+
+    const headings = screen
+      .getAllByRole("heading", { level: 3 })
+      .map((heading) => heading.textContent);
+    for (const entry of questionRoster()) {
+      expect(headings).toContain(entry.label);
+    }
+  });
+
+  it("nests each binding under the question it answers", () => {
+    renderSettings({
+      bindings: [
+        bindingDTO({ key: "race-series", value: { state: "text", text: "f1" } }),
+        bindingDTO({ key: "trips-calendar", value: { state: "text", text: "trips@g" } }),
+      ],
+    });
+
+    // The row's own key is drawn inside the question's group, so the
+    // question heading has to be the nearest preceding h3.
+    for (const [key, question] of [
+      ["race-series", "race"],
+      ["trips-calendar", "vacation"],
+    ] as const) {
+      const row = screen.getByText(key).closest("div");
+      expect(row).not.toBeNull();
+      expect(nearestQuestionHeading(row as HTMLElement)).toBe(
+        questionRoster().find((entry) => entry.question === question)?.label,
+      );
+    }
+  });
+
+  it("renders a question with no bindings with an empty body rather than omitting it", () => {
+    renderSettings({ bindings: [] });
+
+    const weekend = questionRoster().find((entry) => entry.question === "weekend");
+    expect(weekend?.bindings).toEqual([]);
+    expect(
+      screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent),
+    ).toContain(weekend?.label);
+    expect(screen.getAllByText(/nothing to set/i).length).toBeGreaterThan(0);
+  });
+
+  it("says a declared binding has no row rather than saying there is nothing to set", () => {
+    // The state the demo world actually renders: `scps` declares
+    // `scps-quest`, and the seeded bindings list does not carry it.
+    renderSettings({ bindings: [bindingDTO({ key: "race-series" })] });
+
+    const scps = questionRoster().find((entry) => entry.question === "scps");
+    expect(scps?.bindings).toEqual(["scps-quest"]);
+    // Four of the five keys are absent from this list, so the line is
+    // located by its own key rather than by the sentence around it.
+    const said = screen.getByText("scps-quest").closest("p") as HTMLElement;
+    expect(said.textContent).toBe("No settings row for scps-quest yet.");
+    expect(nearestQuestionHeading(said)).toBe(scps?.label);
+    // And it is not the "nothing to set" line, which would be the opposite
+    // claim about the same question.
+    expect(said.textContent).not.toMatch(/nothing to set/i);
+  });
+
+  it("keeps a row no question claims, under 'Other settings rows', still read-only", () => {
+    renderSettings({
+      bindings: [
+        bindingDTO({ key: "race-series", value: { state: "text", text: "f1" } }),
+        bindingDTO({
+          key: "some-future-binding",
+          known: false,
+          value: { state: "other", raw: "7" },
+        }),
+      ],
+    });
+
+    const row = screen.getByText("some-future-binding").closest("div") as HTMLElement;
+    expect(nearestQuestionHeading(row)).toBe("Other settings rows");
+    expect(screen.getByText(/not a text value: 7/i)).toBeDefined();
+    expect(screen.queryByLabelText("some-future-binding")).toBeNull();
+  });
+
+  it("draws no leftovers group when every live row belongs to a question", () => {
+    renderSettings({ bindings: [bindingDTO({ key: "race-series" })] });
+    expect(screen.queryByText("Other settings rows")).toBeNull();
+  });
+
+  it("still renders the whole roster with no device token — the section is not token-gated", () => {
+    // The calendar section above it is (#585); this one is not, and a
+    // device with no token must still be able to read what is bound.
+    renderSettings({ bindings: [], taskTokenState: "unset" });
+
+    const headings = screen
+      .getAllByRole("heading", { level: 3 })
+      .map((heading) => heading.textContent);
+    expect(headings).toContain(questionRoster()[0].label);
+  });
+
+  it("draws no question at all while the core is still loading", () => {
+    // The `status !== "ready"` guard is above the roster, so a loading core
+    // gets the one honest note and not a roster of empty groups that looks
+    // like an answer.
+    renderSettings({ status: "loading", bindings: [] });
+
+    expect(screen.getByText(/bindings are unavailable/i)).toBeDefined();
+    // By level, not by text: the `reachability` question is called "This
+    // device", which is also the title of the section below the roster —
+    // an h2. The roster's own headings are the h3s, and there are none.
+    expect(screen.queryAllByRole("heading", { level: 3 })).toEqual([]);
+  });
+});
+
 describe("SettingsScreen — the core-instance diagnostic", () => {
   it("renders the instance id and this view's ordinal once the handshake has landed", () => {
     renderSettings({ coreId: "3f2a1b8c", viewOrdinal: 2 });
@@ -329,6 +457,14 @@ describe("SettingsScreen — the calendar picker's locked Trips row (#121)", () 
     // control that lied about what it does.
     expect(trips.disabled).toBe(true);
     expect(screen.getByText(/Polled because it answers/)).toBeDefined();
+    // #714: the question is named from the core's roster, by looking up
+    // which question claims `trips-calendar` — not from the sentence that
+    // used to be hand-written here.
+    const vacation = questionRoster().find((entry) =>
+      entry.bindings.includes("trips-calendar"),
+    );
+    expect(vacation).toBeDefined();
+    expect(screen.getByText(vacation!.label, { selector: "em" })).toBeDefined();
     // And a route to where the decision actually lives.
     expect(screen.getByRole("link", { name: "Standing questions" })).toBeDefined();
   });

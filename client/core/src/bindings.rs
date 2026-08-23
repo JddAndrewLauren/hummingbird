@@ -116,6 +116,18 @@ impl BindingKey {
     }
 }
 
+/// A key crosses as its wire spelling, never as a variant name — the same
+/// one [`BindingKey::parse`] reads back, and the one a
+/// [`Binding::key`] already carries. Hand-written rather than derived
+/// because the enum's variant names are `CamelCase` and the wire is not,
+/// and a `rename_all` attribute would put a second copy of every spelling
+/// beside [`BindingKey::as_str`].
+impl Serialize for BindingKey {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
 /// What a binding is currently set to, as three distinct states rather than
 /// a nullable string.
 ///

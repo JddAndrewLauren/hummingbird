@@ -30,8 +30,8 @@ describe("the Status board's compact copy", () => {
   });
 
   it("keeps the question's own label when the sentence has no subject in it", () => {
-    expect(tileParts("This device", "Synced 12m ago")).toEqual({
-      name: "This device",
+    expect(tileParts("Is this device reachable", "Synced 12m ago")).toEqual({
+      name: "Is this device reachable",
       fact: "Synced 12m ago",
     });
     expect(tileParts("Kimi balance", "Never synced on this device.")).toEqual({

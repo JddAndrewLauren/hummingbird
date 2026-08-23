@@ -8,6 +8,7 @@
 import { describe, expect, it } from "vitest";
 import { realQuestionInputs } from "../NowScreen";
 import { QUESTIONS, rankPanes } from "../questions/registry";
+import { questionLabel } from "../questions/roster";
 import { QUESTION_ORDER } from "../questions/contract";
 import { fireEvent, render, screen, taskState } from "../../test/component";
 import { StatusBoard } from "./StatusBoard";
@@ -70,7 +71,7 @@ describe("StatusBoard", () => {
   it("names every pane in a tile's own accessible name", () => {
     render(board());
     for (const pane of ranked()) {
-      const label = QUESTIONS[pane.question].label;
+      const label = questionLabel(pane.question);
       const { name, fact } = tileParts(label, pane.answer.collapsedHeadline);
       // The exact string, not a permissive regex: a `tileParts` that never
       // split would still produce something a `label.*headline` pattern
@@ -142,7 +143,7 @@ describe("StatusBoard", () => {
     render(board());
     const labelOrder = QUESTION_ORDER.filter(
       (q) => QUESTIONS[q].surface === "status",
-    ).map((q) => QUESTIONS[q].label);
+    ).map((q) => questionLabel(q));
     // Per grid, not across the board: grouping comes first, and the declared
     // order is what orders the tiles inside one group.
     for (const grid of document.querySelectorAll(".hb-status-grid")) {
@@ -180,7 +181,7 @@ describe("StatusBoard", () => {
         // the four gap panes share the sentence "No answer yet", so a
         // substring match kept returning the same tile and this loop silently
         // checked one pane three times over.
-        const paneLabel = QUESTIONS[gap.question].label;
+        const paneLabel = questionLabel(gap.question);
         const { name, fact } = tileParts(paneLabel, sentence);
         const spoken =
           name === paneLabel

@@ -10,6 +10,7 @@ import {
   type StandingQuestion,
 } from "./contract";
 import { QUESTIONS, panesFrom, rankPanes, requiredCalendarRequests, requiredSources } from "./registry";
+import { questionLabel, questionRoster } from "./roster";
 
 // The registry, and the two properties that keep it honest: it names every
 // question exactly once, and it ranks every subject of every question — not
@@ -42,9 +43,20 @@ describe("QUESTION_ORDER", () => {
     expect(new Set(QUESTION_ORDER).size).toBe(QUESTION_ORDER.length);
   });
 
-  it("gives every question a human label the shell can draw", () => {
+  // The label is no longer the registry's (#714): it is one field of the
+  // core's standing-question roster, read back through `questionLabel`. This
+  // asserts the registry and the roster still describe the same ten
+  // questions — a question registered here with no roster entry throws.
+  it("gives every registered question a name from the core's roster", () => {
     for (const question of QUESTION_ORDER) {
-      expect(QUESTIONS[question].label).not.toBe("");
+      expect(questionLabel(question)).not.toBe("");
+    }
+    expect(questionRoster().map((entry) => entry.question)).toEqual([...QUESTION_ORDER]);
+  });
+
+  it("takes the surface from the same roster the core ranks against", () => {
+    for (const entry of questionRoster()) {
+      expect(entry.surface).toBe(QUESTIONS[entry.question as StandingQuestion].surface);
     }
   });
 });
@@ -165,7 +177,6 @@ describe("rankPanes", () => {
     // expansion `rankPanes` itself runs. Hand-building the panes and sorting
     // them would test the sort a second time and the expansion not at all.
     const multi: QuestionDef = {
-      label: "Two things",
       surface: "now",
       sources: [],
       subjects: () => ["b", "a"],
@@ -177,7 +188,7 @@ describe("rankPanes", () => {
       }),
       Expanded: () => null,
     };
-    const none: QuestionDef = { ...multi, label: "Nothing yet", subjects: () => [] };
+    const none: QuestionDef = { ...multi, subjects: () => [] };
 
     const panes = panesFrom(
       fakeRegistry({ multi, none }),

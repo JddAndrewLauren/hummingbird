@@ -2042,6 +2042,50 @@ fn map_standing_question(question: StandingQuestion) -> MobileStandingQuestion {
     }
 }
 
+/// One standing-question roster entry (#714, ADR-0034 decision 4), mirrored
+/// as a `uniffi::Record`.
+///
+/// `question` and `surface` cross as this seam's own enums so a Kotlin
+/// `when` over them stays exhaustive; `bindings` crosses as the binding
+/// keys' wire spellings, because that is what a `settings` row is keyed by
+/// and what a Kotlin caller will match a binding row against.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileQuestionRosterEntry {
+    pub question: MobileStandingQuestion,
+    pub label: String,
+    pub surface: MobileSurface,
+    pub bindings: Vec<String>,
+}
+
+/// The whole roster, in `QUESTION_ORDER` — an **applied result**, this
+/// seam's own rule (module header): Android receives the assembled list and
+/// never the three per-question functions behind it, so it cannot hold an
+/// opinion about which questions exist.
+///
+/// **Android does not render this yet.** ADR-0034 decision 4 splits the
+/// rendering into #716 on purpose — that surface has no emulator matrix, so
+/// a UI change there owes a device run — and this slice lands the door so
+/// #716 is rendering-only.
+#[uniffi::export]
+pub fn question_roster() -> Vec<MobileQuestionRosterEntry> {
+    hummingbird_core::decisions::question_roster()
+        .into_iter()
+        .map(|entry| MobileQuestionRosterEntry {
+            question: map_standing_question(entry.question),
+            label: entry.label.to_string(),
+            surface: match entry.surface {
+                Surface::Now => MobileSurface::Now,
+                Surface::Status => MobileSurface::Status,
+            },
+            bindings: entry
+                .bindings
+                .iter()
+                .map(|key| key.as_str().to_string())
+                .collect(),
+        })
+        .collect()
+}
+
 /// [`AnswerState`], mirrored as a `uniffi::Enum`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum MobilePaneAnswerState {
@@ -9033,6 +9077,63 @@ mod settings_tests {
         assert!(!is_informative_sync_outcome("busy".to_string()));
         assert!(is_informative_sync_outcome("completed".to_string()));
         assert!(is_informative_sync_outcome("held".to_string()));
+    }
+
+    // ------------------------------------------------------- the roster (#714)
+
+    #[test]
+    fn the_roster_crosses_in_the_cores_own_order_with_the_cores_own_labels() {
+        // The seam must not re-derive the list: same length, same order,
+        // same label, same surface, same keys, entry by entry against
+        // `hummingbird_core::decisions::question_roster` itself.
+        let core = hummingbird_core::decisions::question_roster();
+        let crossed = question_roster();
+        assert_eq!(crossed.len(), core.len());
+        for (mobile, decided) in crossed.iter().zip(core.iter()) {
+            assert_eq!(mobile.question, map_standing_question(decided.question));
+            assert_eq!(mobile.label, decided.label);
+            assert_eq!(
+                mobile.surface,
+                match decided.surface {
+                    Surface::Now => MobileSurface::Now,
+                    Surface::Status => MobileSurface::Status,
+                }
+            );
+            let keys: Vec<String> =
+                decided.bindings.iter().map(|key| key.as_str().to_string()).collect();
+            assert_eq!(mobile.bindings, keys);
+        }
+    }
+
+    #[test]
+    fn the_roster_lists_every_question_this_seam_can_name() {
+        // The order, spelled out once so a reordering of `QUESTION_ORDER`
+        // is a visible diff here rather than a silent reshuffle of a
+        // Settings screen nobody re-read.
+        let questions: Vec<MobileStandingQuestion> =
+            question_roster().into_iter().map(|entry| entry.question).collect();
+        assert_eq!(
+            questions,
+            vec![
+                MobileStandingQuestion::Homework,
+                MobileStandingQuestion::Scps,
+                MobileStandingQuestion::Waste,
+                MobileStandingQuestion::Weekend,
+                MobileStandingQuestion::Vacation,
+                MobileStandingQuestion::Race,
+                MobileStandingQuestion::Kimi,
+                MobileStandingQuestion::Github,
+                MobileStandingQuestion::Uptime,
+                MobileStandingQuestion::Reachability,
+            ]
+        );
+        // A question with no binding is present with an empty list, never
+        // dropped — the roster is the only place it can be seen at all.
+        let weekend = question_roster()
+            .into_iter()
+            .find(|entry| entry.question == MobileStandingQuestion::Weekend)
+            .expect("weekend is listed");
+        assert!(weekend.bindings.is_empty());
     }
 
     // -------------------------------------------------------------- panes (#536)

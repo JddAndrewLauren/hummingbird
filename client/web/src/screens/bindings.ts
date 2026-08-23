@@ -1,3 +1,4 @@
+import type { QuestionRosterEntry } from "../decisions/seam";
 import type { BindingDTO, BindingValueDTO } from "../store/protocol";
 import type { TaskBindingResult } from "../store/store";
 
@@ -158,4 +159,91 @@ export function canSubmitBinding(binding: BindingDTO, draft: string): boolean {
  * cannot see. Call only when [`canSubmitBinding`] passed. */
 export function bindingSubmitValue(draft: string): string {
   return draft.trim();
+}
+
+// -- the standing-question roster (#714, ADR-0034 decision 4) ---------------
+//
+// The section stopped being a flat list of keys and became a list of
+// *questions* with their keys nested. The relation behind that nesting is
+// the core's (`decisions::questions`), reached through
+// `questionRosterFromCore`; the two functions below only fold `Core::
+// bindings`' answer into it, and take the roster as an argument so they can
+// be tested without the wasm seam.
+
+/** One question's row group, as the section draws it. */
+export interface QuestionBindingGroup {
+  /** The wire spelling of the question — a stable key for React, never
+   * shown. */
+  question: string;
+  label: string;
+  surface: string;
+  /** The rows that answer this question, in the roster's own key order.
+   * Empty for most questions, and an empty group is still rendered: a
+   * question nobody has to configure is a fact, not an omission. */
+  rows: BindingDTO[];
+  /** Keys the roster says answer this question for which the reader was
+   * given no row at all.
+   *
+   * `Core::bindings` returns every key it knows, set or not, so in
+   * production this is always empty — but the demo world hand-authors a
+   * subset, and reporting a question with a *missing* row as a question
+   * with *nothing to set* would be the flat opposite of true. The two
+   * cases are separated here so the screen can say which one it is. */
+  missing: string[];
+}
+
+/** The section's whole shape: every question, then whatever `settings` rows
+ * belonged to none of them. */
+export interface GroupedBindings {
+  groups: QuestionBindingGroup[];
+  /** Live rows no question claims — in practice the keys this build cannot
+   * write (`BindingDTO.known === false`), which `Core::bindings` returns on
+   * purpose so the editor shows what is really in the table. Dropping them
+   * here would be the regression `bindings.rs` warns about. */
+  other: BindingDTO[];
+}
+
+/** Folds `Core::bindings`' flat answer into the core's question roster.
+ *
+ * Never invents or hides a row: every input row lands in exactly one group
+ * or in `other`, and the count is asserted by this module's own test. */
+export function groupBindingsByQuestion(
+  roster: readonly QuestionRosterEntry[],
+  bindings: readonly BindingDTO[],
+): GroupedBindings {
+  const claimed = new Set<string>();
+  const groups = roster.map((entry) => {
+    const rows: BindingDTO[] = [];
+    const missing: string[] = [];
+    for (const key of entry.bindings) {
+      const row = bindings.find((binding) => binding.key === key);
+      if (row === undefined) {
+        missing.push(key);
+        continue;
+      }
+      claimed.add(key);
+      rows.push(row);
+    }
+    return {
+      question: entry.question,
+      label: entry.label,
+      surface: entry.surface,
+      rows,
+      missing,
+    };
+  });
+  return { groups, other: bindings.filter((binding) => !claimed.has(binding.key)) };
+}
+
+/** Which question a binding key answers, in the reader's words — the lookup
+ * that replaced the calendar picker's hand-written *"it answers How long to
+ * the next vacation"* (#714). `null` when no question claims the key, which
+ * is what an unwritable row is; the caller says something else then rather
+ * than naming a question that does not exist. */
+export function questionLabelForBinding(
+  roster: readonly QuestionRosterEntry[],
+  key: string,
+): string | null {
+  const owner = roster.find((entry) => entry.bindings.includes(key));
+  return owner === undefined ? null : owner.label;
 }

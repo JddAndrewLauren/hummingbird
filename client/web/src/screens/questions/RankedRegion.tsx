@@ -17,6 +17,7 @@ import {
   type StorageLike,
 } from "./collapse";
 import { QUESTIONS, rankPanes } from "./registry";
+import { questionLabel } from "./roster";
 import { samePaneIdentity } from "./sort";
 
 // ADR-0015's **ranked region** (#245): every standing question, ordered by
@@ -228,7 +229,7 @@ export function RankedRegion({
           return (
             <CollapsedRow
               key={pane.paneKey}
-              label={definition.label}
+              label={questionLabel(pane.question)}
               answer={pane.answer}
               onToggle={() => toggle(pane.paneKey, pane.answer, collapsed)}
             />
@@ -251,7 +252,7 @@ export function RankedRegion({
                 cursor: "pointer",
               }}
             >
-              <span className="hb-meta">{definition.label}</span>
+              <span className="hb-meta">{questionLabel(pane.question)}</span>
               <Icon name="chevron-down" size={13} color="var(--text-muted)" />
             </button>
             <div style={{ marginTop: "var(--space-4)" }}>

@@ -6,7 +6,8 @@ import { GithubPaneBody } from "../github-pane/GithubPaneExpanded";
 import { KimiPaneBody } from "../kimi-pane/KimiPaneExpanded";
 import type { QuestionInputs, RankedPane } from "../questions/contract";
 import { QUESTION_ORDER } from "../questions/contract";
-import { QUESTIONS, rankPanes } from "../questions/registry";
+import { rankPanes } from "../questions/registry";
+import { questionLabel } from "../questions/roster";
 import { ReachabilityPaneBody } from "../reachability-pane/ReachabilityPaneExpanded";
 import { reachabilityHasDetail } from "../reachability-pane/reachability";
 import type { StorageLike } from "../storage";
@@ -200,11 +201,8 @@ function StatusTile({
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const definition = QUESTIONS[pane.question];
-  const { name, fact } = tileParts(
-    definition.label,
-    pane.answer.collapsedHeadline,
-  );
+  const label = questionLabel(pane.question);
+  const { name, fact } = tileParts(label, pane.answer.collapsedHeadline);
   const tone = tileTone(pane.answer);
   const ring = ringColor(tone);
   const icon = tileIcon(pane);
@@ -213,7 +211,7 @@ function StatusTile({
   const detailId = `hb-status-detail-${pane.paneKey.replace(/[^a-zA-Z0-9-]/g, "-")}`;
   // The subject is worth announcing only when it is not the label said twice
   // — the same guard the detail line below uses.
-  const spoken = name === definition.label ? fact : `${name} · ${fact}`;
+  const spoken = name === label ? fact : `${name} · ${fact}`;
 
   return (
     <Card
@@ -235,7 +233,7 @@ function StatusTile({
         openable={openable}
         open={open}
         detailId={detailId}
-        label={`${definition.label} — ${spoken}`}
+        label={`${label} — ${spoken}`}
         tone={tone}
         band={pane.answer.band}
         onToggle={onToggle}
@@ -284,9 +282,7 @@ function StatusTile({
               tile is already named by its label — and "Kimi balance —
               balance" is the subject saying the label back. */}
           <span className="hb-meta">
-            {name === definition.label
-              ? definition.label
-              : `${definition.label} — ${pane.subjectKey}`}
+            {name === label ? label : `${label} — ${pane.subjectKey}`}
           </span>
           <PaneBody pane={pane} inputs={inputs} />
         </div>

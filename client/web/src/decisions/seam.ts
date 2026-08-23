@@ -211,6 +211,8 @@ export interface DecisionsModule {
   homework_answer_json(inputsJson: string, zoneFactsJson: string): string;
   homework_link_json(inputsJson: string): string;
   homework_constants_json(): string;
+  // #714: the standing-question roster (ADR-0034 decision 4).
+  question_roster_json(): string;
   weekend_zone_queries_json(nowMs: number): string;
   weekend_window_json(nowMs: number, zoneFactsJson: string): string;
   weekend_facts_json(inputsJson: string, zoneFactsJson: string): string;
@@ -2284,4 +2286,27 @@ export function scpsConstantsFromCore(): ScpsConstants {
  * `zone-bridge.ts`'s literal copy is pinned against, by `seam.test.ts`. */
 export function deviceZoneFromCore(): string {
   return required().device_zone();
+}
+
+// -- the standing-question roster (#714) ------------------------------------
+
+/** One standing question as the core lists it (ADR-0034 decision 4) — the
+ * shape `question_roster_json` returns, and the only place the
+ * question→binding relation is spelled. */
+export interface QuestionRosterEntry {
+  /** The wire spelling of `StandingQuestion` — kebab-case, and the same
+   * string a `RankedPane.question` carries. */
+  question: string;
+  /** The operator-facing name. Canonical: no client declares its own. */
+  label: string;
+  /** ADR-0017's surface axis, straight out of the core's `SUNK`. */
+  surface: string;
+  /** The `settings` keys that answer this question — `[]` for most. */
+  bindings: string[];
+}
+
+/** Every standing question, in `QUESTION_ORDER`. Applied result: the core
+ * decides which questions exist, this client only draws them. */
+export function questionRosterFromCore(): QuestionRosterEntry[] {
+  return JSON.parse(required().question_roster_json()) as QuestionRosterEntry[];
 }

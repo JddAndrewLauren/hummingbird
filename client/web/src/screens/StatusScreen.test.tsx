@@ -11,34 +11,48 @@ import { describe, expect, it } from "vitest";
 import { StatusScreen } from "./StatusScreen";
 import { QUESTION_ORDER } from "./questions/contract";
 import { QUESTIONS, rankPanes } from "./questions/registry";
+import { questionLabel } from "./questions/roster";
 import { realQuestionInputs } from "./NowScreen";
 import { fireEvent, render, screen, taskState } from "../test/component";
 import { StatusBoard } from "./status-board/StatusBoard";
 
 const NOW_MS = 1_700_000_000_000;
 
-/** The "This device" tile, whichever arm it is drawn as. An answered
+/** The reachability tile, whichever arm it is drawn as. An answered
  * reachability pane has nothing to disclose beneath its headline, so its
- * tile is a plain `div` with no toggle — a role query would miss it. */
+ * tile is a plain `div` with no toggle — a role query would miss it.
+ *
+ * Found by the question's name out of the core's roster (#714), not by a
+ * literal: the reachability pane's headline carries no subject of its own,
+ * so its label IS the tile's bold line, and spelling it here would be a
+ * second copy of the one string the roster exists to hold. */
 function reachabilityTile(): Element {
+  const name = questionLabel("reachability").toLowerCase();
   const tile = [...document.querySelectorAll("[data-tile-tone]")].find((node) =>
-    /this device/i.test(node.getAttribute("aria-label") ?? ""),
+    (node.getAttribute("aria-label") ?? "").toLowerCase().includes(name),
   );
   if (!tile) throw new Error("no reachability tile on screen");
   return tile;
 }
 
-// Derived from the registry, not hardcoded, so a later status question does
-// not require a second label roster in its component test. Asserting
-// non-empty keeps this from degenerating into a tautology against an empty
-// registry.
-const STATUS_LABELS = QUESTION_ORDER.filter(
-  (q) => QUESTIONS[q].surface === "status",
-).map((q) => QUESTIONS[q].label);
+// Derived from the registry and the core's roster (#714), not hardcoded, so
+// a later status question does not require a second label roster in its
+// component test. Asserting non-empty keeps this from degenerating into a
+// tautology against an empty registry.
+//
+// A function rather than a module-level constant: `questionLabel` reads the
+// decision seam, and module scope runs before `initDecisions()` has
+// resolved.
+function statusLabels(): string[] {
+  return QUESTION_ORDER.filter((q) => QUESTIONS[q].surface === "status").map((q) =>
+    questionLabel(q),
+  );
+}
 
 describe("StatusScreen", () => {
   it("renders one pane for every registered status question, and never a 'now' question", () => {
-    expect(STATUS_LABELS.length).toBeGreaterThan(0);
+    const labels = statusLabels();
+    expect(labels.length).toBeGreaterThan(0);
 
     render(
       <StatusScreen
@@ -52,7 +66,7 @@ describe("StatusScreen", () => {
 
     // Every registered status question is discoverable before this device
     // has acquired any answer.
-    for (const label of STATUS_LABELS) {
+    for (const label of labels) {
       expect(
         screen.getByRole("button", { name: new RegExp(label, "i") }),
       ).toBeTruthy();

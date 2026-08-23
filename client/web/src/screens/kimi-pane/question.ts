@@ -12,7 +12,6 @@ import { KimiPaneExpanded } from "./KimiPaneExpanded";
  * nothing." There is no unbound state to return instead — see `kimi.ts`'s
  * header for why this question has no per-device setup at all. */
 export const kimiQuestion: QuestionDef = {
-  label: "Kimi balance",
   surface: "status",
   sources: [SOURCE],
   subjects: () => [SNAPSHOT_KEY],

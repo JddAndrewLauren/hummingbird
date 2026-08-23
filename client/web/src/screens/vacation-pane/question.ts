@@ -13,7 +13,6 @@ import { VacationPaneExpanded } from "./VacationPaneExpanded";
  * `CalendarHorizon::Long` polls, so the read never asks for an interval the
  * mirror was never filled for. */
 export const vacationQuestion: QuestionDef = {
-  label: "Next vacation",
   surface: "now",
   sources: [],
   subjects: () => [SUBJECT_KEY],

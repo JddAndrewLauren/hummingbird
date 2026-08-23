@@ -13,7 +13,6 @@ import { GithubPaneExpanded } from "./GithubPaneExpanded";
  * still returned when nothing has ever been read, on `contract.ts`'s "a
  * platform with no rows yet renders as a gap, never as nothing." */
 export const githubQuestion: QuestionDef = {
-  label: "GitHub workflows",
   surface: "status",
   sources: [SOURCE],
   subjects: githubSubjects,

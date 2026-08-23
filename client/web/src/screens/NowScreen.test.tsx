@@ -21,6 +21,7 @@ import { describe, expect, it, vi } from "vitest";
 import { NowScreen } from "./NowScreen";
 import { QUESTION_ORDER } from "./questions/contract";
 import { QUESTIONS } from "./questions/registry";
+import { questionLabel } from "./questions/roster";
 import { CALENDAR_REQUEST_KEY, weekendWindow } from "./weekend-pane/weekend";
 import {
   blockedEntryDTO,
@@ -788,7 +789,7 @@ describe("NowScreen — the mark-done checkmark", () => {
 describe("NowScreen — the surface filter (ADR-0017, #311)", () => {
   it("never renders a status-surface pane in Now's aside", () => {
     const statusLabels = QUESTION_ORDER.filter((q) => QUESTIONS[q].surface === "status").map(
-      (q) => QUESTIONS[q].label,
+      (q) => questionLabel(q),
     );
     expect(statusLabels.length).toBeGreaterThan(0);
 
