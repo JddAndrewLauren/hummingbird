@@ -486,6 +486,44 @@ fn rules_appear_in_the_delta_pull_and_sweep_stays_byte_identical() {
     assert!(ids.contains(&"r-1") && ids.contains(&"r-2"));
 }
 
+/// The claim the whole soft delete rests on, asserted where it is actually
+/// decided. Every doc comment on this lane says the flagged row "rides the
+/// delta pull so every device learns the rule is gone" — but `list` filters
+/// deleted rules and `load_enabled` filters them too, so it would be an easy
+/// and completely silent mistake for `pull` to filter them as well, at which
+/// point a delete would reach no device except by a full sweep's
+/// absence-demotion, which `rules` does not have. The cursor is taken
+/// *before* the delete, exactly as an offline device's would be.
+#[test]
+fn a_deleted_rule_rides_the_delta_pull_carrying_its_flag() {
+    let sql = RusqliteSql::new();
+    let seeded = seed_rule(&sql, "r-1");
+    let cursor = seeded.version;
+
+    let deleted = patch_rule(
+        &sql,
+        "r-1",
+        &format!(r#"{{"expected_version": {cursor}, "deleted_at": 5000}}"#),
+        2000,
+    );
+    assert_eq!(deleted.status, 200, "{}", deleted.body);
+
+    let parsed: ChangesResponse = body_as(&changes(&sql, &format!("since={cursor}")));
+    assert_eq!(parsed.rules.len(), 1, "the delete must ride the delta, not vanish from it");
+    assert_eq!(parsed.rules[0].id, "r-1");
+    assert_eq!(
+        parsed.rules[0].deleted_at,
+        Some(5000),
+        "and carry the flag, which is what tells the device it is gone",
+    );
+
+    // `GET /api/rules` — the pollers' door — answers the opposite, from the
+    // same row. Both readings at once is the point: gone for evaluation,
+    // present for replication.
+    let listed = get_rules_as(&sql, DEVICE_TOKEN);
+    assert!(body_as::<Vec<Rule>>(&listed).is_empty(), "{}", listed.body);
+}
+
 #[test]
 fn delta_pull_only_returns_rules_above_the_cursor() {
     let sql = RusqliteSql::new();

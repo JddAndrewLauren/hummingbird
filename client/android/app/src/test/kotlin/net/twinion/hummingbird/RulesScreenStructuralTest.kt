@@ -249,7 +249,7 @@ class RulesScreenStructuralTest {
 
     /** Every `when` over a seam enum must be exhaustive with no `else ->`
      * arm — the compile-time drift gate the brief names. An eighth
-     * operator, a seventh widget or a third tier added to the Rust side
+     * operator, an eighth widget or a third tier added to the Rust side
      * then fails this module's build rather than rendering as nothing. */
     @Test
     fun `every when over a seam enum is exhaustive with no wildcard arm`() {

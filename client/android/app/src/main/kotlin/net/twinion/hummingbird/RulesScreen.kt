@@ -67,7 +67,7 @@ import uniffi.hummingbird_ffi_mobile.SourceOptionRecord
 // **The route has a permanent More-sheet entry since #541.**
 //
 // The `when`s over the seam's enums carry no `else ->` arm, deliberately:
-// an eighth operator or a seventh widget added to ADR-0013's vocabulary is
+// an eighth operator or an eighth widget added to ADR-0013's vocabulary is
 // then a Kotlin compile error here rather than a control that silently
 // renders as nothing.
 

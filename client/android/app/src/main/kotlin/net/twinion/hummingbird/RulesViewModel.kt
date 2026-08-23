@@ -160,15 +160,15 @@ class RulesViewModel(
     private val _pendingEnabled = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     val pendingEnabled: StateFlow<Map<String, Boolean>> = _pendingEnabled.asStateFlow()
 
-    /** The rule being written or edited, or null in list mode. Held here
-     * and never in a `remember {}`: a draft is human-authored content, and
-     * a fold or a rotation must not take it (`ScreenStateRetentionTest`). */
     /** The rules a person has deleted but the authority has not yet handed
      * back — see [delete]. Same overlay-free reasoning as [pendingEnabled];
      * an entry is dropped the moment the row stops being listed. */
     private val _pendingDeleted = MutableStateFlow<Set<String>>(emptySet())
     val pendingDeleted: StateFlow<Set<String>> = _pendingDeleted.asStateFlow()
 
+    /** The rule being written or edited, or null in list mode. Held here
+     * and never in a `remember {}`: a draft is human-authored content, and
+     * a fold or a rotation must not take it (`ScreenStateRetentionTest`). */
     private val _draft = MutableStateFlow<RuleDraft?>(null)
     val draft: StateFlow<RuleDraft?> = _draft.asStateFlow()
 

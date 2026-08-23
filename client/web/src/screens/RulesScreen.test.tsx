@@ -270,6 +270,40 @@ describe("RulesScreen", () => {
     expect([...select.options].find((o) => o.value === "city-waste/v1")?.disabled).toBe(false);
   });
 
+  /// The other direction `withCurrentOption` covers: a rule naming a source
+  /// this build's registry does not declare at all — an older client, or a
+  /// source retired out of the table entirely. The option has to be
+  /// synthesised, or a `<select>` with no matching option silently shows its
+  /// first entry and the row stops naming the source the rule carries.
+  it("a source the registry does not declare at all still names itself rather than reading as another", () => {
+    render(
+      <RulesScreen
+        rules={[
+          rule({ conditions: [{ field: "source", op: "eq", value: "retired-poller/v1", negate: false }] }),
+        ]}
+        kindRegistry={registry}
+        frontier={[]}
+        lastRuleWrite={null}
+        syncOutcomeSeq={0}
+        onCreateRule={vi.fn()}
+        onPatchRule={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Edit"));
+
+    const select = screen.getByLabelText("Source") as HTMLSelectElement;
+    expect(select.value).toBe("retired-poller/v1");
+    const synthesised = [...select.options].find((o) => o.value === "retired-poller/v1");
+    expect(synthesised, "the stored value must be an option at all").toBeTruthy();
+    // Pickable, unlike a *retired* entry: the registry says nothing about
+    // this value either way, so greying it would claim a refusal the
+    // authority has not made.
+    expect(synthesised?.disabled).toBe(false);
+    // And no placeholder — a value is chosen, however unknown it is.
+    expect([...select.options].some((o) => o.value === "")).toBe(false);
+  });
+
   it("a source condition under `contains` stays a text box — substring matching is not a pick", () => {
     render(
       <RulesScreen

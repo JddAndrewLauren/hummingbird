@@ -284,7 +284,10 @@ export const DEMO_DATA: DemoData = {
     // `hummingbird_domain::REGISTRY`, in its own registration order — the
     // real vocabulary a `source eq` condition picks from, retired entry
     // included so the visual gate photographs the marked-and-unselectable
-    // option rather than only the ordinary ones.
+    // option rather than only the ordinary ones. Hand-written here because
+    // this module is static TS and the registry crosses at runtime through
+    // wasm; `demo-source-registry.test.ts` is what keeps the two equal, and
+    // its header says why a hand-written copy needed a gate at all.
     sources: [
       { source: "gmail/v1", retiredAs: null },
       { source: "m365-mail/v1", retiredAs: null },
@@ -302,7 +305,6 @@ export const DEMO_DATA: DemoData = {
       { source: "github/v1", retiredAs: null },
       { source: "photo-site/v1", retiredAs: null },
       { source: "gmail-alert/v1", retiredAs: null },
-      { source: "anthropic-usage/v1", retiredAs: null },
     ],
   },
   ruleBacktestItems: [
