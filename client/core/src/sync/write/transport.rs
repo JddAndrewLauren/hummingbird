@@ -15,6 +15,7 @@
 //! status-carrying `.http()` constructor (status lives on [`RawResponse`]
 //! instead).
 
+use crate::diagnostics::route::CorrelationHeaders;
 pub use super::super::transport::TransportError;
 
 /// The HTTP verb a mutation is sent with. `PATCH` and `PUT` are both CAS
@@ -60,4 +61,20 @@ pub trait MutationTransport: Send + Sync {
         access_token: &str,
         request: MutationRequest,
     ) -> Result<RawResponse, TransportError>;
+
+    /// The same call as [`MutationTransport::send`], plus the four
+    /// `X-Hummingbird-*` correlation headers (#706) an observed sync cycle
+    /// attaches. Defaults to ignoring `headers` and delegating to
+    /// [`MutationTransport::send`] — see
+    /// [`super::super::transport::ChangesTransport::fetch_changes_with_headers`]
+    /// for why every existing implementation keeps compiling unchanged.
+    async fn send_with_headers(
+        &self,
+        access_token: &str,
+        request: MutationRequest,
+        headers: &CorrelationHeaders<'_>,
+    ) -> Result<RawResponse, TransportError> {
+        let _ = headers;
+        self.send(access_token, request).await
+    }
 }

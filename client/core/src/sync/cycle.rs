@@ -499,6 +499,115 @@ where
         force_full_sweep: bool,
         jitter_unit: f64,
     ) -> CycleOutcome {
+        self.run_impl(
+            read_transport,
+            write_transport,
+            access_token,
+            now_ms,
+            trigger,
+            force_full_sweep,
+            jitter_unit,
+            None,
+        )
+        .await
+    }
+
+    /// [`SyncCycle::run`]'s observed twin (#706): identical cycle mechanics
+    /// — both delegate to [`SyncCycle::run_impl`], so there is exactly one
+    /// copy of the drain/pull/persist logic to drift — plus a
+    /// [`DiagnosticsContext`] that emits `sync.started`/`sync.phase_started`/
+    /// `sync.phase_finished`/`sync.finished` around the same four
+    /// boundaries, and wraps both transports so every HTTP call they make
+    /// carries the `X-Hummingbird-*` correlation headers and reports
+    /// `http.started`/`http.finished` (with the slow/stalled watchdog)
+    /// around itself.
+    ///
+    /// `diagnostics.cycle_id()` is what `sync.*`/`http.*` events and the
+    /// `<cycle-id>-<ordinal>` request ids correlate on — caller-minted,
+    /// since this crate has no RNG of its own (see the module docs).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_observed(
+        &mut self,
+        read_transport: &impl ChangesTransport,
+        write_transport: &impl MutationTransport,
+        access_token: &str,
+        now_ms: i64,
+        trigger: Trigger,
+        force_full_sweep: bool,
+        jitter_unit: f64,
+        diagnostics: &crate::diagnostics::DiagnosticsContext<'_>,
+    ) -> CycleOutcome {
+        let instrumented_read =
+            crate::diagnostics::context::InstrumentedChangesTransport::new(read_transport, diagnostics);
+        let instrumented_write =
+            crate::diagnostics::context::InstrumentedMutationTransport::new(write_transport, diagnostics);
+        self.run_impl(
+            &instrumented_read,
+            &instrumented_write,
+            access_token,
+            now_ms,
+            trigger,
+            force_full_sweep,
+            jitter_unit,
+            Some(diagnostics),
+        )
+        .await
+    }
+
+    /// The one copy of ADR-0007's cycle mechanics — [`SyncCycle::run`] and
+    /// [`SyncCycle::run_observed`] both delegate here, differing only in
+    /// which transports they pass (plain, or instrumented) and whether
+    /// `diagnostics` is `Some`. `R`/`W` are generic, rather than `&impl
+    /// Trait` on `run`/`run_observed` themselves, purely so both callers'
+    /// concrete transport types (the caller's own, or
+    /// [`crate::diagnostics::context::InstrumentedChangesTransport`]/
+    /// `InstrumentedMutationTransport`) monomorphize here without either
+    /// caller needing a trait object.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_impl<R: ChangesTransport, W: MutationTransport>(
+        &mut self,
+        read_transport: &R,
+        write_transport: &W,
+        access_token: &str,
+        now_ms: i64,
+        trigger: Trigger,
+        force_full_sweep: bool,
+        jitter_unit: f64,
+        diagnostics: Option<&crate::diagnostics::DiagnosticsContext<'_>>,
+    ) -> CycleOutcome {
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.emit_sync_started(force_full_sweep);
+        }
+        let outcome = self
+            .run_impl_inner(
+                read_transport,
+                write_transport,
+                access_token,
+                now_ms,
+                trigger,
+                force_full_sweep,
+                jitter_unit,
+                diagnostics,
+            )
+            .await;
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.emit_sync_finished(crate::diagnostics::context::sync_outcome_of(&outcome));
+        }
+        outcome
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_impl_inner<R: ChangesTransport, W: MutationTransport>(
+        &mut self,
+        read_transport: &R,
+        write_transport: &W,
+        access_token: &str,
+        now_ms: i64,
+        trigger: Trigger,
+        force_full_sweep: bool,
+        jitter_unit: f64,
+        diagnostics: Option<&crate::diagnostics::DiagnosticsContext<'_>>,
+    ) -> CycleOutcome {
         match trigger {
             Trigger::User => self.backoff.reset(),
             Trigger::Timer if !self.backoff.ready(now_ms) => return CycleOutcome::Skipped,
@@ -512,18 +621,30 @@ where
         // moved"). The asymmetry with the mirror below is deliberate: the
         // mirror clones to build a candidate it may discard, the queue
         // clones to keep a witness of what it had.
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.emit_sync_phase_started(crate::diagnostics::SyncPhase::QueueDrain);
+        }
         let queue_before = self.queue.clone();
         let drain_outcome = self.queue.drain(write_transport, access_token, now_ms).await;
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.emit_sync_phase_finished(crate::diagnostics::SyncPhase::QueueDrain);
+        }
 
         if self.queue != queue_before || self.queue_needs_write {
-            if let Err(error) = save_snapshot(
+            if let Some(diagnostics) = diagnostics {
+                diagnostics.emit_sync_phase_started(crate::diagnostics::SyncPhase::QueuePersist);
+            }
+            let persist_result = save_snapshot(
                 &self.queue_store,
                 QUEUE_SCHEMA_VERSION,
                 now_ms.max(0) as u64,
                 &self.queue,
             )
-            .await
-            {
+            .await;
+            if let Some(diagnostics) = diagnostics {
+                diagnostics.emit_sync_phase_finished(crate::diagnostics::SyncPhase::QueuePersist);
+            }
+            if let Err(error) = persist_result {
                 // Memory is now ahead of disk and `drain` has no undo, so
                 // the next cycle's compare — which will find the queue
                 // equal to itself — must not be what decides whether to
@@ -562,6 +683,9 @@ where
                 .last_full_sweep_at_ms
                 .is_none_or(|at| now_ms.saturating_sub(at) >= FULL_SWEEP_BACKSTOP_INTERVAL_MS);
 
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.emit_sync_phase_started(crate::diagnostics::SyncPhase::Pull);
+        }
         let pull_result = if due_for_full_sweep {
             fetch_sweep(read_transport, access_token)
                 .await
@@ -571,6 +695,9 @@ where
                 .await
                 .map(PullResponse::Delta)
         };
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.emit_sync_phase_finished(crate::diagnostics::SyncPhase::Pull);
+        }
 
         match pull_result {
             Ok(pull) => {
@@ -596,14 +723,20 @@ where
                 // untouched — this is the one case where the ordering has
                 // nothing to order.
                 if candidate != self.mirror {
-                    if let Err(error) = save_snapshot(
+                    if let Some(diagnostics) = diagnostics {
+                        diagnostics.emit_sync_phase_started(crate::diagnostics::SyncPhase::MirrorPersist);
+                    }
+                    let persist_result = save_snapshot(
                         &self.mirror_store,
                         SYNC_MIRROR_SCHEMA_VERSION,
                         now_ms.max(0) as u64,
                         &candidate,
                     )
-                    .await
-                    {
+                    .await;
+                    if let Some(diagnostics) = diagnostics {
+                        diagnostics.emit_sync_phase_finished(crate::diagnostics::SyncPhase::MirrorPersist);
+                    }
+                    if let Err(error) = persist_result {
                         let retry_after_ms = self.backoff.record_failure(now_ms, jitter_unit);
                         return CycleOutcome::PersistFailed {
                             message: error.to_string(),
@@ -2259,5 +2392,241 @@ mod tests {
             0,
             "the flag clears on the write that healed it, rather than pinning every later cycle"
         );
+    }
+
+    // ------------------------------------------------------- #706: run_observed
+
+    mod observed {
+        use super::*;
+        use crate::diagnostics::context::DiagnosticsContext;
+        use crate::diagnostics::route::{is_valid_header_value, CorrelationHeaders};
+        use crate::diagnostics::test_support::{
+            FailingSink, NeverResolvingChangesTransport, RecordingClock, RecordingSink,
+        };
+        use crate::diagnostics::{DiagnosticEvent, SyncPhase};
+        use futures_util::future::{select, Either};
+
+        /// #706 acceptance: "Proven with a never-resolving fake transport:
+        /// `sync.started`, the phase start, and `http.started` are all
+        /// recorded, and no corresponding finish event ever appears."
+        /// Races the observed cycle against an immediately-ready future
+        /// (the cycle's own `.await` never resolves, so the ready future
+        /// always wins) rather than actually waiting forever — the point is
+        /// only to inspect what was recorded up to the moment it hangs.
+        #[tokio::test]
+        async fn a_never_resolving_pull_leaves_its_opening_events_behind_with_no_finish() {
+            let sink = RecordingSink::default();
+            let clock = RecordingClock::default();
+            let read = NeverResolvingChangesTransport;
+            let write = ScriptedWrite {
+                log: &CallLog::default(),
+                responses: Mutex::new(vec![].into()),
+            };
+            let diagnostics = DiagnosticsContext::new(&sink, &clock, "session-1", "cycle-1", "core", "test", 1_000);
+            let mut cycle = SyncCycle::new(MemorySnapshotStore::default(), MemorySnapshotStore::default());
+
+            let running = cycle.run_observed(&read, &write, "token", 1_000, Trigger::User, true, 0.0, &diagnostics);
+            match select(Box::pin(running), Box::pin(std::future::ready(()))).await {
+                Either::Right(((), _)) => {}
+                Either::Left(_) => panic!("a never-resolving transport must never let the cycle finish"),
+            }
+
+            let events = sink.events();
+            assert!(
+                events.iter().any(|e| matches!(e.event, DiagnosticEvent::SyncStarted { .. })),
+                "sync.started must be recorded before the pull is ever attempted"
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e.event, DiagnosticEvent::SyncPhaseStarted { phase: SyncPhase::Pull })),
+                "the pull phase's start must be recorded"
+            );
+            assert!(
+                events.iter().any(|e| matches!(e.event, DiagnosticEvent::HttpStarted { .. })),
+                "http.started must be recorded before the network call is ever awaited"
+            );
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e.event, DiagnosticEvent::SyncPhaseFinished { phase: SyncPhase::Pull })),
+                "the pull phase never finished — it is still hanging"
+            );
+            assert!(
+                !events.iter().any(|e| matches!(e.event, DiagnosticEvent::HttpFinished { .. })),
+                "http.finished must never appear for a call that never returned"
+            );
+            assert!(
+                !events.iter().any(|e| matches!(e.event, DiagnosticEvent::SyncFinished { .. })),
+                "sync.finished must never appear either — the cycle itself never returned"
+            );
+        }
+
+        /// #706 acceptance: "`operation.slow` is emitted after 5 seconds and
+        /// `operation.stalled` after 30 seconds of an unfinished operation,
+        /// under a controllable clock." [`RecordingClock`] resolves every
+        /// `sleep_ms` immediately, so this asserts the exact durations
+        /// requested (5s, then 25s more — 30s total) rather than a real
+        /// wait.
+        #[tokio::test]
+        async fn operation_slow_then_stalled_fire_at_the_5s_and_30s_thresholds() {
+            let sink = RecordingSink::default();
+            let clock = RecordingClock::default();
+            let read = NeverResolvingChangesTransport;
+            let write = ScriptedWrite {
+                log: &CallLog::default(),
+                responses: Mutex::new(vec![].into()),
+            };
+            let diagnostics = DiagnosticsContext::new(&sink, &clock, "session-1", "cycle-1", "core", "test", 1_000);
+            let mut cycle = SyncCycle::new(MemorySnapshotStore::default(), MemorySnapshotStore::default());
+
+            let running = cycle.run_observed(&read, &write, "token", 1_000, Trigger::User, true, 0.0, &diagnostics);
+            let _ = select(Box::pin(running), Box::pin(std::future::ready(()))).await;
+
+            assert_eq!(
+                clock.sleep_requests_ms(),
+                vec![5_000, 25_000],
+                "5s to the slow threshold, then 25 more to reach the 30s stalled threshold"
+            );
+            let events = sink.events();
+            assert!(events.iter().any(|e| matches!(e.event, DiagnosticEvent::OperationSlow)));
+            assert!(events.iter().any(|e| matches!(e.event, DiagnosticEvent::OperationStalled)));
+        }
+
+        /// #706 acceptance: "A deliberately failing sink proves nothing
+        /// propagates to the caller." [`FailingSink`] cannot actually
+        /// return an error (the trait gives it no way to) — this proves the
+        /// cycle completes normally (no panic, an ordinary [`CycleOutcome`])
+        /// with such a sink wired up.
+        #[tokio::test]
+        async fn a_failing_sink_never_propagates_to_the_cycles_caller() {
+            let sink = FailingSink::default();
+            let clock = RecordingClock::default();
+            let log = CallLog::default();
+            let read = ScriptedRead::sweep_only(&log, Ok(empty_body(1)));
+            let write = ScriptedWrite {
+                log: &log,
+                responses: Mutex::new(vec![].into()),
+            };
+            let diagnostics = DiagnosticsContext::new(&sink, &clock, "session-1", "cycle-1", "core", "test", 1_000);
+            let mut cycle = SyncCycle::new(MemorySnapshotStore::default(), MemorySnapshotStore::default());
+
+            let outcome = cycle
+                .run_observed(&read, &write, "token", 1_000, Trigger::User, true, 0.0, &diagnostics)
+                .await;
+
+            assert!(matches!(outcome, CycleOutcome::Completed { .. }));
+            assert!(sink.dropped_count() > 0, "the sink must actually have been called");
+        }
+
+        /// A transport that records the correlation headers it was given —
+        /// proving both that the values are attached at all and that they
+        /// satisfy the `[A-Za-z0-9_-]{1,80}` pattern every header value
+        /// must (#706 acceptance).
+        #[derive(Default)]
+        struct HeaderRecordingRead {
+            seen_cycle_ids: Mutex<Vec<String>>,
+            seen_request_ids: Mutex<Vec<String>>,
+        }
+
+        #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+        #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+        impl ChangesTransport for HeaderRecordingRead {
+            async fn fetch_changes(&self, _access_token: &str, _since: i64) -> Result<String, TransportError> {
+                panic!("this fixture is scripted for a full sweep only")
+            }
+
+            async fn fetch_sweep(&self, _access_token: &str) -> Result<String, TransportError> {
+                Ok(empty_body(1))
+            }
+
+            async fn fetch_sweep_with_headers(
+                &self,
+                _access_token: &str,
+                headers: &CorrelationHeaders<'_>,
+            ) -> Result<String, TransportError> {
+                self.seen_cycle_ids.lock().unwrap().push(headers.cycle_id.to_string());
+                self.seen_request_ids.lock().unwrap().push(headers.request_id.to_string());
+                Ok(empty_body(1))
+            }
+        }
+
+        /// #706 acceptance: "Each HTTP call carries a request id derived
+        /// from the cycle id plus an ordinal ... every value sent matches
+        /// `[A-Za-z0-9_-]{1,80}`."
+        #[tokio::test]
+        async fn the_pull_call_carries_a_cycle_id_and_ordinal_derived_request_id() {
+            let sink = RecordingSink::default();
+            let clock = RecordingClock::default();
+            let read = HeaderRecordingRead::default();
+            let write = ScriptedWrite {
+                log: &CallLog::default(),
+                responses: Mutex::new(vec![].into()),
+            };
+            let diagnostics = DiagnosticsContext::new(&sink, &clock, "session-1", "cycle-abc123", "core", "test", 1_000);
+            let mut cycle = SyncCycle::new(MemorySnapshotStore::default(), MemorySnapshotStore::default());
+
+            cycle
+                .run_observed(&read, &write, "token", 1_000, Trigger::User, true, 0.0, &diagnostics)
+                .await;
+
+            let cycle_ids = read.seen_cycle_ids.lock().unwrap().clone();
+            let request_ids = read.seen_request_ids.lock().unwrap().clone();
+            assert_eq!(cycle_ids, vec!["cycle-abc123".to_string()]);
+            assert_eq!(request_ids, vec!["cycle-abc123-0".to_string()]);
+            for id in cycle_ids.iter().chain(request_ids.iter()) {
+                assert!(is_valid_header_value(id), "{id} must satisfy the header-value pattern");
+            }
+        }
+
+        /// #706 acceptance: "a serialized fixture of a full cycle's events
+        /// is asserted to contain none of [the forbidden substrings]." Runs
+        /// a real cycle with a queued mutation whose path names a concrete
+        /// entity id, so the only way this passes is if the route really
+        /// was templated before anything reached the sink.
+        #[tokio::test]
+        async fn a_serialized_fixture_of_a_full_cycles_events_contains_no_forbidden_substring() {
+            let sink = RecordingSink::default();
+            let clock = RecordingClock::default();
+            let log = CallLog::default();
+            let read = ScriptedRead::sweep_only(&log, Ok(empty_body(1)));
+            let write = ScriptedWrite {
+                log: &log,
+                responses: Mutex::new(vec![ok(200, r#"{"id":"secret-entity-id-99","title":"buy oat milk","version":2}"#)].into()),
+            };
+            let diagnostics = DiagnosticsContext::new(&sink, &clock, "session-1", "cycle-1", "core", "test", 1_000);
+            let mut cycle = SyncCycle::new(MemorySnapshotStore::default(), MemorySnapshotStore::default());
+            cycle.queue.enqueue(QueueEntry {
+                id: "m-1".to_string(),
+                intent: MutationIntent::Patch {
+                    path: "/api/items/secret-entity-id-99".to_string(),
+                    method: HttpMethod::Patch,
+                    base: serde_json::json!({"id": "secret-entity-id-99", "title": "buy milk", "version": 1}),
+                    base_updated_at: 1_000,
+                    patch_fields: serde_json::json!({"title": "buy oat milk"}),
+                    rebase_fields: None,
+                },
+            });
+
+            cycle
+                .run_observed(&read, &write, "token", 1_000, Trigger::User, true, 0.0, &diagnostics)
+                .await;
+
+            let json = serde_json::to_string(&sink.events()).unwrap();
+            for forbidden in [
+                "secret-entity-id-99",
+                "buy oat milk",
+                "buy milk",
+                "authorization",
+                "Bearer",
+                "token",
+                "\"title\"",
+            ] {
+                assert!(
+                    !json.contains(forbidden),
+                    "the serialized fixture must never contain {forbidden:?}, got: {json}"
+                );
+            }
+        }
     }
 }

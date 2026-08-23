@@ -52,6 +52,7 @@ pub mod calendar;
 pub mod capture;
 pub mod context;
 pub mod decisions;
+pub mod diagnostics;
 pub mod freshness;
 pub mod item_detail;
 pub mod pane;
@@ -3170,6 +3171,66 @@ where
             )
             .await;
 
+        self.apply_cycle_outcome(outcome, dead_letters_before_this_cycle, now_ms)
+    }
+
+    /// [`Core::run`]'s observed twin (#706) — every credential/overlay/
+    /// dead-letter rule below is identical, via [`Core::apply_cycle_outcome`];
+    /// the only difference is which [`sync::SyncCycle`] method the cycle
+    /// itself runs through, so `sync.*`/`http.*` diagnostic events are
+    /// emitted around the same drain/pull/persist boundaries
+    /// [`sync::cycle`] already names, and every HTTP call carries the
+    /// `X-Hummingbird-*` correlation headers.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_observed(
+        &mut self,
+        read_transport: &impl ChangesTransport,
+        write_transport: &impl MutationTransport,
+        now_ms: i64,
+        trigger: Trigger,
+        force_full_sweep: bool,
+        jitter_unit: f64,
+        diagnostics: &crate::diagnostics::DiagnosticsContext<'_>,
+    ) -> CoreCycleOutcome {
+        if self.credential.is_held() {
+            return CoreCycleOutcome::Held;
+        }
+        let Some(token) = self.credential.token().map(str::to_string) else {
+            return CoreCycleOutcome::NoCredential;
+        };
+
+        let dead_letters_before_this_cycle = self.cycle.queue().dead_letters().len();
+
+        let outcome = self
+            .cycle
+            .run_observed(
+                read_transport,
+                write_transport,
+                &token,
+                now_ms,
+                trigger,
+                force_full_sweep,
+                jitter_unit,
+                diagnostics,
+            )
+            .await;
+
+        self.apply_cycle_outcome(outcome, dead_letters_before_this_cycle, now_ms)
+    }
+
+    /// The bookkeeping [`Core::run`] and [`Core::run_observed`] share once
+    /// the cycle itself has returned — dead-letter overlay reversion, the
+    /// completed-cycle overlay clear, and the credential hold on
+    /// [`CycleOutcome::CredentialNeeded`]. Factored out so the two entry
+    /// points cannot drift on what a given [`CycleOutcome`] means, exactly
+    /// the same reason [`sync::SyncCycle::run`]/`run_observed` share one
+    /// `run_impl`.
+    fn apply_cycle_outcome(
+        &mut self,
+        outcome: CycleOutcome,
+        dead_letters_before_this_cycle: usize,
+        now_ms: i64,
+    ) -> CoreCycleOutcome {
         // A dead-lettered entry reverts to server truth regardless of what
         // the rest of this cycle did — matched by the queue entry id every
         // `OverlayEntry` carries for exactly this, but only among entries
@@ -4400,6 +4461,65 @@ mod tests {
             resumed,
             CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
         ));
+    }
+
+    // -------------------------------------------------------- #706: run_observed
+
+    /// [`Core::run_observed`] must apply the identical credential/overlay/
+    /// dead-letter bookkeeping [`Core::run`] does — held here for a
+    /// `Held` credential, exactly like [`Core::run`] — proving
+    /// [`Core::apply_cycle_outcome`] is really shared between the two
+    /// rather than one of them silently skipping it.
+    #[tokio::test]
+    async fn run_observed_holds_exactly_like_run_when_the_credential_is_held() {
+        let mut core = Core::new();
+        core.push_api_key("stale-token");
+        let read = ScriptedRead::sweep_only(vec![Err(TransportError::http(401, "revoked"))]);
+        let write = ScriptedWrite::new(vec![]);
+        core.run(&read, &write, 1_000, Trigger::User, true, 1.0).await;
+        core.take_events();
+
+        let sink = crate::diagnostics::test_support::RecordingSink::default();
+        let clock = crate::diagnostics::test_support::RecordingClock::default();
+        let diagnostics =
+            crate::diagnostics::DiagnosticsContext::new(&sink, &clock, "s-1", "c-1", "core", "test", 2_000);
+        let held_read = ScriptedRead::default();
+        let held_write = ScriptedWrite::default();
+        let held = core
+            .run_observed(&held_read, &held_write, 2_000, Trigger::User, true, 1.0, &diagnostics)
+            .await;
+
+        assert_eq!(held, CoreCycleOutcome::Held);
+        assert!(sink.events().is_empty(), "a held credential must never even start a cycle");
+    }
+
+    /// A real observed cycle through [`Core::run_observed`] actually reaches
+    /// the sink — proving the wiring from `Core` through
+    /// `SyncCycle::run_observed` down to the instrumented transports is
+    /// live, not just compiling.
+    #[tokio::test]
+    async fn run_observed_completes_a_cycle_and_reaches_the_sink() {
+        let mut core = Core::new();
+        core.push_api_key("token");
+        let sink = crate::diagnostics::test_support::RecordingSink::default();
+        let clock = crate::diagnostics::test_support::RecordingClock::default();
+        let diagnostics =
+            crate::diagnostics::DiagnosticsContext::new(&sink, &clock, "s-1", "c-1", "core", "test", 1_000);
+        let read = ScriptedRead::sweep_only(vec![Ok(empty_sweep_body(1))]);
+        let write = ScriptedWrite::new(vec![]);
+
+        let outcome = core
+            .run_observed(&read, &write, 1_000, Trigger::User, true, 0.0, &diagnostics)
+            .await;
+
+        assert!(matches!(
+            outcome,
+            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
+        ));
+        assert!(
+            sink.events().iter().any(|e| matches!(e.event, crate::diagnostics::DiagnosticEvent::SyncFinished { .. })),
+            "sync.finished must have reached the sink for a completed cycle"
+        );
     }
 
     #[tokio::test]
