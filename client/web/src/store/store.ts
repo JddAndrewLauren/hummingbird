@@ -5,6 +5,7 @@
 
 import type {
   BindingDTO,
+  QuestionSwitchDTO,
   BlockedFrontierEntryDTO,
   CalendarListEntryDTO,
   CalendarReadDTO,
@@ -138,6 +139,17 @@ export interface TaskBindingResult {
   seed: string;
   key: string;
   kind: "ok" | "unknown_key" | "failed" | "busy";
+  error: string | null;
+}
+
+/** The result of the most recent `setQuestionEnabled` request this view
+ * issued (#715), matched back by `seed` — [`TaskBindingResult`] verbatim
+ * for the question vocabulary, with `question` echoed so a per-question row
+ * can tell whether an outcome is its own. */
+export interface TaskQuestionSwitchResult {
+  seed: string;
+  question: string;
+  kind: "ok" | "unknown_question" | "failed" | "busy";
   error: string | null;
 }
 
@@ -277,6 +289,14 @@ export interface TaskState {
    * `bindings` answer arrives: an empty array is a real answer ("the table
    * is empty"), and the editor must not render it before one exists. */
   bindings: BindingDTO[] | null;
+  /** Every standing question's off switch (#715, ADR-0034) — all ten,
+   * whether they have a `settings` row or not. `null` until the first
+   * `questionSwitches` answer arrives, on [`TaskState.bindings`]' contract
+   * and for a sharper version of its reason: an unread switch list
+   * defaulted to "everything is on" would draw ten toggles in a state
+   * nobody had read, and the first pane to disappear on the next answer
+   * would look like a bug. */
+  questionSwitches: QuestionSwitchDTO[] | null;
   /** The kind registry export (#133/#140, ADR-0013) — `null` until the
    * first `getKindRegistry` answer arrives. Never answers `"busy"`
    * core-side, but a view can still ask before the worker's port is ready,
@@ -330,6 +350,9 @@ export interface TaskState {
   /** The result of the most recent `setBinding` request this view issued
    * (#118) — `null` until the first one resolves. */
   lastBindingWrite: TaskBindingResult | null;
+  /** The result of the most recent `setQuestionEnabled` request this view
+   * issued (#715) — `null` until the first one resolves. */
+  lastQuestionSwitchWrite: TaskQuestionSwitchResult | null;
   lastSyncOutcome: TaskSyncOutcome | null;
   /** When the last `Core::run` cycle actually happened (any trigger, any
    * outcome) — S9's "last sweep" readout. Copied by `worker-client.ts`
@@ -441,6 +464,7 @@ const initialTaskState: TaskState = {
   search: null,
   done: null,
   bindings: null,
+  questionSwitches: null,
   kindRegistry: null,
   rules: null,
   lastRuleWrite: null,
@@ -455,6 +479,7 @@ const initialTaskState: TaskState = {
   grillDraftItemIds: [],
   grillDraftByItem: {},
   lastBindingWrite: null,
+  lastQuestionSwitchWrite: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
   lastSuccessfulSyncAtMs: null,

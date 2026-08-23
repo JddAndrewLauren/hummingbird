@@ -379,6 +379,27 @@ export interface BindingDTO {
   value: BindingValueDTO;
 }
 
+/** One standing question's off switch (#715, ADR-0034) — the wire shape of
+ * `hummingbird_core::question_switch::QuestionSwitch`.
+ *
+ * A second vocabulary over the same `settings` table, and a separate DTO
+ * for the reason ADR-0034 decision 2 gives: a toggle is not a fact a pane
+ * reads, it decides whether the pane is *asked*, and routing it through
+ * `BindingDTO` would put the literal string `"true"` in a free-text box.
+ * `Core::bindings` subtracts these rows, so no key ever appears in both
+ * lists.
+ *
+ * `question` is `StandingQuestion`'s own wire spelling, never the
+ * `settings` key — the key is the core's business. `enabled` is already the
+ * absence-means-enabled reading applied, so a question with no row at all
+ * arrives `true`. `pending` is the same read-time overlay fact
+ * `BindingDTO.pending` carries. */
+export interface QuestionSwitchDTO {
+  question: string;
+  enabled: boolean;
+  pending: boolean;
+}
+
 // -- rules (#140, ADR-0012/0013) --------------------------------------------
 //
 // The rules screen: condition rows, a per-row "not" toggle, the
@@ -810,6 +831,21 @@ export type TaskWorkerRequest =
    * contract as `"act"`. */
   | { type: "setBinding"; seed: string; key: string; value: string; nowMs: number }
   | { type: "getBindings" }
+  /** #715's toggle write: one absolute-value CAS `PUT
+   * /api/settings/question-enabled-<question>`, enqueued durably like every
+   * other mutation. `question` is `StandingQuestion`'s wire spelling,
+   * resolved by name in `client/ffi-web/src/task_host.rs`'s
+   * `set_question_enabled` before it can reach `Core` — the key itself is
+   * never spelled on this side, so no caller can mint a row into a table
+   * with no DELETE. Same caller-mints-`seed` contract as `"setBinding"`. */
+  | {
+      type: "setQuestionEnabled";
+      seed: string;
+      question: string;
+      enabled: boolean;
+      nowMs: number;
+    }
+  | { type: "getQuestionSwitches" }
   /** #140: the kind registry export. Carries no argument and needs no
    * `Core` state — see `TaskHostCore::kind_registry`'s own doc. */
   | { type: "getKindRegistry" }
@@ -1142,6 +1178,20 @@ export type TaskWorkerResponse =
       error: string | null;
     }
   | { type: "bindings"; bindings: BindingDTO[] }
+  /** #715's toggle write result, matched back by `seed` — `setBindingResult`
+   * verbatim for the question vocabulary. `"unknown_question"` is a caller
+   * mistake the seam refused; a successful write needs no payload, since
+   * `Core::set_question_enabled`'s overlay already updated and
+   * `store/worker-client.ts` re-requests `getQuestionSwitches` behind an
+   * `ok`. */
+  | {
+      type: "setQuestionEnabledResult";
+      seed: string;
+      question: string;
+      kind: "ok" | "unknown_question" | "failed" | "busy";
+      error: string | null;
+    }
+  | { type: "questionSwitches"; switches: QuestionSwitchDTO[] }
   /** #140's rule create result, matched back by `seed` — same
    * broadcast-not-reply contract as `captureResult`. `"failed"` covers both
    * a rejected wire vocabulary (an unrecognised `tier`) and a durability

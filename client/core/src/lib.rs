@@ -55,6 +55,7 @@ pub mod decisions;
 pub mod freshness;
 pub mod item_detail;
 pub mod pane;
+pub mod question_switch;
 pub mod rank;
 pub mod search;
 pub mod storage;
@@ -62,6 +63,10 @@ pub mod sync;
 pub mod task;
 
 use bindings::{Binding, BindingKey, BindingValue};
+use decisions::panes::contract::{StandingQuestion, QUESTION_ORDER};
+use question_switch::{
+    all_switch_keys, question_enabled_from_stored, question_switch_key, QuestionSwitch,
+};
 use hummingbird_domain::{
     resulting_stage, Alert, AlertPatch, Condition, CreateFog, CreateGrill, CreateItem,
     CreateProject, CreateProjectLink, CreateRule, CreateStep, Energy, Fog, FogPatch, GrillVerdict,
@@ -2084,6 +2089,13 @@ where
             }
         };
 
+        // #715: a question's off switch is a `settings` row too, in a
+        // second and deliberately separate vocabulary (ADR-0034 decision
+        // 2). Subtracted here rather than left to fall into the unknown
+        // group, which would list ten free-text `"false"`s among the five
+        // real bindings and invite the operator to hand-edit a control that
+        // has a toggle of its own.
+        let switch_keys = all_switch_keys();
         let mut bindings: Vec<Binding> = BindingKey::ALL
             .iter()
             .map(|key| describe(key.as_str()))
@@ -2092,9 +2104,50 @@ where
             overlaid
                 .keys()
                 .filter(|key| BindingKey::parse(key).is_none())
+                .filter(|key| !switch_keys.contains(key.as_str()))
                 .map(|key| describe(key)),
         );
         bindings
+    }
+
+    /// Every standing question's off switch (#715, ADR-0034), in
+    /// [`QUESTION_ORDER`] — [`Core::bindings`]'s twin for the second
+    /// vocabulary over the same table, and read through the same
+    /// overlay-over-mirror view, so a toggle flipped offline reads back
+    /// flipped and `pending` without waiting for a cycle.
+    ///
+    /// **Every question is always present**, whether it has a row or not:
+    /// absence means enabled (`question_switch`'s own contract), and the
+    /// roster this feeds is the one place an off question can be seen at
+    /// all — omitting a question with no row would be exactly the
+    /// invisible-question failure ADR-0034 is guarding against.
+    pub fn question_switches(&self) -> Vec<QuestionSwitch> {
+        let overlaid = self.overlaid_settings();
+        QUESTION_ORDER
+            .iter()
+            .map(|question| {
+                let key = question_switch_key(*question);
+                QuestionSwitch {
+                    question: question.as_str().to_string(),
+                    enabled: match overlaid.get(key) {
+                        Some(setting) => question_enabled_from_stored(&setting.value),
+                        None => true,
+                    },
+                    pending: self.binding_overlay.contains_key(key),
+                }
+            })
+            .collect()
+    }
+
+    /// Which questions are switched **off** — the applied result a pane
+    /// crossing carries ([`decisions::panes::PaneInputs::disabled_questions`]),
+    /// as the questions' own wire spellings.
+    ///
+    /// Almost always empty. A host passes this straight through rather than
+    /// re-deriving "enabled" from rows: absence-means-enabled and
+    /// a-value-I-cannot-read-means-enabled are both decided here, once.
+    pub fn disabled_questions(&self) -> Vec<String> {
+        question_switch::disabled_questions(&self.question_switches())
     }
 
     /// Every live `settings` row with every not-yet-confirmed binding write
@@ -2147,7 +2200,68 @@ where
         value: &str,
         now_ms: i64,
     ) -> Result<(), SnapshotError<QS::Error>> {
-        let key = key.as_str();
+        self.enqueue_setting_write(
+            seed,
+            key.as_str(),
+            serde_json::Value::String(value.to_string()),
+            now_ms,
+        )
+        .await
+    }
+
+    /// Switches one standing question on or off (#715, ADR-0034):
+    /// [`Core::set_binding`]'s exact write path over a second, typed
+    /// vocabulary — one `settings` row per question
+    /// ([`question_switch::question_switch_key`]), absolute-value CAS,
+    /// enqueued through [`sync::SyncCycle::enqueue`], never a bespoke path.
+    ///
+    /// **It overlays**, on [`Core::set_binding`]'s contract and for the same
+    /// reason stated in the same words: the overlaid row is present the
+    /// instant this returns, survives every cycle outcome except a completed
+    /// one (which supersedes it with server truth) or its own entry
+    /// dead-lettering (which reverts it) — so a toggle flipped offline reads
+    /// back flipped, and [`Core::question_switches`] reports it `pending`
+    /// until a cycle drains it. A toggle that showed nothing until the next
+    /// sync would read as a control that does not work.
+    ///
+    /// The value crosses as a **JSON boolean**, not the string `"true"` —
+    /// ADR-0034 decision 2's whole objection to routing this through
+    /// `BindingKey`. `enabled: true` writes an explicit `true` rather than
+    /// clearing the row: `settings` has no DELETE, so switching back on can
+    /// only ever be another write, and
+    /// [`question_switch::question_enabled_from_stored`] reads that row and
+    /// no row identically.
+    ///
+    /// `seed` mints this mutation's queue-entry id
+    /// ([`sync::write::deterministic_id`]) — caller-supplied, the same
+    /// no-clock/no-RNG reasoning as every other mutation entry point here.
+    pub async fn set_question_enabled(
+        &mut self,
+        seed: &str,
+        question: StandingQuestion,
+        enabled: bool,
+        now_ms: i64,
+    ) -> Result<(), SnapshotError<QS::Error>> {
+        self.enqueue_setting_write(
+            seed,
+            question_switch_key(question),
+            serde_json::Value::Bool(enabled),
+            now_ms,
+        )
+        .await
+    }
+
+    /// The one `settings` write path both vocabularies share — the ordinary
+    /// entity-level CAS, spelled once so a binding and a question switch can
+    /// never drift on how a row is created, rebased or overlaid. Callers
+    /// resolve their own key; nothing here can mint one.
+    async fn enqueue_setting_write(
+        &mut self,
+        seed: &str,
+        key: &str,
+        wire_value: serde_json::Value,
+        now_ms: i64,
+    ) -> Result<(), SnapshotError<QS::Error>> {
         let current = self.overlaid_settings().get(key).cloned();
 
         // The wire's `value` is typed JSON (`PutSetting::value`); the stored
@@ -2155,7 +2269,6 @@ where
         // encodings are carried: the first is what gets sent, the second is
         // what a 409 and the overlay are diffed and rebuilt in — see
         // `MutationIntent::Patch::rebase_fields`.
-        let wire_value = serde_json::Value::String(value.to_string());
         let stored_value = wire_value.to_string();
 
         let (base, base_updated_at) = match &current {
@@ -6976,6 +7089,441 @@ mod tests {
             panic!("a fog edit is a CAS patch, not a create");
         };
         assert_eq!(patch_fields, &serde_json::json!({ "resolved_at": null }));
+    }
+
+
+    // ------------------------- #715: the standing-question off switch
+
+    /// A switch row, as the authority stores one — the value column is
+    /// canonical JSON *text*, so an off row holds the four bytes `false`.
+    fn fixture_switch(question: StandingQuestion, enabled: bool, version: i64) -> hummingbird_domain::Setting {
+        fixture_setting(
+            question_switch_key(question),
+            if enabled { "true" } else { "false" },
+            version,
+        )
+    }
+
+    fn switch_of(switches: &[QuestionSwitch], question: StandingQuestion) -> &QuestionSwitch {
+        switches
+            .iter()
+            .find(|switch| switch.question == question.as_str())
+            .unwrap_or_else(|| panic!("{} is missing from the switch list", question.as_str()))
+    }
+
+    /// The fresh-mirror state, which is the one every device starts in and
+    /// the one #715 must never get wrong: no rows at all, every question on.
+    #[tokio::test]
+    async fn a_fresh_mirror_reports_every_question_enabled_with_no_rows_written() {
+        let core = Core::new();
+        let switches = core.question_switches();
+
+        assert_eq!(switches.len(), QUESTION_ORDER.len());
+        assert_eq!(
+            switches.iter().map(|switch| switch.question.as_str()).collect::<Vec<_>>(),
+            QUESTION_ORDER.iter().map(|question| question.as_str()).collect::<Vec<_>>(),
+            "in QUESTION_ORDER, so a roster reading this needs no sort of its own"
+        );
+        assert!(switches.iter().all(|switch| switch.enabled));
+        assert!(switches.iter().all(|switch| !switch.pending));
+        assert!(core.disabled_questions().is_empty());
+        // And nothing was written to get there — absence *is* the answer.
+        assert_eq!(core.cycle.queue().entries().count(), 0);
+    }
+
+    /// The only stored value that switches a question off is the JSON
+    /// literal `false`. Everything else — including a value a newer build
+    /// wrote — reads as on, which is what keeps a question this build cannot
+    /// interpret from going silently missing.
+    #[tokio::test]
+    async fn only_a_stored_false_switches_a_question_off() {
+        let core = core_with_settings(vec![
+            fixture_switch(StandingQuestion::Weekend, false, 1),
+            fixture_switch(StandingQuestion::Race, true, 2),
+            fixture_setting(question_switch_key(StandingQuestion::Kimi), "{\"off\":true}", 3),
+        ])
+        .await;
+
+        let switches = core.question_switches();
+        assert!(!switch_of(&switches, StandingQuestion::Weekend).enabled);
+        assert!(switch_of(&switches, StandingQuestion::Race).enabled);
+        assert!(
+            switch_of(&switches, StandingQuestion::Kimi).enabled,
+            "a value this build cannot read must not silence a question"
+        );
+        assert_eq!(core.disabled_questions(), vec!["weekend".to_string()]);
+    }
+
+    /// The switch rows are a second vocabulary over the same table, so the
+    /// bindings editor must not list them: they would arrive as ten
+    /// free-text `"false"`s beside the five real bindings, each offering to
+    /// hand-edit a control that has a toggle.
+    #[tokio::test]
+    async fn a_switch_row_never_shows_up_as_a_binding() {
+        let core = core_with_settings(vec![
+            fixture_switch(StandingQuestion::Weekend, false, 1),
+            fixture_setting("race-series", "\"f1\"", 2),
+            fixture_setting("a-newer-builds-row", "\"x\"", 3),
+        ])
+        .await;
+
+        let bindings = core.bindings();
+        let keys: Vec<&str> = bindings.iter().map(|binding| binding.key.as_str()).collect();
+        assert!(keys.contains(&"race-series"));
+        assert!(
+            keys.contains(&"a-newer-builds-row"),
+            "an unknown row is still shown — only the switch vocabulary is subtracted"
+        );
+        for question in QUESTION_ORDER {
+            assert!(
+                !keys.contains(&question_switch_key(question)),
+                "{} leaked into the bindings editor",
+                question_switch_key(question)
+            );
+        }
+    }
+
+    /// The overlay half, [`Core::set_binding`]'s own contract applied to the
+    /// toggle: flipped offline, it reads back flipped and says the write is
+    /// still in flight. A toggle that showed nothing until the next sync
+    /// would read as a control that does not work.
+    #[tokio::test]
+    async fn a_question_switched_off_offline_reads_back_off_and_pending() {
+        let mut core = Core::new();
+
+        core.set_question_enabled("seed-1", StandingQuestion::Weekend, false, 2_000)
+            .await
+            .unwrap();
+
+        let switches = core.question_switches();
+        let weekend = switch_of(&switches, StandingQuestion::Weekend);
+        assert!(!weekend.enabled);
+        assert!(weekend.pending, "an unconfirmed write must say so");
+        assert!(switch_of(&switches, StandingQuestion::Race).enabled);
+        assert_eq!(core.disabled_questions(), vec!["weekend".to_string()]);
+    }
+
+    /// The write is a JSON boolean on its own per-question row — ADR-0034
+    /// decision 2's whole objection to routing this through `BindingKey`,
+    /// which would have sent the string `"false"`.
+    #[tokio::test]
+    async fn the_toggle_writes_a_json_boolean_to_its_own_row() {
+        let mut core = Core::new();
+        core.set_question_enabled("seed-1", StandingQuestion::Race, false, 2_000)
+            .await
+            .unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        assert_eq!(entries.len(), 1);
+        let MutationIntent::Patch { path, patch_fields, method, .. } = &entries[0].intent else {
+            panic!("a switch write is a CAS PUT, not a create");
+        };
+        assert_eq!(path, "/api/settings/question-enabled-race");
+        assert_eq!(*method, HttpMethod::Put);
+        assert_eq!(patch_fields, &serde_json::json!({ "value": false }));
+    }
+
+    /// Switching back on writes an explicit `true` rather than trying to
+    /// remove the row: `settings` has no DELETE, and
+    /// `question_enabled_from_stored` reads `true` and no row identically.
+    #[tokio::test]
+    async fn switching_a_question_back_on_writes_true_rather_than_clearing_the_row() {
+        let mut core = core_with_settings(vec![fixture_switch(StandingQuestion::Race, false, 3)]).await;
+        core.set_question_enabled("seed-1", StandingQuestion::Race, true, 2_000)
+            .await
+            .unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        let MutationIntent::Patch { patch_fields, base, .. } = &entries[0].intent else {
+            panic!("a switch write is a CAS PUT");
+        };
+        assert_eq!(patch_fields, &serde_json::json!({ "value": true }));
+        assert_eq!(base["version"], serde_json::json!(3), "CAS against the row it read");
+        assert!(switch_of(&core.question_switches(), StandingQuestion::Race).enabled);
+    }
+
+    /// A queued toggle survives a reload, exactly as a queued binding write
+    /// does — the overlay is rebuilt from the durable queue rather than
+    /// reverting on screen to what the mirror last pulled.
+    #[tokio::test]
+    async fn a_queued_toggle_survives_a_reload_and_still_reads_as_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-switch-reload");
+        let ns = namespace.to_str().unwrap();
+
+        let mut first = Core::init(ns, "api-key-1").await.unwrap();
+        first
+            .set_question_enabled("seed-1", StandingQuestion::Vacation, false, 1_000)
+            .await
+            .unwrap();
+        drop(first);
+
+        let second = Core::init(ns, "api-key-2").await.unwrap();
+        let vacation = switch_of(&second.question_switches(), StandingQuestion::Vacation).clone();
+        assert!(!vacation.enabled);
+        assert!(vacation.pending);
+    }
+
+    /// A permanently rejected toggle reverts to server truth and lands in
+    /// the dead-letter journal — the identical lifecycle a rejected binding
+    /// write gets, and the reason the two share one overlay.
+    #[tokio::test]
+    async fn a_dead_lettered_toggle_reverts_to_server_truth() {
+        let mut core = core_with_settings(vec![fixture_switch(StandingQuestion::Race, true, 3)]).await;
+        core.set_question_enabled("seed-1", StandingQuestion::Race, false, 2_000)
+            .await
+            .unwrap();
+        assert!(!switch_of(&core.question_switches(), StandingQuestion::Race).enabled);
+
+        let write = ScriptedWrite::new(vec![ok(400, r#"{"error":"bad_request"}"#)]);
+        let unchanged = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 2,
+            settings: vec![fixture_switch(StandingQuestion::Race, true, 3)],
+            ..hummingbird_domain::ChangesResponse::empty(2)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(unchanged)]);
+        core.run(&read, &write, 3_000, Trigger::User, true, 0.0).await;
+
+        let race = switch_of(&core.question_switches(), StandingQuestion::Race).clone();
+        assert!(race.enabled, "the overlay must revert to what the server holds");
+        assert!(!race.pending);
+        assert_eq!(core.dead_letters().len(), 1, "and the affordance carries it");
+    }
+
+    // ---- the per-row CAS claim, against a settings authority that CASes
+
+    /// The `settings` half of the real authority
+    /// (`server/authority/src/handlers/settings.rs`), in memory and shared
+    /// by two cores: per-key rows, a monotonic workspace version, PUT as
+    /// create-or-update under `expected_version`, and a 409 carrying the
+    /// current row.
+    ///
+    /// A fake, and it earns its keep only because the tests below assert on
+    /// what it *observed* rather than on what the cores ended up believing:
+    /// a 409 auto-rebases and retries (ADR-0008), so a collision that really
+    /// happened would leave no trace in either core's final state.
+    /// `conflicts` is the whole point of the fixture.
+    #[derive(Default)]
+    struct SettingsAuthority {
+        rows: Mutex<BTreeMap<String, hummingbird_domain::Setting>>,
+        version: Mutex<i64>,
+        conflicts: Mutex<usize>,
+    }
+
+    impl SettingsAuthority {
+        fn seeded(rows: Vec<hummingbird_domain::Setting>) -> Self {
+            let highest = rows.iter().map(|row| row.version).max().unwrap_or(0);
+            Self {
+                rows: Mutex::new(rows.into_iter().map(|row| (row.key.clone(), row)).collect()),
+                version: Mutex::new(highest),
+                conflicts: Mutex::new(0),
+            }
+        }
+
+        fn conflicts(&self) -> usize {
+            *self.conflicts.lock().unwrap()
+        }
+
+        fn settings(&self) -> Vec<hummingbird_domain::Setting> {
+            self.rows.lock().unwrap().values().cloned().collect()
+        }
+
+        fn sweep_body(&self) -> String {
+            let version = *self.version.lock().unwrap();
+            serde_json::to_string(&hummingbird_domain::ChangesResponse {
+                version,
+                settings: self.settings(),
+                ..hummingbird_domain::ChangesResponse::empty(version)
+            })
+            .unwrap()
+        }
+    }
+
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+    impl ChangesTransport for SettingsAuthority {
+        async fn fetch_changes(&self, _access_token: &str, _since: i64) -> Result<String, TransportError> {
+            Ok(self.sweep_body())
+        }
+
+        async fn fetch_sweep(&self, _access_token: &str) -> Result<String, TransportError> {
+            Ok(self.sweep_body())
+        }
+    }
+
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+    impl MutationTransport for SettingsAuthority {
+        async fn send(
+            &self,
+            _access_token: &str,
+            request: sync::write::transport::MutationRequest,
+        ) -> Result<RawResponse, TransportError> {
+            let key = request
+                .path
+                .strip_prefix("/api/settings/")
+                .unwrap_or_else(|| panic!("this authority serves settings only, not {}", request.path))
+                .to_string();
+            let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+            let expected = body["expected_version"].as_i64().unwrap_or(0);
+            let value = body["value"].to_string();
+
+            let mut rows = self.rows.lock().unwrap();
+            let mut version = self.version.lock().unwrap();
+            match rows.get(&key).cloned() {
+                None if expected == 0 => {
+                    *version += 1;
+                    let row = hummingbird_domain::Setting {
+                        key: key.clone(),
+                        value,
+                        updated_at: 1,
+                        version: *version,
+                    };
+                    rows.insert(key, row.clone());
+                    Ok(RawResponse { status: 201, body: serde_json::to_string(&row).unwrap() })
+                }
+                None => Ok(RawResponse { status: 404, body: r#"{"error":"not_found"}"#.to_string() }),
+                // A create replay against an existing key answers the stored
+                // row, the authority's own items rule.
+                Some(current) if expected == 0 => {
+                    Ok(RawResponse { status: 200, body: serde_json::to_string(&current).unwrap() })
+                }
+                Some(current) if current.version != expected => {
+                    *self.conflicts.lock().unwrap() += 1;
+                    Ok(RawResponse {
+                        status: 409,
+                        body: serde_json::json!({
+                            "error": "version_conflict",
+                            "current": current,
+                        })
+                        .to_string(),
+                    })
+                }
+                Some(current) if current.value == value => {
+                    Ok(RawResponse { status: 200, body: serde_json::to_string(&current).unwrap() })
+                }
+                Some(_) => {
+                    *version += 1;
+                    let row = hummingbird_domain::Setting {
+                        key: key.clone(),
+                        value,
+                        updated_at: 2,
+                        version: *version,
+                    };
+                    rows.insert(key, row.clone());
+                    Ok(RawResponse { status: 200, body: serde_json::to_string(&row).unwrap() })
+                }
+            }
+        }
+    }
+
+    /// Two devices, both up to date, each switching off a **different**
+    /// question. ADR-0034 decision 2 rejected a single JSON-set row on
+    /// exactly this ground, so it is proven rather than asserted: the
+    /// authority saw no 409 at all, and both cores end up agreeing.
+    #[tokio::test]
+    async fn two_cores_toggling_two_different_questions_never_collide() {
+        let authority = SettingsAuthority::seeded(vec![
+            fixture_switch(StandingQuestion::Weekend, true, 1),
+            fixture_switch(StandingQuestion::Race, true, 2),
+        ]);
+
+        let mut phone = Core::new();
+        phone.push_api_key("token-phone");
+        let mut browser = Core::new();
+        browser.push_api_key("token-browser");
+        for core in [&mut phone, &mut browser] {
+            core.run(&authority, &authority, 1_000, Trigger::User, true, 0.0).await;
+        }
+
+        // Both write against the versions they pulled — the same instant, no
+        // pull in between, which is what "concurrently" means here.
+        phone
+            .set_question_enabled("seed-phone", StandingQuestion::Weekend, false, 2_000)
+            .await
+            .unwrap();
+        browser
+            .set_question_enabled("seed-browser", StandingQuestion::Race, false, 2_000)
+            .await
+            .unwrap();
+        phone.run(&authority, &authority, 3_000, Trigger::User, true, 0.0).await;
+        browser.run(&authority, &authority, 3_000, Trigger::User, true, 0.0).await;
+
+        assert_eq!(authority.conflicts(), 0, "per-question rows cannot contend");
+        assert!(phone.dead_letters().is_empty());
+        assert!(browser.dead_letters().is_empty());
+
+        // Both edits landed, and each device now sees the other's.
+        phone.run(&authority, &authority, 4_000, Trigger::User, true, 0.0).await;
+        for core in [&phone, &browser] {
+            assert_eq!(
+                core.disabled_questions(),
+                vec!["weekend".to_string(), "race".to_string()],
+                "in QUESTION_ORDER, and both devices agree"
+            );
+        }
+    }
+
+    /// The contrast that stops the test above being vacuous: the same two
+    /// devices toggling the **same** question really do contend, and this
+    /// fixture really does CAS. Without this, a fake that never conflicted
+    /// would pass the claim above for the wrong reason.
+    #[tokio::test]
+    async fn two_cores_toggling_the_same_question_do_contend() {
+        let authority = SettingsAuthority::seeded(vec![fixture_switch(StandingQuestion::Weekend, true, 1)]);
+
+        let mut phone = Core::new();
+        phone.push_api_key("token-phone");
+        let mut browser = Core::new();
+        browser.push_api_key("token-browser");
+        for core in [&mut phone, &mut browser] {
+            core.run(&authority, &authority, 1_000, Trigger::User, true, 0.0).await;
+        }
+
+        phone
+            .set_question_enabled("seed-phone", StandingQuestion::Weekend, false, 2_000)
+            .await
+            .unwrap();
+        browser
+            .set_question_enabled("seed-browser", StandingQuestion::Weekend, true, 2_000)
+            .await
+            .unwrap();
+        phone.run(&authority, &authority, 3_000, Trigger::User, true, 0.0).await;
+        browser.run(&authority, &authority, 3_000, Trigger::User, true, 0.0).await;
+
+        assert!(
+            authority.conflicts() > 0,
+            "one row, two writers at one version: the second must 409"
+        );
+    }
+
+    /// The whole round trip the criterion names: a toggle written on one
+    /// core reaches a second core through the ordinary delta pull, with no
+    /// bespoke sync path anywhere.
+    #[tokio::test]
+    async fn a_toggle_round_trips_through_a_cycle_and_is_visible_on_a_second_core() {
+        let authority = SettingsAuthority::default();
+        let mut writer = Core::new();
+        writer.push_api_key("token-writer");
+        let mut reader = Core::new();
+        reader.push_api_key("token-reader");
+
+        writer
+            .set_question_enabled("seed-1", StandingQuestion::Github, false, 1_000)
+            .await
+            .unwrap();
+        writer.run(&authority, &authority, 2_000, Trigger::User, true, 0.0).await;
+
+        assert!(!switch_of(&writer.question_switches(), StandingQuestion::Github).enabled);
+        assert!(
+            !switch_of(&writer.question_switches(), StandingQuestion::Github).pending,
+            "a completed cycle clears the overlay in favour of the pull"
+        );
+
+        reader.run(&authority, &authority, 3_000, Trigger::User, true, 0.0).await;
+        assert_eq!(reader.disabled_questions(), vec!["github".to_string()]);
+        assert!(!switch_of(&reader.question_switches(), StandingQuestion::Github).pending);
     }
 
     // ------------------------------------------------- Actions/Steps (#629)

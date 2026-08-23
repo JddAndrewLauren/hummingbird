@@ -56,12 +56,30 @@
 //! dependency decision, not a test; the compile errors above are what
 //! stands in the meantime.
 //!
-//! # What is deliberately not here
+//! # What is deliberately not here, and where it went
 //!
-//! The **enabled flag**. ADR-0034's toggle is #715, and it lands as its own
-//! typed `settings` row per question (decision 2), read with the
-//! absence-means-enabled and CAS contracts that slice carries. A boolean
-//! added here ahead of it would get those wrong.
+//! The **enabled flag**. #715 built ADR-0034's toggle and deliberately did
+//! **not** put it on [`QuestionRosterEntry`]: it lives in
+//! [`crate::question_switch`] and is read through
+//! [`crate::Core::question_switches`], which a surface merges with this
+//! roster the way `screens/bindings.ts` already merges `Core::bindings`
+//! into it.
+//!
+//! The reason is what each of the two is. Everything in this module is a
+//! **constant of the build** — the same answer on every device, forever —
+//! which is why both clients memoise the roster and call
+//! `question_label()` per pane per render. The switch is **synced device
+//! state** with an optimistic overlay and a `pending` flag on it. Fusing
+//! them would make every label lookup a state read, and would put a field
+//! that changes into a value whose whole cheapness is that it does not.
+//! The split also keeps the stateless decisions instance stateless: the web
+//! reaches this module through a wasm build that holds no `Core` at all.
+//!
+//! Where the flag *is* felt inside this family is
+//! [`super::panes::rank_panes`] and [`super::panes::zone_queries`], which
+//! skip a question that is switched off — reading the applied result off
+//! [`super::panes::PaneInputs::disabled_questions`], never re-deciding what
+//! "off" means.
 
 use serde::Serialize;
 

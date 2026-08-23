@@ -1,5 +1,6 @@
 import type {
   BindingDTO,
+  QuestionSwitchDTO,
   BindingValueDTO,
   BlockedFrontierEntryDTO,
   ConditionDTO,
@@ -114,6 +115,19 @@ export interface TaskHostLike {
    * `{"kind": "ok"|"unknown_key"|"failed"|"busy", "error": string|null}`. */
   setBinding(seed: string, key: string, value: string, nowMs: number): Promise<string>;
   bindings(): string;
+  /** #715's toggle write. Mirrors `hummingbird-ffi-web`'s
+   * `TaskHost::setQuestionEnabled`, resolved to JSON:
+   * `{"kind": "ok"|"unknown_question"|"failed"|"busy", "error":
+   * string|null}`. */
+  setQuestionEnabled(
+    seed: string,
+    question: string,
+    enabled: boolean,
+    nowMs: number,
+  ): Promise<string>;
+  /** #715's switch read. Mirrors `TaskHost::questionSwitches`, resolved to
+   * JSON: `{"kind": "ok"|"busy", "switches": [QuestionSwitch]}`. */
+  questionSwitches(): string;
   /** #140's kind registry export. Mirrors `hummingbird-ffi-web`'s
    * `TaskHost::kindRegistry` — never `"busy"`, so this resolves
    * synchronously to `{"kind":"ok",…}` always. */
@@ -318,6 +332,24 @@ interface RawBindingListResponse {
 
 interface RawSetBindingResponse {
   kind: "ok" | "unknown_key" | "failed" | "busy";
+  error: string | null;
+}
+
+// -- the question off switch (#715, ADR-0034) --------------------------
+
+interface RawQuestionSwitch {
+  question: string;
+  enabled: boolean;
+  pending: boolean;
+}
+
+interface RawQuestionSwitchListResponse {
+  kind: "ok" | "busy";
+  switches: RawQuestionSwitch[];
+}
+
+interface RawSetQuestionEnabledResponse {
+  kind: "ok" | "unknown_question" | "failed" | "busy";
   error: string | null;
 }
 
@@ -703,6 +735,10 @@ function mapBinding(raw: RawBinding): BindingDTO {
     pending: raw.pending,
     value: raw.value,
   };
+}
+
+function mapQuestionSwitch(raw: RawQuestionSwitch): QuestionSwitchDTO {
+  return { question: raw.question, enabled: raw.enabled, pending: raw.pending };
 }
 
 function mapCondition(raw: RawCondition): ConditionDTO {
@@ -1095,6 +1131,36 @@ export async function handleTaskRequest(
         return;
       }
       post({ type: "bindings", bindings: raw.bindings.map(mapBinding) });
+      return;
+    }
+    case "setQuestionEnabled": {
+      const raw = JSON.parse(
+        await host.setQuestionEnabled(
+          request.seed,
+          request.question,
+          request.enabled,
+          request.nowMs,
+        ),
+      ) as RawSetQuestionEnabledResponse;
+      post({
+        type: "setQuestionEnabledResult",
+        seed: request.seed,
+        question: request.question,
+        kind: raw.kind,
+        error: raw.error,
+      });
+      return;
+    }
+    case "getQuestionSwitches": {
+      const raw = JSON.parse(host.questionSwitches()) as RawQuestionSwitchListResponse;
+      if (raw.kind === "busy") {
+        // No answer, not an empty one — an empty switch list would read as
+        // "there are no questions", and a roster defaulting that to all-on
+        // would state a fact it had not read. Same contract as
+        // `getBindings`.
+        return;
+      }
+      post({ type: "questionSwitches", switches: raw.switches.map(mapQuestionSwitch) });
       return;
     }
     case "getKindRegistry": {

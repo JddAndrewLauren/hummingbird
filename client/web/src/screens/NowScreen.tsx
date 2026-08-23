@@ -131,6 +131,15 @@ export function realQuestionInputs(
       ...task.grillingItems,
       ...task.externallyBlocked,
     ],
+    // #715: the applied result, as `Core::question_switches` decided it.
+    // `null` (the switches have not been read yet) means nothing is
+    // disabled *yet* rather than nothing is disabled — the honest reading
+    // for the one round trip between mount and that answer, and the same
+    // side `bindings: null` errs on: a question that flickered off would
+    // be worse than one that appears a beat before it is switched off.
+    disabledQuestions: (task.questionSwitches ?? [])
+      .filter((switchState) => !switchState.enabled)
+      .map((switchState) => switchState.question),
   };
 }
 

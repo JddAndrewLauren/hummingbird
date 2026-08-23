@@ -316,6 +316,25 @@ export function attachWorkerClient(
       case "bindings":
         store.setTaskState({ bindings: message.bindings });
         return;
+      case "setQuestionEnabledResult":
+        store.setTaskState({
+          lastQuestionSwitchWrite: {
+            seed: message.seed,
+            question: message.question,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        if (message.kind === "ok") {
+          // `Core::set_question_enabled` overlays, exactly as
+          // `set_binding` does, so the toggle settles into its new state
+          // without waiting for a cycle.
+          requestQuestionSwitches(worker);
+        }
+        return;
+      case "questionSwitches":
+        store.setTaskState({ questionSwitches: message.switches });
+        return;
       case "kindRegistry":
         store.setTaskState({ kindRegistry: message.registry });
         return;
@@ -836,6 +855,27 @@ export function setBinding(
 /** Every standing-question binding (#118). */
 export function requestBindings(worker: WorkerLike): void {
   worker.postMessage({ type: "getBindings" });
+}
+
+/** #715's toggle write: one absolute-value CAS `PUT` on that question's own
+ * `settings` row, enqueued durably. `seed` mints
+ * `Core::set_question_enabled`'s queue-entry id — same caller-mints
+ * contract as `setBinding`'s. `question` is `StandingQuestion`'s wire
+ * spelling; the seam refuses one it cannot resolve rather than minting a
+ * row for it. */
+export function setQuestionEnabled(
+  worker: WorkerLike,
+  seed: string,
+  question: string,
+  enabled: boolean,
+  nowMs: number,
+): void {
+  worker.postMessage({ type: "setQuestionEnabled", seed, question, enabled, nowMs });
+}
+
+/** Every standing question's off switch (#715). */
+export function requestQuestionSwitches(worker: WorkerLike): void {
+  worker.postMessage({ type: "getQuestionSwitches" });
 }
 
 /** The kind registry export (#133/#140, ADR-0013). */

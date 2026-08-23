@@ -215,3 +215,64 @@ describe("boundedGlyphs", () => {
     expect(boundedGlyphs(undefined)).toEqual([]);
   });
 });
+
+describe("rankPanes — the off switch (#715, ADR-0034)", () => {
+  it("ranks every question when nothing is switched off", () => {
+    // Both spellings of "nothing off" — an absent field and an empty list —
+    // must agree, since the field is optional exactly so a caller that has
+    // not thought about it gets every question asked.
+    const surfaces = ["now", "status"] as const;
+    for (const surface of surfaces) {
+      const absent = rankPanes(emptyInputs(), surface).map((pane) => pane.question);
+      const empty = rankPanes({ ...emptyInputs(), disabledQuestions: [] }, surface).map(
+        (pane) => pane.question,
+      );
+      expect(empty).toEqual(absent);
+      expect(absent.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("emits no pane at all for a question switched off", () => {
+    // Not a dormant pane and not a sentinel — nothing. The question is
+    // still discoverable in Settings' roster, which is the precondition
+    // ADR-0034 made the switch legal on.
+    const before = rankPanes(emptyInputs(), "now").map((pane) => pane.question);
+    expect(before).toContain("weekend");
+
+    const after = rankPanes(
+      { ...emptyInputs(), disabledQuestions: ["weekend"] },
+      "now",
+    ).map((pane) => pane.question);
+
+    expect(after).toEqual(before.filter((question) => question !== "weekend"));
+  });
+
+  it("switches off a Status question without touching Now, and the reverse", () => {
+    const now = rankPanes({ ...emptyInputs(), disabledQuestions: ["kimi"] }, "now");
+    expect(now.map((pane) => pane.question)).toEqual(
+      rankPanes(emptyInputs(), "now").map((pane) => pane.question),
+    );
+    const status = rankPanes({ ...emptyInputs(), disabledQuestions: ["kimi"] }, "status");
+    expect(status.map((pane) => pane.question)).not.toContain("kimi");
+  });
+
+  it("leaves a surface genuinely empty when every one of its questions is off", () => {
+    const inputs = { ...emptyInputs(), disabledQuestions: [...QUESTION_ORDER] };
+    expect(rankPanes(inputs, "now")).toEqual([]);
+    expect(rankPanes(inputs, "status")).toEqual([]);
+  });
+
+  it("ignores a question name this build does not know", () => {
+    const inputs = { ...emptyInputs(), disabledQuestions: ["fantasy", ""] };
+    expect(rankPanes(inputs, "now").map((pane) => pane.question)).toEqual(
+      rankPanes(emptyInputs(), "now").map((pane) => pane.question),
+    );
+  });
+
+  // Deliberately NOT tested here, and untestable by construction: that
+  // `requiredSources` ignores the switch. It takes no inputs at all, so
+  // there is nothing to vary — which is the pin. The reasoning lives on
+  // `askedQuestionsFor` in `registry.ts`: a pane read is a synchronous read
+  // of rows this device already pulled, so narrowing it saves no traffic and
+  // would leave a re-enabled question rendering "not read yet".
+});

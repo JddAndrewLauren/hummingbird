@@ -1,6 +1,6 @@
 import type { QuestionRosterEntry } from "../decisions/seam";
-import type { BindingDTO, BindingValueDTO } from "../store/protocol";
-import type { TaskBindingResult } from "../store/store";
+import type { BindingDTO, BindingValueDTO, QuestionSwitchDTO } from "../store/protocol";
+import type { TaskBindingResult, TaskQuestionSwitchResult } from "../store/store";
 
 // #118's bindings editor, everything decidable: what each binding is called
 // in human words, what it currently holds, and whether a draft is worth
@@ -172,6 +172,17 @@ export function bindingSubmitValue(draft: string): string {
 
 /** One question's row group, as the section draws it. */
 export interface QuestionBindingGroup {
+  /** Whether this question is asked at all (#715), or `null` when the
+   * switches have not been read yet.
+   *
+   * `null` rather than a defaulted `true`, on `TaskState.questionSwitches`'
+   * own contract: a roster that drew ten toggles from a list it had not read
+   * would state a fact about the workspace, and the first one to flip on the
+   * next answer would look like a bug rather than an answer arriving. */
+  enabled: boolean | null;
+  /** Whether an unconfirmed toggle write is overlaid on this question — the
+   * same read-time fact `BindingDTO.pending` carries for a binding row. */
+  pending: boolean;
   /** The wire spelling of the question — a stable key for React, never
    * shown. */
   question: string;
@@ -210,6 +221,12 @@ export interface GroupedBindings {
 export function groupBindingsByQuestion(
   roster: readonly QuestionRosterEntry[],
   bindings: readonly BindingDTO[],
+  /** `Core::question_switches`' answer (#715), or `null` before the first
+   * one arrives. A question with no entry in a non-null list is `null` too —
+   * "this reader was handed no switch for it", which is the same distinction
+   * `missing` draws for a binding row and is exactly the demo-world
+   * asymmetry that shipped a copy bug at #714. */
+  switches: readonly QuestionSwitchDTO[] | null = null,
 ): GroupedBindings {
   const claimed = new Set<string>();
   const groups = roster.map((entry) => {
@@ -224,15 +241,40 @@ export function groupBindingsByQuestion(
       claimed.add(key);
       rows.push(row);
     }
+    const switchState = switches?.find((candidate) => candidate.question === entry.question);
     return {
       question: entry.question,
       label: entry.label,
       surface: entry.surface,
+      enabled: switchState === undefined ? null : switchState.enabled,
+      pending: switchState?.pending ?? false,
       rows,
       missing,
     };
   });
   return { groups, other: bindings.filter((binding) => !claimed.has(binding.key)) };
+}
+
+/** The message a failed toggle write should show on its own question's row,
+ * or `null` when the last write was another question's or succeeded —
+ * [`bindingWriteError`] verbatim for the question vocabulary, matched by
+ * question so a stale failure never bleeds onto a row it did not come
+ * from. */
+export function questionSwitchWriteError(
+  lastWrite: TaskQuestionSwitchResult | null,
+  question: string,
+): string | null {
+  if (lastWrite === null || lastWrite.question !== question || lastWrite.kind === "ok") {
+    return null;
+  }
+  switch (lastWrite.kind) {
+    case "unknown_question":
+      return "This build doesn't know that question, so it wasn't switched.";
+    case "busy":
+      return "The core was busy. Try again.";
+    case "failed":
+      return lastWrite.error ?? "That switch didn't save.";
+  }
 }
 
 /** Which question a binding key answers, in the reader's words — the lookup

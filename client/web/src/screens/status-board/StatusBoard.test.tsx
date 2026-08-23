@@ -228,3 +228,46 @@ describe("StatusBoard", () => {
     }
   });
 });
+
+// #715, ADR-0034: a board state that could not exist before the off switch.
+describe("the board with every question switched off", () => {
+  function allOff() {
+    return taskState({
+      questionSwitches: QUESTION_ORDER.map((question) => ({
+        question,
+        enabled: false,
+        pending: false,
+      })),
+    });
+  }
+
+  it("says nothing is being asked rather than drawing an empty board", () => {
+    render(board(allOff()));
+    expect(screen.getByText("Nothing is being asked")).toBeDefined();
+    expect(document.querySelectorAll("[data-tile-tone]")).toHaveLength(0);
+  });
+
+  it("keeps the sync strip, which is not a standing question at all", () => {
+    // The one reading on this board that no toggle governs — hiding it with
+    // the tiles would take away the only thing still true.
+    render(board(allOff()));
+    expect(screen.getByText(/as of/)).toBeDefined();
+    expect(document.querySelector(".hb-status-strip-tone")).toBeTruthy();
+  });
+
+  it("draws no such line while one question is still asked", () => {
+    render(
+      board(
+        taskState({
+          questionSwitches: QUESTION_ORDER.map((question) => ({
+            question,
+            enabled: question === "kimi",
+            pending: false,
+          })),
+        }),
+      ),
+    );
+    expect(screen.queryByText("Nothing is being asked")).toBeNull();
+    expect(document.querySelectorAll("[data-tile-tone]")).toHaveLength(1);
+  });
+});

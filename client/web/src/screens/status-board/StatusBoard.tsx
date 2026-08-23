@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { EmptyState } from "../../components/feedback/EmptyState";
 import { useState } from "react";
 import { Card } from "../../components/core/Card";
 import { Icon } from "../../components/core/Icon";
@@ -369,6 +370,19 @@ export function StatusBoard({
         </span>
       </div>
       {strip}
+      {/* #715: every Status question switched off. The sync strip above is
+          still true and still worth showing — this replaces the tile grids
+          only, rather than the whole board, so the reader keeps the one
+          reading that is not a standing question at all. */}
+      {panes.length === 0 ? (
+        <EmptyState
+          compact
+          icon="bell-off"
+          headingLevel={2}
+          title="Nothing is being asked"
+          body="Every standing question on this board is switched off. Turn one back on under Standing questions in Settings."
+        />
+      ) : null}
       {STATUS_GROUPS.map((group) => {
         const members = grouped.get(group);
         // A group with nothing in it draws nothing at all — no label over an

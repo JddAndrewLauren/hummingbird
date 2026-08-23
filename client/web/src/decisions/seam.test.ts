@@ -39,6 +39,7 @@ import {
   vacationConstantsFromCore,
   wasteConstantsFromCore,
   weekendConstantsFromCore,
+  paneZoneQueries,
 } from "./seam";
 import { priorityRank } from "../screens/priority";
 import { AUTO_SELECTION, BACKEND_REGISTRY, fallbackEntry } from "../skills/backend-registry";
@@ -404,6 +405,31 @@ describe("the seam's literal pane vocabulary, pinned against the core", () => {
   // reads as a permanent gap, never a loud failure).
   it("zone-bridge.ts's DEVICE_ZONE sentinel matches the core's", () => {
     expect(DEVICE_ZONE).toBe(deviceZoneFromCore());
+  });
+
+  // #715, and the reason it is here rather than in a node test: the whole
+  // claim is that the field this side writes is the field the core's serde
+  // reads. A camelCase mismatch would not fail to compile, would not throw,
+  // and would present as a toggle that simply does nothing — so it is
+  // asserted across the real wasm boundary, both directions.
+  it("carries `disabledQuestions` across the boundary, so a switched-off question asks for nothing", () => {
+    const inputs = { nowMs: 1_786_377_600_000, bindings: [], paneReads: {} };
+    const asked = paneZoneQueries(inputs, "now");
+    expect(asked.length).toBeGreaterThan(0);
+
+    const silenced = paneZoneQueries(
+      {
+        ...inputs,
+        disabledQuestions: ["homework", "scps", "waste", "weekend", "vacation", "race"],
+      },
+      "now",
+    );
+    expect(silenced).toEqual([]);
+
+    // And a name the core cannot resolve silences nothing — the field is
+    // plain strings precisely so a newer build's question cannot fail the
+    // whole crossing.
+    expect(paneZoneQueries({ ...inputs, disabledQuestions: ["fantasy"] }, "now")).toEqual(asked);
   });
 });
 

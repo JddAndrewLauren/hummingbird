@@ -157,3 +157,70 @@ fn an_unauthenticated_settings_read_is_401() {
     assert_eq!(resp.status, 401);
     assert!(resp.body.is_empty());
 }
+
+// --- the question off switch (#715, ADR-0034) --------------------------
+
+/// #715 work item 2, which turned out to be **zero authority code**: the
+/// off switch is a `settings` row like any other, so the poller half of
+/// "off means unpolled" needs no new route and no fourth `Scope` — the
+/// carve-out above already reaches it, and 404-when-unset is exactly the
+/// shape absence-means-enabled wants.
+///
+/// Written as a test rather than left as a claim in a PR body, because
+/// nothing else in this repo would fail if someone narrowed that gate to
+/// the binding vocabulary alone: the poller that reads this row does not
+/// exist yet (#718), so this test is standing in for its consumer.
+#[test]
+fn an_ingest_token_may_read_a_question_off_switch_the_same_way_it_reads_a_binding() {
+    let sql = RusqliteSql::new();
+    bind_ingest_token(&sql, "city-waste/v2");
+
+    // Unset is the ordinary case and the one a poller meets first: 404,
+    // which the caller reads as "this question is enabled" rather than as
+    // an error (`client/core/src/question_switch.rs`).
+    let unset = req_as(
+        &sql,
+        INGEST_TOKEN,
+        "GET",
+        "/api/settings/question-enabled-waste",
+        None,
+        None,
+        0,
+    );
+    assert_eq!(unset.status, 404, "{}", unset.body);
+
+    // Switched off, the poller reads the bare JSON boolean back — a
+    // boolean, not the string "false", which is ADR-0034 decision 2's
+    // whole objection to routing this through the binding vocabulary.
+    put_setting(
+        &sql,
+        "question-enabled-waste",
+        r#"{"expected_version": 0, "value": false}"#,
+        1000,
+    );
+    let resp = req_as(
+        &sql,
+        INGEST_TOKEN,
+        "GET",
+        "/api/settings/question-enabled-waste",
+        None,
+        None,
+        0,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let setting: Setting = body_as(&resp);
+    assert_eq!(setting.value, "false");
+
+    // And it is still only a read: the toggle is the operator's, written
+    // from a device.
+    let write = req_as(
+        &sql,
+        INGEST_TOKEN,
+        "PUT",
+        "/api/settings/question-enabled-waste",
+        None,
+        Some(r#"{"expected_version": 1, "value": true}"#),
+        0,
+    );
+    assert_eq!(write.status, 403, "{}", write.body);
+}

@@ -18,6 +18,8 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     grillDraftItemIds: vi.fn().mockReturnValue('{"kind":"ok","item_ids":[]}'),
     setBinding: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     bindings: vi.fn().mockReturnValue('{"kind":"ok","bindings":[]}'),
+    setQuestionEnabled: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
+    questionSwitches: vi.fn().mockReturnValue('{"kind":"ok","switches":[]}'),
     kindRegistry: vi
       .fn()
       .mockReturnValue(
@@ -1174,6 +1176,88 @@ describe("handleTaskRequest", () => {
         ],
       },
     ]);
+  });
+
+  // -- #715's question off switch ---------------------------------------
+
+  it("setQuestionEnabled forwards the question and the flag, and posts a result keyed by seed", async () => {
+    const host = fakeHost();
+    const posted = await run(
+      {
+        type: "setQuestionEnabled",
+        seed: "seed-q-1",
+        question: "weekend",
+        enabled: false,
+        nowMs: 5_000,
+      },
+      host,
+    );
+
+    expect(host.setQuestionEnabled).toHaveBeenCalledWith("seed-q-1", "weekend", false, 5_000);
+    expect(posted).toEqual([
+      {
+        type: "setQuestionEnabledResult",
+        seed: "seed-q-1",
+        question: "weekend",
+        kind: "ok",
+        error: null,
+      },
+    ]);
+  });
+
+  it("setQuestionEnabled surfaces the seam's own rejection of a question it cannot name", async () => {
+    const host = fakeHost({
+      setQuestionEnabled: vi
+        .fn()
+        .mockResolvedValue(
+          '{"kind":"unknown_question","error":"unrecognised standing question \\"fantasy\\""}',
+        ),
+    });
+    const posted = await run(
+      {
+        type: "setQuestionEnabled",
+        seed: "seed-q-2",
+        question: "fantasy",
+        enabled: false,
+        nowMs: 5_000,
+      },
+      host,
+    );
+
+    expect(posted[0]).toMatchObject({
+      type: "setQuestionEnabledResult",
+      kind: "unknown_question",
+    });
+  });
+
+  it("getQuestionSwitches posts every question's state", async () => {
+    const host = fakeHost({
+      questionSwitches: vi
+        .fn()
+        .mockReturnValue(
+          '{"kind":"ok","switches":[{"question":"homework","enabled":true,"pending":false},{"question":"weekend","enabled":false,"pending":true}]}',
+        ),
+    });
+
+    expect(await run({ type: "getQuestionSwitches" }, host)).toEqual([
+      {
+        type: "questionSwitches",
+        switches: [
+          { question: "homework", enabled: true, pending: false },
+          { question: "weekend", enabled: false, pending: true },
+        ],
+      },
+    ]);
+  });
+
+  it('getQuestionSwitches posts nothing when the host answers "busy"', async () => {
+    // No answer, not an empty one: an empty switch list would read as
+    // "there are no questions", and a roster defaulting that to all-on
+    // would state a fact it had not read. `getBindings`' own contract.
+    const host = fakeHost({
+      questionSwitches: vi.fn().mockReturnValue('{"kind":"busy","switches":[]}'),
+    });
+    expect(await run({ type: "getQuestionSwitches" }, host)).toEqual([]);
   });
 
   it("getPaneRead camelCases the whole read, carrying the body through as opaque JSON text", async () => {

@@ -319,6 +319,14 @@ function questionHeadings(page: Page) {
     .filter({ hasNotText: "Other settings rows" });
 }
 
+/** The roster's own disclosure buttons (#715) — one per question, plus the
+ * leftovers group when there is one. Located inside the questions' headings
+ * so the leftovers' button is excluded the same way `questionHeadings` does
+ * it, and no question's label is spelled in this file. */
+function questionRows(page: Page) {
+  return questionHeadings(page).getByRole("button");
+}
+
 const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
   now: async (page) => {
     // #456: the kit world's hero card and "Also startable" list are gone —
@@ -420,13 +428,6 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     // inference from the presence check below.
     await expect(page.getByRole("heading", { name: "Mirror", exact: true })).toHaveCount(0);
     await expect(page.getByRole("switch", { name: "Show acked alerts" })).toHaveCount(0);
-    // `boundTripsBinding`'s key — the one binding row #452 added that
-    // neither world had before. Bindings render only once the real core
-    // reports `status === "ready"` (`SettingsScreen` gates that branch on
-    // the live core status, not on anything the fixture controls), which is
-    // a real async worker boot rather than fixture latency — hence the
-    // longer timeout than the rest of this file needs.
-    await expect(page.getByText("trips-calendar")).toBeVisible({ timeout: 15_000 });
     // #714: the section is a list of QUESTIONS now, each with its binding
     // rows nested under it, and the list is the core's roster rather than
     // anything this client declares. Counted rather than named: the count is
@@ -438,7 +439,25 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     // settings rows** heading whenever a live row belongs to no question,
     // so a seeded binding with an unwritable key would fail this for a
     // reason that has nothing to do with the roster.
-    await expect(questionHeadings(page)).toHaveCount(10);
+    // Bindings render only once the real core reports `status === "ready"`
+    // (`SettingsScreen` gates that branch on the live core status, not on
+    // anything the fixture controls), which is a real async worker boot
+    // rather than fixture latency — hence the longer timeout.
+    await expect(questionHeadings(page)).toHaveCount(10, { timeout: 15_000 });
+
+    // #715: every row is shut by default, so the board's Settings capture
+    // opens all ten — which is the frame this pass photographed before the
+    // rows became disclosures, and the only way to photograph the binding
+    // fields at all. Opened by position, never by name.
+    const rows = questionRows(page);
+    for (let index = 0; index < 10; index += 1) {
+      await rows.nth(index).click();
+    }
+    await expect(page.locator("#standing-questions").getByRole("switch")).toHaveCount(10);
+    // `boundTripsBinding`'s key — the one binding row #452 added that
+    // neither world had before, and now the proof that opening a row really
+    // reveals what it holds.
+    await expect(page.getByText("trips-calendar")).toBeVisible();
   },
 };
 
@@ -909,9 +928,47 @@ for (const theme of THEMES) {
       // cannot reach, since that world hand-authors bindings.
       await show(page, "Settings", testInfo.project.name);
       await expect(questionHeadings(page)).toHaveCount(10, { timeout: 15_000 });
+      // #715: every row starts shut, so this frame is also the collapsed
+      // roster — ten questions, no toggles, no fields.
+      await expect(questionRows(page)).toHaveCount(10);
+      await expect(page.locator("#standing-questions").getByRole("switch")).toHaveCount(0);
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
         path: `visual/.captures/settings-empty-${testInfo.project.name}-${theme}.png`,
+        fullPage: false,
+      });
+
+      // #715's two remaining frames, driven through the REAL core rather
+      // than a fixture: the `?demo` world overrides `TaskState`, so a click
+      // there would change nothing. Here the write really enqueues, really
+      // overlays, and really comes back — which is what makes the "off"
+      // capture a photograph of the feature rather than of a prop.
+      //
+      // The first row, never a named one: the labels are the core's, and
+      // spelling one here would put back the per-client copy #714 deleted.
+      const firstRow = questionRows(page).first();
+      await firstRow.click();
+      await expect(firstRow).toHaveAttribute("aria-expanded", "true");
+      const asked = page.locator("#standing-questions").getByRole("switch");
+      await expect(asked).toHaveCount(1);
+      await expect(asked).toBeChecked();
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({
+        path: `visual/.captures/settings-question-expanded-${testInfo.project.name}-${theme}.png`,
+        fullPage: false,
+      });
+
+      // Switched off: the row says so, and — the part worth photographing —
+      // it keeps saying so with the row shut again, which is the only way an
+      // off question is discoverable at all (ADR-0034's consequences).
+      await asked.click();
+      await expect(asked).not.toBeChecked();
+      await firstRow.click();
+      await expect(firstRow).toHaveAttribute("aria-expanded", "false");
+      await expect(page.locator("#standing-questions").getByText("off")).toHaveCount(1);
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({
+        path: `visual/.captures/settings-question-off-${testInfo.project.name}-${theme}.png`,
         fullPage: false,
       });
     });

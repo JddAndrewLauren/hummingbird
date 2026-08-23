@@ -155,6 +155,7 @@
 
 import { TRIPS_CALENDAR_BINDING_KEY } from "../calendar/selection";
 import { LINK_BINDING_KEY } from "../screens/homework-pane/homework";
+import { QUESTION_ORDER } from "../screens/questions/contract";
 import type { BindingDTO, LedgerRowDTO, ProjectDTO, RecallRowDTO, TaskItemDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
 import { DEMO_DATA } from "./demo-data";
@@ -868,6 +869,24 @@ export function buildDemoTaskState(): TaskState {
       boundTripsBinding,
       boundHomeworkLinkBinding,
     ],
+    // #715: every question on, which is production's own steady state (a
+    // switched-off question is the exception, and one seeded here would
+    // silently delete a pane from every board capture this gate takes).
+    //
+    // Derived from `QUESTION_ORDER` rather than hand-listed, unlike
+    // `bindings` above: an eleventh question would otherwise arrive with no
+    // switch at all, and the Settings roster would draw its heading with no
+    // toggle beneath it — the exact demo-world asymmetry #714 shipped a copy
+    // bug through. That constant, not the core's roster: this module is
+    // built outside the wasm seam (its own test calls `buildDemoTaskState`
+    // at import time), and `seam.test.ts` already pins it against the core's
+    // own `QUESTION_ORDER`, so it is the same list by construction.
+    questionSwitches: QUESTION_ORDER.map((question) => ({
+      question,
+      enabled: true,
+      pending: false,
+    })),
+    lastQuestionSwitchWrite: null,
     // Moved from `demo-data.ts`'s kit-only `DEMO_DATA`, which already typed
     // these as the real `RuleDTO[]`/`KindRegistryDTO` (piece 1's "a move
     // rather than a rewrite") — the kit world keeps its own reference to the

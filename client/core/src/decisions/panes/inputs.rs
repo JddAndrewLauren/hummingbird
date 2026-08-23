@@ -62,9 +62,31 @@ pub struct PaneInputs {
     /// reachability pane, which has no `context_snapshots` lane of its own.
     #[serde(default)]
     pub sync: SyncFacts,
+    /// Which standing questions are switched **off** (#715, ADR-0034), as
+    /// their wire spellings — `Core::disabled_questions`' applied result,
+    /// passed straight through by the host.
+    ///
+    /// Absent or empty means every question is asked, which is the same
+    /// absence-means-enabled reading one layer up and is what makes this
+    /// field cost an existing caller nothing.
+    ///
+    /// Plain strings rather than [`super::contract::StandingQuestion`], on
+    /// [`SyncFacts::latest_outcome_kind`]'s own reasoning: a name this build
+    /// does not recognise is a question it does not render either, so there
+    /// is nothing to reject — and rejecting it would fail the whole
+    /// crossing over a question that could not have been drawn anyway.
+    #[serde(default)]
+    pub disabled_questions: Vec<String>,
 }
 
 impl PaneInputs {
+    /// Whether this question is being asked at all (#715) — the one read
+    /// [`super::zone_queries`] and [`super::rank_panes`] make before they
+    /// do anything else for a question.
+    pub fn is_asked(&self, question: super::contract::StandingQuestion) -> bool {
+        !self.disabled_questions.iter().any(|off| off == question.as_str())
+    }
+
     /// The binding row for `key`, if the table has been read and holds one.
     pub fn binding(&self, key: &str) -> Option<&BindingFact> {
         self.bindings.as_ref()?.iter().find(|binding| binding.key == key)

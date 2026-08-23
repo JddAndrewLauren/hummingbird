@@ -96,10 +96,15 @@ pub const SUNK: [(StandingQuestion, Surface); 10] = [
 /// Deduplicated by [`ZoneQuery::key`]: two questions asking the same thing
 /// cost the host one lookup, and the order is the declaration order of
 /// [`SUNK`] so a host may cache against a stable list.
+///
+/// **A question switched off asks for nothing** (#715, ADR-0034 decision
+/// 1). Skipped here as well as in [`rank_panes`] on purpose: off means
+/// unpolled, and a host paying for a tzdb lookup on behalf of a question it
+/// will not draw is exactly the cost the switch exists to remove.
 pub fn zone_queries(surface: Surface, inputs: &PaneInputs) -> Vec<ZoneQuery> {
     let mut queries: Vec<ZoneQuery> = Vec::new();
     for (question, declared) in SUNK {
-        if declared != surface {
+        if declared != surface || !inputs.is_asked(question) {
             continue;
         }
         let asked = match question {
@@ -127,6 +132,15 @@ pub fn zone_queries(surface: Surface, inputs: &PaneInputs) -> Vec<ZoneQuery> {
 /// Returns the panes **in display order** ([`order_panes`] against
 /// [`QUESTION_ORDER`]), so a caller that has no other questions to union in
 /// can render the result directly.
+///
+/// **A question switched off emits no panes at all** (#715, ADR-0034
+/// decision 1) — not a dormant one, not a sentinel. This is the one
+/// exception to the rule stated inside the loop below, and it is not a
+/// weakening of it: ADR-0015 forbade a pane that vanished because *nobody
+/// had bound it*, on the ground that the question would then be
+/// undiscoverable. A question switched off is listed, by name and with its
+/// state on show, in the Settings roster (ADR-0034 decision 4) — which is
+/// the precondition that made the switch legal in the first place.
 pub fn rank_panes(
     surface: Surface,
     inputs: &PaneInputs,
@@ -134,13 +148,15 @@ pub fn rank_panes(
 ) -> Vec<RankedPaneRecord> {
     let mut panes: Vec<RankedPaneRecord> = Vec::new();
     for (question, declared) in SUNK {
-        if declared != surface {
+        if declared != surface || !inputs.is_asked(question) {
             continue;
         }
-        // Every question returns its subjects, including a sentinel while
-        // unbound/never-polled: a pane that vanished when nobody had bound
-        // it would be a question nobody could ever discover (ADR-0017's own
-        // rule).
+        // Every question **that is still asked** returns its subjects,
+        // including a sentinel while unbound/never-polled: a pane that
+        // vanished when nobody had bound it would be a question nobody
+        // could ever discover (ADR-0017's own rule). The one thing that
+        // does remove a pane is the switch above (#715) — see this
+        // function's own doc for why that is not the same failure.
         let answered: Vec<(String, PaneAnswerCore)> = match question {
             StandingQuestion::Homework => {
                 vec![(homework::SUBJECT_KEY.to_string(), homework::homework_answer(inputs, facts))]
@@ -317,6 +333,112 @@ mod tests {
             .iter()
             .filter(|pane| pane.question != "homework" && pane.question != "scps")
             .all(|pane| pane.answer.answer_state == AnswerState::Unbound));
+    }
+
+
+    // -------------------------------- #715: a question switched off
+
+    #[test]
+    fn a_question_switched_off_emits_no_panes_and_asks_for_no_zone_facts() {
+        let mut inputs = bound_inputs();
+        let baseline_panes = rank_panes(Surface::Now, &inputs, &ZoneFacts::default()).len();
+        let baseline_queries = zone_queries(Surface::Now, &inputs).len();
+
+        // Waste is the one question in this fixture that is both bound and
+        // answering, and it asks for zone facts of its own — so switching it
+        // off has to move both halves, not just the visible one.
+        inputs.disabled_questions = vec!["waste".to_string()];
+
+        let ranked = rank_panes(Surface::Now, &inputs, &ZoneFacts::default());
+        assert_eq!(ranked.len(), baseline_panes - 1);
+        assert!(
+            !ranked.iter().any(|pane| pane.question == "waste"),
+            "off means no pane at all — not a dormant one, not a sentinel"
+        );
+
+        let queries = zone_queries(Surface::Now, &inputs);
+        assert!(
+            queries.len() < baseline_queries,
+            "a disabled question must not cost the host a zone lookup either"
+        );
+        // Named rather than counted: waste asks in its own collection zone
+        // (the fixture's `America/Los_Angeles`), and every query in that
+        // zone must be gone. The device-zone queries stay, because weekend
+        // and vacation are still asking them.
+        let waste_zone: Vec<String> = {
+            let mut asked = bound_inputs();
+            asked.disabled_questions = Vec::new();
+            waste::waste_zone_queries(&asked).iter().map(|query| query.key()).collect()
+        };
+        assert!(!waste_zone.is_empty(), "the fixture must actually ask for something");
+        for key in waste_zone {
+            assert!(
+                !queries.iter().any(|query| query.key() == key),
+                "{key} is still being asked for a question nobody can see"
+            );
+        }
+    }
+
+    #[test]
+    fn switching_off_one_question_leaves_every_other_question_alone() {
+        let mut inputs = bound_inputs();
+        let before: Vec<String> =
+            rank_panes(Surface::Now, &inputs, &ZoneFacts::default())
+                .into_iter()
+                .map(|pane| pane.question)
+                .collect();
+
+        inputs.disabled_questions = vec!["weekend".to_string()];
+        let after: Vec<String> = rank_panes(Surface::Now, &inputs, &ZoneFacts::default())
+            .into_iter()
+            .map(|pane| pane.question)
+            .collect();
+
+        let expected: Vec<String> =
+            before.into_iter().filter(|question| question != "weekend").collect();
+        assert_eq!(after, expected, "and the survivors keep their order");
+    }
+
+    #[test]
+    fn a_question_switched_off_on_the_other_surface_changes_nothing_here() {
+        let mut inputs = PaneInputs { disabled_questions: vec!["kimi".to_string()], ..PaneInputs::default() };
+        let status = rank_panes(Surface::Status, &inputs, &ZoneFacts::default());
+        assert_eq!(status.len(), 3);
+        assert!(!status.iter().any(|pane| pane.question == "kimi"));
+
+        // Now is untouched by a Status question's switch.
+        inputs.disabled_questions = vec!["kimi".to_string()];
+        let now = rank_panes(Surface::Now, &inputs, &ZoneFacts::default());
+        assert_eq!(now.len(), 6);
+    }
+
+    #[test]
+    fn a_question_name_this_build_does_not_know_disables_nothing() {
+        // The list crosses as plain strings on purpose (`PaneInputs`'s own
+        // doc): a name from a newer build names a question this one cannot
+        // draw anyway, so it must be ignored rather than fail the crossing.
+        let inputs = PaneInputs {
+            disabled_questions: vec!["fantasy".to_string(), "".to_string()],
+            ..PaneInputs::default()
+        };
+        assert_eq!(rank_panes(Surface::Status, &inputs, &ZoneFacts::default()).len(), 4);
+    }
+
+    #[test]
+    fn every_question_switched_off_leaves_a_surface_genuinely_empty() {
+        // The state a surface has never been in before #715, and the one a
+        // client is likeliest to render as a blank region rather than as
+        // "you have switched everything off".
+        let inputs = PaneInputs {
+            disabled_questions: QUESTION_ORDER
+                .iter()
+                .map(|question| question.as_str().to_string())
+                .collect(),
+            ..PaneInputs::default()
+        };
+        assert!(rank_panes(Surface::Now, &inputs, &ZoneFacts::default()).is_empty());
+        assert!(rank_panes(Surface::Status, &inputs, &ZoneFacts::default()).is_empty());
+        assert!(zone_queries(Surface::Now, &inputs).is_empty());
     }
 
     #[test]

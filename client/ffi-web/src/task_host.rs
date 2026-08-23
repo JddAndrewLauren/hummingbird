@@ -10,6 +10,8 @@
 //! serde output.
 
 use hummingbird_core::bindings::{Binding, BindingKey};
+use hummingbird_core::decisions::panes::contract::QUESTION_ORDER;
+use hummingbird_core::question_switch::QuestionSwitch;
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
 use hummingbird_core::sync::write::ReqwestMutationTransport;
 use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
@@ -758,6 +760,28 @@ pub struct BindingListResponse {
     pub bindings: Vec<Binding>,
 }
 
+/// The wrapper around [`TaskHostCore::question_switches`]'s answer (#715)
+/// — every standing question's on/off state. Same `"busy"` contract as
+/// [`BindingListResponse`], and load-bearing for the same reason with the
+/// polarity reversed: a busy core answering `[]` would leave the Settings
+/// roster with no switch state at all, and a screen defaulting that to
+/// "everything is on" would say so about a workspace it had not read.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct QuestionSwitchListResponse {
+    pub kind: &'static str,
+    pub switches: Vec<QuestionSwitch>,
+}
+
+/// What [`TaskHostCore::set_question_enabled`] resolves to.
+/// `"unknown_question"` is [`SetBindingResponse`]'s `"unknown_key"` for the
+/// question vocabulary: the seam rejecting a name outside
+/// `StandingQuestion`, before `Core` is reached.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SetQuestionEnabledResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
 /// What [`TaskHostCore::set_binding`] resolves to. `"unknown_key"` is
 /// distinct from `"failed"` on purpose: it is the seam rejecting a key that
 /// is not in ADR-0015's closed vocabulary — a caller mistake, and the one
@@ -1252,6 +1276,62 @@ impl TaskHostCore {
         match self.core.set_binding(seed, key, value, now_ms).await {
             Ok(()) => SetBindingResponse { kind: "ok", error: None },
             Err(error) => SetBindingResponse {
+                kind: "failed",
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Every standing question's off switch, per
+    /// [`Core::question_switches`] (#715, ADR-0034) — in `QUESTION_ORDER`,
+    /// every question present whether it has a row or not.
+    ///
+    /// A second door beside [`TaskHostCore::bindings`] rather than a field
+    /// on it: the two are different vocabularies over the same table
+    /// (ADR-0034 decision 2), and `Core::bindings` now subtracts these rows
+    /// so the editor never offers a toggle as free text.
+    pub fn question_switches(&self) -> QuestionSwitchListResponse {
+        QuestionSwitchListResponse {
+            kind: "ok",
+            switches: self.core.question_switches(),
+        }
+    }
+
+    /// Switches one standing question on or off (#715), per
+    /// [`Core::set_question_enabled`] — which overlays, so the next
+    /// [`TaskHostCore::question_switches`] reports the new state and
+    /// `pending` immediately.
+    ///
+    /// `question` is the wire spelling, resolved by name here and never
+    /// passed through raw — the same "reject before the seam" discipline
+    /// [`TaskHostCore::set_binding`] applies, and load-bearing for the same
+    /// second reason: the key this mints lands in a table with no DELETE,
+    /// so a question name invented by a caller would leave a permanent row
+    /// nothing can ever read again.
+    pub async fn set_question_enabled(
+        &mut self,
+        seed: &str,
+        question: &str,
+        enabled: bool,
+        now_ms: i64,
+    ) -> SetQuestionEnabledResponse {
+        let Some(question) = QUESTION_ORDER
+            .iter()
+            .copied()
+            .find(|candidate| candidate.as_str() == question)
+        else {
+            return SetQuestionEnabledResponse {
+                kind: "unknown_question",
+                error: Some(format!("unrecognised standing question {question:?}")),
+            };
+        };
+        match self
+            .core
+            .set_question_enabled(seed, question, enabled, now_ms)
+            .await
+        {
+            Ok(()) => SetQuestionEnabledResponse { kind: "ok", error: None },
+            Err(error) => SetQuestionEnabledResponse {
                 kind: "failed",
                 error: Some(error.to_string()),
             },
@@ -4351,6 +4431,77 @@ mod binding_tests {
             }
         );
         assert!(trips.pending, "nothing has synced it yet");
+    }
+}
+
+#[cfg(test)]
+mod question_switch_tests {
+    use super::*;
+
+    #[test]
+    fn switch_responses_serialize_with_the_exact_keys_task_worker_ts_parses() {
+        let response = QuestionSwitchListResponse {
+            kind: "ok",
+            switches: vec![
+                QuestionSwitch { question: "homework".to_string(), enabled: true, pending: false },
+                QuestionSwitch { question: "weekend".to_string(), enabled: false, pending: true },
+            ],
+        };
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"kind":"ok","switches":[{"question":"homework","enabled":true,"pending":false},{"question":"weekend","enabled":false,"pending":true}]}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fresh_host_reports_all_ten_questions_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-switch-fresh");
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        let response = host.question_switches();
+        assert_eq!(response.kind, "ok");
+        assert_eq!(response.switches.len(), 10);
+        assert!(response.switches.iter().all(|switch| switch.enabled && !switch.pending));
+    }
+
+    #[tokio::test]
+    async fn an_unrecognised_question_never_reaches_core_set_question_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-switch-unknown");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        let response = host.set_question_enabled("seed-1", "fantasy", false, 1_000).await;
+        assert_eq!(response.kind, "unknown_question");
+        // And nothing was written: `settings` has no DELETE, so a key minted
+        // from an invented name would be a permanent unreadable row.
+        assert!(host.question_switches().switches.iter().all(|switch| !switch.pending));
+        assert!(host
+            .bindings()
+            .bindings
+            .iter()
+            .all(|binding| !binding.key.starts_with("question-enabled-")));
+    }
+
+    #[tokio::test]
+    async fn a_question_switched_off_through_the_seam_reads_back_from_the_same_seam() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-switch-roundtrip");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        assert_eq!(
+            host.set_question_enabled("seed-1", "weekend", false, 1_000).await.kind,
+            "ok"
+        );
+
+        let weekend = host
+            .question_switches()
+            .switches
+            .into_iter()
+            .find(|switch| switch.question == "weekend")
+            .expect("weekend is listed");
+        assert!(!weekend.enabled);
+        assert!(weekend.pending, "nothing has synced it yet");
     }
 }
 

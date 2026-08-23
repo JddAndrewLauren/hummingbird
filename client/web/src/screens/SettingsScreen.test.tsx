@@ -14,7 +14,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { SettingsScreen } from "./SettingsScreen";
+import { OTHER_ROWS_KEY, SettingsScreen } from "./SettingsScreen";
 import { connectErrorCopy } from "../calendar/connect-error";
 import { questionRoster } from "./questions/roster";
 import { bindingDTO, fireEvent, itemDTO, render, screen, taskState } from "../test/component";
@@ -65,11 +65,37 @@ interface SettingsOptions {
    * cases in this file want a token present, so the default is "resting"
    * and only the device-token-precondition tests below override it. */
   taskTokenState?: TaskTokenUiState;
+  /** #715: the roster's rows are collapsed by default and their open state
+   * is device-local, so a test about a binding row has to open the question
+   * first. Rather than click through ten disclosures in every one of them,
+   * this seeds the injected storage with every row already open — the state
+   * these tests were all written in. The default itself is not thereby
+   * untested: the roster block below asserts it directly, both directions. */
+  expanded?: readonly string[];
+}
+
+/** A `StorageLike` over a plain object — never the real `localStorage`,
+ * which leaks the open-rows preference between tests (and, per this repo's
+ * own notes, is not reliably present in every node the suite runs on). */
+function stubStorage(seed: Record<string, string> = {}) {
+  const store = new Map(Object.entries(seed));
+  return {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => void store.set(key, value),
+    removeItem: (key: string) => void store.delete(key),
+    read: (key: string) => store.get(key) ?? null,
+  };
 }
 
 function renderSettings(options: SettingsOptions = {}) {
   const onConnect = vi.fn();
   const onSetBinding = vi.fn();
+  const onSetQuestionEnabled = vi.fn();
+  const storage = stubStorage({
+    "hb.settings.questions-expanded": JSON.stringify(
+      options.expanded ?? [...questionRoster().map((entry) => entry.question), OTHER_ROWS_KEY],
+    ),
+  });
   const onSelectionChange = vi.fn();
   const onBackendSelection = vi.fn();
   const tree = (current: SettingsOptions) => (
@@ -94,19 +120,29 @@ function renderSettings(options: SettingsOptions = {}) {
       onForgetTaskToken={vi.fn()}
       task={taskState({ bindings: current.bindings ?? null, ...current.task })}
       onSetBinding={current.withSetBinding === false ? undefined : onSetBinding}
+      onSetQuestionEnabled={
+        current.withSetBinding === false ? undefined : onSetQuestionEnabled
+      }
+      storage={storage}
       online
       syncNowMs={10_000}
       onDownloadMirror={vi.fn()}
     />
   );
-  const { rerender } = render(tree(options));
+  const { rerender, unmount } = render(tree(options));
   // A pull arriving is a re-render with new props, not a remount — which is
   // the whole point of the stale-draft test below.
   return {
     onConnect,
     onSetBinding,
+    onSetQuestionEnabled,
     onSelectionChange,
     onBackendSelection,
+    storage,
+    /** Tears this mount down, so a test can mount a SECOND screen over the
+     * same injected storage — which is what a reload is, and the only way
+     * to prove a device-local preference survives one. */
+    unmount,
     pull: (next: SettingsOptions) => rerender(tree(next)),
   };
 }
@@ -410,6 +446,215 @@ describe("SettingsScreen — the standing-question roster (#714, ADR-0034)", () 
     // device", which is also the title of the section below the roster —
     // an h2. The roster's own headings are the h3s, and there are none.
     expect(screen.queryAllByRole("heading", { level: 3 })).toEqual([]);
+  });
+});
+
+describe("SettingsScreen — the off switch (#715, ADR-0034)", () => {
+  /** The roster row for one question, by its label. */
+  function row(question: string): HTMLElement {
+    const label = questionRoster().find((entry) => entry.question === question)?.label;
+    if (label === undefined) {
+      throw new Error(`no roster entry for ${question}`);
+    }
+    return screen.getByRole("button", { name: label });
+  }
+
+  /** Whether one question's row is open, read off the disclosure's own
+   * `aria-expanded` — the same fact a screen reader is told, not a class. */
+  function isOpen(question: string): boolean {
+    return row(question).getAttribute("aria-expanded") === "true";
+  }
+
+  function allEnabled() {
+    return questionRoster().map((entry) => ({
+      question: entry.question,
+      enabled: true,
+      pending: false,
+    }));
+  }
+
+  it("draws every question's row shut, with no toggle and no binding row on show", () => {
+    // The default, asserted rather than inherited from the harness: ten
+    // questions each with a value line, a field and a Save button is a
+    // screenful nobody reads.
+    renderSettings({
+      expanded: [],
+      bindings: [bindingDTO({ key: "race-series", value: { state: "text", text: "f1" } })],
+      task: { questionSwitches: allEnabled() },
+    });
+
+    for (const entry of questionRoster()) {
+      expect(isOpen(entry.question)).toBe(false);
+    }
+    expect(screen.queryAllByRole("switch")).toEqual([]);
+    expect(screen.queryByText("race-series")).toBeNull();
+  });
+
+  it("reveals the question's toggle and its bindings when the row is opened", () => {
+    // The gesture the issue names: "expanding a question's row reveals its
+    // bindings and its toggle".
+    const { storage } = renderSettings({
+      expanded: [],
+      bindings: [bindingDTO({ key: "race-series", value: { state: "text", text: "f1" } })],
+      task: { questionSwitches: allEnabled() },
+    });
+
+    fireEvent.click(row("race"));
+
+    expect(isOpen("race")).toBe(true);
+    expect(screen.getByText("race-series")).toBeDefined();
+    const toggle = screen.getByRole("switch", { name: /race/i });
+    expect((toggle as HTMLInputElement).checked).toBe(true);
+    // Only the opened row's toggle: the other nine are still shut.
+    expect(screen.getAllByRole("switch")).toHaveLength(1);
+    // And the gesture persisted device-locally, in the injectable storage —
+    // never in `settings`, which has no DELETE and syncs everywhere.
+    expect(JSON.parse(storage.read("hb.settings.questions-expanded") ?? "null")).toEqual(["race"]);
+  });
+
+  it("keeps a row open across a reload, reading it back from the same storage", () => {
+    const first = renderSettings({
+      expanded: [],
+      bindings: [],
+      task: { questionSwitches: allEnabled() },
+    });
+    fireEvent.click(row("waste"));
+    const stored = first.storage.read("hb.settings.questions-expanded");
+    first.unmount();
+
+    // A reload is a fresh mount reading the storage the last one wrote.
+    renderSettings({
+      expanded: JSON.parse(stored ?? "[]") as string[],
+      bindings: [],
+      task: { questionSwitches: allEnabled() },
+    });
+    expect(isOpen("waste")).toBe(true);
+  });
+
+  it("shuts a row that was open, and leaves nothing behind when the last one shuts", () => {
+    const { storage } = renderSettings({
+      expanded: ["race"],
+      bindings: [],
+      task: { questionSwitches: allEnabled() },
+    });
+    expect(isOpen("race")).toBe(true);
+
+    fireEvent.click(row("race"));
+
+    expect(isOpen("race")).toBe(false);
+    expect(storage.read("hb.settings.questions-expanded")).toBeNull();
+  });
+
+  it("sends the flipped state, naming the question, when the toggle is used", () => {
+    const { onSetQuestionEnabled } = renderSettings({
+      expanded: ["weekend"],
+      bindings: [],
+      task: { questionSwitches: allEnabled() },
+    });
+
+    fireEvent.click(screen.getByRole("switch", { name: /weekend/i }));
+
+    expect(onSetQuestionEnabled).toHaveBeenCalledTimes(1);
+    expect(onSetQuestionEnabled).toHaveBeenCalledWith("weekend", false);
+  });
+
+  it("says a question is off while its row is still shut", () => {
+    // Load-bearing: the roster is the only place an off question can be
+    // seen at all (ADR-0034's consequences), so "off" must never be a fact
+    // you have to expand a row to find.
+    renderSettings({
+      expanded: [],
+      bindings: [],
+      task: {
+        questionSwitches: allEnabled().map((entry) =>
+          entry.question === "weekend" ? { ...entry, enabled: false } : entry,
+        ),
+      },
+    });
+
+    expect(screen.getAllByText("off")).toHaveLength(1);
+    expect(screen.queryAllByText("queued")).toEqual([]);
+  });
+
+  it("marks an unconfirmed toggle queued, while it is shut", () => {
+    renderSettings({
+      expanded: [],
+      bindings: [],
+      task: {
+        questionSwitches: allEnabled().map((entry) =>
+          entry.question === "race" ? { question: "race", enabled: false, pending: true } : entry,
+        ),
+      },
+    });
+
+    expect(screen.getAllByText("queued")).toHaveLength(1);
+    expect(screen.getAllByText("off")).toHaveLength(1);
+  });
+
+  it("says so when a toggle write failed, on that question's own row", () => {
+    renderSettings({
+      expanded: ["race", "waste"],
+      bindings: [],
+      task: {
+        questionSwitches: allEnabled(),
+        lastQuestionSwitchWrite: {
+          seed: "s-1",
+          question: "race",
+          kind: "failed",
+          error: "the queue is full",
+        },
+      },
+    });
+
+    const alerts = screen.getAllByRole("alert").map((node) => node.textContent);
+    expect(alerts).toEqual(["the queue is full"]);
+  });
+
+  it("draws no toggle at all before the switches have been read", () => {
+    // `null` is "nobody has answered", not "everything is on" — a toggle
+    // rendered from an unread list would state a fact about the workspace.
+    renderSettings({
+      expanded: [...questionRoster().map((entry) => entry.question)],
+      bindings: [],
+      task: { questionSwitches: null },
+    });
+
+    expect(screen.queryAllByRole("switch")).toEqual([]);
+    // The questions themselves are still listed — the roster does not wait
+    // on the switches.
+    expect(row("race")).toBeDefined();
+  });
+
+  it("draws the toggle read-only when the host cannot write", () => {
+    renderSettings({
+      expanded: ["race"],
+      bindings: [],
+      withSetBinding: false,
+      task: { questionSwitches: allEnabled() },
+    });
+
+    const toggle = screen.getByRole("switch", { name: /race/i }) as HTMLInputElement;
+    expect(toggle.readOnly).toBe(true);
+    fireEvent.click(toggle);
+    expect(toggle.checked).toBe(true);
+  });
+
+  it("leaves the leftovers group a plain disclosure with no toggle", () => {
+    // Not a question: nothing switches it, and giving it one would offer to
+    // silence rows that belong to no question at all.
+    renderSettings({
+      expanded: ["other.settings-rows"],
+      bindings: [bindingDTO({ key: "some-future-binding", known: false })],
+      task: { questionSwitches: allEnabled() },
+    });
+
+    const leftovers = screen.getByRole("button", {
+      expanded: true,
+      name: "Other settings rows",
+    });
+    expect(leftovers).toBeDefined();
+    expect(screen.getByText("some-future-binding")).toBeDefined();
+    expect(screen.queryAllByRole("switch")).toEqual([]);
   });
 });
 

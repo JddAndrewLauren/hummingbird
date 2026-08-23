@@ -117,11 +117,15 @@ pub fn permitted(scope: Scope, method: &str, segments: &[&str]) -> bool {
         //
         // The widening is real and worth stating plainly: an ingest token
         // can read ANY setting by name, not just one belonging to its own
-        // source. What bounds it is that `settings` is a small closed
-        // vocabulary of binding facts (`client/core/src/bindings.rs`), it
-        // holds no credential, and the route is read-only — a token that
-        // could already write alerts and snapshots for its source gains no
-        // ability to change anything here.
+        // source. What bounds it is that `settings` holds only small closed
+        // vocabularies — binding facts (`client/core/src/bindings.rs`) and,
+        // since #715, one on/off row per standing question
+        // (`client/core/src/question_switch.rs`, the poller half of
+        // ADR-0034 decision 1, which needed no new route and no new scope
+        // precisely because of this carve-out) — it holds no credential,
+        // and the route is read-only, so a token that could already write
+        // alerts and snapshots for its source gains no ability to change
+        // anything here.
         ("GET", ["settings", _]) => matches!(scope, Scope::Device | Scope::Ingest),
         // The evaluated-stream pollers' own reads (#135-137). An
         // out-of-process poller (Gmail, Google Calendar, M365 mail/calendar)
