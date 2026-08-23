@@ -6,7 +6,15 @@ import { EmptyState } from "../components/feedback/EmptyState";
 import { Input } from "../components/forms/Input";
 import { Select } from "../components/forms/Select";
 import { Switch } from "../components/forms/Switch";
-import type { ConditionDTO, FieldTypeName, KindRegistryDTO, RuleDTO, TaskItemDTO, TierName } from "../store/protocol";
+import type {
+  ConditionDTO,
+  FieldTypeName,
+  KindRegistryDTO,
+  RuleDTO,
+  SourceOptionDTO,
+  TaskItemDTO,
+  TierName,
+} from "../store/protocol";
 import type { TaskState } from "../store/store";
 import { defaultSeverity } from "../decisions/seam";
 import { backtest } from "./rules/backtest";
@@ -97,6 +105,7 @@ function ConditionRow({
           widget={widget}
           fieldType={thisFieldType}
           op={condition.op as OperatorName}
+          sources={registry.sources}
           value={condition.value}
           onChange={(value) => onChange({ ...condition, value })}
         />
@@ -122,12 +131,14 @@ function ValueWidget({
   widget,
   fieldType,
   op,
+  sources,
   value,
   onChange,
 }: {
   widget: ReturnType<typeof widgetFor>;
   fieldType: FieldTypeName;
   op: OperatorName;
+  sources: SourceOptionDTO[];
   value: unknown;
   onChange: (value: unknown) => void;
 }) {
@@ -140,6 +151,47 @@ function ValueWidget({
   // the editor is reopened fresh; good enough for a picker's own moment,
   // never a stored value anything must stay byte-identical against.
   const [nowMs] = useState(() => Date.now());
+  if (widget === "source") {
+    // `source`'s legal values are a frozen registry (ADR-0014), so this is
+    // a pick, never a text box: a typo produces a rule that matches nothing
+    // and says nothing about it. Which conditions get this control is
+    // `rules::widget_for`'s answer (`eq` only — `contains` is substring
+    // matching, which a whole-value picker cannot express).
+    const text = typeof value === "string" ? value : "";
+    // A retired source still renders — an existing rule may name one —
+    // but cannot be newly picked: the authority already 400s that save
+    // (`RuleProblem::RetiredSource`), and this is where the operator finds
+    // out first. `withCurrentOption` covers the other direction: a stored
+    // value this build's registry does not declare at all still names
+    // itself rather than showing the browser's blank/first-item behaviour.
+    const known = sources.map((s) => s.source);
+    const options = withCurrentOption(known, text).map((source) => {
+      const retiredAs = sources.find((s) => s.source === source)?.retiredAs ?? null;
+      if (retiredAs === null) {
+        return { value: source, label: source };
+      }
+      return {
+        value: source,
+        label: `${source} — retired, use ${retiredAs}`,
+        // Not disabled when it is the value already stored: a `<select>`
+        // whose selected option is disabled reads as nothing selected, and
+        // the row would stop naming the source the rule actually carries.
+        disabled: source !== text,
+      };
+    });
+    return (
+      <Select
+        label="Source"
+        value={text}
+        // A fresh condition starts empty, which is no source at all — and a
+        // `<select>` with no matching option shows its first entry while
+        // the state stays "", which would read as a source already chosen.
+        // The placeholder is what keeps the control honest about that.
+        options={text === "" ? [{ value: "", label: "Pick a source…" }, ...options] : options}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    );
+  }
   if (widget === "chips") {
     const chips = Array.isArray(value) ? (value as string[]) : [];
     return (
@@ -432,6 +484,7 @@ function RuleCard({
   lastRuleWrite,
   onToggle,
   onSave,
+  onDelete,
 }: {
   rule: RuleDTO;
   registry: KindRegistryDTO;
@@ -440,9 +493,15 @@ function RuleCard({
   lastRuleWrite: TaskState["lastRuleWrite"];
   onToggle: (enabled: boolean) => void;
   onSave: (state: RuleEditorState) => void;
+  onDelete: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<RuleEditorState>(() => editorStateFromRule(rule));
+  // Two steps, because the write is not undoable from this screen: the
+  // first click asks, the second sends. Not a `window.confirm` — that
+  // blocks the worker's message pump and is untestable in jsdom.
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState(false);
 
   // Reseed the draft whenever the stored rule's own editable fields move
   // underneath it — another device's edit, or this device's own write
@@ -472,6 +531,14 @@ function RuleCard({
     setSeenLastRuleWrite(lastRuleWrite);
     if (pendingEnabled !== null) {
       setPendingEnabled(null);
+    }
+    // The queued delete clears the same render-time way and for the same
+    // reason. A delete that landed takes the whole card with it (the
+    // mirror stops listing the rule), so this only ever clears a delete
+    // that has *not* landed — which is exactly when the badge should stop
+    // claiming one is in flight.
+    if (pendingDelete) {
+      setPendingDelete(false);
     }
   }
 
@@ -525,9 +592,39 @@ function RuleCard({
           ) : null}
         </div>
       ) : null}
-      <Button variant="ghost" size="sm" onClick={() => setEditing((v) => !v)}>
-        {editing ? "Close" : "Edit"}
-      </Button>
+      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)", flexWrap: "wrap" }}>
+        <Button variant="ghost" size="sm" onClick={() => setEditing((v) => !v)}>
+          {editing ? "Close" : "Edit"}
+        </Button>
+        {confirmingDelete ? (
+          <>
+            <span className="hb-meta">Delete rule?</span>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => {
+                setConfirmingDelete(false);
+                setPendingDelete(true);
+                onDelete();
+              }}
+            >
+              Delete
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setConfirmingDelete(false)}>
+              Cancel
+            </Button>
+          </>
+        ) : (
+          <Button variant="ghost" size="sm" onClick={() => setConfirmingDelete(true)}>
+            Delete
+          </Button>
+        )}
+        {pendingDelete ? (
+          <Badge dot mono tone="warn">
+            pending
+          </Badge>
+        ) : null}
+      </div>
       {editing ? (
         <RuleEditorForm
           registry={registry}
@@ -568,6 +665,9 @@ export interface RulesScreenProps {
       severity?: string | null;
       tier?: TierName | null;
       enabled?: boolean | null;
+      /** Present at all = touched, per `worker-client.ts`'s `patchRule`.
+       * Deleting a rule is this field, not a call of its own. */
+      deletedAt?: number | null;
     },
   ) => void;
 }
@@ -616,6 +716,7 @@ export function RulesScreen({
             syncOutcomeSeq={syncOutcomeSeq}
             lastRuleWrite={lastRuleWrite}
             onToggle={(enabled) => onPatchRule(rule, { enabled })}
+            onDelete={() => onPatchRule(rule, { deletedAt: Date.now() })}
             onSave={(state) =>
               onPatchRule(rule, {
                 name: state.name,

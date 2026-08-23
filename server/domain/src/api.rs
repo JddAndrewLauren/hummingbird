@@ -369,9 +369,15 @@ pub struct CreatePushTarget {
 }
 
 /// `PATCH /api/rules/:id` body: `expected_version` plus absolute-value
-/// sets, the same CAS contract as [`ItemPatch`]. `event_kind` is the one
-/// nullable column — double-`Option`, `null` clears it to "any kind" — every
+/// sets, the same CAS contract as [`ItemPatch`]. `event_kind` and
+/// `deleted_at` are the two nullable columns — double-`Option`, `null`
+/// clears them (to "any kind", and to a live rule respectively) — every
 /// other field is `NOT NULL` and rejects an explicit `null`.
+///
+/// **Deleting a rule is this patch**, not a route of its own
+/// ([`StepPatch::deleted_at`]'s precedent): one flagged column on the one
+/// CAS write, so there is no second HTTP surface and no second piece of
+/// auth reasoning.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RulePatch {
@@ -388,6 +394,8 @@ pub struct RulePatch {
     pub tier: Option<Tier>,
     #[serde(default, deserialize_with = "non_null_enabled", skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<Option<i64>>,
 }
 
 /// `PUT /api/settings/:key` body. `expected_version: 0` is the create case
@@ -920,6 +928,7 @@ mod tests {
             enabled: true,
             updated_at: 0,
             version: 1,
+            deleted_at: None,
         };
         let response = ChangesResponse {
             rules: vec![rule.clone()],

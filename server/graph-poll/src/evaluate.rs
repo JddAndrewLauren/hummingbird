@@ -104,6 +104,7 @@ mod tests {
             enabled: true,
             updated_at: 0,
             version: 1,
+            deleted_at: None,
         }
     }
 

@@ -48,10 +48,35 @@ pub struct KindEntry {
     pub fields: Vec<KindField>,
 }
 
+/// One `source` a condition may name — `hummingbird_domain::SourceEntry`
+/// narrowed to what an editor needs. `retired_as` is `Some(successor)`
+/// for a source ADR-0014 has bumped to a newer version.
+///
+/// **A retired source still ships.** An existing rule may name one, and a
+/// dropdown that hid it would show a blank control rather than the value
+/// actually stored; what it must not do is let a *new* condition pick one,
+/// because the authority already answers that save with a 400
+/// (`RuleProblem::RetiredSource`). Presenting it as visible-but-unpickable
+/// is what turns that 400 into something the operator can see before
+/// spending a save on it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceOption {
+    pub source: String,
+    #[serde(default)]
+    pub retired_as: Option<String>,
+}
+
+impl SourceOption {
+    pub fn is_retired(&self) -> bool {
+        self.retired_as.is_some()
+    }
+}
+
 /// The kind registry as a client holds it (#133/#140, ADR-0013).
-/// `alarm_interval_ms` and `severities` are carried through untouched —
-/// no decision here reads them, but the mobile seam ships them to a form
-/// in the same crossing rather than opening a second one.
+/// `alarm_interval_ms`, `severities` and `sources` are carried through
+/// untouched — no decision here reads them, but the mobile seam ships them
+/// to a form in the same crossing rather than opening a second one.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KindRegistry {
@@ -63,6 +88,12 @@ pub struct KindRegistry {
     pub alarm_interval_ms: i64,
     #[serde(default)]
     pub severities: Vec<String>,
+    /// `hummingbird_domain::REGISTRY`, in registration order —
+    /// the vocabulary the `source` core field's value is picked from
+    /// ([`super::editor::ValueWidget::Source`]). Every registered source,
+    /// retired ones included; see [`SourceOption`].
+    #[serde(default)]
+    pub sources: Vec<SourceOption>,
 }
 
 /// The Durable Object's sweep-alarm interval (#138) — what a
@@ -123,6 +154,13 @@ pub fn compiled_registry() -> KindRegistry {
         severities: hummingbird_domain::SEVERITIES
             .iter()
             .map(|s| s.to_string())
+            .collect(),
+        sources: hummingbird_domain::REGISTRY
+            .iter()
+            .map(|entry| SourceOption {
+                source: entry.source.to_string(),
+                retired_as: entry.retired_as.map(str::to_string),
+            })
             .collect(),
     }
 }
@@ -234,6 +272,16 @@ mod tests {
             ],
             alarm_interval_ms: 900_000,
             severities: vec!["low".to_string(), "normal".to_string()],
+            sources: vec![
+                SourceOption {
+                    source: "gmail/v1".to_string(),
+                    retired_as: None,
+                },
+                SourceOption {
+                    source: "city-waste/v1".to_string(),
+                    retired_as: Some("city-waste/v2".to_string()),
+                },
+            ],
         }
     }
 

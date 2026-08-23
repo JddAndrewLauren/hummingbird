@@ -874,10 +874,16 @@ export function createRule(
   });
 }
 
-/** #140's rule patch — the enable/disable toggle and every other rule
- * edit. `current` is the caller's own last-known copy of the row (the CAS
- * `base` a 409 is diffed against); every other field is `null` to mean
- * "leave this alone," except `enabled`, which the toggle sets directly. */
+/** #140's rule patch — the enable/disable toggle, the delete, and every
+ * other rule edit. `current` is the caller's own last-known copy of the row
+ * (the CAS `base` a 409 is diffed against); every other field is `null` to
+ * mean "leave this alone," except `enabled`, which the toggle sets directly.
+ *
+ * `deletedAt` follows `eventKind`'s three-way reading: **present in the
+ * patch object at all** means touched, so `{ deletedAt: nowMs }` deletes and
+ * `{ deletedAt: null }` un-deletes, while omitting the key leaves the flag
+ * where it is. There is no `deleteRule` — a rule's deletion is one field on
+ * this one CAS write, all the way down to `Core::patch_rule`. */
 export function patchRule(
   worker: WorkerLike,
   seed: string,
@@ -889,6 +895,7 @@ export function patchRule(
     severity?: string | null;
     tier?: TierName | null;
     enabled?: boolean | null;
+    deletedAt?: number | null;
   },
   nowMs: number,
 ): void {
@@ -903,6 +910,8 @@ export function patchRule(
     severity: patch.severity ?? null,
     tier: patch.tier ?? null,
     enabled: patch.enabled ?? null,
+    deletedAtTouched: "deletedAt" in patch,
+    deletedAt: patch.deletedAt ?? null,
     nowMs,
   });
 }

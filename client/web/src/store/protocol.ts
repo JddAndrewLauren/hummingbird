@@ -416,6 +416,12 @@ export interface RuleDTO {
   enabled: boolean;
   updatedAt: number;
   version: number;
+  /** ms epoch; `null` for a live rule. The rule lane's soft delete — the
+   * flagged row still rides the delta pull, and `Core::rules` filters it,
+   * so a deleted rule leaves this list on the next completed cycle rather
+   * than waiting for a full sweep. A rule reaching this screen with it set
+   * is therefore only ever this device's own write on its way back. */
+  deletedAt: number | null;
 }
 
 /** The typed catalogue ADR-0013 gates operators by —
@@ -436,6 +442,20 @@ export type FieldTypeName =
 export interface KindFieldDTO {
   name: string;
   fieldType: FieldTypeName;
+}
+
+/** One `source` a condition may name — the frozen source registry
+ * (`hummingbird_domain::REGISTRY`, ADR-0014) as the rules editor holds it.
+ * `retiredAs` names the successor a bumped source was retired in favour of.
+ *
+ * A retired entry is still listed: an existing rule may name one, and a
+ * dropdown that hid it would render blank rather than the value actually
+ * stored. What it must not be is newly selectable — the authority already
+ * 400s that save (`RuleProblem::RetiredSource`), and showing it disabled is
+ * what puts that refusal in front of the operator first. */
+export interface SourceOptionDTO {
+  source: string;
+  retiredAs: string | null;
 }
 
 /** One registry entry — `hummingbird_domain::EventKindEntry`'s wire shape.
@@ -462,6 +482,10 @@ export interface KindRegistryDTO {
    * screen's severity dropdown can never disagree with the ADR-0014 ratchet
    * order a hand-typed string would silently rank `0` against. */
   severities: string[];
+  /** The `source` core field's vocabulary, in the registry's own
+   * registration order — what a `source` value widget picks from, retired
+   * entries included. See `SourceOptionDTO`. */
+  sources: SourceOptionDTO[];
 }
 
 // -- the pane read (#245, ADR-0015) ----------------------------------------
@@ -824,6 +848,12 @@ export type TaskWorkerRequest =
       severity: string | null;
       tier: TierName | null;
       enabled: boolean | null;
+      /** The rule's soft-delete flag, flattened for the wasm boundary the
+       * same way `eventKindTouched`/`eventKind` is: `deletedAtTouched:
+       * false` leaves it alone, `true` with `deletedAt: null` un-deletes.
+       * **Deleting a rule is this message**, not one of its own. */
+      deletedAtTouched: boolean;
+      deletedAt: number | null;
       nowMs: number;
     }
   /** #245's generic pane read: one source's snapshot rows and its live

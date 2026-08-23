@@ -91,13 +91,16 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
         enabled: create.enabled.unwrap_or(true),
         updated_at: now_ms,
         version,
+        // A create is always live: deletion is a later `PATCH`, never
+        // something `POST /api/rules` can express.
+        deleted_at: None,
     };
     if let Some(resp) = validation_error(&rule) {
         return Ok(resp);
     }
     sql.exec(
         "INSERT INTO rules (id, name, event_kind, conditions, severity, tier, enabled, \
-         updated_at, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         updated_at, version, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &rule_params(&rule)?,
     )?;
     write_meta_version(sql, version)?;
@@ -142,10 +145,21 @@ pub fn patch(
         severity: patch.severity.clone().unwrap_or_else(|| current.severity.clone()),
         tier: patch.tier.unwrap_or(current.tier),
         enabled: patch.enabled.unwrap_or(current.enabled),
+        deleted_at: patch.deleted_at.unwrap_or(current.deleted_at),
         ..current.clone()
     };
-    if let Some(resp) = validation_error(&candidate) {
-        return Ok(resp);
+    // A rule that ends this patch deleted is not validated. It never fires
+    // (`load_enabled` filters it) and never lists, so there is nothing for
+    // a save-time problem to protect — while validating it would make the
+    // stalest rules the undeletable ones: a rule naming a source ADR-0014
+    // has since retired is exactly what an operator reaches for delete
+    // over, and `RuleProblem::RetiredSource` would answer that 400 for a
+    // condition the patch does not touch. Undeleting still validates: the
+    // rule is about to be live again, so it must earn it.
+    if candidate.deleted_at.is_none() {
+        if let Some(resp) = validation_error(&candidate) {
+            return Ok(resp);
+        }
     }
 
     // Compared typed against `current` (already the deserialized row) —
@@ -186,6 +200,11 @@ pub fn patch(
     if let Some(enabled) = patch.enabled {
         if enabled != current.enabled {
             sets.set("enabled", SqlValue::Integer(enabled as i64));
+        }
+    }
+    if let Some(deleted_at) = patch.deleted_at {
+        if deleted_at != current.deleted_at {
+            sets.set("deleted_at", SqlValue::from_opt_i64(deleted_at));
         }
     }
     if sets.is_empty() {
@@ -231,7 +250,7 @@ fn event_kinds_readable_by(source: &str) -> &'static [&'static str] {
     }
 }
 
-/// `GET /api/rules` — every rule, enabled or not, for a device token; for
+/// `GET /api/rules` — every undeleted rule, enabled or not, for a device token; for
 /// an `ingest` token, only the rules its bound source is entitled to see
 /// (#135-137, [`event_kinds_readable_by`]). Ordinary device clients already
 /// get the full set through `GET /api/changes`'s `rules` field; this route
@@ -248,7 +267,10 @@ fn event_kinds_readable_by(source: &str) -> &'static [&'static str] {
 /// would be a rule that quietly stops existing, in the one consumer whose
 /// entire job is firing rules.
 pub fn list(token_source: Option<&str>, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
-    let rows = sql.exec("SELECT * FROM rules ORDER BY id", &[])?;
+    let rows = sql.exec(
+        "SELECT * FROM rules WHERE deleted_at IS NULL ORDER BY id",
+        &[],
+    )?;
     let rules: Vec<hummingbird_domain::Rule> =
         rows.iter().map(rule_from_row).collect::<Result<_, _>>()?;
     let rules = match token_source {
@@ -267,12 +289,19 @@ pub fn list(token_source: Option<&str>, sql: &dyn Sql) -> Result<ApiResponse, Sq
     Ok(json(200, &rules))
 }
 
-/// Every enabled rule, shared by both `deliver` callers (#138's DO-alarm
-/// sweep and #255's `POST /api/alerts` inline hook) so evaluate-then-
-/// deliver has exactly one query to load its rule set from rather than two
-/// copies drifting apart.
+/// Every enabled, undeleted rule, shared by both `deliver` callers (#138's
+/// DO-alarm sweep and #255's `POST /api/alerts` inline hook) so
+/// evaluate-then-deliver has exactly one query to load its rule set from
+/// rather than two copies drifting apart.
+///
+/// `deleted_at IS NULL` is the load-bearing half of the soft delete: the
+/// flagged row still exists, still rides the delta pull so every device
+/// learns it is gone — and must stop firing the moment it is flagged.
 pub(crate) fn load_enabled(sql: &dyn Sql) -> Result<Vec<Row>, SqlError> {
-    sql.exec("SELECT * FROM rules WHERE enabled = 1", &[])
+    sql.exec(
+        "SELECT * FROM rules WHERE enabled = 1 AND deleted_at IS NULL",
+        &[],
+    )
 }
 
 fn select_rule(sql: &dyn Sql, id: &str) -> Result<Option<Row>, SqlError> {
@@ -300,6 +329,7 @@ fn rule_params(rule: &Rule) -> Result<Vec<SqlValue>, SqlError> {
         SqlValue::Integer(rule.enabled as i64),
         SqlValue::Integer(rule.updated_at),
         SqlValue::Integer(rule.version),
+        SqlValue::from_opt_i64(rule.deleted_at),
     ])
 }
 
@@ -318,5 +348,6 @@ pub(crate) fn rule_from_row(row: &Row) -> Result<Rule, SqlError> {
         enabled: r.bool_int("enabled")?,
         updated_at: r.int("updated_at")?,
         version: r.int("version")?,
+        deleted_at: r.opt_int("deleted_at"),
     })
 }

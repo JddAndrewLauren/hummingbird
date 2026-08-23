@@ -15,8 +15,10 @@ import uniffi.hummingbird_ffi_mobile.MobileValueWidget
 import uniffi.hummingbird_ffi_mobile.RuleConditionInput
 import uniffi.hummingbird_ffi_mobile.RuleConditionRecord
 import uniffi.hummingbird_ffi_mobile.RuleFieldRecord
+import uniffi.hummingbird_ffi_mobile.RuleOperatorRecord
 import uniffi.hummingbird_ffi_mobile.RuleFormRecord
 import uniffi.hummingbird_ffi_mobile.RuleRecord
+import uniffi.hummingbird_ffi_mobile.SourceOptionRecord
 
 // Behavioural, driving the injected fns with fakes — the house shape
 // (`NowViewModelTest`, `ItemDetailViewModelTest`). No native library is
@@ -38,7 +40,7 @@ class RulesViewModelTest {
         name = name,
         fieldType = type,
         legalOperators = operators,
-        defaultWidget = MobileValueWidget.TEXT,
+        operators = operators.map { RuleOperatorRecord(operator = it, widget = MobileValueWidget.TEXT) },
         durationUnits = units,
     )
 
@@ -49,6 +51,10 @@ class RulesViewModelTest {
         ),
         fields = fields.toList(),
         severities = listOf("low", "normal", "high", "urgent"),
+        sources = listOf(
+            SourceOptionRecord(source = "gmail/v1", retiredAs = null),
+            SourceOptionRecord(source = "city-waste/v1", retiredAs = "city-waste/v2"),
+        ),
         defaultSeverity = "normal",
         tiers = listOf(MobileTier.URGENT, MobileTier.NORMAL),
         alarmIntervalMs = 900_000,
@@ -91,6 +97,7 @@ class RulesViewModelTest {
         onCreate: (RuleDraft) -> Unit = {},
         onPatch: (RuleDraft) -> Unit = {},
         onToggle: (String, Boolean) -> Unit = { _, _ -> },
+        onDelete: (String) -> Unit = {},
         backtest: (List<RuleConditionInput>) -> BacktestRecord = {
             BacktestRecord(
                 isAvailable = true,
@@ -106,6 +113,7 @@ class RulesViewModelTest {
         createFn = { draft, _ -> onCreate(draft) },
         patchFn = { draft, _ -> onPatch(draft) },
         toggleFn = { id, enabled, _ -> onToggle(id, enabled) },
+        deleteFn = { id, _ -> onDelete(id) },
         backtestFn = { _, conditions, _ -> backtest(conditions) },
         syncFn = { onSync() },
         hasContentFn = hasContent,
@@ -184,6 +192,52 @@ class RulesViewModelTest {
         model.setEnabled("r-1", false, 1_000)
         assertTrue(model.statusLine.value.orEmpty().contains("offline"))
         assertTrue(model.state.value is RulesState.Loaded)
+    }
+
+    @Test
+    fun `delete sends the rule id and re-reads`() = runBlocking {
+        val deleted = mutableListOf<String>()
+        val model = viewModel(onDelete = { deleted += it })
+        model.delete("r-1", 1_000)
+        assertEquals(listOf("r-1"), deleted)
+        assertTrue(model.state.value is RulesState.Loaded)
+    }
+
+    /** `Core::rules()` has no optimistic overlay, so the re-read after a
+     * delete still lists the row until a cycle lands. The card has to say
+     * so, or a delete looks like nothing happened — the same trap the
+     * toggle's pending position exists for. */
+    @Test
+    fun `a deleted rule stays marked pending until it leaves the list`() = runBlocking {
+        var landed = false
+        val model = viewModel(rules = { if (landed) emptyList() else listOf(rule()) })
+        model.delete("r-1", 1_000)
+        assertEquals(setOf("r-1"), model.pendingDeleted.value)
+
+        landed = true
+        model.load()
+        assertTrue(model.pendingDeleted.value.isEmpty())
+    }
+
+    @Test
+    fun `a failed delete drops the pending mark and reports`() = runBlocking {
+        val model = viewModel(onDelete = { error("offline") })
+        model.load()
+        model.delete("r-1", 1_000)
+        assertTrue(model.pendingDeleted.value.isEmpty())
+        assertTrue(model.statusLine.value.orEmpty().contains("offline"))
+        assertTrue(model.state.value is RulesState.Loaded)
+    }
+
+    /** The vocabulary a `source` condition picks from arrives on the form,
+     * from the frozen registry — never assembled here. */
+    @Test
+    fun `the form carries the source vocabulary with retirement marked`() = runBlocking {
+        val model = viewModel()
+        model.beginCreate()
+        val sources = requireNotNull(model.form.value).sources
+        assertEquals(listOf("gmail/v1", "city-waste/v1"), sources.map { it.source })
+        assertEquals("city-waste/v2", sources.last().retiredAs)
     }
 
     @Test

@@ -206,13 +206,45 @@ class RulesScreenStructuralTest {
     @Test
     fun `the value widget is the seam's answer, not a Kotlin cascade`() {
         assertTrue(
-            "the value control must read the seam's defaultWidget",
-            screenSrc.contains("defaultWidget"),
+            "the value control must read the seam's per-operator widget",
+            Regex("""field\?\.operators\?\.firstOrNull\s*\{\s*it\.operator\s*==\s*op\s*\}""")
+                .containsMatchIn(screenSrc),
+        )
+        // The control follows the operator the row currently carries, not
+        // the field's default — a `source contains` row is a text box, and
+        // keying off the field alone is what made that row unreachable.
+        assertTrue(
+            "the widget lookup must be keyed on the selected operator",
+            Regex("""widgetFor\(\s*field\s*,\s*condition\.op\s*\)""").containsMatchIn(screenSrc),
         )
         assertFalse(
             "the widget must not be re-derived from the field name",
             Regex("""field\.name\s*==\s*"deadline"""").containsMatchIn(screenSrc),
         )
+    }
+
+    /** The `source` field's vocabulary is the frozen registry
+     * (`hummingbird_domain::REGISTRY`), reached through
+     * `RuleFormRecord.sources`. A hand-written list of source strings here
+     * is the same failure as a hand-written field list: it compiles, it
+     * renders, and it silently disagrees with what the authority accepts
+     * the first time the registry moves. */
+    @Test
+    fun `the source picker reads the seam's vocabulary and hand-writes none of it`() {
+        assertTrue(
+            "the source picker must read form.sources",
+            screenSrc.contains("form.sources"),
+        )
+        assertTrue(
+            "retirement must be the registry's own retiredAs, never a Kotlin list",
+            screenSrc.contains("retiredAs"),
+        )
+        for ((name, src) in both) {
+            assertFalse(
+                "$name must not hand-write a source string",
+                Regex(""""[a-z0-9-]+/v\d"""").containsMatchIn(src),
+            )
+        }
     }
 
     /** Every `when` over a seam enum must be exhaustive with no `else ->`

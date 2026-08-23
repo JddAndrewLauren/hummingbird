@@ -22,6 +22,11 @@ const registry: KindRegistryDTO = {
   ],
   alarmIntervalMs: 900_000,
   severities: ["low", "normal", "high", "urgent"],
+  sources: [
+    { source: "gmail/v1", retiredAs: null },
+    { source: "city-waste/v1", retiredAs: "city-waste/v2" },
+    { source: "city-waste/v2", retiredAs: null },
+  ],
 };
 
 describe("kindOptions", () => {

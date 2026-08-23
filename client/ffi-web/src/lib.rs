@@ -1445,6 +1445,10 @@ mod wasm_bindings {
         /// (`true`, with `event_kind` carrying the new value or `None`) —
         /// the same double-`Option` [`hummingbird_domain::RulePatch`]
         /// itself carries, flattened for the wasm boundary.
+        /// `deleted_at_touched`/`deleted_at` is the same pair for the rule's
+        /// soft-delete flag — **deleting a rule is this call**, not a route
+        /// of its own, and `deleted_at_touched: true` with `deleted_at:
+        /// None` is the explicit `null` that un-deletes.
         #[wasm_bindgen(js_name = patchRule)]
         #[allow(clippy::too_many_arguments)]
         pub fn patch_rule(
@@ -1458,6 +1462,8 @@ mod wasm_bindings {
             severity: Option<String>,
             tier: Option<String>,
             enabled: Option<bool>,
+            deleted_at_touched: bool,
+            deleted_at: Option<f64>,
             now_ms: f64,
         ) -> js_sys::Promise {
             let inner = self.inner.clone();
@@ -1484,6 +1490,8 @@ mod wasm_bindings {
                         severity,
                         tier,
                         enabled,
+                        deleted_at_touched,
+                        deleted_at.map(|ms| ms as i64),
                         now_ms as i64,
                     )
                     .await;

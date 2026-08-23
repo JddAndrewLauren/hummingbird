@@ -849,6 +849,27 @@ pub struct KindRegistryResponse {
     /// `alarm_interval_ms` doc above warns about: `hummingbird_domain` is
     /// already this crate's dependency, unlike `hummingbird_authority`.
     pub severities: &'static [&'static str],
+    /// `hummingbird_domain::REGISTRY`, in registration order — the `source`
+    /// core field's frozen vocabulary, so the rules screen's source
+    /// dropdown offers exactly what the authority will accept. Same
+    /// justification as `severities`: `hummingbird_domain` is already this
+    /// crate's dependency. Retired entries are carried, not filtered — an
+    /// existing rule may name one, and hiding it would render a blank
+    /// `<select>` rather than the value actually stored
+    /// (`hummingbird_core::decisions::rules::SourceOption`).
+    pub sources: Vec<SourceOptionDTO>,
+}
+
+/// One entry of [`KindRegistryResponse::sources`] — a registered `source`
+/// and, when ADR-0014 has bumped it, the successor it was retired in favour
+/// of. `retired_as: Some(_)` is what makes an option unselectable in the
+/// editor: the authority already 400s that save
+/// (`RuleProblem::RetiredSource`), and this is what lets the operator see
+/// it first.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SourceOptionDTO {
+    pub source: &'static str,
+    pub retired_as: Option<&'static str>,
 }
 
 /// Mirrors `hummingbird_authority::sweep::ALARM_INTERVAL_MS` — see
@@ -1683,6 +1704,13 @@ impl TaskHostCore {
                 .collect(),
             alarm_interval_ms: ALARM_INTERVAL_MS,
             severities: &hummingbird_domain::SEVERITIES[..],
+            sources: hummingbird_domain::REGISTRY
+                .iter()
+                .map(|entry| SourceOptionDTO {
+                    source: entry.source,
+                    retired_as: entry.retired_as,
+                })
+                .collect(),
         }
     }
 
@@ -1746,10 +1774,14 @@ impl TaskHostCore {
     /// last-known copy of the row (from [`TaskHostCore::rules`]), so this
     /// method never re-reads the mirror for it — the same "caller supplies
     /// `base`" contract every other CAS write here follows.
-    /// `event_kind`/`conditions`/`severity`/`tier`/`enabled` are each
-    /// `None` to mean "leave this field alone." `tier`, when present, is
-    /// the wire's snake_case name, resolved through [`Tier::parse`] before
-    /// it can reach `Core`.
+    /// `event_kind`/`conditions`/`severity`/`tier`/`enabled`/`deleted_at`
+    /// are each `None` to mean "leave this field alone." `tier`, when
+    /// present, is the wire's snake_case name, resolved through
+    /// [`Tier::parse`] before it can reach `Core`.
+    ///
+    /// **Deleting a rule is this method with `deleted_at` set** — one
+    /// flagged column on the one CAS write, per [`Core::patch_rule`]; there
+    /// is no delete entry point here either.
     #[allow(clippy::too_many_arguments)]
     pub async fn patch_rule(
         &mut self,
@@ -1764,6 +1796,11 @@ impl TaskHostCore {
         severity: Option<String>,
         tier: Option<String>,
         enabled: Option<bool>,
+        // The same flattened double-`Option` as `event_kind` above:
+        // `deleted_at_touched` with `deleted_at: None` is the explicit
+        // `null` that un-deletes.
+        deleted_at_touched: bool,
+        deleted_at: Option<i64>,
         now_ms: i64,
     ) -> PatchRuleResponse {
         let tier = match tier {
@@ -1791,9 +1828,13 @@ impl TaskHostCore {
             None => None,
         };
         let event_kind = event_kind_touched.then_some(event_kind);
+        let deleted_at = deleted_at_touched.then_some(deleted_at);
         match self
             .core
-            .patch_rule(seed, current, name, event_kind, conditions, severity, tier, enabled, now_ms)
+            .patch_rule(
+                seed, current, name, event_kind, conditions, severity, tier, enabled, deleted_at,
+                now_ms,
+            )
             .await
         {
             Ok(()) => PatchRuleResponse { kind: "ok", error: None },
@@ -4342,6 +4383,40 @@ mod rule_tests {
         assert!(json.contains(r#""severities":["low","normal","high","urgent"]"#));
     }
 
+    /// The source vocabulary crosses whole and in registration order,
+    /// **retired entries included** — an existing rule may name one, and a
+    /// dropdown that could not render it would show a blank control instead
+    /// of the value actually stored. `city-waste/v1` is the registry's real
+    /// retired entry (ADR-0014), and it arrives naming its successor, which
+    /// is what an editor marks the option unselectable on.
+    #[tokio::test]
+    async fn kind_registry_carries_every_source_with_the_retired_one_named() {
+        let response = TaskHostCore::kind_registry();
+        assert_eq!(response.sources.len(), hummingbird_domain::REGISTRY.len());
+        assert_eq!(
+            response.sources.iter().map(|s| s.source).collect::<Vec<_>>(),
+            hummingbird_domain::REGISTRY.iter().map(|e| e.source).collect::<Vec<_>>(),
+            "registration order, verbatim",
+        );
+
+        let retired = response
+            .sources
+            .iter()
+            .find(|s| s.source == "city-waste/v1")
+            .expect("the registry's retired entry still ships");
+        assert_eq!(retired.retired_as, Some("city-waste/v2"));
+
+        let live = response
+            .sources
+            .iter()
+            .find(|s| s.source == hummingbird_domain::GMAIL_V1)
+            .expect("a live source");
+        assert_eq!(live.retired_as, None);
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains(r#"{"source":"city-waste/v1","retired_as":"city-waste/v2"}"#));
+    }
+
     #[tokio::test]
     async fn creating_a_rule_with_an_unrecognised_tier_never_reaches_core_create_rule() {
         let dir = tempfile::tempdir().unwrap();
@@ -4397,10 +4472,66 @@ mod rule_tests {
             enabled: true,
             updated_at: 1,
             version: 3,
+            deleted_at: None,
         };
 
         let response = host
-            .patch_rule("seed-1", &rule, None, false, None, None, None, None, Some(false), 2_000)
+            .patch_rule(
+                "seed-1",
+                &rule,
+                None,
+                false,
+                None,
+                None,
+                None,
+                None,
+                Some(false),
+                false,
+                None,
+                2_000,
+            )
+            .await;
+
+        assert_eq!(response.kind, "ok");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+    }
+
+    /// Deleting a rule crosses this seam as one more field on the same
+    /// patch — no delete entry point, per `Core::patch_rule`'s own contract.
+    #[tokio::test]
+    async fn deleting_a_rule_crosses_as_the_same_patch_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-delete-rule");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        let rule = hummingbird_domain::Rule {
+            id: "r-1".to_string(),
+            name: "trash slide".to_string(),
+            event_kind: None,
+            conditions: vec![],
+            severity: "high".to_string(),
+            tier: hummingbird_domain::Tier::Urgent,
+            enabled: true,
+            updated_at: 1,
+            version: 3,
+            deleted_at: None,
+        };
+
+        let response = host
+            .patch_rule(
+                "seed-1",
+                &rule,
+                None,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                true,
+                Some(9_000),
+                2_000,
+            )
             .await;
 
         assert_eq!(response.kind, "ok");
@@ -4423,6 +4554,7 @@ mod rule_tests {
             enabled: true,
             updated_at: 1,
             version: 3,
+            deleted_at: None,
         };
 
         let response = host
@@ -4435,6 +4567,8 @@ mod rule_tests {
                 None,
                 None,
                 Some("not-a-tier".to_string()),
+                None,
+                false,
                 None,
                 2_000,
             )

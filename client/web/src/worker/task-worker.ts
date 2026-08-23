@@ -150,6 +150,8 @@ export interface TaskHostLike {
     severity: string | null,
     tier: string | null,
     enabled: boolean | null,
+    deletedAtTouched: boolean,
+    deletedAt: number | null,
     nowMs: number,
   ): Promise<string>;
   /** #245's generic pane read. Mirrors `hummingbird-ffi-web`'s
@@ -338,6 +340,7 @@ interface RawRule {
   enabled: boolean;
   updated_at: number;
   version: number;
+  deleted_at: number | null;
 }
 
 interface RawRuleListResponse {
@@ -373,6 +376,12 @@ interface RawKindRegistryResponse {
   core_fields: RawKindField[];
   alarm_interval_ms: number;
   severities: string[];
+  sources: RawSourceOption[];
+}
+
+interface RawSourceOption {
+  source: string;
+  retired_as: string | null;
 }
 
 // -- the pane read (#245) — pinned to `PaneReadResponse`'s serde output by
@@ -711,6 +720,7 @@ function mapRule(raw: RawRule): RuleDTO {
     enabled: raw.enabled,
     updatedAt: raw.updated_at,
     version: raw.version,
+    deletedAt: raw.deleted_at,
   };
 }
 
@@ -728,6 +738,7 @@ function mapKindRegistry(raw: RawKindRegistryResponse): KindRegistryDTO {
     coreFields: raw.core_fields.map(mapKindField),
     alarmIntervalMs: raw.alarm_interval_ms,
     severities: raw.severities,
+    sources: raw.sources.map((s) => ({ source: s.source, retiredAs: s.retired_as })),
   };
 }
 
@@ -1142,6 +1153,7 @@ export async function handleTaskRequest(
             enabled: request.current.enabled,
             updated_at: request.current.updatedAt,
             version: request.current.version,
+            deleted_at: request.current.deletedAt,
           }),
           request.name,
           request.eventKindTouched,
@@ -1150,6 +1162,8 @@ export async function handleTaskRequest(
           request.severity,
           request.tier,
           request.enabled,
+          request.deletedAtTouched,
+          request.deletedAt,
           request.nowMs,
         ),
       ) as RawPatchRuleResponse;

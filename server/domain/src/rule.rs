@@ -64,6 +64,13 @@ pub struct Rule {
     pub enabled: bool,
     pub updated_at: i64,
     pub version: i64,
+    /// ms epoch; `None` = a live rule. A soft delete, exactly
+    /// `Step::deleted_at`: the flagged row still rides the delta pull, so
+    /// every device learns the rule is gone rather than keeping it on
+    /// screen until a full sweep. A deleted rule never fires
+    /// (`load_enabled` filters it) and never lists.
+    #[serde(default)]
+    pub deleted_at: Option<i64>,
 }
 
 /// One FCM registration, exactly the `push_targets` columns. Individually
@@ -203,6 +210,7 @@ mod tests {
             enabled: true,
             updated_at: 1,
             version: 1,
+            deleted_at: None,
         };
         let json = serde_json::to_string(&rule).unwrap();
         let back: Rule = serde_json::from_str(&json).unwrap();

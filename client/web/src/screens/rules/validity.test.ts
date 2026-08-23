@@ -13,6 +13,11 @@ const registry: KindRegistryDTO = {
   ],
   alarmIntervalMs: 900_000,
   severities: ["low", "normal", "high", "urgent"],
+  sources: [
+    { source: "gmail/v1", retiredAs: null },
+    { source: "city-waste/v1", retiredAs: "city-waste/v2" },
+    { source: "city-waste/v2", retiredAs: null },
+  ],
 };
 
 function rule(overrides: Partial<RuleDTO> = {}): RuleDTO {
@@ -26,6 +31,7 @@ function rule(overrides: Partial<RuleDTO> = {}): RuleDTO {
     enabled: true,
     updatedAt: 1,
     version: 1,
+    deletedAt: null,
     ...overrides,
   };
 }

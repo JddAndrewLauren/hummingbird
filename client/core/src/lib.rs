@@ -2275,6 +2275,17 @@ where
     /// `current` verbatim (the caller's own last-known copy of the row,
     /// e.g. from [`Core::rules`]), for [`sync::write::rebase::decide`] to
     /// diff a 409 against.
+    ///
+    /// **Deleting a rule is this method with `deleted_at: Some(Some(ms))`,
+    /// and there is no `delete_rule`.** A rule's deletion is one flagged
+    /// column on the one CAS write ([`RulePatch::deleted_at`], the
+    /// `steps.deleted_at` precedent), so a second entry point would only be
+    /// a second thing to keep in step with this one. `Some(None)` sends an
+    /// explicit JSON `null` and un-deletes; `None` leaves the flag alone,
+    /// the same three-way reading every double-`Option` here carries. No
+    /// optimistic overlay — the row stays on screen until a completed cycle
+    /// pulls the flagged version back, which is what the caller's own
+    /// pending affordance is for.
     #[allow(clippy::too_many_arguments)]
     pub async fn patch_rule(
         &mut self,
@@ -2286,6 +2297,7 @@ where
         severity: Option<String>,
         tier: Option<Tier>,
         enabled: Option<bool>,
+        deleted_at: Option<Option<i64>>,
         now_ms: i64,
     ) -> Result<(), SnapshotError<QS::Error>> {
         let base = serde_json::to_value(current).expect("Rule always serializes");
@@ -2297,6 +2309,7 @@ where
             severity: None,
             tier: None,
             enabled: None,
+            deleted_at: None,
         };
         patch.name = name;
         patch.event_kind = event_kind;
@@ -2304,6 +2317,7 @@ where
         patch.severity = severity;
         patch.tier = tier;
         patch.enabled = enabled;
+        patch.deleted_at = deleted_at;
 
         let mut patch_fields = serde_json::to_value(&patch).expect("RulePatch always serializes");
         // `expected_version` rides on the wire body but is not itself a
@@ -6458,6 +6472,7 @@ mod tests {
             enabled,
             updated_at: 1,
             version,
+            deleted_at: None,
         }
     }
 
@@ -7226,6 +7241,7 @@ mod tests {
             None,
             None,
             Some(false),
+            None,
             3_000,
         )
         .await
@@ -7251,6 +7267,84 @@ mod tests {
             patch_fields.get("expected_version").is_none(),
             "expected_version is not a touched field — drain fills it at send time"
         );
+    }
+
+    /// Deleting a rule is the same one CAS write, with `deleted_at` as the
+    /// only touched field — there is no `delete_rule`, and nothing else
+    /// about the row is restated on the wire. `deleted_at: Some(None)`
+    /// un-deletes, which is what keeps the flag a state rather than a
+    /// one-way door.
+    #[tokio::test]
+    async fn deleting_a_rule_is_one_cas_patch_touching_only_deleted_at() {
+        let mut core = core_with_rules(vec![fixture_rule("r-1", true, 5)]).await;
+        let current = core.rules().into_iter().find(|r| r.id == "r-1").unwrap();
+
+        core.patch_rule(
+            "seed-1",
+            &current,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(Some(9_000)),
+            3_000,
+        )
+        .await
+        .unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        assert_eq!(entries.len(), 1);
+        let MutationIntent::Patch { path, patch_fields, .. } = &entries[0].intent else {
+            panic!("a delete is a CAS patch, not a create");
+        };
+        assert_eq!(path, "/api/rules/r-1");
+        assert_eq!(patch_fields, &serde_json::json!({"deleted_at": 9_000}));
+    }
+
+    /// The clear half of the double-`Option`: an explicit JSON `null`,
+    /// distinct from omitting the field — which is what
+    /// `RulePatch::deleted_at`'s `touched` deserializer reads as
+    /// "un-delete" server-side.
+    #[tokio::test]
+    async fn un_deleting_a_rule_sends_an_explicit_null() {
+        let mut deleted = fixture_rule("r-1", true, 5);
+        deleted.deleted_at = Some(9_000);
+        let mut core = core_with_rules(vec![deleted]).await;
+        // `Core::rules` filters deleted rows, so the caller's base here is
+        // the row it already holds — the same "caller supplies `base`"
+        // contract every CAS write in this file follows.
+        let current = {
+            let mut row = fixture_rule("r-1", true, 5);
+            row.deleted_at = Some(9_000);
+            row
+        };
+
+        core.patch_rule(
+            "seed-1", &current, None, None, None, None, None, None, Some(None), 3_000,
+        )
+        .await
+        .unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        let MutationIntent::Patch { patch_fields, .. } = &entries[0].intent else {
+            panic!("a CAS patch");
+        };
+        assert_eq!(patch_fields, &serde_json::json!({"deleted_at": null}));
+    }
+
+    /// A deleted rule is not in [`Core::rules`] at all: the flagged row
+    /// rides the delta pull precisely so the screen stops showing it
+    /// without waiting for a full sweep.
+    #[tokio::test]
+    async fn a_deleted_rule_is_absent_from_the_rules_read() {
+        let mut deleted = fixture_rule("r-gone", true, 5);
+        deleted.deleted_at = Some(9_000);
+        let core = core_with_rules(vec![fixture_rule("r-live", true, 5), deleted]).await;
+
+        let ids: Vec<String> = core.rules().into_iter().map(|r| r.id).collect();
+        assert_eq!(ids, ["r-live"]);
     }
 
     // ---- M2's alert surface (#141, ADR-0012) ----
