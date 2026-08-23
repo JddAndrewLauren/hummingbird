@@ -48,6 +48,16 @@ import { computeUrgency, type Urgency } from "../urgency";
 // `sourceId`, and the events and items are re-attached here, where they
 // already are.
 //
+// **The window shrinks as the weekend is spent.** `days` used to be
+// Friday/Saturday/Sunday for the whole life of the window; a day now
+// leaves it at its own local midnight, so on Sunday the pane draws Sunday
+// alone and an unfinished item that was due or scheduled on a dropped day
+// goes with it. The filter lives in `weekendWindow` below, not in
+// `WeekendPaneExpanded.tsx` — everything downstream (the merge, the
+// counts, the headline, the glyphs, the plan chips) reads `days`, so one
+// filter moves all of them, and `weekend.rs`'s `weekend_window` carries
+// the identical `retain` on the other side of the pin.
+//
 // `entryUrgency` is still unsunk — it reads `computeUrgency`, which is
 // already `hummingbird_core::decisions::urgency` (M1-2, #500) under a
 // different name; there is nothing second to sink.
@@ -89,6 +99,11 @@ export interface WeekendDay {
 export interface WeekendWindow {
   startMs: number;
   endMs: number;
+  /** The window's days that have not yet ended at the device, in window
+   * order — Friday/Saturday/Sunday while the weekend is still ahead, then
+   * shrinking by one as each day's own local midnight passes. Never empty
+   * (the rollover precedes Sunday's end). `weekend.rs`'s
+   * `WeekendWindow::days`, mirrored — that field's doc is canonical. */
   days: WeekendDay[];
   underWay: boolean;
 }
@@ -97,7 +112,10 @@ export interface WeekendWindow {
  * Friday 17:00 local through Sunday 23:59:59.999 local — #122's pinned
  * window, rolling forward from Sunday 20:00 local. Pinned against
  * `weekend.rs`'s `weekend_window` by `weekend-window.shared.test.ts`
- * rather than called through the seam — see the module header for why. */
+ * rather than called through the seam — see the module header for why.
+ *
+ * `startMs`/`endMs`/`underWay` are facts about the whole weekend and never
+ * shrink; `days` does, dropping each day as it ends (its own doc above). */
 export function weekendWindow(nowMs: number): WeekendWindow {
   const today = startOfLocalDay(nowMs);
   const dow = new Date(nowMs).getDay();
@@ -115,18 +133,25 @@ export function weekendWindow(nowMs: number): WeekendWindow {
   const startMs = fridayMidnight + 17 * HOUR_MS;
   const endMs = addLocalDays(sundayMidnight, 1) - 1;
 
-  const days: WeekendDay[] = [0, 1, 2].map((offset) => {
-    const dayStart = addLocalDays(fridayMidnight, offset);
-    const at = new Date(dayStart);
-    return {
-      key: dayKeyOf(dayStart),
-      label: at.toLocaleDateString([], { weekday: "long" }),
-      dateLabel: at.toLocaleDateString([], { month: "short", day: "numeric" }),
-      startMs: dayStart,
-      endMs: addLocalDays(dayStart, 1) - 1,
-      entries: [],
-    };
-  });
+  const days: WeekendDay[] = [0, 1, 2]
+    .map((offset) => {
+      const dayStart = addLocalDays(fridayMidnight, offset);
+      const at = new Date(dayStart);
+      return {
+        key: dayKeyOf(dayStart),
+        label: at.toLocaleDateString([], { weekday: "long" }),
+        dateLabel: at.toLocaleDateString([], { month: "short", day: "numeric" }),
+        startMs: dayStart,
+        endMs: addLocalDays(dayStart, 1) - 1,
+        entries: [],
+      };
+    })
+    // The shrink, mirroring `weekend_window`'s own `retain`: a day leaves
+    // the window at its own end. Filtering here rather than in the
+    // renderer is the whole point — `mergeWindow` below maps over these
+    // days, so the columns, the plan chips, the counts and the headline
+    // all follow from one place, on both hosts.
+    .filter((day) => day.endMs >= nowMs);
 
   return { startMs, endMs, days, underWay: nowMs >= startMs && nowMs <= endMs };
 }
@@ -195,19 +220,23 @@ function toWindowEntry(
  * inverse (scheduled inside, due outside, deadline still shown) rides the
  * surviving entry. Both now live in the core alone.
  *
- * **`nowMs` is `window.startMs`**, not a sampled clock: the core computes
- * its own window from the instant it is given, and Friday 17:00 is inside
- * the window it came from, so it re-derives the identical one. Sampling
- * `Date.now()` here instead would let a merge run against next weekend's
- * window on a Sunday evening render — the exact rollover this function's
- * caller has already decided.
+ * **`nowMs` is the first still-ahead day's own midnight**, not a sampled
+ * clock: the core computes its own window from the instant it is given,
+ * and that instant re-derives the identical one — same weekend (it is
+ * inside it, or is its Friday midnight before it opens) and the same days,
+ * because every day the caller's window still holds ends at or after it.
+ * Sampling `Date.now()` here instead would let a merge run against next
+ * weekend's window on a Sunday evening render — the exact rollover this
+ * function's caller has already decided. `window.startMs` (Friday 17:00),
+ * which this used before the days began to shrink, would now re-derive a
+ * *wider* window than the caller's on a Saturday or Sunday.
  */
 export function mergeWindow(
   window: WeekendWindow,
   events: readonly CalendarEventDTO[],
   items: readonly TaskItemDTO[],
 ): WeekendWindow {
-  const nowMs = window.startMs;
+  const nowMs = window.days[0]?.startMs ?? window.startMs;
   const facts = resolveZoneFacts(weekendZoneQueriesFromCore(nowMs));
   const resolved = weekendFactsFromCore(
     {

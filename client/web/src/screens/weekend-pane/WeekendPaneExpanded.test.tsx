@@ -43,6 +43,10 @@ function item(overrides: Partial<TaskItemDTO> & { id: string }): TaskItemDTO {
 // `answered` state) without needing to click through the collapsed row.
 const LIVE_NOW_MS = weekendWindow(Date.now()).startMs + 60 * 60 * 1000;
 const SATURDAY_KEY = weekendWindow(LIVE_NOW_MS).days[1].key;
+const SUNDAY_KEY = weekendWindow(LIVE_NOW_MS).days[2].key;
+// Sunday 09:00 of that same weekend — after Saturday's end, before the
+// Sunday-20:00 rollover, so the window has shrunk to Sunday alone.
+const SUNDAY_NOW_MS = weekendWindow(LIVE_NOW_MS).days[2].startMs + 9 * 60 * 60 * 1000;
 
 describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
   it("renders due and scheduled entries distinctly, and a due item's residue do-date", () => {
@@ -154,6 +158,86 @@ describe("WeekendPaneExpanded (mounted through RankedRegion)", () => {
     fireEvent.click(screen.getByTitle(/clear this do-date/i));
 
     expect(onSetScheduledDate).toHaveBeenCalledWith("sched-1", null);
+  });
+
+  it("draws only the days still ahead, and offers only those as plan chips", () => {
+    // The shrink, at the surface: asked on Sunday morning, Friday and
+    // Saturday are gone as columns AND as places to plan something.
+    const { unmount } = render(
+      <RankedRegion
+        surface="now"
+        inputs={{
+          sync: EMPTY_QUESTION_SYNC,
+          bindings: [],
+          paneReads: {},
+          calendarConnected: true,
+          calendarReads: {
+            [CALENDAR_REQUEST_KEY]: { state: "read", events: [], freshness: { kind: "unknown" } },
+          },
+          items: [item({ id: "due-1", title: "Renew the car insurance", deadline: SUNDAY_KEY })],
+        }}
+        nowMs={LIVE_NOW_MS}
+        syncOutcomeSeq={0}
+        onScreen={() => {}}
+        onSetScheduledDate={() => {}}
+      />,
+    );
+
+    // Friday evening: three columns, three chips.
+    expect(screen.getByText("Friday")).toBeTruthy();
+    expect(screen.getByText("Saturday")).toBeTruthy();
+    expect(screen.getAllByTitle(/plan it for/i)).toHaveLength(3);
+    unmount();
+
+    render(
+      <RankedRegion
+        surface="now"
+        inputs={{
+          sync: EMPTY_QUESTION_SYNC,
+          bindings: [],
+          paneReads: {},
+          calendarConnected: true,
+          calendarReads: {
+            [CALENDAR_REQUEST_KEY]: { state: "read", events: [], freshness: { kind: "unknown" } },
+          },
+          items: [item({ id: "due-1", title: "Renew the car insurance", deadline: SUNDAY_KEY })],
+        }}
+        nowMs={SUNDAY_NOW_MS}
+        syncOutcomeSeq={0}
+        onScreen={() => {}}
+        onSetScheduledDate={() => {}}
+      />,
+    );
+
+    expect(screen.queryByText("Friday")).toBeNull();
+    expect(screen.queryByText("Saturday")).toBeNull();
+    expect(screen.getByText("Sunday")).toBeTruthy();
+    expect(screen.getByText("Renew the car insurance")).toBeTruthy();
+    expect(screen.getAllByTitle(/plan it for/i)).toHaveLength(1);
+  });
+
+  it("loses an unfinished item due on a day that has ended, with no carry-forward", () => {
+    render(
+      <RankedRegion
+        surface="now"
+        inputs={{
+          sync: EMPTY_QUESTION_SYNC,
+          bindings: [],
+          paneReads: {},
+          calendarConnected: true,
+          calendarReads: {
+            [CALENDAR_REQUEST_KEY]: { state: "read", events: [], freshness: { kind: "unknown" } },
+          },
+          items: [item({ id: "due-1", title: "Renew the car insurance", deadline: SATURDAY_KEY })],
+        }}
+        nowMs={SUNDAY_NOW_MS}
+        syncOutcomeSeq={0}
+        onScreen={() => {}}
+      />,
+    );
+
+    expect(screen.queryByText("Renew the car insurance")).toBeNull();
+    expect(screen.getByText("A clear weekend")).toBeTruthy();
   });
 
   it("renders a clear-weekend empty state for a genuinely empty answered pane", () => {

@@ -154,13 +154,66 @@ describe("weekendWindow", () => {
     expect(window.underWay).toBe(false);
   });
 
-  it("always carries exactly three days — Friday, Saturday, Sunday", () => {
+  it("carries all three days while the whole weekend is still ahead", () => {
     const window = weekendWindow(at(2026, 8, 10, 9, 0));
     expect(window.days.map((day) => day.key)).toEqual([
       dayKeyOf(at(2026, 8, 14)),
       dayKeyOf(at(2026, 8, 15)),
       dayKeyOf(at(2026, 8, 16)),
     ]);
+  });
+
+  it("still carries all three on Friday evening — Friday is being spent, not ended", () => {
+    // The shrink is keyed to a day's own midnight, not to the window's
+    // 17:00 start.
+    const window = weekendWindow(at(2026, 8, 14, 20, 0));
+    expect(window.underWay).toBe(true);
+    expect(window.days.map((day) => day.key)).toHaveLength(3);
+  });
+
+  it("drops Friday once Friday has ended", () => {
+    const window = weekendWindow(at(2026, 8, 15, 9, 0));
+    expect(window.days.map((day) => day.key)).toEqual([
+      dayKeyOf(at(2026, 8, 15)),
+      dayKeyOf(at(2026, 8, 16)),
+    ]);
+  });
+
+  it("keeps Friday through its own last millisecond", () => {
+    const lastMs = at(2026, 8, 15) - 1;
+    expect(weekendWindow(lastMs).days).toHaveLength(3);
+    expect(weekendWindow(lastMs + 1).days).toHaveLength(2);
+  });
+
+  it("holds Sunday alone on Sunday", () => {
+    const window = weekendWindow(at(2026, 8, 16, 9, 0));
+    expect(window.days.map((day) => day.key)).toEqual([dayKeyOf(at(2026, 8, 16))]);
+  });
+
+  it("is never empty at Sunday 19:59, the last instant before the rollover", () => {
+    // The invariant that replaced "always exactly three": the rollover
+    // fires at Sunday 20:00, before Sunday's own end.
+    expect(weekendWindow(at(2026, 8, 16, 19, 59)).days.map((day) => day.key)).toEqual([
+      dayKeyOf(at(2026, 8, 16)),
+    ]);
+  });
+
+  it("is three days again once the rollover moves to next weekend", () => {
+    expect(weekendWindow(at(2026, 8, 16, 20, 1)).days.map((day) => day.key)).toEqual([
+      dayKeyOf(at(2026, 8, 21)),
+      dayKeyOf(at(2026, 8, 22)),
+      dayKeyOf(at(2026, 8, 23)),
+    ]);
+  });
+
+  it("never shrinks its start, end or underWay with its days", () => {
+    // The band is a fact about the whole weekend; only the day columns go.
+    const sunday = weekendWindow(at(2026, 8, 16, 9, 0));
+    expect(sunday.startMs).toBe(at(2026, 8, 14, 17, 0));
+    expect(sunday.endMs).toBe(at(2026, 8, 17) - 1);
+    expect(sunday.underWay).toBe(true);
+    expect(weekendBand(sunday, at(2026, 8, 16, 9, 0))).toBe("live");
+    expect(weekendWithinBand(sunday)).toBe(sunday.endMs);
   });
 });
 
@@ -310,16 +363,39 @@ describe("mergeWindow", () => {
     expect(all[0].deadlineOutsideWindow).toBe("2026-08-25");
   });
 
-  it("keeps an entry already in the past within the window, unrestyled", () => {
+  it("keeps an entry already in the past on a day that has not ended, unrestyled", () => {
     // Asked from Saturday afternoon: Saturday morning's parkrun stays.
-    const nowMs = at(2026, 8, 15, 14, 0);
-    const liveWindow = weekendWindow(nowMs);
+    // A day is spent, not gone, until its own midnight.
     const merged = mergeWindow(
-      liveWindow,
+      weekendWindow(at(2026, 8, 15, 14, 0)),
       [event({ id: "parkrun", startMs: at(2026, 8, 15, 9, 0), endMs: at(2026, 8, 15, 10, 0) })],
       [],
     );
     expect(countKinds(merged).events).toBe(1);
+  });
+
+  it("loses that same entry once its day has ended", () => {
+    // The other half of the rule, asked on Sunday: Saturday's parkrun is
+    // not a plan any more, and there is no Saturday column to hold it.
+    const merged = mergeWindow(
+      weekendWindow(at(2026, 8, 16, 9, 0)),
+      [event({ id: "parkrun", startMs: at(2026, 8, 15, 9, 0), endMs: at(2026, 8, 15, 10, 0) })],
+      [],
+    );
+    expect(merged.days.map((day) => day.key)).toEqual([dayKeyOf(at(2026, 8, 16))]);
+    expect(countKinds(merged).events).toBe(0);
+  });
+
+  it("drops an unfinished item due on a day that has ended, with no carry-forward", () => {
+    // Ruling 2 of the shrink: the same item, same stage, asked twice.
+    const fridayDue = item({ id: "fri-due", deadline: dayKeyOf(at(2026, 8, 14)) });
+
+    const onFriday = mergeWindow(weekendWindow(at(2026, 8, 14, 9, 0)), [], [fridayDue]);
+    expect(countKinds(onFriday).due).toBe(1);
+
+    const onSaturday = mergeWindow(weekendWindow(at(2026, 8, 15, 9, 0)), [], [fridayDue]);
+    expect(countKinds(onSaturday).due).toBe(0);
+    expect(onSaturday.days.every((day) => day.entries.length === 0)).toBe(true);
   });
 
   it("drops an item with neither a due date nor a do-date in the window", () => {

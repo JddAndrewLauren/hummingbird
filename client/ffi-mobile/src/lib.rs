@@ -2274,9 +2274,11 @@ pub struct MobileWeekendDay {
     pub end_ms: i64,
 }
 
-/// [`weekend::WeekendWindow`], mirrored — `days` is always exactly three
-/// (Friday, Saturday, Sunday), a `Vec` only because uniffi has no
-/// fixed-length array.
+/// [`weekend::WeekendWindow`], mirrored — `days` holds only the days that
+/// have not yet ended at the device (three while the weekend is still
+/// ahead, then shrinking to Sunday alone; never empty), so the `Vec` is
+/// load-bearing rather than a uniffi workaround. That field's own doc in
+/// `weekend.rs` is canonical.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct MobileWeekendWindow {
     pub start_ms: i64,
@@ -2380,7 +2382,8 @@ pub struct MobileWeekendDayEntries {
 pub struct MobileWeekendFacts {
     pub window: MobileWeekendWindow,
     pub counts: MobileWeekendCounts,
-    /// Always exactly three, in window order — Friday, Saturday, Sunday.
+    /// One per day still ahead, in window order — `window.days` verbatim,
+    /// so this shrinks as the weekend is spent. Never empty.
     pub days: Vec<MobileWeekendDayEntries>,
 }
 
@@ -9675,6 +9678,46 @@ mod settings_tests {
         };
         assert_eq!(facts.window.days.len(), 3);
         assert_eq!(facts.counts, MobileWeekendCounts { events: 0, due: 0, scheduled: 0 });
+
+        // The shrink crosses the seam: asked on the Sunday of that same
+        // weekend (`PANE_NOW_MS` is the Monday before, device-local), the
+        // window carries Sunday alone. `MobileWeekendWindow.days` is a
+        // `Vec` and nothing here re-imposes an arity, but this is what
+        // says so — Android's card derives its day columns AND its plan
+        // chips from exactly this list.
+        const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+        let sunday_inputs = pane_inputs(serde_json::json!({
+            "nowMs": PANE_NOW_MS + 6 * DAY_MS,
+            "bindings": [],
+            "calendarConnected": true,
+            "calendarReads": {
+                weekend::CALENDAR_REQUEST_KEY: {
+                    "state": "read",
+                    "events": [],
+                    "freshness": {"kind":"age","ageMs":60000,"declaredCadenceMs":null},
+                },
+            },
+        }));
+        let sunday_zone = resolve_zone(&weekend::weekend_zone_queries(sunday_inputs.now_ms));
+        let sunday_arm = mobile_pane_facts_of(
+            StandingQuestion::Weekend,
+            weekend::SUBJECT_KEY,
+            &sunday_inputs,
+            &sunday_zone,
+        );
+        let MobilePaneFacts::Weekend { resolved: MobileWeekendResolved::Facts { facts: sunday } } =
+            sunday_arm
+        else {
+            panic!("expected the weekend facts arm on Sunday");
+        };
+        assert_eq!(
+            sunday.window.days.iter().map(|day| day.date.as_str()).collect::<Vec<_>>(),
+            vec!["2026-08-16"],
+        );
+        assert_eq!(
+            sunday.days.iter().map(|day| day.date.as_str()).collect::<Vec<_>>(),
+            vec!["2026-08-16"],
+        );
 
         // THIS is the arm a device with no calendar connected still sees —
         // `calendar_connected` is real since #564, so it is now one of two

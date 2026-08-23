@@ -60,6 +60,31 @@ describe("weekendQuestion.calendarRequests", () => {
     }
   });
 
+  it("shrinks its civil start with the window, and keeps both arms on the same day", () => {
+    // Sunday 09:00: the window has shrunk to Sunday alone, so asking from
+    // Friday would fetch two days of events no column can hold — and the
+    // timed arm has to name the same opening day as the civil one, or a
+    // Sunday all-day event arrives against a Friday-17:00 lower bound.
+    const sundayMorning = new Date(2026, 7, 16, 9, 0).getTime();
+    const window = weekendWindow(sundayMorning);
+    expect(window.days.map((day) => day.key)).toHaveLength(1);
+
+    const { startDate, endDate, startMs } = request(sundayMorning);
+    expect(startDate).toBe(window.days[0].key);
+    expect(startMs).toBe(window.days[0].startMs);
+    expect(dayKeyOf(startMs)).toBe(startDate);
+    for (const day of window.days) {
+      expect(startDate <= day.key && day.key < endDate).toBe(true);
+    }
+  });
+
+  it("leaves the timed start at Friday 17:00 while the whole weekend is ahead", () => {
+    // The raise only bites once days start dropping: before the weekend,
+    // Friday midnight is below Friday 17:00, so `startMs` is the window's
+    // own start exactly as it always was.
+    expect(request(WEDNESDAY).startMs).toBe(weekendWindow(WEDNESDAY).startMs);
+  });
+
   it("rolls its civil bounds forward with the window itself", () => {
     // Sunday 21:00: `weekendWindow` has already rolled to next weekend, so
     // the request must have too — a civil arm computed from a stale window
