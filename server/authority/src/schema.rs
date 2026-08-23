@@ -72,7 +72,19 @@ use crate::sql::{Sql, SqlError, SqlValue};
 /// NOT EXISTS` grows for free — not another [`add_missing_columns`] arm.
 /// References `projects`, not `items`, so it is not part of
 /// [`FK_CHILDREN`].
-pub const SCHEMA_VERSION: i64 = 9;
+///
+/// 10 adds `rules.deleted_at` (#725's follow-on: the rules screen gains a
+/// delete). Back to the 3→4 / 4→5 / 8→9 shape — one nullable column on an
+/// existing table — so [`add_missing_columns`] gains a fifth arm rather
+/// than a rebuild. **A soft delete, not a `DELETE`**, for the reason
+/// `steps.deleted_at` already is: `changes.rs`'s `pull` selects
+/// `WHERE version > ?`, so an erased row never rides a delta and the rule
+/// would stay on every device's screen until a full sweep. `rules` carries no
+/// table-level constraint, so the `ALTER TABLE … ADD COLUMN` splices
+/// immediately before the closing paren, same as `items.agent` (4→5) and
+/// `projects`' pair (8→9) — which is why [`CREATE_RULES`] is written in
+/// that spliced form rather than as another pretty column line.
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// meta: the workspace version counter (one row), bumped by every write.
 /// Every mutated row stamps its `version` from this counter; the delta pull
@@ -291,7 +303,7 @@ CREATE TABLE IF NOT EXISTS rules (
   enabled    INTEGER NOT NULL DEFAULT 1,
   updated_at INTEGER NOT NULL,
   version    INTEGER NOT NULL
-)";
+, deleted_at INTEGER)";
 
 /// FCM registrations (ADR-0012): the notification sibling of `tokens`,
 /// individually revocable. No `version` — server-side machinery outside the
@@ -483,8 +495,9 @@ fn archive_unaddressable_items(sql: &dyn Sql, now_ms: i64) -> Result<(), SqlErro
 }
 
 /// Every column added to an already-existing table since the schema was
-/// first written — `alerts.subject_key` (3→4, ADR-0015) and `items.agent`
-/// (4→5, #115). The arms are independent and each reads its own column's
+/// first written — `alerts.subject_key` (3→4, ADR-0015), `items.agent`
+/// (4→5, #115), `projects`' pair (8→9, #625) and `rules.deleted_at`
+/// (9→10). The arms are independent and each reads its own column's
 /// presence, so a store at any starting version reaches the same shape.
 ///
 /// Runs **after** the create loop, which is what makes one rule cover every
@@ -511,6 +524,9 @@ fn add_missing_columns(sql: &dyn Sql) -> Result<(), SqlError> {
     }
     if !column_exists(sql, "projects", "default_context")? {
         sql.exec("ALTER TABLE projects ADD COLUMN default_context TEXT", &[])?;
+    }
+    if !column_exists(sql, "rules", "deleted_at")? {
+        sql.exec("ALTER TABLE rules ADD COLUMN deleted_at INTEGER", &[])?;
     }
     Ok(())
 }

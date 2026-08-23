@@ -5,6 +5,11 @@ import { Icon } from "../core/Icon";
 export interface SelectOption {
   value: string;
   label: string;
+  /** Rendered but unpickable. For a vocabulary whose members can be
+   * *retired* rather than removed — the rules screen's source list, whose
+   * retired entries must still name themselves on an existing rule while
+   * refusing a fresh pick the authority would 400 anyway. */
+  disabled?: boolean;
 }
 
 export interface SelectProps extends Omit<SelectHTMLAttributes<HTMLSelectElement>, "size" | "style"> {
@@ -37,8 +42,8 @@ export function Select({ label, options = [], value, onChange, size = "md", id, 
             boxShadow: focus ? "var(--ring-focus)" : "none", cursor: "pointer",
             transition: "border-color var(--dur-fast) var(--ease-flit)" }} {...rest}>
           {options.map((o) => {
-            const opt = typeof o === "string" ? { value: o, label: o } : o;
-            return <option key={opt.value} value={opt.value}>{opt.label}</option>;
+            const opt: SelectOption = typeof o === "string" ? { value: o, label: o } : o;
+            return <option key={opt.value} value={opt.value} disabled={opt.disabled}>{opt.label}</option>;
           })}
         </select>
         <Icon name="chevron-down" size={16} color="var(--text-muted)" style={{ position: "absolute", right: "var(--space-5)", pointerEvents: "none" }} />

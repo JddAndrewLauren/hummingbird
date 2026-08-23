@@ -5,6 +5,7 @@
 //! straight against the `Sql` seam, the same way #114 seeded `alerts` and
 //! `context_snapshots` before they had write handlers.
 
+use hummingbird_authority::SqlValue;
 use hummingbird_domain::{ChangesResponse, ConflictResponse, Rule};
 
 use crate::rig::*;
@@ -485,6 +486,44 @@ fn rules_appear_in_the_delta_pull_and_sweep_stays_byte_identical() {
     assert!(ids.contains(&"r-1") && ids.contains(&"r-2"));
 }
 
+/// The claim the whole soft delete rests on, asserted where it is actually
+/// decided. Every doc comment on this lane says the flagged row "rides the
+/// delta pull so every device learns the rule is gone" — but `list` filters
+/// deleted rules and `load_enabled` filters them too, so it would be an easy
+/// and completely silent mistake for `pull` to filter them as well, at which
+/// point a delete would reach no device except by a full sweep's
+/// absence-demotion, which `rules` does not have. The cursor is taken
+/// *before* the delete, exactly as an offline device's would be.
+#[test]
+fn a_deleted_rule_rides_the_delta_pull_carrying_its_flag() {
+    let sql = RusqliteSql::new();
+    let seeded = seed_rule(&sql, "r-1");
+    let cursor = seeded.version;
+
+    let deleted = patch_rule(
+        &sql,
+        "r-1",
+        &format!(r#"{{"expected_version": {cursor}, "deleted_at": 5000}}"#),
+        2000,
+    );
+    assert_eq!(deleted.status, 200, "{}", deleted.body);
+
+    let parsed: ChangesResponse = body_as(&changes(&sql, &format!("since={cursor}")));
+    assert_eq!(parsed.rules.len(), 1, "the delete must ride the delta, not vanish from it");
+    assert_eq!(parsed.rules[0].id, "r-1");
+    assert_eq!(
+        parsed.rules[0].deleted_at,
+        Some(5000),
+        "and carry the flag, which is what tells the device it is gone",
+    );
+
+    // `GET /api/rules` — the pollers' door — answers the opposite, from the
+    // same row. Both readings at once is the point: gone for evaluation,
+    // present for replication.
+    let listed = get_rules_as(&sql, DEVICE_TOKEN);
+    assert!(body_as::<Vec<Rule>>(&listed).is_empty(), "{}", listed.body);
+}
+
 #[test]
 fn delta_pull_only_returns_rules_above_the_cursor() {
     let sql = RusqliteSql::new();
@@ -696,6 +735,126 @@ fn a_device_token_reads_every_event_kind() {
     let resp = get_rules_as(&sql, DEVICE_TOKEN);
     let ids: Vec<String> = body_as::<Vec<Rule>>(&resp).into_iter().map(|r| r.id).collect();
     assert_eq!(ids.len(), 2);
+}
+
+// -------------------------------------------------------- delete (PATCH)
+
+/// Deleting a rule is one field on the ordinary CAS patch, not a route of
+/// its own — `StepPatch::deleted_at`'s precedent. The flagged row is still
+/// *there*, which is the whole point: it rides the delta pull so every
+/// device learns the rule is gone rather than keeping it on screen until a
+/// full sweep.
+#[test]
+fn patch_sets_deleted_at_and_the_row_survives_to_ride_the_delta() {
+    let sql = RusqliteSql::new();
+    post_rule(
+        &sql,
+        r#"{"id": "r-1", "name": "trash slide", "conditions": [], "severity": "high", "tier": "urgent"}"#,
+        1000,
+    );
+
+    let resp = patch_rule(&sql, "r-1", r#"{"expected_version": 1, "deleted_at": 5000}"#, 2000);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let patched = rule(&resp);
+    assert_eq!(patched.deleted_at, Some(5000));
+    assert_eq!(patched.version, 2, "an ordinary versioned write");
+    assert!(patched.enabled, "deleting says nothing about `enabled`");
+
+    let rows = sql.exec("SELECT id FROM rules", &[]).unwrap();
+    assert_eq!(rows.len(), 1, "flagged, never erased");
+}
+
+/// The clear half of the double-`Option`: an explicit `null` un-deletes,
+/// distinct from omitting the field (which leaves it alone). Same contract
+/// `StepPatch` carries, and what makes the flag a state rather than a
+/// one-way door.
+#[test]
+fn patch_clears_deleted_at_with_an_explicit_null() {
+    let sql = RusqliteSql::new();
+    post_rule(
+        &sql,
+        r#"{"id": "r-1", "name": "n", "conditions": [], "severity": "high", "tier": "urgent"}"#,
+        1000,
+    );
+    patch_rule(&sql, "r-1", r#"{"expected_version": 1, "deleted_at": 5000}"#, 2000);
+
+    let untouched = patch_rule(&sql, "r-1", r#"{"expected_version": 2, "name": "renamed"}"#, 3000);
+    assert_eq!(untouched.status, 200, "{}", untouched.body);
+    assert_eq!(rule(&untouched).deleted_at, Some(5000), "absent = untouched");
+
+    let cleared = patch_rule(&sql, "r-1", r#"{"expected_version": 3, "deleted_at": null}"#, 4000);
+    assert_eq!(cleared.status, 200, "{}", cleared.body);
+    assert_eq!(rule(&cleared).deleted_at, None, "explicit null = clear");
+}
+
+/// `GET /api/rules` is the pollers' door, and a deleted rule is not
+/// theirs to evaluate. Disabled rules are still listed (each poller runs
+/// the engine's own `enabled` check) — deleted ones are not, because there
+/// is nothing left to check.
+#[test]
+fn list_omits_a_deleted_rule_but_still_carries_a_disabled_one() {
+    let sql = RusqliteSql::new();
+    post_rule(
+        &sql,
+        r#"{"id": "r-gone", "name": "n", "conditions": [], "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+    post_rule(
+        &sql,
+        r#"{"id": "r-off", "name": "n", "conditions": [], "severity": "s", "tier": "normal"}"#,
+        0,
+    );
+    patch_rule(&sql, "r-gone", r#"{"expected_version": 1, "deleted_at": 900}"#, 0);
+    patch_rule(&sql, "r-off", r#"{"expected_version": 2, "enabled": false}"#, 0);
+
+    let resp = get_rules_as(&sql, DEVICE_TOKEN);
+    let ids: Vec<String> = body_as::<Vec<Rule>>(&resp).into_iter().map(|r| r.id).collect();
+    assert_eq!(ids, ["r-off"], "deleted is gone; disabled is still listed");
+}
+
+/// A rule the registry has outgrown is exactly the rule an operator
+/// reaches for delete over, so the delete path does not validate. This row
+/// names `city-waste/v1`, legal when it was saved and a save-time
+/// `RuleProblem::RetiredSource` ever since ADR-0014 bumped it — inserted
+/// straight into the table because no route would mint it today, which is
+/// the situation itself.
+#[test]
+fn a_rule_no_longer_valid_can_still_be_deleted() {
+    let sql = RusqliteSql::new();
+    sql.exec(
+        "INSERT INTO rules (id, name, conditions, severity, tier, enabled, updated_at, version) \
+         VALUES ('r-stale', 'n', ?, 's', 'normal', 1, 1000, 1)",
+        &[SqlValue::Text(
+            r#"[{"field": "source", "op": "eq", "value": "city-waste/v1", "negate": false}]"#
+                .to_string(),
+        )],
+    )
+    .unwrap();
+
+    let resp = patch_rule(&sql, "r-stale", r#"{"expected_version": 1, "deleted_at": 5000}"#, 2000);
+    assert_eq!(resp.status, 200, "a stale rule must not be undeletable: {}", resp.body);
+    assert_eq!(rule(&resp).deleted_at, Some(5000));
+}
+
+/// The other half of that door: un-deleting puts the rule back in front of
+/// the pollers, so it has to earn it. The same stale row, cleared rather
+/// than flagged, is refused with the ordinary save-time 400.
+#[test]
+fn undeleting_a_no_longer_valid_rule_is_still_refused() {
+    let sql = RusqliteSql::new();
+    sql.exec(
+        "INSERT INTO rules (id, name, conditions, severity, tier, enabled, updated_at, version, \
+         deleted_at) VALUES ('r-stale', 'n', ?, 's', 'normal', 1, 1000, 1, 5000)",
+        &[SqlValue::Text(
+            r#"[{"field": "source", "op": "eq", "value": "city-waste/v1", "negate": false}]"#
+                .to_string(),
+        )],
+    )
+    .unwrap();
+
+    let resp = patch_rule(&sql, "r-stale", r#"{"expected_version": 1, "deleted_at": null}"#, 2000);
+    assert_eq!(resp.status, 400, "{}", resp.body);
+    assert!(resp.body.contains("city-waste/v1"), "{}", resp.body);
 }
 
 // ------------------------------------------------- push_targets / deliveries

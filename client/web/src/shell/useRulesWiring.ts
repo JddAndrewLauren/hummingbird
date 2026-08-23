@@ -29,6 +29,9 @@ export interface RulesWiring {
       severity?: string | null;
       tier?: TierName | null;
       enabled?: boolean | null;
+      /** Present at all = touched — see `worker-client.ts`'s `patchRule`.
+       * Deleting a rule is this field on this same call. */
+      deletedAt?: number | null;
     },
   ) => void;
 }

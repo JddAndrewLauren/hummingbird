@@ -109,7 +109,7 @@ data class RuleDraft(
 // **This class decides nothing about a rule.** Every verdict it renders
 // arrives applied from `hummingbird_core::decisions::rules`, through the
 // records `ffi-mobile` hands over: `isValid`/`invalidFields` on a
-// [RuleRecord], `legalOperators`/`defaultWidget`/`durationUnits` on a
+// [RuleRecord], `legalOperators`/`operators`/`durationUnits` on a
 // field, `belowAlarmInterval` on a condition row, and `matchCount` on a
 // backtest. There is no operator table here, no duration grammar, no
 // notion of which fields a kind declares, and no re-derivation of what
@@ -126,6 +126,7 @@ class RulesViewModel(
     private val createFn: suspend (draft: RuleDraft, nowMs: Long) -> Unit,
     private val patchFn: suspend (draft: RuleDraft, nowMs: Long) -> Unit,
     private val toggleFn: suspend (ruleId: String, enabled: Boolean, nowMs: Long) -> Unit,
+    private val deleteFn: suspend (ruleId: String, nowMs: Long) -> Unit,
     private val backtestFn: suspend (
         eventKind: String?,
         conditions: List<RuleConditionInput>,
@@ -158,6 +159,12 @@ class RulesViewModel(
      * entry is dropped the moment the re-read row agrees with it. */
     private val _pendingEnabled = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     val pendingEnabled: StateFlow<Map<String, Boolean>> = _pendingEnabled.asStateFlow()
+
+    /** The rules a person has deleted but the authority has not yet handed
+     * back — see [delete]. Same overlay-free reasoning as [pendingEnabled];
+     * an entry is dropped the moment the row stops being listed. */
+    private val _pendingDeleted = MutableStateFlow<Set<String>>(emptySet())
+    val pendingDeleted: StateFlow<Set<String>> = _pendingDeleted.asStateFlow()
 
     /** The rule being written or edited, or null in list mode. Held here
      * and never in a `remember {}`: a draft is human-authored content, and
@@ -225,13 +232,48 @@ class RulesViewModel(
         load()
     }
 
+    /** Deletes a rule — a soft delete underneath (`deleted_at`), so the row
+     * is flagged rather than erased and every other device learns about it
+     * on its ordinary delta pull.
+     *
+     * Held in [pendingDeleted] the same way, and for the same reason, a
+     * toggle is held in [pendingEnabled]: `Core::rules()` has no optimistic
+     * overlay, so the re-read below still lists the rule until a cycle
+     * lands, and a card that simply stayed put would read as a delete that
+     * did not happen. [settlePending] drops the entry the moment the row it
+     * names actually leaves the list.
+     *
+     * The write is not undoable from this screen — the confirm dialog in
+     * `RulesScreen.kt` is where that is asked. */
+    suspend fun delete(ruleId: String, nowMs: Long) {
+        _pendingDeleted.value += ruleId
+        try {
+            deleteFn(ruleId, nowMs)
+        } catch (error: Exception) {
+            _pendingDeleted.value -= ruleId
+            _statusLine.value = "Couldn't delete that rule — ${error.message}"
+            return
+        }
+        load()
+    }
+
     /** Drops every pending switch position the given rows have caught up
      * with. A row that has not caught up keeps its entry, so the switch
      * holds the tapped value across the reads in between. */
     private fun settlePending(rules: List<RuleRecord>) {
-        if (_pendingEnabled.value.isEmpty()) return
-        _pendingEnabled.value = _pendingEnabled.value.filterNot { (ruleId, enabled) ->
-            rules.any { it.id == ruleId && it.enabled == enabled }
+        if (_pendingEnabled.value.isNotEmpty()) {
+            _pendingEnabled.value = _pendingEnabled.value.filterNot { (ruleId, enabled) ->
+                rules.any { it.id == ruleId && it.enabled == enabled }
+            }
+        }
+        if (_pendingDeleted.value.isNotEmpty()) {
+            // A deleted rule leaves the list entirely — the mirror filters
+            // it — so "caught up" here is the row being gone, not a field
+            // agreeing with what was tapped.
+            _pendingDeleted.value =
+                _pendingDeleted.value.filterTo(mutableSetOf()) { ruleId ->
+                    rules.any { it.id == ruleId }
+                }
         }
     }
 
@@ -377,6 +419,10 @@ class RulesViewModel(
                         nowMs,
                     )
                 },
+                // A soft delete: one flagged column on the same CAS patch
+                // the edits use, so the row rides the delta pull off this
+                // device rather than vanishing only here.
+                deleteFn = { ruleId, nowMs -> core().deleteRule(ruleId, nowMs) },
                 backtestFn = { eventKind, conditions, nowMs ->
                     core().backtestRule(
                         eventKind,

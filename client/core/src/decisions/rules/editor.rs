@@ -21,16 +21,21 @@ pub enum ValueWidget {
     Datetime,
     Boolean,
     Number,
+    /// A pick from [`super::validity::KindRegistry::sources`] — the `source`
+    /// core field's frozen vocabulary, rather than a text box a typo makes
+    /// silently unmatchable. See [`widget_for`] for when it applies.
+    Source,
     Text,
 }
 
 impl ValueWidget {
-    pub const ALL: [ValueWidget; 6] = [
+    pub const ALL: [ValueWidget; 7] = [
         ValueWidget::Chips,
         ValueWidget::Duration,
         ValueWidget::Datetime,
         ValueWidget::Boolean,
         ValueWidget::Number,
+        ValueWidget::Source,
         ValueWidget::Text,
     ];
 
@@ -41,6 +46,7 @@ impl ValueWidget {
             ValueWidget::Datetime => "datetime",
             ValueWidget::Boolean => "boolean",
             ValueWidget::Number => "number",
+            ValueWidget::Source => "source",
             ValueWidget::Text => "text",
         }
     }
@@ -61,6 +67,21 @@ impl ValueWidget {
 /// wire value is still an ordinary duration. Every *other*
 /// `within_next`/`within_last` condition (e.g. `received_at within_last
 /// '10m'`) gets the plain duration picker instead.
+///
+/// **`source` gets a pick list, but only under `eq`.** Its legal values are
+/// a frozen registry (`hummingbird_domain::REGISTRY`), so a typed
+/// string is a rule that silently matches nothing — the exact failure this
+/// family exists to prevent. `contains` is substring matching, though: a
+/// condition may legitimately name `city-waste` to reach both versions of
+/// it, and a whole-value picker cannot express that. The engine's own
+/// `retired_source_problems` draws the line in the same place and for the
+/// same reason, which is what keeps the two from disagreeing about which
+/// conditions the picker's vocabulary governs.
+///
+/// Placed after the `StringList` and relative-time guards, per the priority
+/// discipline above: neither can collide with `source` today (it is a
+/// `String` core field, and `eq` is not a relative-time operator), and the
+/// order is what keeps that true if the catalogue moves.
 pub fn widget_for(field_name: &str, field_type: FieldType, operator: Operator) -> ValueWidget {
     if field_type == FieldType::StringList {
         return ValueWidget::Chips;
@@ -71,6 +92,9 @@ pub fn widget_for(field_name: &str, field_type: FieldType, operator: Operator) -
         } else {
             ValueWidget::Duration
         };
+    }
+    if field_name == "source" && operator == Operator::Eq {
+        return ValueWidget::Source;
     }
     match field_type {
         FieldType::Bool => ValueWidget::Boolean,
@@ -283,6 +307,37 @@ mod tests {
         let flipped = toggle_negate(&condition);
         assert!(flipped.negate);
         assert_eq!(toggle_negate(&flipped), condition);
+    }
+
+    /// `source`'s legal values are a frozen registry, so an `eq` condition
+    /// gets the vocabulary rather than a text box. `contains` does not:
+    /// substring matching over a whole-value picker is not expressible, and
+    /// the engine's own retired-source check draws the line at `eq` for the
+    /// same reason.
+    #[test]
+    fn source_gets_the_registry_picker_under_eq_and_a_text_box_otherwise() {
+        assert_eq!(
+            widget_for("source", FieldType::String, Operator::Eq),
+            ValueWidget::Source,
+        );
+        assert_eq!(
+            widget_for("source", FieldType::String, Operator::Contains),
+            ValueWidget::Text,
+        );
+    }
+
+    /// The picker is `source`'s alone — an `eq` on any other string field
+    /// keeps the text box it has always had.
+    #[test]
+    fn no_other_field_gets_the_source_picker() {
+        assert_eq!(
+            widget_for("subject", FieldType::String, Operator::Eq),
+            ValueWidget::Text,
+        );
+        assert_eq!(
+            widget_for("from", FieldType::String, Operator::Eq),
+            ValueWidget::Text,
+        );
     }
 
     #[test]

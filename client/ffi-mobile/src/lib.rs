@@ -1592,6 +1592,10 @@ pub enum MobileValueWidget {
     Datetime,
     Boolean,
     Number,
+    /// A pick from [`RuleFormRecord::sources`] — the `source` core field's
+    /// frozen vocabulary. Kotlin renders it as a choice row; *which* field
+    /// gets it is [`rules::widget_for`]'s answer, never Kotlin's.
+    Source,
     Text,
 }
 
@@ -1602,6 +1606,7 @@ fn map_widget(widget: rules::ValueWidget) -> MobileValueWidget {
         rules::ValueWidget::Datetime => MobileValueWidget::Datetime,
         rules::ValueWidget::Boolean => MobileValueWidget::Boolean,
         rules::ValueWidget::Number => MobileValueWidget::Number,
+        rules::ValueWidget::Source => MobileValueWidget::Source,
         rules::ValueWidget::Text => MobileValueWidget::Text,
     }
 }
@@ -1687,17 +1692,46 @@ pub struct KindOptionRecord {
     pub label_key: String,
 }
 
+/// One legal operator on a field, paired with the value control that
+/// operator implies — [`rules::widget_for`] is a function of *both* the
+/// field and the operator, and a row whose operator has just changed must
+/// be able to follow it. `source` is why: the frozen-vocabulary picker is
+/// its answer under `eq`, but `contains` is substring matching (a
+/// condition may name `city-waste` to reach both versions of it), which a
+/// whole-value picker cannot express.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct RuleOperatorRecord {
+    pub operator: MobileOperator,
+    pub widget: MobileValueWidget,
+}
+
 /// One field the editor offers, with its cascade already resolved:
 /// the operators legal for its type ([`rules::legal_operators`], derived
-/// from the authority's own gating function), the widget its *default*
-/// operator implies, and the duration units a `date` field narrows to.
+/// from the authority's own gating function) each already carrying the
+/// widget it implies, and the duration units a `date` field narrows to.
+///
+/// The widgets are resolved here, once per form open, rather than exposed
+/// as a per-keystroke seam call — the crate header's rule — which is why
+/// this is a list and not a function. `legal_operators` is the same list
+/// of operators in the same order, kept for the operator picker itself.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct RuleFieldRecord {
     pub name: String,
     pub field_type: MobileFieldType,
     pub legal_operators: Vec<MobileOperator>,
-    pub default_widget: MobileValueWidget,
+    pub operators: Vec<RuleOperatorRecord>,
     pub duration_units: Vec<String>,
+}
+
+/// One selectable `source` — [`rules::SourceOption`], mirrored.
+/// `retired_as` is `Some(successor)` for a source ADR-0014 has bumped;
+/// such an entry is still *listed* (an existing rule may name one, and a
+/// picker that hid it would show nothing selected) and must not be
+/// newly pickable, because the authority already 400s that save.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct SourceOptionRecord {
+    pub source: String,
+    pub retired_as: Option<String>,
 }
 
 /// Everything the create-and-edit form needs for one chosen kind, decided
@@ -1708,6 +1742,11 @@ pub struct RuleFormRecord {
     pub kind_options: Vec<KindOptionRecord>,
     pub fields: Vec<RuleFieldRecord>,
     pub severities: Vec<String>,
+    /// The `source` field's vocabulary, in the registry's own registration
+    /// order — what a [`MobileValueWidget::Source`] row picks from. A
+    /// hand-typed Kotlin list of source strings is exactly the drift this
+    /// exists to prevent.
+    pub sources: Vec<SourceOptionRecord>,
     /// The severity a fresh draft opens on —
     /// [`hummingbird_core::decisions::rules::DEFAULT_SEVERITY`], not the
     /// head of `severities`, which is a ratchet order and not a default.
@@ -1842,12 +1881,17 @@ fn to_rule_record(rule: &Rule, registry: &rules::KindRegistry) -> RuleRecord {
 
 fn to_rule_field_record(field: &rules::KindField) -> RuleFieldRecord {
     let legal = rules::legal_operators(field.field_type);
-    let default_op = rules::default_operator_for(field.field_type);
     RuleFieldRecord {
         name: field.name.clone(),
         field_type: map_field_type(field.field_type),
-        legal_operators: legal.into_iter().map(map_operator).collect(),
-        default_widget: map_widget(rules::widget_for(&field.name, field.field_type, default_op)),
+        legal_operators: legal.iter().copied().map(map_operator).collect(),
+        operators: legal
+            .iter()
+            .map(|op| RuleOperatorRecord {
+                operator: map_operator(*op),
+                widget: map_widget(rules::widget_for(&field.name, field.field_type, *op)),
+            })
+            .collect(),
         duration_units: rules::duration_units_for(field.field_type)
             .into_iter()
             .map(|unit| rules::duration::duration_unit_str(unit).to_string())
@@ -4648,6 +4692,14 @@ impl MobileTaskHost {
                 .map(to_rule_field_record)
                 .collect(),
             severities: registry.severities.clone(),
+            sources: registry
+                .sources
+                .iter()
+                .map(|source| SourceOptionRecord {
+                    source: source.source.clone(),
+                    retired_as: source.retired_as.clone(),
+                })
+                .collect(),
             default_severity: rules::DEFAULT_SEVERITY.to_string(),
             tiers: vec![MobileTier::Urgent, MobileTier::Normal],
             alarm_interval_ms: registry.alarm_interval_ms,
@@ -4756,6 +4808,55 @@ impl MobileTaskHost {
                 severity,
                 tier.map(unmap_tier),
                 enabled,
+                // Untouched: an edit says nothing about whether the rule is
+                // deleted, and [`Core::patch_rule`]'s `None` is exactly
+                // that. `delete_rule` below is the one caller that sets it.
+                None,
+                now_ms,
+            )
+            .await
+            .map_err(|error| MobileRuleError::SaveFailed {
+                detail: error.to_string(),
+            })
+    }
+
+    /// Deletes a rule — the same `PATCH /api/rules/:id`
+    /// ([`hummingbird_core::Core::patch_rule`]) with `deleted_at` as its one
+    /// touched field. A **soft** delete: the flagged row still rides the
+    /// delta pull, which is what makes it leave every other device's screen
+    /// rather than linger until a full sweep.
+    ///
+    /// A named method rather than a seventh argument on [`Self::patch_rule`]
+    /// because it is a different gesture with a different confirmation
+    /// behind it, and because every existing Kotlin caller of that method
+    /// passes six fields it *is* editing. The write underneath is the same
+    /// one CAS patch either way — there is no `Core::delete_rule` for this
+    /// to drift from.
+    ///
+    /// `now_ms` is both the flag's own timestamp and the enqueue clock: the
+    /// host owns the wall clock here as it does at every other mutation
+    /// entry point in this file.
+    pub async fn delete_rule(&self, rule_id: String, now_ms: i64) -> Result<(), MobileRuleError> {
+        let mut inner = self.inner.lock().await;
+        let current = inner
+            .core
+            .rules()
+            .into_iter()
+            .find(|rule| rule.id == rule_id)
+            .ok_or(MobileRuleError::RuleNotFound)?;
+        let seed = mint_mutation_seed("delete-rule", now_ms);
+        inner
+            .core
+            .patch_rule(
+                &seed,
+                &current,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(Some(now_ms)),
                 now_ms,
             )
             .await
@@ -8178,6 +8279,7 @@ mod tests {
             enabled: true,
             updated_at: 1,
             version: 3,
+            deleted_at: None,
         }
     }
 
@@ -8381,7 +8483,75 @@ mod tests {
         );
         // A `date` field is day-grained only (ADR-0013).
         assert_eq!(record.duration_units, ["d"]);
-        assert_eq!(record.default_widget, MobileValueWidget::Duration);
+        assert_eq!(
+            record.operators,
+            [
+                RuleOperatorRecord {
+                    operator: MobileOperator::WithinNext,
+                    widget: MobileValueWidget::Duration,
+                },
+                RuleOperatorRecord {
+                    operator: MobileOperator::WithinLast,
+                    widget: MobileValueWidget::Duration,
+                },
+            ],
+            "every legal operator arrives already carrying its control",
+        );
+    }
+
+    /// The `source` core field arrives asking for the vocabulary picker
+    /// under `eq` and a text box under `contains` — [`rules::widget_for`]'s
+    /// answer, per operator rather than per field. A typed source is a rule
+    /// that silently matches nothing, which is why `eq` is not free text;
+    /// `contains` is substring matching over a partial source name, which
+    /// the picker cannot express.
+    #[test]
+    fn the_source_field_asks_for_the_picker_under_eq_and_a_text_box_under_contains() {
+        let registry = rules::compiled_registry();
+        let source = rules::fields_for_kind(&registry, None)
+            .into_iter()
+            .find(|f| f.name == "source")
+            .expect("`source` is an Event core field");
+        let record = to_rule_field_record(&source);
+        let widget = |op: MobileOperator| {
+            record
+                .operators
+                .iter()
+                .find(|entry| entry.operator == op)
+                .map(|entry| entry.widget)
+                .expect("a legal operator on `source`")
+        };
+        assert_eq!(widget(MobileOperator::Eq), MobileValueWidget::Source);
+        assert_eq!(widget(MobileOperator::Contains), MobileValueWidget::Text);
+    }
+
+    /// The form ships the whole registry, in its own registration order,
+    /// **retired entries included and named as such** — a rule already
+    /// naming `city-waste/v1` has to render as itself, and a fresh pick of
+    /// it is what the screen greys out rather than sending for the
+    /// authority to 400.
+    #[test]
+    fn the_form_carries_the_whole_source_vocabulary_with_retirement_marked() {
+        let registry = rules::compiled_registry();
+        let sources: Vec<SourceOptionRecord> = registry
+            .sources
+            .iter()
+            .map(|source| SourceOptionRecord {
+                source: source.source.clone(),
+                retired_as: source.retired_as.clone(),
+            })
+            .collect();
+
+        assert_eq!(sources.len(), hummingbird_domain::REGISTRY.len());
+        assert_eq!(
+            sources.iter().map(|s| s.source.as_str()).collect::<Vec<_>>(),
+            hummingbird_domain::REGISTRY.iter().map(|e| e.source).collect::<Vec<_>>(),
+        );
+        let retired = sources
+            .iter()
+            .find(|s| s.source == "city-waste/v1")
+            .expect("the registry's retired entry still ships");
+        assert_eq!(retired.retired_as.as_deref(), Some("city-waste/v2"));
     }
 
     #[test]

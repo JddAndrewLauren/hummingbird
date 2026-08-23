@@ -82,7 +82,19 @@ use crate::task::Presence;
 /// "this device has synced and this project genuinely has no links"
 /// indistinguishable from "this device hasn't re-swept since the field was
 /// added." Discard and resweep, same as every bump above.
-pub const SYNC_MIRROR_SCHEMA_VERSION: u32 = 4;
+///
+/// Bumped to 5 for `rules.deleted_at` — the rule above applied plainly
+/// rather than because this one is dangerous. Unlike the bumps to 2, 3
+/// and 4, the default here is *correct*: a v4 snapshot predates the
+/// column, so no rule in it can have been deleted, `#[serde(default)]`
+/// gives `None`, and any deletion since rides the delta pull off the
+/// stored cursor. The payload shape still changed, and this constant's
+/// contract is that a shape change bumps it — a snapshot that is silently
+/// a different shape than its label says is the thing the check in
+/// [`super::cycle::SyncCycle::load`] exists to make impossible, and
+/// deciding per-field which shape changes "really" matter is how that
+/// guarantee erodes.
+pub const SYNC_MIRROR_SCHEMA_VERSION: u32 = 5;
 
 /// One stored row plus whether it is currently live — the retained-history
 /// half of the retention rule above.
@@ -356,9 +368,12 @@ impl SyncMirror {
     }
 
     /// Every live rule, id order — the read behind #140's rules screen.
-    /// `rules` carries no soft-delete flag of its own (ADR-0003's
-    /// retention still applies via a full sweep's absence-demotion, the
-    /// same as `routes`/`fog`/`projects`).
+    /// A deleted rule (its own `deleted_at` flag) is absent here: the
+    /// flagged row rides the delta pull exactly so this device learns the
+    /// rule is gone rather than showing it until the next full sweep, and
+    /// [`SyncMirror::apply_tables`] demotes it on that flag the same way it
+    /// does a `steps.deleted_at` or a `project_links.removed_at`. Retained,
+    /// not erased, per this module's header.
     pub fn all_rules(&self) -> impl Iterator<Item = &Rule> {
         self.rules.values().filter_map(live_slot)
     }
@@ -492,7 +507,7 @@ impl SyncMirror {
             &mut self.rules,
             resp.rules,
             |r| r.id.clone(),
-            |_| None,
+            |r| r.deleted_at,
             full,
             now_ms,
         );
@@ -1063,6 +1078,7 @@ mod tests {
                 enabled,
                 updated_at: 1,
                 version,
+                deleted_at: None,
             }
         }
 

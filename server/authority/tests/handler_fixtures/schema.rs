@@ -1131,6 +1131,101 @@ fn init_schema_grows_a_schema_8_database_additively() {
     );
 }
 
+/// A genuine v9 store: [`v8_store`] with `project_links` created by 8→9's
+/// own DDL and `rules` still lacking `deleted_at`, exactly how a real v9
+/// store came to be. The DDL here is frozen text, never `CREATE_PROJECT_LINKS`
+/// — a fixture that reads today's constant cannot fail when today's
+/// constant moves.
+fn v9_store() -> RusqliteSql {
+    let sql = v8_store();
+    for ddl in [
+        "\
+CREATE TABLE IF NOT EXISTS project_links (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES projects(id),
+  url         TEXT NOT NULL,
+  label       TEXT,
+  position    INTEGER NOT NULL,
+  removed_at  INTEGER,
+  version     INTEGER NOT NULL
+)",
+        "CREATE INDEX IF NOT EXISTS idx_project_links_version ON project_links(version)",
+        "CREATE INDEX IF NOT EXISTS idx_project_links_project ON project_links(project_id)",
+    ] {
+        sql.exec(ddl, &[]).expect("8→9's own DDL applies");
+    }
+    sql.exec("UPDATE meta SET schema_version = 9 WHERE id = 1", &[])
+        .expect("v9 meta row seeds");
+    sql
+}
+
+/// The 9→10 growth path: `rules.deleted_at`, the fifth
+/// [`add_missing_columns`] arm — back to the 3→4 / 4→5 / 8→9 shape, one
+/// nullable column on an existing table, not another rebuild.
+///
+/// The byte-identity assertion is the load-bearing one, and it is what
+/// decides how [`CREATE_RULES`](hummingbird_authority) had to be *written*:
+/// `rules` carries no table-level constraint, so `ALTER TABLE … ADD COLUMN`
+/// splices immediately before the closing paren, and the fresh store's DDL
+/// has to be spelled that same way or the two diverge. Verified against a
+/// real migrated store here, not reasoned out.
+#[test]
+fn init_schema_grows_a_schema_9_database_additively() {
+    let migrated = v9_store();
+    assert_eq!(schema_version(&migrated), 9, "starts genuinely at v9");
+    assert!(
+        !column_names(&migrated, "rules").contains(&"deleted_at".to_string()),
+        "the v9 fixture must not already carry rules.deleted_at"
+    );
+    // A row written before the growth, to prove the ALTER never touches
+    // anything pre-existing.
+    migrated
+        .exec(
+            "INSERT INTO rules (id, name, conditions, severity, tier, enabled, updated_at, version) \
+             VALUES ('r', 'trash slide', '[]', 'high', 'urgent', 1, 1000, 1)",
+            &[],
+        )
+        .unwrap();
+
+    init_schema(&migrated, 0).expect("growth init succeeds");
+
+    assert_eq!(schema_version(&migrated), SCHEMA_VERSION, "schema_version moved forward");
+    assert!(
+        column_names(&migrated, "rules").contains(&"deleted_at".to_string()),
+        "migrated store missing `rules.deleted_at`",
+    );
+    let rows = migrated.exec("SELECT deleted_at FROM rules", &[]).unwrap();
+    assert_eq!(rows.len(), 1, "the pre-growth row survives");
+    assert!(
+        matches!(rows[0].get("deleted_at"), Some(SqlValue::Null) | None),
+        "and comes back live, not deleted",
+    );
+
+    let fresh = RusqliteSql::new();
+    assert_eq!(
+        schema_ddl(&migrated),
+        schema_ddl(&fresh),
+        "a migrated v9 store and a fresh store end up with byte-identical DDL — which is \
+         why CREATE_RULES is written with `, deleted_at INTEGER)` spliced before the closing \
+         paren, verified against a real migrated store's sqlite_master rather than reasoned out",
+    );
+}
+
+#[test]
+fn the_rules_deleted_at_migration_is_idempotent() {
+    let migrated = v9_store();
+    init_schema(&migrated, 0).expect("first growth succeeds");
+    init_schema(&migrated, 0).expect("second init is a no-op, not a duplicate-column error");
+    assert_eq!(
+        column_names(&migrated, "rules")
+            .iter()
+            .filter(|name| *name == "deleted_at")
+            .count(),
+        1,
+        "exactly one deleted_at column",
+    );
+}
+
 fn schema_version(sql: &dyn Sql) -> i64 {
     sql.exec("SELECT schema_version FROM meta WHERE id = 1", &[])
         .unwrap()[0]

@@ -780,7 +780,16 @@ export type OperatorName = "eq" | "contains" | "gt" | "lt" | "is" | "within_next
 
 export type DurationUnit = "m" | "h" | "d";
 
-export type ValueWidget = "chips" | "duration" | "datetime" | "boolean" | "number" | "text";
+export type ValueWidget =
+  | "chips"
+  | "duration"
+  | "datetime"
+  | "boolean"
+  | "number"
+  /** `source` under `eq`: a pick from the registry's frozen vocabulary
+   * rather than a text box a typo makes silently unmatchable. */
+  | "source"
+  | "text";
 
 export type DeadlineOperator = "within_next" | "within_last";
 

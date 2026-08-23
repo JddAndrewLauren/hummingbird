@@ -23,6 +23,11 @@ const registry: KindRegistryDTO = {
   ],
   alarmIntervalMs: 900_000,
   severities: ["low", "normal", "high", "urgent"],
+  sources: [
+    { source: "gmail/v1", retiredAs: null },
+    { source: "city-waste/v1", retiredAs: "city-waste/v2" },
+    { source: "city-waste/v2", retiredAs: null },
+  ],
 };
 
 function rule(overrides: Partial<RuleDTO> = {}): RuleDTO {
@@ -36,6 +41,7 @@ function rule(overrides: Partial<RuleDTO> = {}): RuleDTO {
     enabled: true,
     updatedAt: 1,
     version: 3,
+    deletedAt: null,
     ...overrides,
   };
 }
@@ -188,6 +194,224 @@ describe("RulesScreen", () => {
 
     const patch = onPatchRule.mock.calls[onPatchRule.mock.calls.length - 1][1];
     expect(patch.enabled).toBe(false);
+  });
+
+  it("a source condition under `eq` is edited as the registry's vocabulary, not a text box", () => {
+    render(
+      <RulesScreen
+        rules={[rule({ conditions: [{ field: "source", op: "eq", value: "gmail/v1", negate: false }] })]}
+        kindRegistry={registry}
+        frontier={[]}
+        lastRuleWrite={null}
+        syncOutcomeSeq={0}
+        onCreateRule={vi.fn()}
+        onPatchRule={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Edit"));
+
+    const select = screen.getByLabelText("Source") as HTMLSelectElement;
+    expect(select.tagName).toBe("SELECT");
+    expect(select.value).toBe("gmail/v1");
+    expect([...select.options].map((o) => o.value)).toEqual([
+      "gmail/v1",
+      "city-waste/v1",
+      "city-waste/v2",
+    ]);
+  });
+
+  it("a retired source is listed, named as retired, and cannot be newly picked", () => {
+    render(
+      <RulesScreen
+        rules={[rule({ conditions: [{ field: "source", op: "eq", value: "gmail/v1", negate: false }] })]}
+        kindRegistry={registry}
+        frontier={[]}
+        lastRuleWrite={null}
+        syncOutcomeSeq={0}
+        onCreateRule={vi.fn()}
+        onPatchRule={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Edit"));
+
+    const select = screen.getByLabelText("Source") as HTMLSelectElement;
+    const retired = [...select.options].find((o) => o.value === "city-waste/v1");
+    expect(retired?.textContent).toBe("city-waste/v1 — retired, use city-waste/v2");
+    expect(retired?.disabled).toBe(true);
+    // Its successor is an ordinary, pickable option — retirement marks one
+    // entry, never the family.
+    expect([...select.options].find((o) => o.value === "city-waste/v2")?.disabled).toBe(false);
+  });
+
+  /// A rule already naming a retired source has to keep naming it: the
+  /// option is selected, so it must NOT be disabled, or the control reads
+  /// as nothing chosen.
+  it("a rule already on a retired source still shows it selected", () => {
+    render(
+      <RulesScreen
+        rules={[
+          rule({ conditions: [{ field: "source", op: "eq", value: "city-waste/v1", negate: false }] }),
+        ]}
+        kindRegistry={registry}
+        frontier={[]}
+        lastRuleWrite={null}
+        syncOutcomeSeq={0}
+        onCreateRule={vi.fn()}
+        onPatchRule={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Edit"));
+
+    const select = screen.getByLabelText("Source") as HTMLSelectElement;
+    expect(select.value).toBe("city-waste/v1");
+    expect([...select.options].find((o) => o.value === "city-waste/v1")?.disabled).toBe(false);
+  });
+
+  /// The other direction `withCurrentOption` covers: a rule naming a source
+  /// this build's registry does not declare at all — an older client, or a
+  /// source retired out of the table entirely. The option has to be
+  /// synthesised, or a `<select>` with no matching option silently shows its
+  /// first entry and the row stops naming the source the rule carries.
+  it("a source the registry does not declare at all still names itself rather than reading as another", () => {
+    render(
+      <RulesScreen
+        rules={[
+          rule({ conditions: [{ field: "source", op: "eq", value: "retired-poller/v1", negate: false }] }),
+        ]}
+        kindRegistry={registry}
+        frontier={[]}
+        lastRuleWrite={null}
+        syncOutcomeSeq={0}
+        onCreateRule={vi.fn()}
+        onPatchRule={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Edit"));
+
+    const select = screen.getByLabelText("Source") as HTMLSelectElement;
+    expect(select.value).toBe("retired-poller/v1");
+    const synthesised = [...select.options].find((o) => o.value === "retired-poller/v1");
+    expect(synthesised, "the stored value must be an option at all").toBeTruthy();
+    // Pickable, unlike a *retired* entry: the registry says nothing about
+    // this value either way, so greying it would claim a refusal the
+    // authority has not made.
+    expect(synthesised?.disabled).toBe(false);
+    // And no placeholder — a value is chosen, however unknown it is.
+    expect([...select.options].some((o) => o.value === "")).toBe(false);
+  });
+
+  it("a source condition under `contains` stays a text box — substring matching is not a pick", () => {
+    render(
+      <RulesScreen
+        rules={[
+          rule({ conditions: [{ field: "source", op: "contains", value: "city-waste", negate: false }] }),
+        ]}
+        kindRegistry={registry}
+        frontier={[]}
+        lastRuleWrite={null}
+        syncOutcomeSeq={0}
+        onCreateRule={vi.fn()}
+        onPatchRule={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Edit"));
+
+    expect(screen.queryByLabelText("Source")).toBeNull();
+    expect((screen.getByLabelText("Value") as HTMLInputElement).value).toBe("city-waste");
+  });
+
+  it("delete is two steps, and the second calls onPatchRule with only deletedAt touched", () => {
+    const onPatchRule = vi.fn();
+    render(
+      <RulesScreen
+        rules={[rule()]}
+        kindRegistry={registry}
+        frontier={[]}
+        lastRuleWrite={null}
+        syncOutcomeSeq={0}
+        onCreateRule={vi.fn()}
+        onPatchRule={onPatchRule}
+      />,
+    );
+
+    // The first click asks rather than sends — the write is not undoable
+    // from this screen.
+    fireEvent.click(screen.getByText("Delete"));
+    expect(onPatchRule).not.toHaveBeenCalled();
+    expect(screen.getByText("Delete rule?")).toBeTruthy();
+
+    fireEvent.click(screen.getAllByText("Delete")[0]);
+
+    expect(onPatchRule).toHaveBeenCalledTimes(1);
+    const [current, patch] = onPatchRule.mock.calls[0];
+    expect(current.id).toBe("r-1");
+    expect(Object.keys(patch)).toEqual(["deletedAt"]);
+    expect(typeof patch.deletedAt).toBe("number");
+  });
+
+  it("cancelling the delete confirmation sends nothing and puts the row back", () => {
+    const onPatchRule = vi.fn();
+    render(
+      <RulesScreen
+        rules={[rule()]}
+        kindRegistry={registry}
+        frontier={[]}
+        lastRuleWrite={null}
+        syncOutcomeSeq={0}
+        onCreateRule={vi.fn()}
+        onPatchRule={onPatchRule}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Delete"));
+    fireEvent.click(screen.getByText("Cancel"));
+
+    expect(onPatchRule).not.toHaveBeenCalled();
+    expect(screen.queryByText("Delete rule?")).toBeNull();
+    expect(screen.getByText("Delete")).toBeTruthy();
+  });
+
+  it("a queued delete says so until the row leaves on a completed cycle", () => {
+    const onPatchRule = vi.fn();
+    const { rerender } = render(
+      <RulesScreen
+        rules={[rule()]}
+        kindRegistry={registry}
+        frontier={[]}
+        lastRuleWrite={null}
+        syncOutcomeSeq={0}
+        onCreateRule={vi.fn()}
+        onPatchRule={onPatchRule}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Delete"));
+    fireEvent.click(screen.getAllByText("Delete")[0]);
+
+    // The write is only queued — the card is still here, and must say the
+    // delete has not landed rather than look as though nothing happened.
+    expect(screen.getByText("pending")).toBeTruthy();
+
+    // A completed cycle that did NOT take the rule away clears the claim:
+    // the mirror still lists it, so the badge must stop saying a delete is
+    // in flight.
+    rerender(
+      <RulesScreen
+        rules={[rule()]}
+        kindRegistry={registry}
+        frontier={[]}
+        lastRuleWrite={null}
+        syncOutcomeSeq={1}
+        onCreateRule={vi.fn()}
+        onPatchRule={onPatchRule}
+      />,
+    );
+    expect(screen.queryByText("pending")).toBeNull();
   });
 
   it("flags a rule naming a field its kind no longer declares as invalid", () => {

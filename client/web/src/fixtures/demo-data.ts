@@ -162,23 +162,32 @@ export const DEMO_DATA: DemoData = {
       conditions: [
         { field: "deadline", op: "within_next", value: "3d", negate: false },
         { field: "title", op: "contains", value: "passport", negate: false },
+        // A `source eq` row, so the visual gate's editor capture covers the
+        // source vocabulary picker at every width and theme rather than
+        // leaving the widest new control in this editor unphotographed.
+        { field: "source", op: "eq", value: "item-threshold/v1", negate: false },
       ],
       severity: "high",
       tier: "urgent",
       enabled: false,
       updatedAt: 1_755_000_000_000,
       version: 2,
+      deletedAt: null,
     },
     {
       id: "rule-sweeper-fail",
       name: "Sweeper run failed",
       eventKind: "alert_raised",
-      conditions: [{ field: "source", op: "eq", value: "fly-worker", negate: false }],
+      // A real registry source: since the `source` field's `eq` control is
+      // the frozen vocabulary rather than a text box, a made-up string here
+      // would render as an unknown value the registry does not declare.
+      conditions: [{ field: "source", op: "eq", value: "healthchecks/v1", negate: false }],
       severity: "urgent",
       tier: "urgent",
       enabled: true,
       updatedAt: 1_755_000_000_000,
       version: 4,
+      deletedAt: null,
     },
     {
       id: "rule-deploy-finished",
@@ -190,6 +199,7 @@ export const DEMO_DATA: DemoData = {
       enabled: true,
       updatedAt: 1_755_000_000_000,
       version: 1,
+      deletedAt: null,
     },
     // #374: last on purpose — the other three each have a reason to stay
     // where they are (the first is the backtest capture's target; the rest
@@ -206,6 +216,7 @@ export const DEMO_DATA: DemoData = {
       enabled: true,
       updatedAt: 1_755_000_000_000,
       version: 1,
+      deletedAt: null,
     },
   ],
   ruleKindRegistry: {
@@ -270,6 +281,31 @@ export const DEMO_DATA: DemoData = {
     ],
     alarmIntervalMs: 900_000,
     severities: ["low", "normal", "high", "urgent"],
+    // `hummingbird_domain::REGISTRY`, in its own registration order — the
+    // real vocabulary a `source eq` condition picks from, retired entry
+    // included so the visual gate photographs the marked-and-unselectable
+    // option rather than only the ordinary ones. Hand-written here because
+    // this module is static TS and the registry crosses at runtime through
+    // wasm; `demo-source-registry.test.ts` is what keeps the two equal, and
+    // its header says why a hand-written copy needed a gate at all.
+    sources: [
+      { source: "gmail/v1", retiredAs: null },
+      { source: "m365-mail/v1", retiredAs: null },
+      { source: "google-calendar/v1", retiredAs: null },
+      { source: "m365-calendar/v1", retiredAs: null },
+      { source: "city-waste/v1", retiredAs: "city-waste/v2" },
+      { source: "city-waste/v2", retiredAs: null },
+      { source: "race-schedule/v1", retiredAs: null },
+      { source: "kimi-balance/v1", retiredAs: null },
+      { source: "github-hummingbird/v1", retiredAs: null },
+      { source: "uptime/v1", retiredAs: null },
+      { source: "item-threshold/v1", retiredAs: null },
+      { source: "healthchecks/v1", retiredAs: null },
+      { source: "home-assistant/v1", retiredAs: null },
+      { source: "github/v1", retiredAs: null },
+      { source: "photo-site/v1", retiredAs: null },
+      { source: "gmail-alert/v1", retiredAs: null },
+    ],
   },
   ruleBacktestItems: [
     {

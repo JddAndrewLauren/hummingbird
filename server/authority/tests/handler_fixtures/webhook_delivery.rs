@@ -260,3 +260,32 @@ fn a_disabled_rule_never_delivers() {
     assert_eq!(resp.status, 201, "{}", resp.body);
     assert!(resp.deliveries.is_empty(), "a disabled rule must not deliver");
 }
+
+/// The load-bearing half of the rule soft delete: a deleted rule must stop
+/// firing the instant it is flagged, not once some sweep gets to it. Same
+/// shared `load_enabled` query as the disabled case above — this pins its
+/// second clause (`deleted_at IS NULL`), against a rule left `enabled`, so
+/// nothing here can pass by accident on the `enabled = 1` half.
+#[test]
+fn a_deleted_rule_never_delivers_even_while_still_enabled() {
+    let sql = RusqliteSql::new();
+    seed_push_target_raw(&sql, "pt-1", "pixel-9");
+    let rule = seed_rule(&sql, "r-1");
+    let deleted = patch_rule(
+        &sql,
+        &rule.id,
+        &format!(r#"{{"expected_version": {}, "deleted_at": 900}}"#, rule.version),
+        0,
+    );
+    assert_eq!(deleted.status, 200, "{}", deleted.body);
+    assert!(crate::rig::rule(&deleted).enabled, "still enabled — only deleted");
+
+    let resp = ingest_alert(
+        &sql,
+        r#"{"source": "healthchecks/v1", "source_key": "sweeper", "title": "sweeper is down",
+            "severity": "high"}"#,
+        1000,
+    );
+    assert_eq!(resp.status, 201, "{}", resp.body);
+    assert!(resp.deliveries.is_empty(), "a deleted rule must not deliver");
+}

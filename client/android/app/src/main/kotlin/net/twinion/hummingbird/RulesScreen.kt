@@ -11,6 +11,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.background
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -26,7 +27,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -43,13 +47,14 @@ import uniffi.hummingbird_ffi_mobile.RuleConditionRecord
 import uniffi.hummingbird_ffi_mobile.RuleFieldRecord
 import uniffi.hummingbird_ffi_mobile.RuleFormRecord
 import uniffi.hummingbird_ffi_mobile.RuleRecord
+import uniffi.hummingbird_ffi_mobile.SourceOptionRecord
 
 // The rules surface (#540/M4, ADR-0013): the list, the enable/disable
 // toggle, the create-and-edit form, and a draft rule's backtest count.
 //
 // **This file decides nothing about a rule.** `isValid` gates the invalid
-// badge, `legalOperators` fills the operator row, `defaultWidget` picks the
-// value control, `belowAlarmInterval` raises the duration warning, and
+// badge, `legalOperators` fills the operator row, `operators` picks the
+// value control for the operator now selected, `belowAlarmInterval` raises the duration warning, and
 // `matchCount` is the backtest — every one of them decided in
 // `hummingbird_core::decisions::rules` and arriving applied. There is no
 // operator table here, no duration grammar, no `23:59`, no comparator and
@@ -62,7 +67,7 @@ import uniffi.hummingbird_ffi_mobile.RuleRecord
 // **The route has a permanent More-sheet entry since #541.**
 //
 // The `when`s over the seam's enums carry no `else ->` arm, deliberately:
-// an eighth operator or a seventh widget added to ADR-0013's vocabulary is
+// an eighth operator or an eighth widget added to ADR-0013's vocabulary is
 // then a Kotlin compile error here rather than a control that silently
 // renders as nothing.
 
@@ -80,6 +85,7 @@ fun RulesScreen(
     val form by viewModel.form.collectAsState()
     val backtest by viewModel.backtest.collectAsState()
     val pendingEnabled by viewModel.pendingEnabled.collectAsState()
+    val pendingDeleted by viewModel.pendingDeleted.collectAsState()
 
     suspend fun reload() = viewModel.load()
 
@@ -145,11 +151,17 @@ fun RulesScreen(
                     is RulesState.Loaded -> ListBody(
                         rules = current.rules,
                         pendingEnabled = pendingEnabled,
+                        pendingDeleted = pendingDeleted,
                         onNew = { scope.launch { viewModel.beginCreate() } },
                         onEdit = { record -> scope.launch { viewModel.beginEdit(record) } },
                         onSetEnabled = { ruleId, enabled ->
                             scope.launch {
                                 viewModel.setEnabled(ruleId, enabled, System.currentTimeMillis())
+                            }
+                        },
+                        onDelete = { ruleId ->
+                            scope.launch {
+                                viewModel.delete(ruleId, System.currentTimeMillis())
                             }
                         },
                     )
@@ -177,9 +189,11 @@ private fun RulesNotSyncedBody(onRetry: () -> Unit) {
 private fun ListBody(
     rules: List<RuleRecord>,
     pendingEnabled: Map<String, Boolean>,
+    pendingDeleted: Set<String>,
     onNew: () -> Unit,
     onEdit: (RuleRecord) -> Unit,
     onSetEnabled: (String, Boolean) -> Unit,
+    onDelete: (String) -> Unit,
 ) {
     Text("Rules", style = MaterialTheme.typography.headlineLarge)
 
@@ -199,8 +213,10 @@ private fun ListBody(
         RuleCard(
             rule = rule,
             pending = pendingEnabled[rule.id],
+            pendingDeleted = rule.id in pendingDeleted,
             onEdit = { onEdit(rule) },
             onSetEnabled = { enabled -> onSetEnabled(rule.id, enabled) },
+            onDelete = { onDelete(rule.id) },
         )
     }
 
@@ -213,9 +229,16 @@ private fun RuleCard(
     /** A switch position tapped but not yet handed back, or null when the
      * row and the switch agree — [RulesViewModel.pendingEnabled]. */
     pending: Boolean?,
+    /** Whether a delete has been sent for this row and the mirror is still
+     * listing it — [RulesViewModel.pendingDeleted]. */
+    pendingDeleted: Boolean,
     onEdit: () -> Unit,
     onSetEnabled: (Boolean) -> Unit,
+    onDelete: () -> Unit,
 ) {
+    // Confirmation state only — no words a person authored, so this may
+    // live in a `remember` (a draft may not; see [RulesViewModel.draft]).
+    var confirmingDelete by remember { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -284,8 +307,55 @@ private fun RuleCard(
                 ConditionLine(condition)
             }
 
-            OutlinedButton(onClick = onEdit) { Text("Edit") }
+            if (pendingDeleted) {
+                Text(
+                    "Deleted here — waiting for the sync to carry it.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(onClick = onEdit) { Text("Edit") }
+                TextButton(
+                    onClick = { confirmingDelete = true },
+                    enabled = !pendingDeleted,
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            }
         }
+    }
+
+    if (confirmingDelete) {
+        // Asked, not assumed: nothing on this screen can undo it, and a
+        // deleted rule stops firing everywhere the moment it lands.
+        AlertDialog(
+            onDismissRequest = { confirmingDelete = false },
+            title = { Text("Delete this rule?") },
+            text = {
+                Text(
+                    "\"${rule.name}\" stops firing on every device. " +
+                        "This screen can't put it back.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmingDelete = false
+                        onDelete()
+                    },
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmingDelete = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 
@@ -465,13 +535,45 @@ private fun ConditionEditor(
                 )
             }
 
-            OutlinedTextField(
-                value = condition.value,
-                onValueChange = { onChange(condition.copy(value = it)) },
-                label = { Text(valueLabel(field)) },
-                supportingText = field?.let { { Text(valueHint(it)) } },
-                modifier = Modifier.fillMaxWidth(),
-            )
+            // The control follows the *selected* operator, not the field
+            // alone: `rules::widget_for` is a function of both, and
+            // `source` is the field that proves it — a picker under `eq`,
+            // a text box under `contains`, where a partial source name is
+            // the point. The answer arrives applied on `field.operators`.
+            val widget = widgetFor(field, condition.op)
+
+            if (widget == MobileValueWidget.SOURCE) {
+                // `source`'s legal values are a frozen registry, so this is
+                // a pick and never a text field: a typed source is a rule
+                // that matches nothing and never says so. Which rows get
+                // this control is `rules::widget_for`'s answer; the
+                // vocabulary itself arrives on `form.sources`, never
+                // hand-written here.
+                ChoiceRow(
+                    label = "SOURCE",
+                    options = form.sources.map { it.source to sourceLabel(it) },
+                    selected = condition.value,
+                    // A retired source is shown — an existing rule may name
+                    // one — but cannot be newly picked: the authority
+                    // already refuses that save, and greying it here is what
+                    // puts the refusal in front of the reader first. The one
+                    // already stored stays tappable so it can be re-picked
+                    // after a stray tap elsewhere.
+                    disabledKeys = form.sources
+                        .filter { it.retiredAs != null && it.source != condition.value }
+                        .map { it.source }
+                        .toSet(),
+                    onSelect = { source -> source?.let { onChange(condition.copy(value = it)) } },
+                )
+            } else {
+                OutlinedTextField(
+                    value = condition.value,
+                    onValueChange = { onChange(condition.copy(value = it)) },
+                    label = { Text(valueLabel(widget)) },
+                    supportingText = field?.let { { Text(valueHint(widget, it)) } },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -526,6 +628,11 @@ private fun ChoiceRow(
     label: String,
     options: List<Pair<String?, String>>,
     selected: String?,
+    /** Rendered but untappable. For a vocabulary whose members can be
+     * *retired* rather than removed — the source list, whose retired
+     * entries must still name themselves on an existing rule while
+     * refusing a fresh pick the authority would refuse anyway. */
+    disabledKeys: Set<String?> = emptySet(),
     onSelect: (String?) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -544,10 +651,13 @@ private fun ChoiceRow(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             for ((key, wording) in options) {
+                val pickable = key !in disabledKeys
                 if (key == selected) {
-                    Button(onClick = { onSelect(key) }) { Text(wording) }
+                    Button(onClick = { onSelect(key) }, enabled = pickable) { Text(wording) }
                 } else {
-                    OutlinedButton(onClick = { onSelect(key) }) { Text(wording) }
+                    OutlinedButton(onClick = { onSelect(key) }, enabled = pickable) {
+                        Text(wording)
+                    }
                 }
             }
         }
@@ -597,34 +707,49 @@ private fun operatorLabel(op: MobileOperator): String = when (op) {
     MobileOperator.WITHIN_LAST -> "was within the last"
 }
 
+/** How one source reads in the picker. A retired entry says so and names
+ * the version that replaced it — the registry decided which those are
+ * (`SourceOptionRecord.retiredAs`); only the wording is here. */
+private fun sourceLabel(source: SourceOptionRecord): String =
+    source.retiredAs?.let { "${source.source} (retired → $it)" } ?: source.source
+
 private fun tierLabel(tier: MobileTier): String = when (tier) {
     MobileTier.URGENT -> "urgent"
     MobileTier.NORMAL -> "normal"
 }
 
+/** The value control this row is edited with — the seam's answer for the
+ * field *and* the operator now selected (`RuleFieldRecord.operators`,
+ * decided by `rules::widget_for`). A field that isn't in the registry, or
+ * an operator not legal on it, has no control to look up and falls back to
+ * the plain text box the row was already drawing. */
+private fun widgetFor(field: RuleFieldRecord?, op: MobileOperator): MobileValueWidget =
+    field?.operators?.firstOrNull { it.operator == op }?.widget ?: MobileValueWidget.TEXT
+
 /** What the value control is called, given the widget the seam picked for
- * this field. The widget is decided by `rules::widget_for`; only the
+ * this row. The widget is decided by `rules::widget_for`; only the
  * wording is here. */
-private fun valueLabel(field: RuleFieldRecord?): String = when (field?.defaultWidget) {
+private fun valueLabel(widget: MobileValueWidget): String = when (widget) {
     MobileValueWidget.CHIPS -> "Values, comma separated"
     MobileValueWidget.DURATION -> "Duration"
     MobileValueWidget.DATETIME -> "Duration"
     MobileValueWidget.BOOLEAN -> "true or false"
     MobileValueWidget.NUMBER -> "Number"
+    MobileValueWidget.SOURCE -> "Source"
     MobileValueWidget.TEXT -> "Value"
-    null -> "Value"
 }
 
 /** The hint beneath the value field. The duration units come from the
  * record — a `date` field is day-grained only (ADR-0013), and that
  * narrowing is the seam's answer, not a Kotlin rule. */
-private fun valueHint(field: RuleFieldRecord): String = when (field.defaultWidget) {
+private fun valueHint(widget: MobileValueWidget, field: RuleFieldRecord): String = when (widget) {
     MobileValueWidget.DURATION,
     MobileValueWidget.DATETIME,
     -> "A number and one of ${field.durationUnits.joinToString(", ")}"
     MobileValueWidget.CHIPS -> "Any one of them matches"
     MobileValueWidget.BOOLEAN -> "true or false"
     MobileValueWidget.NUMBER -> "A number"
+    MobileValueWidget.SOURCE -> "One of the registered sources"
     MobileValueWidget.TEXT -> "Matching ignores case"
 }
 
