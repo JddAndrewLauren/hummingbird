@@ -39,7 +39,12 @@ import uniffi.hummingbird_ffi_mobile.diagnosticInitSession
  * "a diagnostic write failure (no space, IO error, serialization failure)
  * is swallowed" criterion — because nothing that merely observes the app
  * (capture, a sync cycle, startup) may behave differently depending on
- * whether this recorder happens to be working.
+ * whether this recorder happens to be working. [export]/[clear] carry the
+ * same swallowing: a failure reading or deleting the journal's files
+ * answers an empty export (or a no-op clear) rather than throwing out of
+ * `scope.launch`/`.await()` into a caller with no handler for it — Settings'
+ * own coroutine included, where an uncaught exception there would crash
+ * the app rather than merely fail to export.
  *
  * **[export]/[clear] resist the `NavBackStackEntry` cancellation trap.**
  * Settings' Export/Clear buttons call these from a `ViewModel`-scoped
@@ -73,14 +78,28 @@ class DiagnosticsRecorder(
         }
     }
 
-    suspend fun export(): ByteArray =
-        scope.async { withContext(NonCancellable) { journalFn().export() } }.await()
+    suspend fun export(): ByteArray {
+        val result = scope.async {
+            withContext(NonCancellable) { runCatching { journalFn().export() } }
+        }.await()
+        return result.getOrDefault(EMPTY_EXPORT)
+    }
 
     suspend fun clear() {
-        scope.async { withContext(NonCancellable) { journalFn().clear() } }.await()
+        scope.async {
+            withContext(NonCancellable) { runCatching { journalFn().clear() } }
+        }.await()
     }
 
     companion object {
+        /** [export]'s fallback when reading the journal fails — the exact
+         * bytes an empty, healthy [DiagnosticJournal] itself would produce
+         * (its own `export()` doc), so a caller cannot tell "the journal
+         * failed to read" from "the journal is empty" — both answer with
+         * nothing to show, which is the whole point of swallowing this. */
+        private val EMPTY_EXPORT: ByteArray =
+            """{"schema_version":1,"dropped_count":0,"events":[]}""".toByteArray(Charsets.UTF_8)
+
         @Volatile
         private var instance: DiagnosticsRecorder? = null
 

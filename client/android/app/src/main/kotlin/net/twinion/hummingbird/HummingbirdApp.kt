@@ -7,6 +7,7 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import java.util.concurrent.TimeUnit
+import net.twinion.hummingbird.diagnostics.DiagnosticsRecorder
 import net.twinion.hummingbird.notify.NotificationChannels
 import net.twinion.hummingbird.push.PushBootstrap
 import net.twinion.hummingbird.sync.SyncWorker
@@ -15,6 +16,13 @@ class HummingbirdApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // #709: samples the process's one monotonic origin now, at actual
+        // process start, rather than leaving it to whichever of the four
+        // writers happens to record first (review round 1: that left every
+        // process's first-ever diagnostic event reading `elapsed_ms: 0`
+        // regardless of how long the process had actually been running).
+        // Mints no event itself — `session.started` stays `CoreHolder`'s.
+        DiagnosticsRecorder.get(this)
         scheduleHourlySync()
         // Before any push can arrive: a notification posted against a
         // channel id that does not exist is dropped to a default channel

@@ -6363,30 +6363,35 @@ fn map_mobile_diagnostic_event(
 /// own tests build a fresh counter per case instead of fighting a
 /// [`std::sync::OnceLock`] only the first test in the binary could ever set.
 struct DiagnosticSessionState {
-    session_id: std::sync::OnceLock<String>,
-    origin_monotonic_ms: AtomicU64,
+    /// The id and origin are set together, in one `OnceLock`, precisely so
+    /// neither can move independently of the other once a session exists —
+    /// review round 1 caught an earlier version of this struct storing the
+    /// origin in its own unconditional `AtomicU64::store`, which made this
+    /// function's own doc ("a later call cannot move the origin") false on
+    /// the Rust side; it only looked true because `DiagnosticsRecorder`
+    /// happens to call this with the same `by lazy` value every time.
+    identity: std::sync::OnceLock<(String, u64)>,
     seq: AtomicU64,
 }
 
 static DIAGNOSTIC_SESSION: DiagnosticSessionState = DiagnosticSessionState {
-    session_id: std::sync::OnceLock::new(),
-    origin_monotonic_ms: AtomicU64::new(0),
+    identity: std::sync::OnceLock::new(),
     seq: AtomicU64::new(0),
 };
 
 /// Sets the process-wide session's id and the one monotonic reading its
 /// `elapsed_ms` is measured from. Called once, at the mobile FFI host's own
 /// init (`CoreHolder.create`) — which is also where `session.started` gets
-/// minted, immediately after. Idempotent: a later call cannot move the
-/// origin or rename a session already under way, since `seq`/`elapsed_ms`
-/// staying monotonic *within* one session is the whole point of the split
+/// minted, immediately after. Idempotent **by construction**: `identity` is
+/// a single `OnceLock<(String, u64)>`, so a later call with a different id
+/// or origin cannot move either — `seq`/`elapsed_ms` staying monotonic
+/// *within* one session is the whole point of the split
 /// (`hummingbird_core::diagnostics::context`'s own doc).
 #[uniffi::export]
 pub fn diagnostic_init_session(session_id: String, origin_monotonic_ms: u64) {
-    let _ = DIAGNOSTIC_SESSION.session_id.set(session_id);
-    DIAGNOSTIC_SESSION
-        .origin_monotonic_ms
-        .store(origin_monotonic_ms, Ordering::Relaxed);
+    let _ = DIAGNOSTIC_SESSION
+        .identity
+        .set((session_id, origin_monotonic_ms));
 }
 
 /// Mints one Android-sourced `DiagnosticEventV1` and returns it serialized
@@ -6401,12 +6406,11 @@ pub fn diagnostic_event_json(
     monotonic_ms: u64,
     event: MobileDiagnosticEvent,
 ) -> String {
-    let session_id = DIAGNOSTIC_SESSION
-        .session_id
+    let (session_id, origin_monotonic_ms) = DIAGNOSTIC_SESSION
+        .identity
         .get()
-        .map(String::as_str)
-        .unwrap_or("uninitialized");
-    let origin_monotonic_ms = DIAGNOSTIC_SESSION.origin_monotonic_ms.load(Ordering::Relaxed);
+        .map(|(id, origin)| (id.as_str(), *origin))
+        .unwrap_or(("uninitialized", 0));
     let seq = DIAGNOSTIC_SESSION.seq.fetch_add(1, Ordering::Relaxed);
     diagnostics::event_json(
         session_id,
@@ -10626,17 +10630,22 @@ mod diagnostic_ffi_tests {
     /// the same counter).
     #[test]
     fn diagnostic_event_json_carries_the_session_and_android_source() {
-        diagnostic_init_session("ffi-test-session".to_string(), 0);
+        // `diagnostic_init_session` is idempotent, and `DIAGNOSTIC_SESSION`
+        // is one process-wide `static` shared with every other test in
+        // this binary — this call may or may not be the one that actually
+        // wins, so this asserts the *shape* (a non-empty id, whatever it
+        // is), never a literal one specific test happened to pass in.
+        diagnostic_init_session("some-session".to_string(), 0);
         let json = diagnostic_event_json(1_700_000_000_000, 0, MobileDiagnosticEvent::PushReceived);
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["session_id"], "ffi-test-session");
+        assert!(value["session_id"].as_str().is_some_and(|id| !id.is_empty()));
         assert_eq!(value["source"], "android");
         assert_eq!(value["event"]["name"], "push.received");
     }
 
     #[test]
     fn worker_finished_success_maps_to_the_success_outcome() {
-        diagnostic_init_session("ffi-test-session".to_string(), 0);
+        diagnostic_init_session("some-session".to_string(), 0);
         let json = diagnostic_event_json(
             0,
             0,
@@ -10644,5 +10653,29 @@ mod diagnostic_ffi_tests {
         );
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["event"]["payload"]["outcome"], "success");
+    }
+
+    /// Review round 1, finding: an earlier version of `diagnostic_init_session`
+    /// stored the id in a `OnceLock` but the origin in a plain
+    /// `AtomicU64::store`, so a *second* call — with a different id and a
+    /// wildly different origin — silently moved the origin every time it
+    /// ran, even though the doc claimed otherwise. `DIAGNOSTIC_SESSION` is
+    /// one process-wide `static` shared with every other test in this
+    /// binary, so this cannot assert which caller's id "won" the race to
+    /// go first — only that *whichever one did* is what every later call
+    /// still sees: two calls back to back, with different ids and wildly
+    /// different origins, produce two events with the identical
+    /// `session_id` and `elapsed_ms`.
+    #[test]
+    fn diagnostic_init_session_is_idempotent_a_later_call_cannot_move_the_origin() {
+        diagnostic_init_session("first-caller".to_string(), 111);
+        let first = diagnostic_event_json(0, 500, MobileDiagnosticEvent::PushReceived);
+        diagnostic_init_session("second-caller".to_string(), 999_999);
+        let second = diagnostic_event_json(0, 500, MobileDiagnosticEvent::PushReceived);
+
+        let first: serde_json::Value = serde_json::from_str(&first).unwrap();
+        let second: serde_json::Value = serde_json::from_str(&second).unwrap();
+        assert_eq!(first["session_id"], second["session_id"]);
+        assert_eq!(first["elapsed_ms"], second["elapsed_ms"]);
     }
 }

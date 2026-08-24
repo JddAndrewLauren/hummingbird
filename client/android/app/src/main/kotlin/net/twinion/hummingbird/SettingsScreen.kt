@@ -40,7 +40,10 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.twinion.hummingbird.core.NetworkStatus
 import net.twinion.hummingbird.skills.BackendPreference
 import net.twinion.hummingbird.theme.ThemePreference
@@ -131,13 +134,25 @@ fun SettingsScreen(
     // #709: the document-creation contract, not a storage permission and
     // not a `FileProvider` — the picker itself hands back a `Uri` this
     // process may write to, with no declared permission at all.
+    //
+    // Both traps this slice's own brief names, in one place: `scope` is
+    // `rememberCoroutineScope()`, cancelled the moment this composition
+    // leaves — a plain `scope.launch { ... }` here would leave the
+    // picker's already-created document at 0 bytes if the operator
+    // navigates away mid-write (review round 1, finding 4). `withContext
+    // (NonCancellable + Dispatchers.IO)` both moves the write off the
+    // dispatcher `scope.launch` would otherwise inherit (Main — up to
+    // 10 MiB of main-thread file I/O otherwise) and makes it run to
+    // completion regardless of what happens to the enclosing `scope`.
     val exportDiagnosticsLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json"),
     ) { uri ->
         if (uri != null) {
             scope.launch {
-                val bytes = viewModel.exportDiagnostics()
-                context.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                withContext(NonCancellable + Dispatchers.IO) {
+                    val bytes = viewModel.exportDiagnostics()
+                    context.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                }
             }
         }
     }

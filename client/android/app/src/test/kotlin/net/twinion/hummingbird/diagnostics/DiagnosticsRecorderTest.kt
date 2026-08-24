@@ -16,9 +16,19 @@ import uniffi.hummingbird_ffi_mobile.MobileDiagnosticEvent
  * fixture here, never the real `diagnosticEventJson` — that function is a
  * `#[uniffi::export]` call into the native `.so`, unreachable from a plain
  * JVM unit test (the same reason `SettingsViewModel` injects
- * `deadLetterHeadingFn`). The fixture's shape is not a guess: it mirrors
- * what `hummingbird-ffi-mobile`'s own `diagnostics::tests` (Rust) already
- * pins byte-for-byte for each event kind this class mints. */
+ * `deadLetterHeadingFn`). The fixture's shape follows the same
+ * `#[serde(tag = "name", content = "payload")]` rule `hummingbird-ffi-mobile`'s
+ * own `diagnostics::tests` pins (a fieldless variant carries **no**
+ * `payload` key, not `"payload":null` — review round 1 caught this file
+ * getting that backwards), but **this fixture is not evidence about what
+ * `diagnosticEventJson` actually produces** — nothing running in this
+ * process can call that native function, so it cannot notice if the two
+ * ever drift. The real redaction guarantee over real production output is
+ * `hummingbird-ffi-mobile`'s own
+ * `no_android_minted_event_ever_carries_a_forbidden_field` test (Rust);
+ * what this class's own redaction-shaped test below checks is narrower —
+ * only that the journal/export *pipeline* neither strips nor adds
+ * anything to whatever JSON it is handed. */
 class DiagnosticsRecorderTest {
 
     private lateinit var dir: File
@@ -34,17 +44,20 @@ class DiagnosticsRecorderTest {
     }
 
     private fun fixtureJson(event: MobileDiagnosticEvent, wallClockMs: Long, @Suppress("UNUSED_PARAMETER") monotonicMs: Long): String {
-        val (eventName, payload) = when (event) {
-            is MobileDiagnosticEvent.SessionStarted -> "session.started" to "null"
-            is MobileDiagnosticEvent.WorkerStarted -> "worker.started" to "null"
+        // A fieldless variant has no `payload` key at all — never
+        // `"payload":null` — matching `#[serde(tag = "name", content =
+        // "payload")]`'s real behavior for a unit variant.
+        val eventField = when (event) {
+            is MobileDiagnosticEvent.SessionStarted -> "{\"name\":\"session.started\"}"
+            is MobileDiagnosticEvent.WorkerStarted -> "{\"name\":\"worker.started\"}"
             is MobileDiagnosticEvent.WorkerFinished ->
-                "worker.finished" to "{\"outcome\":\"${if (event.success) "success" else "failure"}\"}"
-            is MobileDiagnosticEvent.PushReceived -> "push.received" to "null"
+                "{\"name\":\"worker.finished\",\"payload\":{\"outcome\":\"${if (event.success) "success" else "failure"}\"}}"
+            is MobileDiagnosticEvent.PushReceived -> "{\"name\":\"push.received\"}"
         }
         return "{\"schema_version\":1,\"seq\":0,\"wall_clock_ms\":$wallClockMs," +
             "\"elapsed_ms\":0,\"session_id\":\"test-session\",\"source\":\"android\"," +
             "\"cycle_id\":null,\"operation_id\":null,\"request_id\":null," +
-            "\"event\":{\"name\":\"$eventName\",\"payload\":$payload}}"
+            "\"event\":$eventField}"
     }
 
     private fun recorder(directory: File = dir): DiagnosticsRecorder = DiagnosticsRecorder(
@@ -103,6 +116,36 @@ class DiagnosticsRecorderTest {
     }
 
     @Test
+    fun `export swallows a journal read failure and answers the empty export shape`() = runBlocking {
+        // `diagnostics.ndjson` as a *directory* rather than a file: `File
+        // .readLines()` throws `IOException` reading it, giving `export`
+        // a real failure to swallow rather than merely a Bash trick that
+        // returns 0 without ever entering the exception path.
+        File(dir, "diagnostics.ndjson").mkdirs()
+        val rec = DiagnosticsRecorder(
+            journalFn = { DiagnosticJournal(dir) },
+            mintEventJsonFn = ::fixtureJson,
+        )
+
+        val exported = rec.export()
+
+        assertEquals("""{"schema_version":1,"dropped_count":0,"events":[]}""", String(exported))
+    }
+
+    @Test
+    fun `clear never throws even over a journal it cannot fully read`() = runBlocking {
+        File(dir, "diagnostics.ndjson").mkdirs()
+        val rec = DiagnosticsRecorder(
+            journalFn = { DiagnosticJournal(dir) },
+            mintEventJsonFn = ::fixtureJson,
+        )
+
+        // No assertion beyond "this call returns" — a throw here would
+        // fail the test on its own.
+        rec.clear()
+    }
+
+    @Test
     fun `a failure minting the event is swallowed and record never throws`() {
         val rec = DiagnosticsRecorder(
             journalFn = { DiagnosticJournal(dir) },
@@ -112,8 +155,14 @@ class DiagnosticsRecorderTest {
         rec.record(MobileDiagnosticEvent.PushReceived)
     }
 
+    /** Not the redaction guarantee itself (see this class's own doc) —
+     * only that the export pipeline (append → rotate → export) copies
+     * whatever JSON it is handed through verbatim, never wrapping,
+     * stringifying or otherwise reintroducing a field the fixture never
+     * had. The real guarantee, over real `diagnosticEventJson` output, is
+     * `hummingbird-ffi-mobile`'s `no_android_minted_event_ever_carries_a_forbidden_field`. */
     @Test
-    fun `a real exported fixture never carries a forbidden field`() = runBlocking {
+    fun `the export pipeline never introduces a forbidden field of its own`() = runBlocking {
         val rec = recorder()
         rec.record(MobileDiagnosticEvent.SessionStarted)
         rec.record(MobileDiagnosticEvent.WorkerStarted)

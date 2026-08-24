@@ -117,20 +117,29 @@ class DiagnosticJournalTest {
     }
 
     @Test
-    fun `the dropped count is cumulative across more than one rotation`() {
+    fun `the dropped count is cumulative across more than one rotation, not reset by the later one`() {
+        // Exact values, not a `>=`: with this fixture and a 150-byte
+        // budget, each append after the first keeps exactly one surviving
+        // event and drops exactly one more. A cumulative count reaches 1,
+        // then 2, then 3 — a count that *resets* on each rotation would
+        // read 1, then 1, then 1, and a loose `actual >= previous`
+        // assertion cannot tell the two apart (1 >= 1 passes either way).
+        // This is the brief's own named defect ("a dropped count that
+        // resets on rotation is worse than none"), so this test pins the
+        // exact running total at every step.
         val journal = DiagnosticJournal(dir, maxSizeBytes = 150)
+
         journal.append(event("worker.started", 0), wallClockMs = 1_000)
+        assertEquals(0L, journal.droppedCount())
+
         journal.append(event("worker.finished", 1), wallClockMs = 1_001)
-        val afterFirst = journal.droppedCount()
-        assertTrue(afterFirst > 0)
+        assertEquals(1L, journal.droppedCount())
 
         journal.append(event("push.received", 2), wallClockMs = 1_002)
-        journal.append(event("session.started", 3), wallClockMs = 1_003)
+        assertEquals(2L, journal.droppedCount())
 
-        assertTrue(
-            "a later rotation must add to the running total, never reset it",
-            journal.droppedCount() >= afterFirst,
-        )
+        journal.append(event("session.started", 3), wallClockMs = 1_003)
+        assertEquals(3L, journal.droppedCount())
     }
 
     @Test
@@ -163,10 +172,15 @@ class DiagnosticJournalTest {
 
     @Test
     fun `the export never contains the sibling mirror file's content`() {
-        // Same directory, deliberately: `export` must read only its own
-        // `diagnostics.ndjson`/`diagnostics.dropped-count`, never anything
-        // else the core keeps alongside it.
-        File(dir, "snapshot.json").writeText("""{"items":[{"title":"a private item title"}]}""")
+        // Same directory, deliberately: `Core::init` (`client/core/src/
+        // lib.rs`) lays `mirror.json`/`queue.json`/`grill-drafts.json`
+        // down alongside the journal in this exact directory — `export`
+        // must read only its own `diagnostics.ndjson`/
+        // `diagnostics.dropped-count`, never those. (The device token is
+        // not a sibling here at all — it lives in `TokenStore`'s
+        // `EncryptedSharedPreferences`, outside this directory entirely,
+        // so it has no file here to leak from in the first place.)
+        File(dir, "mirror.json").writeText("""{"items":[{"title":"a private item title"}]}""")
 
         val journal = DiagnosticJournal(dir)
         journal.append(event("push.received", 0), wallClockMs = 1_000)
@@ -176,19 +190,21 @@ class DiagnosticJournalTest {
 
     @Test
     fun `clear never touches sibling files in the same core directory`() {
-        // The journal shares its directory with the core's own snapshot,
-        // outbound-queue and token state (`client/core/src/storage/fs.rs`'s
-        // "app-private core directory") — `clear` must only ever remove
-        // its own two `diagnostics.*` files.
-        val mirrorFile = File(dir, "snapshot.json").apply { writeText("mirror-bytes") }
-        val tokenFile = File(dir, "token").apply { writeText("device-token-bytes") }
+        // The journal shares its directory with the core's own mirror,
+        // outbound queue and grill drafts (`Core::init`'s own three
+        // files) — `clear` must only ever remove its own two
+        // `diagnostics.*` files.
+        val mirrorFile = File(dir, "mirror.json").apply { writeText("mirror-bytes") }
+        val queueFile = File(dir, "queue.json").apply { writeText("queue-bytes") }
+        val grillDraftsFile = File(dir, "grill-drafts.json").apply { writeText("grill-drafts-bytes") }
 
         val journal = DiagnosticJournal(dir)
         journal.append(event("push.received", 0), wallClockMs = 1_000)
         journal.clear()
 
         assertEquals("mirror-bytes", mirrorFile.readText())
-        assertEquals("device-token-bytes", tokenFile.readText())
+        assertEquals("queue-bytes", queueFile.readText())
+        assertEquals("grill-drafts-bytes", grillDraftsFile.readText())
     }
 
     @Test

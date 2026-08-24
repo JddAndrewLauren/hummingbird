@@ -55,9 +55,13 @@ class DiagnosticJournal(
 
     /** The exported bytes: every surviving event plus the cumulative
      * dropped count, as one `application/json` document — logs only, never
-     * the task mirror, the outbound queue or the device token, none of
-     * which this class or its directory's `diagnostics.*` files ever
-     * touch. */
+     * the task mirror (`mirror.json`), the outbound queue (`queue.json`)
+     * or the grill drafts (`grill-drafts.json`) this directory also holds
+     * (`client/core/src/lib.rs`'s `Core::init`) — this class touches only
+     * its own two `diagnostics.*` files. The device token is not in this
+     * directory at all on Android: it lives in `TokenStore`'s
+     * `EncryptedSharedPreferences`, behind the Keystore, so there is
+     * nothing here for this class to leak it from. */
     @Synchronized
     fun export(): ByteArray {
         val events = readEntries().joinToString(",") { it.json }

@@ -151,6 +151,46 @@ class SettingsScreenStructuralTest {
         )
     }
 
+    /** #709's Export/Clear diagnostics section, held to the same source-
+     * gate shape as the rest of this class — a Robolectric-free repo means
+     * a dropped `NonCancellable`/`Dispatchers.IO` compiles, runs, and looks
+     * right on every fixture anyone would think to write (review round 1,
+     * finding 4: without this, a screen popped mid-export left the
+     * picker's document at 0 bytes and did the write on the main thread). */
+    @Test
+    fun `export diagnostics uses the document-creation contract with no storage permission or FileProvider`() {
+        assertTrue(
+            "SettingsScreen.kt must launch the document-creation contract for application/json",
+            screenSrc.contains("""ActivityResultContracts.CreateDocument("application/json")"""),
+        )
+        for ((name, src) in both) {
+            assertFalse("$name must not reference a storage permission", src.contains("WRITE_EXTERNAL_STORAGE"))
+            assertFalse("$name must not reference a FileProvider", src.contains("FileProvider"))
+        }
+    }
+
+    @Test
+    fun `the diagnostics export write is non-cancellable and off the main dispatcher`() {
+        assertTrue(
+            "the export write must run under NonCancellable, not the composition's own cancellable scope",
+            Regex("""withContext\(\s*NonCancellable\s*\+\s*Dispatchers\.IO\s*\)""").containsMatchIn(screenSrc),
+        )
+    }
+
+    @Test
+    fun `export and clear diagnostics call the view model, never the recorder directly`() {
+        // The screen must go through `SettingsViewModel.exportDiagnostics`/
+        // `clearDiagnostics` — never `DiagnosticsRecorder` itself — so a
+        // plain JVM `SettingsViewModelTest` can exercise the same control
+        // flow with an injected fn and no native `.so` in the process.
+        assertTrue(screenSrc.contains("viewModel.exportDiagnostics()"))
+        assertTrue(screenSrc.contains("viewModel.clearDiagnostics()"))
+        assertFalse(
+            "SettingsScreen.kt must not call DiagnosticsRecorder directly",
+            screenSrc.contains("DiagnosticsRecorder"),
+        )
+    }
+
     @Test
     fun `the screen renders every dead-letter reason through an exhaustive when`() {
         // The `when` over `MobileDeadLetterReason` in `SettingsScreen.kt`

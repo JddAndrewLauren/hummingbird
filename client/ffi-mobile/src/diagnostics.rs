@@ -155,4 +155,103 @@ mod tests {
         assert_eq!(first["seq"], 5);
         assert_eq!(second["seq"], 6);
     }
+
+    /// A unit variant (no payload field on the Rust side at all) serializes
+    /// with **no `payload` key**, not `"payload":null` — `#[serde(tag =
+    /// "name", content = "payload")]` omits the content key entirely for a
+    /// fieldless variant. Pinned here because review round 1 caught the
+    /// Android-side test suite assuming the opposite (a hand-built fixture
+    /// emitting `"payload":null`, which real production output never
+    /// produces) — this is the one place that could actually go stale
+    /// silently, since nothing on the Kotlin side can call the real
+    /// `event_json` to notice.
+    #[test]
+    fn a_unit_variant_serializes_with_no_payload_key_at_all() {
+        let json = event_json("s-1", 0, 0, 0, 0, DiagnosticEvent::SessionStarted);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let event_object = value["event"].as_object().unwrap();
+        assert!(
+            !event_object.contains_key("payload"),
+            "a fieldless variant must omit `payload`, not null it: {json}",
+        );
+    }
+
+    /// Mirrors `hummingbird_core::diagnostics::FORBIDDEN_FIELD_NAMES` (that
+    /// list is `#[cfg(test)]`-private to `core`, so this is a deliberate
+    /// copy for the same reason `core`'s own doc gives: a fixed, named list
+    /// a reviewer can diff against the source of truth, not a guess).
+    const FORBIDDEN_FIELD_NAMES: &[&str] = &[
+        "authorization",
+        "access_token",
+        "api_key",
+        "token",
+        "credential",
+        "password",
+        "body",
+        "request_body",
+        "response_body",
+        "title",
+        "description",
+        "url",
+        "ip",
+        "ip_address",
+        "exception",
+        "stack_trace",
+        "message",
+    ];
+
+    fn forbidden_keys_in(value: &serde_json::Value, found: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, nested) in map {
+                    if FORBIDDEN_FIELD_NAMES
+                        .iter()
+                        .any(|forbidden| forbidden.eq_ignore_ascii_case(key))
+                    {
+                        found.push(key.clone());
+                    }
+                    forbidden_keys_in(nested, found);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    forbidden_keys_in(item, found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// **The real redaction guarantee, over real production output.** Every
+    /// event Android mints on its own — `event_json`, not a Kotlin fixture —
+    /// scanned for a forbidden field name. This is the only place that
+    /// guarantee can actually be checked against what ships: a plain JVM
+    /// Android unit test cannot call `event_json` at all (it is a
+    /// `#[uniffi::export]` function behind the native `.so`), so any
+    /// redaction assertion written in Kotlin is necessarily over a
+    /// hand-built fixture standing in for this function's output — useful
+    /// for the journal/export *pipeline* (does storage introduce or drop
+    /// anything), but not evidence about what this function itself
+    /// produces. That evidence lives here.
+    #[test]
+    fn no_android_minted_event_ever_carries_a_forbidden_field() {
+        let events = [
+            DiagnosticEvent::SessionStarted,
+            DiagnosticEvent::WorkerStarted,
+            DiagnosticEvent::WorkerFinished {
+                outcome: OperationOutcome::Success,
+            },
+            DiagnosticEvent::WorkerFinished {
+                outcome: OperationOutcome::Failure,
+            },
+            DiagnosticEvent::PushReceived,
+        ];
+        for (seq, event) in events.into_iter().enumerate() {
+            let json = event_json("s-1", seq as u64, 0, 1_700_000_000_000, 1_000, event);
+            let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+            let mut found = Vec::new();
+            forbidden_keys_in(&value, &mut found);
+            assert!(found.is_empty(), "forbidden field(s) {found:?} in {json}");
+        }
+    }
 }
