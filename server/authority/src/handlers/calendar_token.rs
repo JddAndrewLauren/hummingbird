@@ -25,6 +25,8 @@ pub fn verdict() -> ApiResponse {
         body: String::new(),
         deliveries: Vec::new(),
         principal_id: None,
+        cycle_id: None,
+        request_id: String::new(),
     }
 }
 
@@ -58,6 +60,8 @@ pub fn write_verdict(token_id: &str) -> ApiResponse {
         body: String::new(),
         deliveries: Vec::new(),
         principal_id: None,
+        cycle_id: None,
+        request_id: String::new(),
     }
 }
 

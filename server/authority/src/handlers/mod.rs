@@ -68,12 +68,18 @@ pub struct ApiRequest<'a> {
     /// The raw `X-Hummingbird-Cycle-Id` header value, if any (#711) — the
     /// client's `DiagnosticsContext::correlation_headers` attaches it
     /// already sanitized client-side, but correlation ids are
-    /// attacker-supplied strings, so this crate does its own validation
-    /// (`crate::diagnostics::accept_cycle_id`) rather than trusting the raw
-    /// value. Never percent-decoded — see `path`'s own doc.
+    /// attacker-supplied strings, so `handle()` does its own validation
+    /// ([`crate::diagnostics::accept_cycle_id`]) rather than trusting the
+    /// raw value — see `handle()`'s own doc for exactly where. Never
+    /// percent-decoded — see `path`'s own doc.
     pub cycle_id: Option<&'a str>,
     /// The raw `X-Hummingbird-Request-Id` header value, if any (#711).
-    /// Same validation posture as `cycle_id`.
+    /// Same validation posture as `cycle_id`, via
+    /// [`crate::diagnostics::accept_request_id`]. The `wasm32` shim's own
+    /// pre-`handle()` resolution (`worker/src/lib.rs::fetch`) already
+    /// guarantees this is valid by the time it reaches here in production;
+    /// a fixture test is free to pass a genuinely unvalidated value to
+    /// exercise `handle()`'s own generate-a-fallback path directly.
     pub request_id: Option<&'a str>,
 }
 
@@ -97,8 +103,21 @@ pub struct ApiResponse {
     /// it into the HTTP body (pinned by this crate's own tests). `None`
     /// for an unauthenticated (401) request and for the admin lane, which
     /// authenticates against `ADMIN_SECRET` and has no per-caller token
-    /// row to name.
+    /// row to name. `None` on the one path that never reaches `route()` at
+    /// all — a `SqlError` `handle()` catches and turns into a 500 — since
+    /// there is no principal to name for an error the routing/auth layer
+    /// never got to run.
     pub principal_id: Option<String>,
+    /// `ApiRequest::cycle_id`, validated (#711) — response metadata, the
+    /// same shape as `principal_id`. Set unconditionally by `handle()` on
+    /// every response, including the 500 fallback, so a fixture test (or
+    /// the `wasm32` shim) can read the *validated* id straight off
+    /// whatever `handle()` returns rather than re-deriving it.
+    pub cycle_id: Option<String>,
+    /// `ApiRequest::request_id`, validated-or-generated (#711). Always
+    /// present — every request gets a request id, generated when the
+    /// client sent none or an invalid one.
+    pub request_id: String,
 }
 
 /// The 400 every create route answers when its client-supplied id is not a
@@ -119,10 +138,20 @@ pub struct HandleContext<'a> {
     pub entropy: &'a dyn Entropy,
 }
 
-/// The one entry point.
+/// The one entry point. #711: `cycle_id`/`request_id` are resolved here —
+/// the pure crate's own parsing of `ApiRequest`'s two raw correlation
+/// headers, via [`crate::diagnostics::accept_cycle_id`]/
+/// [`crate::diagnostics::accept_request_id`] — and stamped onto every
+/// `ApiResponse` this function returns, `route()`'s own `Err` fallback
+/// included, so the resolved (not raw) values are always observable off
+/// this function's return value rather than only inside the `wasm32` shim.
 pub fn handle(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> ApiResponse {
-    let result = route(req, ctx, sql);
-    result.unwrap_or_else(|e| error(500, "internal", &e.message))
+    let cycle_id = crate::diagnostics::accept_cycle_id(req.cycle_id);
+    let request_id = crate::diagnostics::accept_request_id(req.request_id, ctx.entropy);
+    let mut resp = route(req, ctx, sql).unwrap_or_else(|e| error(500, "internal", &e.message));
+    resp.cycle_id = cycle_id;
+    resp.request_id = request_id;
+    resp
 }
 
 fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
@@ -266,6 +295,16 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
 
 // --------------------------------------------------------------- helpers
 
+// `ApiResponse` doubles as this crate's own "answer to send back" type,
+// used as both the `Ok` and the `Err` side of a `Result` throughout this
+// module — a deliberate, pre-existing pattern (it is a plain data struct
+// every caller already unwraps directly, never propagated as a real
+// error). #711 grew it by two fields (`cycle_id`, `request_id`), which
+// pushed `parse_body`'s `Err` side past clippy's size threshold; boxing
+// `ApiResponse` to satisfy the lint would ripple `Box::new`/deref across
+// every construction site in `handlers/`, for a struct that is never
+// large enough to matter at this crate's request volume.
+#[allow(clippy::result_large_err)]
 fn parse_body<T: serde::de::DeserializeOwned>(body: Option<&str>) -> Result<T, ApiResponse> {
     let body = body
         .filter(|b| !b.is_empty())
@@ -316,6 +355,8 @@ fn json<T: Serialize>(status: u16, value: &T) -> ApiResponse {
         body: serde_json::to_string(value).expect("DTOs serialize"),
         deliveries: Vec::new(),
         principal_id: None,
+        cycle_id: None,
+        request_id: String::new(),
     }
 }
 
@@ -340,5 +381,7 @@ fn empty_status(status: u16) -> ApiResponse {
         body: String::new(),
         deliveries: Vec::new(),
         principal_id: None,
+        cycle_id: None,
+        request_id: String::new(),
     }
 }

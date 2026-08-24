@@ -26,5 +26,7 @@ pub fn run_verdict() -> ApiResponse {
         body: String::new(),
         deliveries: Vec::new(),
         principal_id: None,
+        cycle_id: None,
+        request_id: String::new(),
     }
 }

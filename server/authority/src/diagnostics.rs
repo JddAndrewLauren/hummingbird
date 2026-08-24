@@ -1,45 +1,57 @@
 //! The authority's half of #706's shared diagnostic contract
-//! (`client/core/src/diagnostics/mod.rs`): `request.received` and
+//! (`hummingbird_domain::diagnostics`): `request.received` and
 //! `request.finished`, structured JSON at the Durable Object boundary
 //! (#711, part of #705).
 //!
-//! **This module cannot literally reuse `DiagnosticEventV1`/`DiagnosticEvent`.**
-//! They live in `hummingbird-core`, a member of the *client* Cargo
-//! workspace (`client/Cargo.toml`); `hummingbird-authority` is a member of
-//! the *server* workspace and has no dependency on it today. Adding one
-//! would drag `chrono`, `futures-util` and (unless disabled) `reqwest` into
-//! `hummingbird-authority-worker`'s `wasm32` build — exactly what
-//! CLAUDE.md's thin-shim rule forbids, for a dependency this module does
-//! not otherwise need. So [`RequestReceived`]/[`RequestFinished`] are
-//! hand-shaped structs of their own, carrying the field *names* the
-//! client-side contract already established wherever the concept is
-//! shared (`cycle_id`, `request_id`, `route`, `method`), plus the
-//! boundary-specific fields the brief calls for. Reported as a finding on
-//! #711 rather than forked into a redefinition of the client's enum.
+//! **This module constructs real `DiagnosticEventV1` values** — the shared
+//! envelope moved from `hummingbird-core` (a client-workspace crate this
+//! server-workspace crate cannot depend on) into `hummingbird-domain` in
+//! #711's review round 1, precisely so this could be true rather than a
+//! hand-shaped lookalike. See `hummingbird_domain::diagnostics`'s own module
+//! docs for the full reasoning and for why `Source::Authority`,
+//! `DiagnosticEvent::RequestReceived`/`RequestFinished` and
+//! [`hummingbird_domain::diagnostics::route_template`] live there now
+//! instead of being redefined here.
 //!
-//! Everything here is decidable and natively tested, per CLAUDE.md's
-//! thin-shim rule: the `wasm32` shim (`hummingbird-authority-worker`) calls
-//! [`accept_cycle_id`]/[`accept_request_id`] before invoking `handle()` (so
-//! a `request.received` line can be written before the possibly-slow work
-//! starts — the same "span survives a hang" shape the client's own
-//! `DiagnosticsContext` uses), classifies the outcome with
-//! [`classify_auth_result`] after `handle()` returns, and does nothing but
-//! serialize the two structs below and call the platform's log function.
+//! **What the authority supplies that the envelope doesn't have a session
+//! for.** `DiagnosticEventV1::session_id`/`seq`/`elapsed_ms` were designed
+//! for `hummingbird-core`'s session model (one per client process,
+//! constructed once at launch). The authority has no equivalent — a
+//! Durable Object instance is ADR-0008's "one workspace singleton", the
+//! closest thing it has to a session — so [`SESSION_ID`] is a fixed
+//! constant and `seq`/the elapsed-time origin are read by the `wasm32`
+//! shim off its own per-instance `Cell` state (the same pattern
+//! `worker/src/lib.rs`'s `schema_ready: Cell<bool>` already uses) and
+//! handed into [`request_received_event`]/[`request_finished_event`] as
+//! plain values — this module holds no state of its own to compute them
+//! from.
+//!
+//! Everything decidable is natively tested here, per CLAUDE.md's thin-shim
+//! rule: `server/worker` has no test harness, so id validation, route
+//! normalization (`route_template`), auth classification and event shaping
+//! all live in this crate; the `wasm32` shim adds only the `Cell` reads and
+//! the `console_log!` call.
 
-use serde::Serialize;
+use hummingbird_domain::diagnostics::{
+    DiagnosticEvent, DiagnosticEventV1, DiagnosticHttpMethod, Source,
+    DIAGNOSTIC_EVENT_SCHEMA_VERSION,
+};
+pub use hummingbird_domain::diagnostics::{is_valid_header_value, route_template, AuthResult};
 
-/// `[A-Za-z0-9_-]{1,80}` — the same shape
-/// `client/core/src/diagnostics/route.rs::is_valid_header_value` enforces
-/// client-side. Checked again here because a correlation id is an
-/// attacker-supplied string riding an HTTP header: the client is not a
-/// trust boundary, and a value that failed validation there might never
-/// have come from this app's own client at all.
+/// The authority's fixed session id (see this module's own docs on why) —
+/// one Durable Object instance, one "session" for as long as it lives.
+pub const SESSION_ID: &str = "authority";
+
+/// `[A-Za-z0-9_-]{1,80}` — re-checked here under the name this module's
+/// callers use; the underlying pattern is
+/// [`hummingbird_domain::diagnostics::is_valid_header_value`] (shared with
+/// the client's own enforcement, `client/core/src/diagnostics/route.rs`).
+/// Checked again here because a correlation id is an attacker-supplied
+/// string riding an HTTP header: the client is not a trust boundary, and a
+/// value that failed validation there might never have come from this
+/// app's own client at all.
 pub fn is_valid_correlation_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 80
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    is_valid_header_value(value)
 }
 
 /// The cycle id a client attached, or `None`. **An invalid value is
@@ -60,7 +72,14 @@ pub fn accept_cycle_id(raw: Option<&str>) -> Option<String> {
 /// `entropy` is the same seam token minting already uses
 /// ([`crate::Entropy`]); 16 random bytes hex-encoded are 32 characters of
 /// `[0-9a-f]`, comfortably inside the 80-character budget and always valid
-/// by construction, so a generated id never itself needs re-validating.
+/// by construction, so a generated id never itself needs re-validating —
+/// and this function draws entropy **only** on that fallback branch: a
+/// caller that hands in an already-valid value (the `wasm32` shim's own
+/// pre-`handle()` resolution, see `worker/src/lib.rs::fetch`) gets it back
+/// unchanged with no second random draw, which is what keeps a request's
+/// `request.received` log, its `request.finished` log and its echoed
+/// `X-Hummingbird-Request-Id` header all naming the exact same id even
+/// though the shim and `route()` each call this function once.
 pub fn accept_request_id(raw: Option<&str>, entropy: &dyn crate::Entropy) -> String {
     if let Some(value) = raw {
         if is_valid_correlation_id(value) {
@@ -70,47 +89,6 @@ pub fn accept_request_id(raw: Option<&str>, entropy: &dyn crate::Entropy) -> Str
     let mut buf = [0u8; 16];
     entropy.fill(&mut buf);
     buf.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Reduces a concrete request path to its route template — every path
-/// segment that is not made up entirely of ASCII letters and underscores
-/// becomes `:id`, except the segment immediately after `settings` (a
-/// settings key, drawn from a small fixed non-secret vocabulary, some of
-/// whose entries are hyphenated — e.g. `race-series` — so it must stay
-/// concrete rather than being treated as an entity id).
-///
-/// **Not a second, drifting copy of `handlers::route`'s match table.** This
-/// makes no reference to any literal segment name at all: it is a
-/// structural rule over segment shape, so a new literal route segment
-/// (always lowercase letters/underscores, per every existing route in
-/// `handlers/mod.rs`) is classified correctly with no update needed here,
-/// and a new entity id (every id this app mints contains a digit or a
-/// hyphen — `sweep.py`'s `deterministic_v4`, the authority's own uuids, and
-/// hex-encoded generated ids) is templated correctly for the same reason.
-/// This is the identical rule (and identical known limit — a purely
-/// alphabetic id would be left concrete) as the client's own
-/// `client/core/src/diagnostics/route.rs::route_template`; the two cannot
-/// share code (different Cargo workspaces) but should never disagree, and
-/// this module's tests pin the same fixtures across both authority routes
-/// and the settings carve-out.
-pub fn route_template(path: &str) -> String {
-    let segments: Vec<&str> = path.split('/').collect();
-    segments
-        .iter()
-        .enumerate()
-        .map(|(index, segment)| {
-            let previous_is_settings = index > 0 && segments[index - 1] == "settings";
-            if previous_is_settings
-                || segment.is_empty()
-                || segment.chars().all(|c| c.is_ascii_alphabetic() || c == '_')
-            {
-                segment.to_string()
-            } else {
-                ":id".to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("/")
 }
 
 /// Whether `path` is the admin lane (`/api/admin/...`) — the one branch
@@ -123,27 +101,6 @@ pub fn is_admin_path(path: &str) -> bool {
         == Some("admin")
 }
 
-/// The closed auth-result vocabulary (#711's acceptance list, verbatim).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AuthResult {
-    Accepted,
-    Rejected,
-    Forbidden,
-    Admin,
-}
-
-impl AuthResult {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            AuthResult::Accepted => "accepted",
-            AuthResult::Rejected => "rejected",
-            AuthResult::Forbidden => "forbidden",
-            AuthResult::Admin => "admin",
-        }
-    }
-}
-
 /// Derives the auth result purely from the request path and the final
 /// response status — no threading of extra state through every branch of
 /// `route()` is needed, because the DO only ever ends up in one of these
@@ -152,7 +109,23 @@ impl AuthResult {
 /// token) or 403 (valid token, out of scope); or anything else (valid
 /// token, in scope).
 ///
-/// This assumes every request classified here already passed
+/// **This is a classification of the *auth* outcome, not of every 403 this
+/// crate can answer.** A handful of routes return 403 for reasons that have
+/// nothing to do with the scope matrix and happen after a token has
+/// already been accepted and permitted — `alerts::ingest`'s
+/// source-binding check (`handlers/alerts.rs`), `snapshots::get`/`ingest`'s
+/// equivalent (`handlers/snapshots.rs`), and
+/// `calendar_token::write_verdict`'s allowed-holder list
+/// (`handlers/calendar_token.rs`) all answer 403 for an authenticated,
+/// in-scope device/ingest token that is simply the wrong *source* or the
+/// wrong *device*. Those still classify as `Forbidden` here — the same
+/// bucket the scope-matrix 403 uses — because from the log line's point of
+/// view they are the same fact worth recording ("this token could not do
+/// this"); this function does not and cannot distinguish *why* within that
+/// bucket, since it sees only the path and the status, never which
+/// in-handler check produced the 403.
+///
+/// This also assumes every request classified here already passed
 /// `handlers::route`'s own `/api/` prefix check — true for every request
 /// that reaches the Durable Object in production, since the Worker's own
 /// `#[event(fetch)]` routes only `/api/*` paths to it (`worker/src/lib.rs`).
@@ -170,73 +143,95 @@ pub fn classify_auth_result(path: &str, status: u16) -> AuthResult {
     }
 }
 
-/// Written before `handle()` runs, so an incomplete span survives a hang —
-/// the same reason the client's own `http.started` is emitted before its
-/// awaited call (`client/core/src/diagnostics/context.rs`).
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct RequestReceived {
-    pub event: &'static str,
-    pub cycle_id: Option<String>,
-    pub request_id: String,
-    pub route: String,
-    pub method: String,
-}
-
-impl RequestReceived {
-    pub fn new(cycle_id: Option<String>, request_id: String, route: String, method: String) -> Self {
-        RequestReceived {
-            event: "request.received",
-            cycle_id,
-            request_id,
-            route,
-            method,
-        }
+/// Maps the authority's uppercase method string
+/// (`ApiRequest::method`/`req.method().to_string().to_uppercase()` in the
+/// shim) onto the shared [`DiagnosticHttpMethod`]. The route table in
+/// `handlers/mod.rs` only ever dispatches `GET`/`POST`/`PATCH`/`PUT`/`DELETE`
+/// — anything else reaching this function is a method the router itself
+/// would answer 404/405 for, so it is classified `Get` rather than adding a
+/// speculative `Other` variant to a shared, wire-committed enum for a verb
+/// this API never actually answers.
+fn parse_method(method: &str) -> DiagnosticHttpMethod {
+    match method {
+        "POST" => DiagnosticHttpMethod::Post,
+        "PATCH" => DiagnosticHttpMethod::Patch,
+        "PUT" => DiagnosticHttpMethod::Put,
+        "DELETE" => DiagnosticHttpMethod::Delete,
+        _ => DiagnosticHttpMethod::Get,
     }
 }
 
-/// Written after the response is built. **Never carries a token value, an
-/// `authorization` header, or a response body** — only the non-secret
-/// token id ([`crate::ApiResponse::principal_id`]) and the closed
-/// [`AuthResult`].
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct RequestFinished {
-    pub event: &'static str,
-    pub cycle_id: Option<String>,
-    pub request_id: String,
-    pub route: String,
-    pub method: String,
-    pub status: u16,
-    pub duration_ms: i64,
-    pub response_bytes: usize,
-    pub token_id: Option<String>,
-    pub auth_result: AuthResult,
+/// Builds the `request.received` event — written by the `wasm32` shim
+/// before `handle()` runs (before schema init, alarm scheduling, or
+/// reading the body), so an incomplete span survives a hang.
+#[allow(clippy::too_many_arguments)]
+pub fn request_received_event(
+    seq: u64,
+    wall_clock_ms: i64,
+    elapsed_ms: u64,
+    cycle_id: Option<String>,
+    request_id: String,
+    route: String,
+    method: &str,
+) -> DiagnosticEventV1 {
+    DiagnosticEventV1 {
+        schema_version: DIAGNOSTIC_EVENT_SCHEMA_VERSION,
+        seq,
+        wall_clock_ms,
+        elapsed_ms,
+        session_id: SESSION_ID.to_string(),
+        source: Source::Authority,
+        cycle_id,
+        operation_id: None,
+        request_id: Some(request_id),
+        event: DiagnosticEvent::RequestReceived {
+            method: parse_method(method),
+            route,
+        },
+    }
 }
 
+/// Builds the `request.finished` event — written after the response is
+/// built, or (for a request the DO fails on before ever calling `handle()`
+/// — schema init, the alarm-scheduling await, the body-read await) written
+/// immediately before that failure propagates, so this event is never
+/// skipped on an exit path that already emitted `request.received`. Never
+/// carries a token value, an `authorization` header, or a response body —
+/// only the non-secret `token_id` and the closed [`AuthResult`].
 #[allow(clippy::too_many_arguments)]
-impl RequestFinished {
-    pub fn new(
-        cycle_id: Option<String>,
-        request_id: String,
-        route: String,
-        method: String,
-        status: u16,
-        duration_ms: i64,
-        response_bytes: usize,
-        token_id: Option<String>,
-        auth_result: AuthResult,
-    ) -> Self {
-        RequestFinished {
-            event: "request.finished",
-            cycle_id,
-            request_id,
+pub fn request_finished_event(
+    seq: u64,
+    wall_clock_ms: i64,
+    elapsed_ms: u64,
+    cycle_id: Option<String>,
+    request_id: String,
+    route: String,
+    method: &str,
+    status: u16,
+    duration_ms: i64,
+    response_bytes: usize,
+    token_id: Option<String>,
+    auth_result: AuthResult,
+) -> DiagnosticEventV1 {
+    DiagnosticEventV1 {
+        schema_version: DIAGNOSTIC_EVENT_SCHEMA_VERSION,
+        seq,
+        wall_clock_ms,
+        elapsed_ms,
+        session_id: SESSION_ID.to_string(),
+        source: Source::Authority,
+        cycle_id,
+        operation_id: None,
+        request_id: Some(request_id),
+        event: DiagnosticEvent::RequestFinished {
+            method: parse_method(method),
             route,
-            method,
             status,
             duration_ms,
             response_bytes,
             token_id,
             auth_result,
-        }
+        },
     }
 }
 
@@ -262,12 +257,6 @@ mod tests {
         assert!(!is_valid_correlation_id(&too_long));
     }
 
-    #[test]
-    fn an_eighty_character_correlation_id_is_accepted() {
-        let boundary = "a".repeat(80);
-        assert!(is_valid_correlation_id(&boundary));
-    }
-
     /// Percent-decoding never happens at this layer (`ApiRequest::path`'s
     /// own doc: segments are matched exactly as received) — this pins that
     /// the validator sees the raw, still-encoded bytes and rejects them,
@@ -275,12 +264,6 @@ mod tests {
     #[test]
     fn a_percent_encoded_payload_is_rejected() {
         assert!(!is_valid_correlation_id("cycle%2F1"));
-    }
-
-    #[test]
-    fn a_correlation_id_with_a_disallowed_character_is_rejected() {
-        assert!(!is_valid_correlation_id("has a space"));
-        assert!(!is_valid_correlation_id("has/a/slash"));
     }
 
     #[test]
@@ -333,51 +316,23 @@ mod tests {
         assert!(!generated.contains(' '));
     }
 
-    // ------------------------------------------------- route templating
-
+    /// The exact coordination claim `accept_request_id`'s own doc makes:
+    /// calling it a second time on an already-valid value never touches
+    /// entropy. Proven by handing it an entropy source that panics if
+    /// asked to fill anything — if the fallback branch ran, this test
+    /// would panic instead of returning.
     #[test]
-    fn a_bare_collection_path_is_unchanged() {
-        assert_eq!(route_template("/api/items"), "/api/items");
-    }
-
-    #[test]
-    fn a_concrete_entity_path_is_templated() {
-        let template = route_template("/api/items/9f1c2e40-aaaa-4b2b-8c3d-000000000001");
-        assert!(!template.contains("9f1c2e40"));
-        assert_eq!(template, "/api/items/:id");
-    }
-
-    #[test]
-    fn two_entity_ids_in_one_path_are_both_templated() {
+    fn accept_request_id_never_draws_entropy_for_an_already_valid_value() {
+        struct PanicsIfDrawn;
+        impl crate::Entropy for PanicsIfDrawn {
+            fn fill(&self, _buf: &mut [u8]) {
+                panic!("entropy drawn for an already-valid request id");
+            }
+        }
         assert_eq!(
-            route_template("/api/blocked_by/a-1/a-2"),
-            "/api/blocked_by/:id/:id"
+            accept_request_id(Some("already-valid-1"), &PanicsIfDrawn),
+            "already-valid-1"
         );
-    }
-
-    #[test]
-    fn a_hyphenated_settings_key_survives_concrete() {
-        assert_eq!(
-            route_template("/api/settings/race-series"),
-            "/api/settings/race-series"
-        );
-    }
-
-    #[test]
-    fn only_the_segment_immediately_after_settings_is_exempt() {
-        assert_eq!(
-            route_template("/api/settings/race-series/a-1"),
-            "/api/settings/race-series/:id"
-        );
-    }
-
-    #[test]
-    fn purely_alphabetic_literal_segments_survive_untouched() {
-        assert_eq!(
-            route_template("/api/google/calendar_token"),
-            "/api/google/calendar_token"
-        );
-        assert_eq!(route_template("/api/skills/run"), "/api/skills/run");
     }
 
     // ------------------------------------------------- auth classification
@@ -396,6 +351,19 @@ mod tests {
     #[test]
     fn a_403_off_the_device_lane_classifies_forbidden() {
         assert_eq!(classify_auth_result("/api/alerts", 403), AuthResult::Forbidden);
+    }
+
+    /// The non-blocking finding from review round 1: a non-auth 403 (an
+    /// ingest token bound to the wrong source, `alerts::ingest`'s own
+    /// check) still classifies `Forbidden` — see this function's own doc
+    /// for why that is the intended, not merely tolerated, behaviour.
+    #[test]
+    fn a_source_binding_403_unrelated_to_the_scope_matrix_still_classifies_forbidden() {
+        assert_eq!(classify_auth_result("/api/alerts", 403), AuthResult::Forbidden);
+        assert_eq!(
+            classify_auth_result("/api/google/calendar_write_token", 403),
+            AuthResult::Forbidden
+        );
     }
 
     #[test]
@@ -417,26 +385,34 @@ mod tests {
     // ------------------------------------------------- event shaping
 
     #[test]
-    fn request_received_serializes_with_the_event_name_and_no_status() {
-        let event = RequestReceived::new(
+    fn request_received_event_carries_source_authority_and_no_status() {
+        let event = request_received_event(
+            0,
+            1_700_000_000_000,
+            0,
             Some("cycle-1".to_string()),
             "cycle-1-0".to_string(),
             "/api/items".to_string(),
-            "POST".to_string(),
+            "POST",
         );
+        assert_eq!(event.source, Source::Authority);
+        assert_eq!(event.session_id, SESSION_ID);
         let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("\"event\":\"request.received\""));
+        assert!(json.contains("\"name\":\"request.received\""));
         assert!(json.contains("\"cycle_id\":\"cycle-1\""));
-        assert!(!json.contains("status"));
+        assert!(!json.contains("\"status\""));
     }
 
     #[test]
-    fn request_finished_serializes_every_required_field() {
-        let event = RequestFinished::new(
+    fn request_finished_event_serializes_every_required_field() {
+        let event = request_finished_event(
+            1,
+            1_700_000_000_000,
+            5,
             Some("cycle-1".to_string()),
             "cycle-1-0".to_string(),
             "/api/items/:id".to_string(),
-            "PATCH".to_string(),
+            "PATCH",
             200,
             42,
             128,
@@ -444,7 +420,7 @@ mod tests {
             AuthResult::Accepted,
         );
         let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("\"event\":\"request.finished\""));
+        assert!(json.contains("\"name\":\"request.finished\""));
         assert!(json.contains("\"status\":200"));
         assert!(json.contains("\"duration_ms\":42"));
         assert!(json.contains("\"response_bytes\":128"));
@@ -454,16 +430,20 @@ mod tests {
 
     /// The whole risk the brief names explicitly: the principal id is
     /// metadata for the shim's log call, never the HTTP response body. This
-    /// test lives beside `RequestFinished` (which carries `token_id`) as a
-    /// reminder of the field it is *not* the same as — `ApiResponse`'s own
-    /// pin (`handlers/mod.rs`) is the one that actually protects the body.
+    /// test lives beside `request_finished_event` (which carries
+    /// `token_id`) as a reminder of the field it is *not* the same as —
+    /// `ApiResponse`'s own pin (`handlers/mod.rs`) is the one that actually
+    /// protects the body.
     #[test]
-    fn a_token_id_absent_from_the_request_serializes_as_null_not_a_missing_key() {
-        let event = RequestFinished::new(
+    fn a_token_id_absent_from_the_event_serializes_as_null_not_a_missing_key() {
+        let event = request_finished_event(
+            2,
+            1_700_000_000_000,
+            5,
             None,
             "generated-1".to_string(),
             "/api/admin/tokens".to_string(),
-            "POST".to_string(),
+            "POST",
             401,
             5,
             0,
@@ -473,5 +453,14 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"token_id\":null"));
         assert!(json.contains("\"cycle_id\":null"));
+    }
+
+    #[test]
+    fn a_delete_method_maps_to_the_shared_delete_variant() {
+        let event = request_received_event(
+            0, 0, 0, None, "r-1".to_string(), "/api/admin/tokens/:id".to_string(), "DELETE",
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"method\":\"DELETE\""));
     }
 }
