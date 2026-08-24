@@ -22,6 +22,8 @@ import {
   requestGrillDraft,
   requestGrillDraftItemIds,
   requestIsPending,
+  requestClearDiagnostics,
+  requestDiagnosticsExport,
   requestMirrorSnapshot,
   requestProjects,
   requestQueueDepth,
@@ -29,6 +31,7 @@ import {
   requestTriageInbox,
   saveGrillDraft,
   setCalendarSelectionsOnWorker,
+  setDiagnosticsExportHandler,
   setMirrorSnapshotHandler,
   triageItem,
   triggerSyncFocus,
@@ -1230,6 +1233,56 @@ describe("attachWorkerClient", () => {
     });
   });
 
+  describe("diagnosticsExport handling (#707, same never-retained contract as mirrorSnapshot)", () => {
+    afterEach(() => {
+      setDiagnosticsExportHandler(null);
+    });
+
+    it("hands the export straight to the registered handler and writes nothing to the store", () => {
+      const worker = fakeWorker();
+      const store = createCoreStore();
+      attachWorkerClient(worker, store);
+      const received: Array<[unknown, number]> = [];
+      setDiagnosticsExportHandler((events, droppedCount) => received.push([events, droppedCount]));
+
+      worker.onmessage?.({
+        data: { type: "diagnosticsExport", events: [{ seq: 1 }], droppedCount: 3 },
+      } as MessageEvent);
+
+      expect(received).toEqual([[[{ seq: 1 }], 3]]);
+      expect(store.getSnapshot().task).not.toHaveProperty("diagnosticsExport");
+    });
+
+    it("drops the export silently when no handler is registered — never throws, never stored", () => {
+      const worker = fakeWorker();
+      const store = createCoreStore();
+      attachWorkerClient(worker, store);
+
+      expect(() =>
+        worker.onmessage?.({
+          data: { type: "diagnosticsExport", events: [], droppedCount: 0 },
+        } as MessageEvent),
+      ).not.toThrow();
+    });
+
+    it("a later registration replaces the earlier one rather than accumulating", () => {
+      const worker = fakeWorker();
+      const store = createCoreStore();
+      attachWorkerClient(worker, store);
+      const first = vi.fn();
+      const second = vi.fn();
+      setDiagnosticsExportHandler(first);
+      setDiagnosticsExportHandler(second);
+
+      worker.onmessage?.({
+        data: { type: "diagnosticsExport", events: [], droppedCount: 0 },
+      } as MessageEvent);
+
+      expect(first).not.toHaveBeenCalled();
+      expect(second).toHaveBeenCalledWith([], 0);
+    });
+  });
+
   it("flags task needsReconnect on a taskEvents message carrying a credential_needed event", () => {
     const worker = fakeWorker();
     const store = createCoreStore();
@@ -1535,6 +1588,18 @@ describe("the task send helpers (#105/S7)", () => {
     const worker = fakeWorker();
     requestMirrorSnapshot(worker);
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "getMirrorSnapshot" });
+  });
+
+  it("requestDiagnosticsExport posts a getDiagnostics request", () => {
+    const worker = fakeWorker();
+    requestDiagnosticsExport(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getDiagnostics" });
+  });
+
+  it("requestClearDiagnostics posts a clearDiagnostics request", () => {
+    const worker = fakeWorker();
+    requestClearDiagnostics(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "clearDiagnostics" });
   });
 
   it("reportViewVisibility posts a setViewVisibility request with this view's own hidden state", () => {

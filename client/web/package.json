@@ -34,6 +34,7 @@
     "eslint": "^10.8.1",
     "eslint-plugin-jsx-a11y": "^6.10.2",
     "eslint-plugin-react-hooks": "^7.1.1",
+    "fake-indexeddb": "^6.2.5",
     "globals": "^17.9.0",
     "jsdom": "^30.0.1",
     "tailwindcss": "^4.1.0",

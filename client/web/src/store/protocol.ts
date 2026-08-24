@@ -1087,6 +1087,78 @@ export type SyncCadenceRequest =
    * path", and any future in-flight coalescing (#184) covers it too. */
   | { type: "manualSyncTrigger" };
 
+// -- #707's SharedWorker diagnostic journal --------------------------------
+//
+// One IndexedDB journal, owned by the SharedWorker (`worker/diagnostics-*`),
+// not the wasm task host — so, like `SyncCadenceRequest` above, these two
+// reach neither wasm host and are intercepted by `core.worker.ts`'s
+// dispatch directly (`worker/dispatch.ts`, `worker/request-router.ts`).
+
+/** `server/domain/src/diagnostics.rs`'s `Source` enum, wire-spelled
+ * exactly (kebab-case, `#[serde(rename_all = "kebab-case")]`) — the SAME
+ * spelling on every host, since an exported journal's `source` field is
+ * compared across the PWA's, Android's and the authority's own exports
+ * (#705's whole point). */
+export type DiagnosticSourceName = "core" | "web-worker" | "android" | "authority";
+
+/** One `{name, payload}` pair from the closed `DiagnosticEvent` enum
+ * (`server/domain/src/diagnostics.rs`), typed loosely rather than as a
+ * mirrored discriminated union: this module never branches on a payload's
+ * contents, only stores and exports it verbatim (a Core-sourced event
+ * arrives pre-built from wasm; a web-worker-sourced one is built by
+ * `worker/diagnostics-events.ts` to the identical shape), and hand-copying
+ * the whole Rust enum here would be a second owner of it — exactly what
+ * that module's header forbids every consuming slice from doing. `payload`
+ * is absent for a unit variant (`serde`'s adjacently-tagged representation
+ * omits it, not `null`), present otherwise. */
+export interface DiagnosticEventNamePayload {
+  name: string;
+  payload?: unknown;
+}
+
+/** One `DiagnosticEventV1` exactly as it appears on the wire — snake_case
+ * field names, deliberately NOT remapped to this file's usual camelCase DTO
+ * convention. Every other type in this file trades the wire's snake_case
+ * for camelCase at the boundary; this one does not, because the boundary
+ * here is cross-host (PWA vs. Android vs. authority), not
+ * Rust-wire-vs-TS-app, and an operator diffing two exported journals needs
+ * to see the same field names in both. */
+export interface DiagnosticEventV1DTO {
+  schema_version: number;
+  seq: number;
+  wall_clock_ms: number;
+  elapsed_ms: number;
+  session_id: string;
+  source: DiagnosticSourceName;
+  cycle_id: string | null;
+  /** Always `null` in this slice — #708 is what starts setting it
+   * (`server/domain/src/diagnostics.rs`'s own doc on the field; #711 moved
+   * the envelope there out of `client/core/src/diagnostics/mod.rs`, which
+   * now only re-exports it). */
+  operation_id: string | null;
+  request_id: string | null;
+  event: DiagnosticEventNamePayload;
+}
+
+/** Settings' "Download diagnostics" button. */
+export type DiagnosticsWorkerRequest =
+  | { type: "getDiagnostics" }
+  /** Settings' "Clear diagnostics" button. Carries nothing and gets no
+   * reply — the same "fire and forget" contract `clearTaskApiKey` documents
+   * above; a caller that wants to confirm the journal is now empty asks
+   * again with `getDiagnostics`. */
+  | { type: "clearDiagnostics" };
+
+export type DiagnosticsWorkerResponse = {
+  type: "diagnosticsExport";
+  events: DiagnosticEventV1DTO[];
+  /** The journal's cumulative dropped-event count (`diagnostics-store.ts`'s
+   * retention sweep) — exported alongside the events themselves so a reader
+   * can tell "72 hours of quiet" from "72 hours of quiet, and 4,000 events
+   * this journal could not afford to keep". */
+  droppedCount: number;
+};
+
 export type TaskWorkerResponse =
   | {
       type: "captureResult";
@@ -1418,4 +1490,5 @@ export type WorkerResponse =
    * reason — an empty `events` read renders as "nothing scheduled", which a
    * core that has not attempted the read has no standing to claim. */
   | { type: "calendarEvents"; key: string; read: CalendarReadDTO }
-  | TaskWorkerResponse;
+  | TaskWorkerResponse
+  | DiagnosticsWorkerResponse;

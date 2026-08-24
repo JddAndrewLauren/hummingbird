@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskWorkerResponse } from "../store/protocol";
 import { PortRegistry, type PortLike } from "./ports";
-import { createTaskRequestQueue, handleTaskRequest, type TaskHostLike } from "./task-worker";
+import {
+  createTaskRequestQueue,
+  handleTaskRequest,
+  type TaskDiagnostics,
+  type TaskHostLike,
+} from "./task-worker";
 
 function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
   return {
@@ -1423,6 +1428,121 @@ describe("createTaskRequestQueue", () => {
     expect(consoleError).toHaveBeenCalled();
     expect(posted).toEqual([{ type: "frontier", items: [] }]);
     consoleError.mockRestore();
+  });
+
+  describe("#707's diagnostics wiring", () => {
+    function fakeDiagnostics() {
+      return {
+        recordEnqueued: vi.fn(),
+        recordDequeued: vi.fn(),
+        recordAbandoned: vi.fn(),
+        recordBusy: vi.fn(),
+        drainAroundRequest: vi.fn((run: () => Promise<unknown>, _drainHost: () => string | null | undefined) =>
+          run(),
+        ) as unknown as TaskDiagnostics["drainAroundRequest"] & { mock: { calls: unknown[][] } },
+      };
+    }
+
+    it("records enqueue before dequeue for a single request", async () => {
+      const host = fakeHost();
+      const diagnostics = fakeDiagnostics();
+      const order: string[] = [];
+      diagnostics.recordEnqueued.mockImplementation(() => order.push("enqueued"));
+      diagnostics.recordDequeued.mockImplementation(() => order.push("dequeued"));
+      const enqueue = createTaskRequestQueue(host, () => {}, diagnostics);
+
+      await enqueue({ type: "getFrontier" });
+
+      expect(order).toEqual(["enqueued", "dequeued"]);
+    });
+
+    it("records a busy result posted by the handler, without recording an ok one", async () => {
+      const host = fakeHost({
+        capture: vi.fn().mockResolvedValue('{"kind":"busy","id":null,"error":null}'),
+      });
+      const diagnostics = fakeDiagnostics();
+      const posted: TaskWorkerResponse[] = [];
+      const enqueue = createTaskRequestQueue(host, (response) => posted.push(response), diagnostics);
+
+      await enqueue({
+        type: "capture",
+        seed: "s",
+        title: "t",
+        stage: "triage",
+        fields: {
+          size: null,
+          energy: null,
+          context: null,
+          description: null,
+          projectId: null,
+          priority: null,
+          deadline: null,
+          scheduledDate: null,
+        },
+        nowMs: 1,
+      });
+
+      expect(diagnostics.recordBusy).toHaveBeenCalledTimes(1);
+      expect(posted).toEqual([{ type: "captureResult", seed: "s", kind: "busy", id: null, error: null }]);
+
+      diagnostics.recordBusy.mockClear();
+      const host2 = fakeHost();
+      const diagnostics2 = fakeDiagnostics();
+      const enqueue2 = createTaskRequestQueue(host2, () => {}, diagnostics2);
+      await enqueue2({ type: "getFrontier" });
+      expect(diagnostics2.recordBusy).not.toHaveBeenCalled();
+    });
+
+    it("wraps the request's own run in drainAroundRequest, passing the host's drain method through", async () => {
+      const drainDiagnostics = vi.fn(() => "[]");
+      const host = fakeHost({ drainDiagnostics });
+      const diagnostics = fakeDiagnostics();
+      const enqueue = createTaskRequestQueue(host, () => {}, diagnostics);
+
+      await enqueue({ type: "getFrontier" });
+
+      expect(diagnostics.drainAroundRequest).toHaveBeenCalledTimes(1);
+      const [, drainHost] = diagnostics.drainAroundRequest.mock.calls[0];
+      expect((drainHost as () => string | null)()).toBe("[]");
+    });
+
+    it("passes a working drain callback even when the host has no drainDiagnostics at all", async () => {
+      const host = fakeHost();
+      const diagnostics = fakeDiagnostics();
+      const enqueue = createTaskRequestQueue(host, () => {}, diagnostics);
+
+      await enqueue({ type: "getFrontier" });
+
+      const [, drainHost] = diagnostics.drainAroundRequest.mock.calls[0];
+      expect((drainHost as () => string | null)()).toBeNull();
+    });
+
+    it("records the 30s abandonment via the diagnostics hook, in addition to the console error", async () => {
+      vi.useFakeTimers();
+      try {
+        const host = fakeHost({
+          runSync: vi.fn().mockReturnValue(new Promise<string>(() => {})),
+        });
+        const diagnostics = fakeDiagnostics();
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+        const enqueue = createTaskRequestQueue(host, () => {}, diagnostics);
+
+        const first = enqueue({
+          type: "runSync",
+          nowMs: 1_000,
+          trigger: "user",
+          forceFullSweep: true,
+          jitterUnit: 0,
+        });
+        await vi.advanceTimersByTimeAsync(30_100);
+        await first;
+
+        expect(diagnostics.recordAbandoned).toHaveBeenCalledTimes(1);
+        consoleError.mockRestore();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe("a request that never settles", () => {

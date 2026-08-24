@@ -9,6 +9,8 @@ import type {
   CalendarSelectionDTO,
   CalendarWorkerRequest,
   ConditionDTO,
+  DiagnosticEventV1DTO,
+  DiagnosticsWorkerRequest,
   GrillDraftTurnDTO,
   GrillVerdictName,
   ProjectDTO,
@@ -61,7 +63,9 @@ export interface CaptureFields {
 // the type carried that name through the migration).
 export interface WorkerLike {
   onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null;
-  postMessage(message: CalendarWorkerRequest | TaskWorkerRequest | SyncCadenceRequest): void;
+  postMessage(
+    message: CalendarWorkerRequest | TaskWorkerRequest | SyncCadenceRequest | DiagnosticsWorkerRequest,
+  ): void;
 }
 
 /** S9's mirror-download flow, round-1 review fix: `mirrorSnapshot` used to
@@ -82,6 +86,24 @@ let mirrorSnapshotHandler: ((mirror: unknown) => void) | null = null;
  * up a snapshot some other request-issuing view triggered. */
 export function setMirrorSnapshotHandler(handler: ((mirror: unknown) => void) | null): void {
   mirrorSnapshotHandler = handler;
+}
+
+/** #707's "Download diagnostics" flow — the identical single-mutable-slot
+ * shape `mirrorSnapshotHandler` documents above, for the same reason: a
+ * `diagnosticsExport` is a broadcast with no directed reply, so storing it
+ * in `TaskState` would retain a full journal export in every open tab's
+ * memory indefinitely after only one of them ever asked for a download. */
+let diagnosticsExportHandler:
+  | ((events: DiagnosticEventV1DTO[], droppedCount: number) => void)
+  | null = null;
+
+/** Registers the one handler `attachWorkerClient` hands the next
+ * `diagnosticsExport` broadcast to. Pass `null` to unregister (e.g. on
+ * unmount) — the same contract `setMirrorSnapshotHandler` documents. */
+export function setDiagnosticsExportHandler(
+  handler: ((events: DiagnosticEventV1DTO[], droppedCount: number) => void) | null,
+): void {
+  diagnosticsExportHandler = handler;
 }
 
 type Store = Pick<
@@ -595,6 +617,10 @@ export function attachWorkerClient(
       case "mirrorSnapshot":
         // Never stored — see `mirrorSnapshotHandler`'s own doc.
         mirrorSnapshotHandler?.(message.mirror);
+        return;
+      case "diagnosticsExport":
+        // Never stored — see `diagnosticsExportHandler`'s own doc.
+        diagnosticsExportHandler?.(message.events, message.droppedCount);
         return;
     }
   };
@@ -1170,6 +1196,18 @@ export function requestDeadLetters(worker: WorkerLike): void {
 
 export function requestMirrorSnapshot(worker: WorkerLike): void {
   worker.postMessage({ type: "getMirrorSnapshot" });
+}
+
+// -- #707's diagnostics-journal reads/writes --------------------------
+
+export function requestDiagnosticsExport(worker: WorkerLike): void {
+  worker.postMessage({ type: "getDiagnostics" });
+}
+
+/** Settings' "Clear diagnostics" button. No reply — same "fire and forget"
+ * contract `protocol.ts`'s `clearDiagnostics` documents. */
+export function requestClearDiagnostics(worker: WorkerLike): void {
+  worker.postMessage({ type: "clearDiagnostics" });
 }
 
 // -- shared cadence coordination (S9 round-1 review, PR #181) --------------

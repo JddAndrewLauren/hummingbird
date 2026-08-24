@@ -203,6 +203,15 @@ pub enum AuthResult {
 /// only by, `hummingbird_authority::diagnostics` (#711) — `hummingbird-core`
 /// never builds one of those two variants, the same way it never builds
 /// `worker.started`.
+///
+/// `operation.abandoned` is #707's own addition to this owner enum (the
+/// PWA SharedWorker's serial queue giving up *waiting*, distinct from
+/// `operation.stalled`'s "still running past 30s"). No Rust crate in
+/// either workspace constructs it: the only writer is
+/// `client/web/src/worker/diagnostics-events.ts`, which serializes this
+/// same envelope from TypeScript. It lives here anyway because this
+/// module is the sole owner of the vocabulary — see that variant's own
+/// doc.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "name", content = "payload")]
 pub enum DiagnosticEvent {
@@ -254,6 +263,17 @@ pub enum DiagnosticEvent {
     OperationSlow,
     #[serde(rename = "operation.stalled")]
     OperationStalled,
+    /// A queue gave up WAITING on a request rather than watching one still
+    /// running — the terminal fact "the queue moved on without knowing if
+    /// this ever finished," as opposed to [`DiagnosticEvent::OperationStalled`]'s
+    /// "still running past 30s." Added by #707's SharedWorker journal (its
+    /// serial queue's own 30s abandon-on-timeout, `worker/serial-queue.ts`)
+    /// after a review caught the two being folded into one name with no
+    /// discriminating field — #708's wasm-level `core.busy{owner}` amendment
+    /// is expected to need a similar enum touch, so this is the first of
+    /// what may be more than one #707/#708 amendment to this file.
+    #[serde(rename = "operation.abandoned")]
+    OperationAbandoned,
 
     #[serde(rename = "network.changed")]
     NetworkChanged { online: bool },
@@ -538,6 +558,7 @@ mod tests {
                 }
                 DiagnosticEvent::OperationSlow => DiagnosticEvent::OperationSlow,
                 DiagnosticEvent::OperationStalled => DiagnosticEvent::OperationStalled,
+                DiagnosticEvent::OperationAbandoned => DiagnosticEvent::OperationAbandoned,
                 DiagnosticEvent::NetworkChanged { online } => DiagnosticEvent::NetworkChanged { online },
                 DiagnosticEvent::WorkerStarted => DiagnosticEvent::WorkerStarted,
                 DiagnosticEvent::WorkerFinished { outcome } => DiagnosticEvent::WorkerFinished { outcome },
@@ -591,6 +612,7 @@ mod tests {
             DiagnosticEvent::OperationFinished { outcome: OperationOutcome::Success },
             DiagnosticEvent::OperationSlow,
             DiagnosticEvent::OperationStalled,
+            DiagnosticEvent::OperationAbandoned,
             DiagnosticEvent::NetworkChanged { online: true },
             DiagnosticEvent::WorkerStarted,
             DiagnosticEvent::WorkerFinished { outcome: OperationOutcome::Success },

@@ -181,7 +181,13 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     comboboxOpenSignal.getSnapshot,
   );
   const { ready: updateReady, onReload: handleReload } = useAppUpdate();
-  const { nowMs: syncNowMs, handleDownloadMirror, handleManualSync } = useSyncWiring(worker, status);
+  const {
+    nowMs: syncNowMs,
+    handleDownloadMirror,
+    handleManualSync,
+    handleDownloadDiagnostics,
+    handleClearDiagnostics,
+  } = useSyncWiring(worker, status);
   useFrontierWiring(worker, status, task.syncOutcomeSeq);
   const {
     selectedItemId,
@@ -694,6 +700,8 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               online={online}
               syncNowMs={syncNowMs}
               onDownloadMirror={handleDownloadMirror}
+              onDownloadDiagnostics={handleDownloadDiagnostics}
+              onClearDiagnostics={handleClearDiagnostics}
             />
           )}
         </div>
