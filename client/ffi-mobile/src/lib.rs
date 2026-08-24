@@ -71,6 +71,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 mod calendar_token;
+mod diagnostics;
 
 use calendar_token::{
     connection_state, mint_calendar_token, CalendarState, MintOutcome, ROTATION_MARGIN_MS,
@@ -6317,6 +6318,110 @@ pub fn is_informative_sync_outcome(kind: String) -> bool {
     settings::is_informative_sync_outcome(&kind)
 }
 
+// -------------------------------------------------------------- #709: diagnostics
+
+/// Mirrors only the handful of [`hummingbird_core::diagnostics::DiagnosticEvent`]
+/// variants Android mints on its own — `session.started` (the mobile FFI
+/// host's own init, `CoreHolder.create`), `worker.started`/`worker.finished`
+/// (`SyncWorker`, around its `run` call) and `push.received`
+/// (`HbMessagingService.onMessageReceived`). Never the whole closed family:
+/// `Core::run_observed`'s own `sync.*`/`http.*`/`operation.*` events are
+/// #710's wiring, once Android calls the observed path at all — this is the
+/// same "mirror a Rust-owned enum, don't redefine it" shape
+/// [`MobileUrgencyBand`]/[`MobileFrontierAxis`] already use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileDiagnosticEvent {
+    SessionStarted,
+    WorkerStarted,
+    WorkerFinished { success: bool },
+    PushReceived,
+}
+
+fn map_mobile_diagnostic_event(
+    event: MobileDiagnosticEvent,
+) -> hummingbird_core::diagnostics::DiagnosticEvent {
+    use hummingbird_core::diagnostics::{DiagnosticEvent, OperationOutcome};
+    match event {
+        MobileDiagnosticEvent::SessionStarted => DiagnosticEvent::SessionStarted,
+        MobileDiagnosticEvent::WorkerStarted => DiagnosticEvent::WorkerStarted,
+        MobileDiagnosticEvent::WorkerFinished { success } => DiagnosticEvent::WorkerFinished {
+            outcome: if success {
+                OperationOutcome::Success
+            } else {
+                OperationOutcome::Failure
+            },
+        },
+        MobileDiagnosticEvent::PushReceived => DiagnosticEvent::PushReceived,
+    }
+}
+
+/// The process-wide diagnostic session state (#709): one per Android
+/// process, matching the recorder it feeds — `seq` keeps counting and
+/// `origin_monotonic_ms` stays fixed for the process's whole life, exactly
+/// [`hummingbird_core::diagnostics::DiagnosticSession`]'s own contract for
+/// what one session is. Held here (not in [`diagnostics`]) so that module's
+/// own tests build a fresh counter per case instead of fighting a
+/// [`std::sync::OnceLock`] only the first test in the binary could ever set.
+struct DiagnosticSessionState {
+    /// The id and origin are set together, in one `OnceLock`, precisely so
+    /// neither can move independently of the other once a session exists —
+    /// review round 1 caught an earlier version of this struct storing the
+    /// origin in its own unconditional `AtomicU64::store`, which made this
+    /// function's own doc ("a later call cannot move the origin") false on
+    /// the Rust side; it only looked true because `DiagnosticsRecorder`
+    /// happens to call this with the same `by lazy` value every time.
+    identity: std::sync::OnceLock<(String, u64)>,
+    seq: AtomicU64,
+}
+
+static DIAGNOSTIC_SESSION: DiagnosticSessionState = DiagnosticSessionState {
+    identity: std::sync::OnceLock::new(),
+    seq: AtomicU64::new(0),
+};
+
+/// Sets the process-wide session's id and the one monotonic reading its
+/// `elapsed_ms` is measured from. Called once, at the mobile FFI host's own
+/// init (`CoreHolder.create`) — which is also where `session.started` gets
+/// minted, immediately after. Idempotent **by construction**: `identity` is
+/// a single `OnceLock<(String, u64)>`, so a later call with a different id
+/// or origin cannot move either — `seq`/`elapsed_ms` staying monotonic
+/// *within* one session is the whole point of the split
+/// (`hummingbird_core::diagnostics::context`'s own doc).
+#[uniffi::export]
+pub fn diagnostic_init_session(session_id: String, origin_monotonic_ms: u64) {
+    let _ = DIAGNOSTIC_SESSION
+        .identity
+        .set((session_id, origin_monotonic_ms));
+}
+
+/// Mints one Android-sourced `DiagnosticEventV1` and returns it serialized
+/// as the exact NDJSON line the Kotlin recorder appends — see
+/// [`diagnostics::event_json`]. `wall_clock_ms` is the caller's own
+/// `System.currentTimeMillis()`; `monotonic_ms` is `SystemClock
+/// .elapsedRealtime()`, measured against the origin [`diagnostic_init_session`]
+/// fixed for this process.
+#[uniffi::export]
+pub fn diagnostic_event_json(
+    wall_clock_ms: i64,
+    monotonic_ms: u64,
+    event: MobileDiagnosticEvent,
+) -> String {
+    let (session_id, origin_monotonic_ms) = DIAGNOSTIC_SESSION
+        .identity
+        .get()
+        .map(|(id, origin)| (id.as_str(), *origin))
+        .unwrap_or(("uninitialized", 0));
+    let seq = DIAGNOSTIC_SESSION.seq.fetch_add(1, Ordering::Relaxed);
+    diagnostics::event_json(
+        session_id,
+        seq,
+        origin_monotonic_ms,
+        wall_clock_ms,
+        monotonic_ms,
+        map_mobile_diagnostic_event(event),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -10507,5 +10612,70 @@ mod settings_tests {
             facts_of(MobileStandingQuestion::Vacation),
             MobilePaneFacts::Vacation { resolved: None }
         ));
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_ffi_tests {
+    use super::*;
+
+    /// The whole wiring, end to end: `diagnostic_init_session` fixes the
+    /// origin, then `diagnostic_event_json` mints a real, parseable
+    /// `DiagnosticEventV1` line carrying that session id and `source:
+    /// "android"`. A later `diagnostic_init_session` call is a no-op —
+    /// `DIAGNOSTIC_SESSION` is a process-wide `static`, shared with every
+    /// other test in this binary, so this only pins that the *first* id
+    /// this process ever sets is the one that sticks (never asserts an
+    /// exact `seq`, since other tests in this file may run first and share
+    /// the same counter).
+    #[test]
+    fn diagnostic_event_json_carries_the_session_and_android_source() {
+        // `diagnostic_init_session` is idempotent, and `DIAGNOSTIC_SESSION`
+        // is one process-wide `static` shared with every other test in
+        // this binary — this call may or may not be the one that actually
+        // wins, so this asserts the *shape* (a non-empty id, whatever it
+        // is), never a literal one specific test happened to pass in.
+        diagnostic_init_session("some-session".to_string(), 0);
+        let json = diagnostic_event_json(1_700_000_000_000, 0, MobileDiagnosticEvent::PushReceived);
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(value["session_id"].as_str().is_some_and(|id| !id.is_empty()));
+        assert_eq!(value["source"], "android");
+        assert_eq!(value["event"]["name"], "push.received");
+    }
+
+    #[test]
+    fn worker_finished_success_maps_to_the_success_outcome() {
+        diagnostic_init_session("some-session".to_string(), 0);
+        let json = diagnostic_event_json(
+            0,
+            0,
+            MobileDiagnosticEvent::WorkerFinished { success: true },
+        );
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["event"]["payload"]["outcome"], "success");
+    }
+
+    /// Review round 1, finding: an earlier version of `diagnostic_init_session`
+    /// stored the id in a `OnceLock` but the origin in a plain
+    /// `AtomicU64::store`, so a *second* call — with a different id and a
+    /// wildly different origin — silently moved the origin every time it
+    /// ran, even though the doc claimed otherwise. `DIAGNOSTIC_SESSION` is
+    /// one process-wide `static` shared with every other test in this
+    /// binary, so this cannot assert which caller's id "won" the race to
+    /// go first — only that *whichever one did* is what every later call
+    /// still sees: two calls back to back, with different ids and wildly
+    /// different origins, produce two events with the identical
+    /// `session_id` and `elapsed_ms`.
+    #[test]
+    fn diagnostic_init_session_is_idempotent_a_later_call_cannot_move_the_origin() {
+        diagnostic_init_session("first-caller".to_string(), 111);
+        let first = diagnostic_event_json(0, 500, MobileDiagnosticEvent::PushReceived);
+        diagnostic_init_session("second-caller".to_string(), 999_999);
+        let second = diagnostic_event_json(0, 500, MobileDiagnosticEvent::PushReceived);
+
+        let first: serde_json::Value = serde_json::from_str(&first).unwrap();
+        let second: serde_json::Value = serde_json::from_str(&second).unwrap();
+        assert_eq!(first["session_id"], second["session_id"]);
+        assert_eq!(first["elapsed_ms"], second["elapsed_ms"]);
     }
 }
