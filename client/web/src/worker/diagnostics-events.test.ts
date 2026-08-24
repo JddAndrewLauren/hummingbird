@@ -52,7 +52,7 @@ describe("event builders", () => {
   it("maps enqueue/dequeue/abandon/busy to their own distinct closed-enum names", () => {
     expect(requestEnqueuedEvent(session, 1_000).event.name).toBe("core.wait_started");
     expect(requestDequeuedEvent(session, 1_000).event.name).toBe("core.acquired");
-    expect(requestAbandonedEvent(session, 1_000).event.name).toBe("operation.stalled");
+    expect(requestAbandonedEvent(session, 1_000).event.name).toBe("operation.abandoned");
     expect(requestBusyEvent(session, 1_000).event.name).toBe("core.busy");
   });
 

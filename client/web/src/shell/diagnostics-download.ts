@@ -1,16 +1,21 @@
 import type { DiagnosticEventV1DTO } from "../store/protocol";
 
-// #707's "Download diagnostics" button — the same shape as
-// `mirror-download.ts`'s mirror download (that file's own doc explains why
-// actually writing bytes to disk stays thin and untested wire-up: no DOM
-// env in this repo's test tooling). The one thing worth its own pure,
-// tested function is the filename, same as the mirror's.
+// #707's "Download diagnostics" button — the same Blob-and-anchor shape as
+// `mirror-download.ts`'s mirror download.
+//
+// **Review round 1 of PR #736 caught a false comment here**: this used to
+// say "no DOM env in this repo's test tooling", which is not true — this
+// repo's `// @vitest-environment jsdom` docblock (used by every
+// `*.test.tsx` component test) is exactly how `diagnostics-download.test.ts`
+// exercises this file's actual Blob content, not just its filename.
 //
 // The export is deliberately its own file, never the mirror's: the Agent
 // Brief's own acceptance criterion is that a diagnostics export "never
 // carries the mirror" — two separate downloads, two separate files, is
 // what makes that true by construction rather than by a shared writer
-// happening to be called with the right argument.
+// happening to be called with the right argument. `diagnostics-download.test.ts`
+// proves it by reading the actual Blob's text back and asserting the word
+// "mirror" never appears in it.
 
 /** A sortable, filesystem-safe name for one diagnostics export — same
  * colon/dot substitution `mirrorSnapshotFilename` uses, for the same

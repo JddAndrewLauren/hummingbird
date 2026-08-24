@@ -27,16 +27,35 @@ import type { DiagnosticEventV1DTO } from "../store/protocol";
 // serial queue's OWN analogous lifecycle (waiting for a queue turn,
 // getting it, or being told the underlying host is already busy) — the
 // same general shape as the wasm-level `TaskHostCore` checkout #708
-// instruments, one layer up. `operation.stalled` is used for the 30s
-// abandonment specifically because #705's own plan text names that exact
-// bound ("operation.slow (5s) and operation.stalled (30s)"), which matches
-// `worker/task-worker.ts`'s `TASK_REQUEST_TIMEOUT_MS` precisely.
+// instruments, one layer up.
+//
+// **`operation.abandoned`, not `operation.stalled`, for the 30s
+// abandonment.** Review round 1 of PR #736 caught a real name collision: the
+// shared enum already uses `operation.stalled` for a STILL-RUNNING
+// operation past 30s (`client/core/src/sync/cycle.rs`'s observed cycle),
+// while this queue's 30s bound is the opposite fact — the queue GIVING UP
+// on the wait and moving on, with no idea whether the request will ever
+// settle. Folding both into one name with no discriminating field would
+// have made #712's cross-host interpretation table read them as the same
+// thing. `OperationAbandoned` is a new variant this slice added to
+// `client/core/src/diagnostics/mod.rs` (see that variant's own doc) —
+// amending the shared owner enum, not forking a second one, which is the
+// distinction that module's header actually draws.
+//
 // `core.released` is deliberately NOT emitted here — release-on-settle at
 // this layer was not asked for, and inventing it risks colliding with
 // #708's own wasm-level `core.released`, which records the more decisive
 // fact (the actual `TaskHostCore` checkout closing). If a reviewer wants
 // the JS queue's own release recorded too, that is a follow-up, not a
 // silent addition here.
+//
+// **A consequence #708 is built directly on**: this queue's own
+// `core.wait_started`/`core.acquired` pairs never close with a matching
+// `core.released` (the paragraph above), so a reader computing "how long
+// was X held" from this journal alone cannot pair them by `source` and
+// `session_id` the way it can for #708's wasm-level checkout spans — this
+// layer's pairs must be read as "queue-turn" spans, distinct from
+// `source: "core"`'s "wasm-checkout" spans, never merged across the two.
 
 export const DIAGNOSTIC_EVENT_SCHEMA_VERSION = 1;
 
@@ -130,10 +149,13 @@ export function requestDequeuedEvent(session: DiagnosticsSession, nowMs: number)
 }
 
 /** `serial-queue.ts`'s `withTimeout` gave up waiting on the request at
- * `TASK_REQUEST_TIMEOUT_MS` (30s) and moved the queue on — #705's own plan
- * names this exact bound as `operation.stalled`. */
+ * `TASK_REQUEST_TIMEOUT_MS` (30s) and moved the queue on —
+ * `operation.abandoned`, a family this slice added to the shared enum (see
+ * the module doc's "review round 1" note): the still-running
+ * `operation.stalled` #705's plan names for that same 30s figure is a
+ * different fact from a queue that has stopped waiting. */
 export function requestAbandonedEvent(session: DiagnosticsSession, nowMs: number): DiagnosticEventV1DTO {
-  return envelope(session, nowMs, { name: "operation.stalled" });
+  return envelope(session, nowMs, { name: "operation.abandoned" });
 }
 
 /** A task request's own result carried `kind: "busy"` — the underlying

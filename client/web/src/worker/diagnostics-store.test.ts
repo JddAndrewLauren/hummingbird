@@ -1,7 +1,20 @@
-import { IDBFactory } from "fake-indexeddb";
-import { describe, expect, it } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { describe, expect, it, vi } from "vitest";
 import type { DiagnosticEventV1DTO } from "../store/protocol";
-import { createDiagnosticsStore, DIAGNOSTICS_MAX_BYTES, DIAGNOSTICS_RETENTION_MS } from "./diagnostics-store";
+import {
+  createDiagnosticsStore,
+  DIAGNOSTICS_MAX_BYTES,
+  DIAGNOSTICS_RETENTION_MS,
+  openDiagnosticsDb,
+} from "./diagnostics-store";
+
+// Node has no ambient `IDBKeyRange`; the store's age-eviction sweep needs
+// one to build a bounded index range, so every call below hands it
+// `fake-indexeddb`'s own real implementation, the same injection idiom the
+// `IDBFactory` argument already uses.
+function newStore(factory: IDBFactory = new IDBFactory()) {
+  return createDiagnosticsStore(factory, IDBKeyRange);
+}
 
 // `fake-indexeddb`'s `IDBFactory` is a real, spec-conformant in-memory
 // implementation (not a mock of this module's own calls), so these tests
@@ -27,13 +40,13 @@ function event(overrides: Partial<DiagnosticEventV1DTO> = {}): DiagnosticEventV1
 
 describe("createDiagnosticsStore", () => {
   it("exports nothing and a zero dropped count from a fresh journal", async () => {
-    const store = createDiagnosticsStore(new IDBFactory());
+    const store = newStore();
     const result = await store.exportAll();
     expect(result).toEqual({ events: [], droppedCount: 0 });
   });
 
   it("exports written events in insertion (sequence) order", async () => {
-    const store = createDiagnosticsStore(new IDBFactory());
+    const store = newStore();
     await store.append([event({ seq: 1 }), event({ seq: 2 })], 1_000);
     await store.append([event({ seq: 3 })], 1_001);
 
@@ -42,7 +55,7 @@ describe("createDiagnosticsStore", () => {
   });
 
   it("clear empties the journal and resets the dropped count", async () => {
-    const store = createDiagnosticsStore(new IDBFactory());
+    const store = newStore();
     await store.append([event()], 1_000);
 
     await store.clear();
@@ -53,13 +66,13 @@ describe("createDiagnosticsStore", () => {
 
   it("survives a simulated worker restart: a second store over the same factory sees events written before it existed", async () => {
     const factory = new IDBFactory();
-    const firstLifetime = createDiagnosticsStore(factory);
+    const firstLifetime = newStore(factory);
     await firstLifetime.append([event({ seq: 1 }), event({ seq: 2 })], 1_000);
 
     // A new `DiagnosticsStoreLike` instance, exactly what a fresh
     // `SharedWorker` activation constructs — nothing here reuses the first
     // instance's in-memory state, only the underlying (fake) IndexedDB.
-    const secondLifetime = createDiagnosticsStore(factory);
+    const secondLifetime = newStore(factory);
     const result = await secondLifetime.exportAll();
 
     expect(result.events.map((e) => e.seq)).toEqual([1, 2]);
@@ -67,17 +80,56 @@ describe("createDiagnosticsStore", () => {
 
   it("preserves sequence order across a restart boundary", async () => {
     const factory = new IDBFactory();
-    await createDiagnosticsStore(factory).append([event({ seq: 1 })], 1_000);
+    await newStore(factory).append([event({ seq: 1 })], 1_000);
     // Simulated restart, then more events append after it.
-    await createDiagnosticsStore(factory).append([event({ seq: 2 })], 1_001);
+    await newStore(factory).append([event({ seq: 2 })], 1_001);
 
-    const result = await createDiagnosticsStore(factory).exportAll();
+    const result = await newStore(factory).exportAll();
     expect(result.events.map((e) => e.seq)).toEqual([1, 2]);
+  });
+
+  // Review round 1 of PR #736: a fresh `IDBDatabase` connection per
+  // operation, never reused, is a real leak — this pins the fix.
+  it("opens exactly one connection for the store's whole lifetime, across many operations", async () => {
+    const factory = new IDBFactory();
+    const openSpy = vi.spyOn(factory, "open");
+    const store = newStore(factory);
+
+    await store.append([event({ seq: 1 })], 1_000);
+    await store.append([event({ seq: 2 })], 1_000);
+    await store.exportAll();
+    await store.clear();
+
+    expect(openSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // Review round 1: `append` used to read the WHOLE store and
+  // `JSON.stringify` every record on every call — i.e. every 250ms during
+  // exactly the stall this journal exists to observe. The age sweep is an
+  // indexed range query (`evictExpired`), not a full scan, so it opens a
+  // cursor on the `wall_clock_ms` INDEX rather than on the object store
+  // directly when nothing is expired; this pins that the object store's
+  // own (unbounded) cursor is never opened by an append that has nothing
+  // to evict on either bound.
+  it("never opens a full object-store cursor on an append that evicts nothing on either bound", async () => {
+    const factory = new IDBFactory();
+    const store = newStore(factory);
+    await store.append([event({ seq: 1 })], 1_000);
+
+    const db = await openDiagnosticsDb(factory);
+    const tx = db.transaction(["events"], "readonly");
+    const objectStoreOpenCursor = vi.spyOn(Object.getPrototypeOf(tx.objectStore("events")), "openCursor");
+    db.close();
+
+    await store.append([event({ seq: 2 })], 1_000);
+
+    expect(objectStoreOpenCursor).not.toHaveBeenCalled();
+    objectStoreOpenCursor.mockRestore();
   });
 
   describe("retention", () => {
     it("drops events older than 72 hours by the caller's injected clock, and counts them", async () => {
-      const store = createDiagnosticsStore(new IDBFactory());
+      const store = newStore();
       const oldMs = 0;
       const nowMs = DIAGNOSTICS_RETENTION_MS + 10_000;
 
@@ -90,7 +142,7 @@ describe("createDiagnosticsStore", () => {
     });
 
     it("drops the oldest events first once the 10 MiB bound is crossed, and counts them", async () => {
-      const store = createDiagnosticsStore(new IDBFactory());
+      const store = newStore();
       // Each padded event serializes to well over 3 MiB; four of them cross
       // the 10 MiB bound and force at least one eviction.
       const pad = "x".repeat(3.5 * 1024 * 1024);
@@ -113,7 +165,7 @@ describe("createDiagnosticsStore", () => {
     });
 
     it("never lets the journal exceed the 10 MiB bound", async () => {
-      const store = createDiagnosticsStore(new IDBFactory());
+      const store = newStore();
       const pad = "x".repeat(3.5 * 1024 * 1024);
       for (let seq = 1; seq <= 5; seq += 1) {
         await store.append([event({ seq, request_id: pad })], 1_000);

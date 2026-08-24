@@ -953,7 +953,7 @@ describe("SettingsScreen — the device-token precondition for calendar (#585)",
 // exist AND are wired to the two protocol ops, not merely that the screen
 // renders without throwing.
 describe("SettingsScreen — #707's diagnostics journal controls", () => {
-  it("renders Download diagnostics and Clear diagnostics beside Download mirror", () => {
+  it("renders Download diagnostics, Clear diagnostics, and Download mirror when the core is ready", () => {
     renderSettings();
     expect(screen.getByRole("button", { name: "Download mirror" })).toBeDefined();
     expect(screen.getByRole("button", { name: "Download diagnostics" })).toBeDefined();
@@ -972,5 +972,48 @@ describe("SettingsScreen — #707's diagnostics journal controls", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear diagnostics" }));
     expect(onClearDiagnostics).toHaveBeenCalledTimes(1);
     expect(onDownloadDiagnostics).not.toHaveBeenCalled();
+  });
+
+  // Review round 1 of PR #736: both controls used to sit inside the
+  // `status === "ready"` gate, which made the journal unexportable exactly
+  // when the core never reaches ready — one of the main situations an
+  // operator needs it (a hang or a wasm load failure during startup,
+  // #704's own incident). `worker/ports.ts`'s `DiagnosticsPortHandler`
+  // makes the request genuinely servable in both of these states now
+  // (queued-then-delivered while loading; explicitly answered by a failed
+  // core) — this proves the SCREEN no longer hides the controls either.
+  describe("reachable regardless of core status", () => {
+    it("renders both diagnostics controls, clickable, while the core is still loading", () => {
+      const { onDownloadDiagnostics, onClearDiagnostics } = renderSettings({ status: "loading" });
+
+      expect(screen.getByText(/local core is still loading/i)).toBeDefined();
+      fireEvent.click(screen.getByRole("button", { name: "Download diagnostics" }));
+      fireEvent.click(screen.getByRole("button", { name: "Clear diagnostics" }));
+
+      expect(onDownloadDiagnostics).toHaveBeenCalledTimes(1);
+      expect(onClearDiagnostics).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders both diagnostics controls, clickable, when the core failed to start", () => {
+      const { onDownloadDiagnostics, onClearDiagnostics } = renderSettings({ status: "error" });
+
+      expect(screen.getByText(/local core failed to start/i)).toBeDefined();
+      fireEvent.click(screen.getByRole("button", { name: "Download diagnostics" }));
+      fireEvent.click(screen.getByRole("button", { name: "Clear diagnostics" }));
+
+      expect(onDownloadDiagnostics).toHaveBeenCalledTimes(1);
+      expect(onClearDiagnostics).toHaveBeenCalledTimes(1);
+    });
+
+    it("never shows the not-ready note once the core is ready", () => {
+      renderSettings({ status: "ready" });
+      expect(screen.queryByText(/local core is still loading/i)).toBeNull();
+      expect(screen.queryByText(/local core failed to start/i)).toBeNull();
+    });
+
+    it("does not gate Download mirror the same way — it stays ready-only, since the mirror is a wasm-side read", () => {
+      renderSettings({ status: "loading" });
+      expect(screen.queryByRole("button", { name: "Download mirror" })).toBeNull();
+    });
   });
 });

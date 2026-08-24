@@ -1,5 +1,6 @@
 import type {
   CalendarWorkerRequest,
+  DiagnosticsWorkerRequest,
   SyncCadenceRequest,
   TaskWorkerRequest,
   WorkerResponse,
@@ -7,7 +8,38 @@ import type {
 import { isInformativeSyncOutcome } from "../shell/sync-outcome-informative";
 import { announceReady } from "./announce";
 
-type AnyWorkerRequest = CalendarWorkerRequest | TaskWorkerRequest | SyncCadenceRequest;
+type AnyWorkerRequest =
+  | CalendarWorkerRequest
+  | TaskWorkerRequest
+  | SyncCadenceRequest
+  | DiagnosticsWorkerRequest;
+
+/** #707 review round 1: "the journal is unexportable exactly when the core
+ * never reaches ready — which is one of the main situations an operator
+ * needs the journal." The diagnostic journal (`diagnostics-journal.ts`)
+ * lives in `core.worker.ts`'s module scope, entirely independent of the
+ * wasm import — it exists and keeps recording whether or not that import
+ * ever resolves. What was still missing was a way to REACH it: `wire`
+ * below only ever assigned a port's `onmessage` on the "ready" branch: a
+ * "failed" core's port got `{type: "error"}` and nothing else, ever — no
+ * `onmessage`, so any message a view later sent (including
+ * `getDiagnostics`) sat queued in the port forever, undelivered. This
+ * handler is what `wire` now also serves on the "failed" branch, so a
+ * core that never came up can still answer the two diagnostics messages
+ * (and only those — nothing else can be served without the wasm host that
+ * failed to load). Constructed once, in `core.worker.ts`, before the wasm
+ * import is even attempted; optional here (a test that does not care about
+ * this passes nothing and gets the previous "cannot serve" behaviour
+ * unchanged). */
+export interface DiagnosticsPortHandler {
+  isDiagnosticsRequest(request: AnyWorkerRequest): boolean;
+  handle(request: AnyWorkerRequest, port: PortLike): void;
+}
+
+const NOOP_DIAGNOSTICS_PORT_HANDLER: DiagnosticsPortHandler = {
+  isDiagnosticsRequest: () => false,
+  handle: () => {},
+};
 
 // The narrow slice of `MessagePort` the registry needs — narrow enough that
 // tests can pass a plain object instead of a real port (same discipline as
@@ -201,8 +233,15 @@ export class PortRegistry {
    * exactly once at module scope, so the registry IS the instance. Injected
    * rather than minted here, the repo's caller-injected-randomness idiom
    * (`client/core` takes `seed`/`Now` for the same reason), which is also
-   * what lets `ports.test.ts` assert on a fixed string. */
-  constructor(private readonly coreId: string) {}
+   * what lets `ports.test.ts` assert on a fixed string.
+   *
+   * `diagnostics` is #707's addition — see `DiagnosticsPortHandler`'s own
+   * doc. Optional and no-op by default, so every existing caller/test that
+   * does not construct one is unaffected. */
+  constructor(
+    private readonly coreId: string,
+    private readonly diagnostics: DiagnosticsPortHandler = NOOP_DIAGNOSTICS_PORT_HANDLER,
+  ) {}
 
   /** Wires a newly connecting port. While the core is still initializing,
    * the port is queued instead — never dropped, never wired twice. */
@@ -227,11 +266,15 @@ export class PortRegistry {
 
   /** The core failed to initialize. Every port already queued, and every
    * port connecting from here on, gets `{type: "error"}` instead of a
-   * handshake that will never come. */
+   * handshake that will never come — routed through `wire` (not a direct
+   * `postMessage` here) so both cases still get the diagnostics-only
+   * `onmessage` wiring `wire`'s "failed" branch now assigns; see
+   * `DiagnosticsPortHandler`'s own doc for why. */
   activateError(message: string): void {
-    this.state = { kind: "failed", message };
-    for (const { port } of this.pending.splice(0)) {
-      port.postMessage({ type: "error", message });
+    const state: State = { kind: "failed", message };
+    this.state = state;
+    for (const { port, viewOrdinal } of this.pending.splice(0)) {
+      this.wire(port, state, viewOrdinal);
     }
   }
 
@@ -255,6 +298,16 @@ export class PortRegistry {
   ): void {
     if (state.kind === "failed") {
       port.postMessage({ type: "error", message: state.message });
+      // #707: nothing wasm-dependent can ever be served on a failed core,
+      // but the diagnostic journal is not wasm-dependent — see
+      // `DiagnosticsPortHandler`'s own doc. Everything else this port ever
+      // sends is silently dropped, same as before this handler existed.
+      port.onmessage = (event) => {
+        if (this.diagnostics.isDiagnosticsRequest(event.data)) {
+          this.diagnostics.handle(event.data, port);
+        }
+      };
+      port.start();
       return;
     }
     const { enqueue, coreApiVersion } = state;

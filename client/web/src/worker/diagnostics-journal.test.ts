@@ -39,7 +39,7 @@ describe("createDiagnosticsJournal", () => {
     journal.recordBusy(1_000);
 
     const names = store.appended.map((batch) => batch[0].event.name);
-    expect(names).toEqual(["core.acquired", "operation.stalled", "core.busy"]);
+    expect(names).toEqual(["core.acquired", "operation.abandoned", "core.busy"]);
   });
 
   it("records a network change with the online payload", () => {

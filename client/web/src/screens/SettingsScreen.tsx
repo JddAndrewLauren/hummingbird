@@ -849,6 +849,53 @@ export function SettingsScreen({
           ) : null}
         </Card>
 
+        {/* #707's SharedWorker diagnostic journal. Review round 1 of PR
+            #736: this used to sit inside the `status === "ready"` gate
+            below with the mirror download, which meant the journal was
+            unexportable exactly when the core never reaches ready — one of
+            the main situations an operator needs it (a hang or a wasm
+            load failure during startup, #704's own incident). The journal
+            lives in the SharedWorker's own module scope independent of
+            whether wasm ever loads (`worker/diagnostics-journal.ts`), and
+            `worker/ports.ts`'s `DiagnosticsPortHandler` now answers
+            `getDiagnostics`/`clearDiagnostics` even from a core that failed
+            to initialize (see that module's own doc) — so these two
+            controls render unconditionally, never gated on `status`. The
+            "Download mirror" button above stays `status === "ready"`-gated
+            correctly: the mirror is a wasm-side read with nothing to serve
+            it from a core that never loaded. */}
+        <span className="hb-meta">diagnostics</span>
+        <Card
+          padding="var(--space-5)"
+          style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
+        >
+          {status !== "ready" ? (
+            <Note>
+              {status === "loading"
+                ? "The local core is still loading — a request queues and completes once it does."
+                : "The local core failed to start, but the SharedWorker's own request/response journal is a separate, independent store and is still reachable."}
+            </Note>
+          ) : null}
+          <div style={{ display: "flex", gap: "var(--space-3)", flexWrap: "wrap" }}>
+            <Button
+              variant="secondary"
+              iconLeft="download"
+              onClick={onDownloadDiagnostics}
+              style={{ alignSelf: "flex-start" }}
+            >
+              Download diagnostics
+            </Button>
+            <Button
+              variant="secondary"
+              iconLeft="trash-2"
+              onClick={onClearDiagnostics}
+              style={{ alignSelf: "flex-start" }}
+            >
+              Clear diagnostics
+            </Button>
+          </div>
+        </Card>
+
         {status === "ready" && taskTokenState !== "unset" ? (
           <>
             <span className="hb-meta">google calendar</span>
@@ -1007,27 +1054,6 @@ export function SettingsScreen({
               >
                 Download mirror
               </Button>
-              {/* #707's SharedWorker diagnostic journal — a deliberate,
-                  manual export beside the mirror above, never carrying it
-                  (see `shell/diagnostics-download.ts`). */}
-              <div style={{ display: "flex", gap: "var(--space-3)", flexWrap: "wrap" }}>
-                <Button
-                  variant="secondary"
-                  iconLeft="download"
-                  onClick={onDownloadDiagnostics}
-                  style={{ alignSelf: "flex-start" }}
-                >
-                  Download diagnostics
-                </Button>
-                <Button
-                  variant="secondary"
-                  iconLeft="trash-2"
-                  onClick={onClearDiagnostics}
-                  style={{ alignSelf: "flex-start" }}
-                >
-                  Clear diagnostics
-                </Button>
-              </div>
             </Card>
 
             {task.deadLetters.length > 0 ? (

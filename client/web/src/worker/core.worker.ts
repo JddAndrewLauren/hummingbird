@@ -97,7 +97,11 @@
 // incorrect" duplicate-trigger case the calendar wiring above already
 // accepts.
 
-import type { TaskWorkerRequest, TaskWorkerResponse } from "../store/protocol";
+import type {
+  DiagnosticsWorkerRequest,
+  TaskWorkerRequest,
+  TaskWorkerResponse,
+} from "../store/protocol";
 import {
   createSyncCadence,
   mergePendingSyncTrigger,
@@ -109,6 +113,7 @@ import { createDispatch, type DispatchDiagnostics, type DispatchVisibility } fro
 import { mintCoreId } from "./core-id";
 import { createDiagnosticsJournal } from "./diagnostics-journal";
 import { PortRegistry, type PortLike } from "./ports";
+import { isDiagnosticsWorkerRequest } from "./request-router";
 import { createSyncRunGuard } from "./sync-run-guard";
 import {
   createTaskRequestQueue,
@@ -154,6 +159,40 @@ const TASK_NAMESPACE = "hummingbird-task";
 // unset in every checked-in configuration.
 const TASK_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? self.location.origin;
 
+// #707's SharedWorker diagnostic journal: one IndexedDB-backed journal for
+// the whole origin, declared BEFORE `registry` below (which now needs it —
+// see `diagnosticsPortHandler`) — for the same reason `visibility` is
+// declared alongside `registry`: a `getDiagnostics`/`clearDiagnostics`
+// request could in principle arrive as soon as any port is wired, well
+// before the async IIFE below resolves. `Date.now()` anchors the session's
+// `elapsed_ms` origin — bare wasm32 has no clock of its own, but this
+// global scope is a real JS runtime (the same reasoning the module doc
+// above gives for calling `Math.random()`/`Date.now()` directly in the
+// cadence wiring).
+const diagnosticsJournal = createDiagnosticsJournal(Date.now());
+
+/** #707 review round 1: a core that fails to initialize could not, until
+ * this, ever answer `getDiagnostics`/`clearDiagnostics` — `PortRegistry`'s
+ * "failed" branch posted `{type: "error"}` and never assigned the port's
+ * `onmessage` at all, so those two messages sat queued in the port
+ * forever. The journal itself lives in this module's scope regardless of
+ * whether the wasm import below ever resolves, so it has always been
+ * reachable in principle — this is what makes it reachable in practice,
+ * passed into `PortRegistry`'s constructor so it applies on the "failed"
+ * branch too (see `ports.ts`'s `DiagnosticsPortHandler` doc). */
+const diagnosticsPortHandler = {
+  isDiagnosticsRequest: isDiagnosticsWorkerRequest,
+  handle: (request: DiagnosticsWorkerRequest, port: PortLike) => {
+    if (request.type === "getDiagnostics") {
+      void diagnosticsJournal.export().then(({ events, droppedCount }) => {
+        port.postMessage({ type: "diagnosticsExport", events, droppedCount });
+      });
+      return;
+    }
+    void diagnosticsJournal.clear();
+  },
+};
+
 // Issue #172: the id every view's handshake carries, minted once per
 // `SharedWorker` global scope — this module is evaluated exactly once per
 // core, so the constant IS the core instance. `mintCoreId` owns the
@@ -163,7 +202,7 @@ const TASK_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? self.location.origin;
 // `core-id.ts`). A plain static call either way: this file's invariant is
 // no top-level `await` in its static import graph, which that module does
 // not touch.
-const registry = new PortRegistry(mintCoreId());
+const registry = new PortRegistry(mintCoreId(), diagnosticsPortHandler);
 
 // The shared cadence's own view-visibility aggregate (S9 round-1 review) —
 // see the module doc above and `visibility-tracker.ts`. Declared alongside
@@ -172,17 +211,6 @@ const registry = new PortRegistry(mintCoreId());
 // in principle arrive as soon as any port is wired, and this must already
 // exist by then.
 const visibility = new VisibilityTracker<PortLike>();
-
-// #707's SharedWorker diagnostic journal: one IndexedDB-backed journal for
-// the whole origin, matching `registry`/`visibility` above — declared here,
-// alongside them, for the same reason `visibility` is: a `setViewVisibility`
-// (or, here, a `getDiagnostics`/`clearDiagnostics`) request could in
-// principle arrive as soon as any port is wired, well before the async IIFE
-// below resolves. `Date.now()` anchors the session's `elapsed_ms` origin —
-// bare wasm32 has no clock of its own, but this global scope is a real JS
-// runtime (the same reasoning the module doc above gives for calling
-// `Math.random()`/`Date.now()` directly in the cadence wiring).
-const diagnosticsJournal = createDiagnosticsJournal(Date.now());
 
 // The narrow adapter `worker/task-worker.ts`'s `createTaskRequestQueue`
 // needs (`TaskDiagnostics`) — every method there is clock-free by design
