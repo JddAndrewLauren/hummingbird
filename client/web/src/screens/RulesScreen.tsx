@@ -548,8 +548,8 @@ function RuleCard({
 
   return (
     <Card padding="var(--space-5)" style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--space-4)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+      <div className="hb-rule-card-header">
+        <div className="hb-rule-card-title">
           <span style={{ font: "var(--type-body-strong)" }}>{rule.name}</span>
           <Badge tone={rule.tier === "urgent" ? "danger" : "info"} mono>
             {rule.tier}
