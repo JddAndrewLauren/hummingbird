@@ -55,6 +55,7 @@ import net.twinion.hummingbird.speech.DictationHost
 import net.twinion.hummingbird.ui.LevelGlyphFamily
 import net.twinion.hummingbird.ui.forms.CaptureDateField
 import net.twinion.hummingbird.ui.forms.ContextField
+import net.twinion.hummingbird.ui.forms.DeadlineField
 import net.twinion.hummingbird.ui.forms.LevelSlider
 import net.twinion.hummingbird.ui.forms.PriorityRow
 import net.twinion.hummingbird.ui.forms.ProjectField
@@ -325,8 +326,7 @@ private fun CaptureScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.Top,
                         ) {
-                            CaptureDateField(
-                                label = "Deadline",
+                            DeadlineField(
                                 value = draft.deadline,
                                 error = metaProblems.deadline,
                                 onValueChange = { viewModel.updateDraft(draft.copy(deadline = it)) },

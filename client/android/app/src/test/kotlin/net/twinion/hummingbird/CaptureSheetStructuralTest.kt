@@ -97,7 +97,12 @@ class CaptureSheetStructuralTest {
         // than by the disclosure's flag alone: a `detailsOpen` that reveals
         // three of the five would satisfy the line above and still send the
         // reader to the other surface.
-        for (field in listOf("ProjectField(", "PriorityRow(", "CaptureDateField(")) {
+        for (field in listOf(
+            "ProjectField(",
+            "PriorityRow(",
+            "DeadlineField(",
+            "CaptureDateField(",
+        )) {
             assertTrue(
                 "the disclosure must render the shared $field",
                 src.contains(field),
@@ -189,12 +194,20 @@ class CaptureSheetStructuralTest {
      * which is also why [net.twinion.hummingbird.ui.forms.CaptureDateField]
      * grew a `modifier` parameter. Checked on both files because the pair
      * is a parity claim, and the Triage editor is deliberately excluded: it
-     * stacks them still, inside a narrower card. */
+     * stacks them still, inside a narrower card.
+     *
+     * The two are no longer the *same* component: since the pickers landed
+     * (2026-08-24) the deadline is
+     * [net.twinion.hummingbird.ui.forms.DeadlineField], which wraps the
+     * scheduled date's own control and adds the optional minute the
+     * deadline grammar accepts. So the pair is anchored on `DeadlineField(`
+     * and their order is asserted too — due before planned, which is the
+     * reading the shared line exists to buy. */
     @Test
     fun `both capture surfaces pair the two dates on one line`() {
         for (name in listOf("CaptureSheet.kt", "CaptureActivity.kt")) {
             val src = source(name)
-            val firstDate = src.indexOf("CaptureDateField(")
+            val firstDate = src.indexOf("DeadlineField(")
             // The nearest `Row(` above the first date field must be the
             // pair's own container, so nothing else may sit between them.
             // Stacked again, that search would land on the title/mic row
@@ -208,20 +221,45 @@ class CaptureSheetStructuralTest {
             // point: measured unbounded, this assertion counted the submit
             // buttons' weights instead and stayed green with a date field's
             // weight deleted.
+            val scheduled = src.indexOf("CaptureDateField(", firstDate)
             val indent = " ".repeat(rowStart - src.lastIndexOf('\n', rowStart) - 1)
-            val block = src.substring(
-                rowStart,
-                src.indexOf("\n$indent}", src.indexOf("CaptureDateField(", firstDate + 1)),
+            val block = src.substring(rowStart, src.indexOf("\n$indent}", scheduled))
+            assertEquals(
+                "$name's date Row must hold the deadline and nothing else of the kind",
+                1,
+                Regex("""DeadlineField\(""").findAll(block).count(),
             )
             assertEquals(
-                "$name's date Row must hold both fields and nothing else of the kind",
-                2,
+                "$name's date Row must hold the scheduled date and nothing else of the kind",
+                1,
                 Regex("""CaptureDateField\(""").findAll(block).count(),
+            )
+            assertTrue(
+                "$name must read due-then-planned, deadline first",
+                block.indexOf("DeadlineField(") < block.indexOf("CaptureDateField("),
             )
             assertEquals(
                 "$name must weight both date fields evenly",
                 2,
                 Regex("""modifier = Modifier\.weight\(1f\),""").findAll(block).count(),
+            )
+            // The pair's geometry, not just its membership.
+            // `DeadlineFieldWrappingTest` builds its own Row with these two
+            // and calls it "as the two capture surfaces render it" — nothing
+            // made that true until here. `Alignment.Top` is the load-bearing
+            // one: the deadline grows a second control when it names a
+            // minute, and `CenterVertically` would slide the scheduled-date
+            // field down as it did, which is the exact defect that test's
+            // `naming a minute grows the deadline column without shifting its
+            // neighbour` exists to catch.
+            assertTrue(
+                "$name's date Row must top-align, so the deadline's time row " +
+                    "cannot shift the scheduled-date field",
+                block.contains("verticalAlignment = Alignment.Top"),
+            )
+            assertTrue(
+                "$name's date Row must keep the 8dp gap the half-slot budget assumes",
+                block.contains("Arrangement.spacedBy(8.dp)"),
             )
         }
     }

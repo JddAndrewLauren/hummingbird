@@ -655,7 +655,8 @@ field set must not disclose it with two different controls.
 
 `PriorityRowWrappingTest` is the module's **fourth** layout-measuring test —
 `ChoiceRowWrappingTest`, `FacetLabelAlignmentTest` and `AxisRowWrappingTest`
-are the others, and `docs/SURFACES.md`'s Android row names all four —
+are the others, `DeadlineFieldWrappingTest` (2026-08-24, below) is the fifth,
+and `docs/SURFACES.md`'s Android row names them all —
 `AxisRowWrappingTest`'s rig unchanged — including the two things that rig
 exists to carry: measure unconstrained (a `Row` rendered at its budget
 squeezes the overflow into bounds that look like a pass), and wrap the
@@ -674,6 +675,181 @@ was only caught by deliberately mutating the source and watching the test
 the block it is claiming something about — and needs the mutation run, since
 nothing else distinguishes a pin that holds from a pin that matches
 elsewhere.
+
+## Round 6: the two capture dates become pickers
+
+Operator report 2026-08-24: "there is no date or time picker in the expanded
+capture menu". True, and a parity gap rather than a missing feature — the web
+capture box has picked its dates since it shipped (`CaptureBox.tsx`'s
+`DeadlineField` plus an `<input type="date">`), while both Android capture
+surfaces and the item-detail editor made you type `2026-09-01` by hand and
+learn about a typo from the core's refusal afterwards.
+
+- **The seam crossing came first, and it was the whole of the Rust work.**
+  `split_deadline`/`join_deadline` have been sunk in
+  `hummingbird_core::decisions::urgency` since M1-2 and exposed on the *web*
+  seam only. ADR-0025's sink-as-you-go step is what makes crossing them the
+  mandatory first move rather than writing `value.substringBefore("T")` in
+  Kotlin: the grammar has an owner, and a second copy of it is the thing the
+  ADR forbids by name. `client/core` gained no lines at all.
+- **Read-only fields, no keyboard** (operator decision). Tapping anywhere in
+  a date field opens its dialog. The press is collected off an
+  `interactionSource` rather than a `Modifier.clickable`, because a
+  `readOnly` `OutlinedTextField` consumes the click itself — `ProjectField`'s
+  `menuAnchor` is the other shape of the same problem and does not transfer,
+  since it anchors a dropdown rather than a dialog.
+- **The price of read-only, stated rather than discovered later.**
+  `split_deadline` deliberately passes an unrecognised value straight
+  through so a legacy free-text deadline stays visible instead of being
+  emptied on load. With no keyboard that value is now visible, replaceable
+  and clearable, but **not character-editable**. Two things keep the core's
+  guarantee true anyway: the field renders `parts.date` verbatim, and it
+  carries no `singleLine` — so a long legacy value wraps instead of being
+  truncated. Both are load-bearing and both say so in `CaptureDateField`'s
+  own header, because either could be tidied away in good faith.
+- **The trailing icon is the clearing story.** One slot, two states: a
+  calendar when the field is empty, an × when it is not. With no keyboard
+  there is otherwise no gesture that empties a date set by mistake, so it is
+  load-bearing rather than decoration; one 24dp target is also all a ~193dp
+  half-slot affords beside a ten-character value.
+- **The time is behind a button, as on the web — with one deliberate
+  divergence.** `DeadlineField.tsx` reveals an *empty* `<input type="time">`
+  and treats that as a reader mid-decision. A Compose `TimePicker` cannot be
+  empty, and seeding one at `00:00` would be a silent edit rather than a
+  blank: `deadline_sort_key` reads a bare `2026-08-15` as `2026-08-15T23:59`,
+  so accepting a default `00:00` moves the deadline nearly a full day
+  earlier the instant somebody taps "Add time". So the second gesture opens
+  the dialog directly, seeded from the current wall clock, and writes
+  nothing until it is confirmed. It is `AlertDialog`, not
+  `TimePickerDialog` — that composable arrived in Material 3 1.4 and this
+  module's BOM is on the 1.3 line.
+- **`ZoneOffset.UTC`, and it is the defect this round could most easily have
+  shipped.** `DatePickerState.selectedDateMillis` is UTC midnight of the
+  picked civil day by Material's contract — a calendar day wearing an
+  instant's clothes. Resolving it in the device zone compiles, renders, and
+  is off by one day for every reader west of Greenwich, and a hardware run
+  at midday cannot see it. The conversions live in `core/WallClock.kt`
+  beside the app's other epoch/civil edge (ADR-0025 puts that conversion
+  per-client deliberately), and `CaptureFieldSetStructuralTest` pins them —
+  bounded to the two functions that claim UTC, since `local` and
+  `currentHourMinute` read the device zone on purpose and a file-wide search
+  would be green whatever the picker did.
+
+`DeadlineFieldWrappingTest` is the fifth layout-measuring test, and it earned
+its place twice over on its first run. It caught a real defect — the "Add
+time" `TextButton` rested at Material's 40dp, under the 44dp target
+`PaneShell`/`NowScreen`/`ItemDetailPanel` all hold to — and it caught its own
+rig: the first pass omitted the pair's `spacedBy(8.dp)`, measured each half
+at 197.5dp instead of 193.5dp, and reported the time control overflowing when
+it does not. Worth recording because the failure looked exactly like a
+product bug.
+
+It also lost an assertion on purpose. The button's *width* was measured, and
+even a much longer phrasing fits the half slot comfortably — so a width bar
+could not fail, and this file does not carry assertions that cannot. The
+control renders the bare 40dp button instead, which keeps the 4dp a recorded
+measurement rather than a taste.
+
+**Six defects were found by review after the feature "worked", and two of
+them were shipping-blockers.** Worth recording, because all six were invisible
+to a green suite and to a hardware pass that exercised the happy path:
+
+- **A valid deadline outside 1900..2100 crashed the field.** Material's
+  `DatePickerState` does not clamp an out-of-range year, it `require`s it, and
+  the core bounds no year at all — `is_valid_deadline` checks only that the
+  calendar date exists. So `2206-08-15`, a plausible fat-finger from the years
+  this field was free text, is saveable, syncable, and crashes the one surface
+  that could fix it. `civilDateMillis` now takes the picker's own
+  `DatePickerDefaults.YearRange` and answers `null` outside it. Passing the
+  range in, rather than restating `1900..2100` in `core/`, is what stops the
+  two bounds drifting.
+- **TalkBack could clear a date but never set one.** The picker opened only
+  from `PressInteraction.Release`; a screen reader dispatches `ACTION_CLICK`,
+  which reaches the semantics action instead. That action was written as
+  `onClick(label = …) { false }` — label only, "the press collector handles
+  it" — which reports the action *unhandled*. With `readOnly` there is no
+  keyboard to fall back on, so the whole field was a dead end. The `×` worked
+  throughout, being a real `IconButton`, which is what made it look fine.
+- **"Add time" was a silent dead end on an empty deadline** — the resting
+  state of every fresh capture. `joinDeadline("", "14:00")` is `""` by design
+  (a time with no day is not a deadline), so picking a time did nothing at
+  all. The web can leave its own button always available because it keeps the
+  revealed input on screen; opening the dialog directly is what turned that
+  into no feedback. It is `enabled` on the date now.
+- The time dialog clipped in landscape, where Material swaps to its wider
+  horizontal dial below 480dp of height — which the cover display is when
+  rotated (969x443dp).
+- Both dialogs were lost on rotation (`remember`, not `rememberSaveable`).
+- `civilTime` used `"%02d:%02d".format(…)`, which resolves against the default
+  locale: `٠٩:٣٠` under `ar-EG`, and the same under `fa`, `bn`, `my`. The core
+  accepts ASCII digits only, so a reader on such a device could pick a time and
+  then be unable to submit, with no way to correct it. `Locale.ROOT` now, and
+  pinned in four locales. The `DateTimeFormatter`s were always immune —
+  `DecimalStyle.STANDARD` is ASCII regardless of locale.
+
+The lesson worth keeping: **this file's own bans and pins are about the
+grammar, and none of them can see a toolkit contract.** The year range, the
+semantics action and the locale digits are all Material/JDK behaviour that no
+amount of source-text pinning would have caught, and the hardware pass walked
+straight past every one of them by testing dates a reader would actually pick.
+`WallClockPickerTest` exists because of this round.
+
+`PriorityRowWrappingTest`'s date-pair render was updated in the same pass:
+it built the pair from two `CaptureDateField`s, which is no longer the pair
+the app ships, and would have gone on measuring a layout that had stopped
+existing.
+
+## The date-picker pass (2026-08-24, round 6)
+
+Run on the **Pixel 10 Pro Fold AVD folded to its cover display**, which is the
+same 1080x2364 at density 390 — 443dp — this file records from the physical
+device, so the budget the layout tests assert is the budget that rendered.
+`docs/SURFACES.md`'s 2026-08-20 decision accepts an emulator as visual
+evidence; this is that, not a Robolectric render.
+
+It was run on the emulator rather than the phone for a reason worth recording:
+the debug keystore that signed the build installed on the device no longer
+exists on this machine, so `installDebug` can only be made to work by
+uninstalling first — which costs the device token and anything still sitting
+in the outbound queue. The emulator has neither to lose, and holds no device
+token, so nothing it captures can reach the authority.
+
+What passed, on `CaptureActivity` at 443dp:
+
+1. Tapping either date field opens its dialog and the IME goes down
+   (`mInputShown` true before the tap, false after) — the read-only decision,
+   observed rather than asserted.
+2. With nothing selected the date dialog's confirm button reports
+   `enabled=false` on its clickable node. A picker opened on a value it
+   cannot represent cannot confirm nothing.
+3. **The UTC trap, checked where it would actually bite.** The emulator runs
+   `America/Los_Angeles`; picking 1 August put `2026-08-01` in the field, not
+   the `2026-07-31` a device-zone read of `selectedDateMillis` produces at
+   UTC-7.
+4. "Add time" opened the time picker seeded at the device wall clock (10:16),
+   not `00:00`. **Cancel wrote nothing** — the deadline stayed a whole day.
+5. Confirming produced a Time field; the joined draft reached the outbound
+   queue as `"deadline": "2026-08-01T10:18"` (read back from
+   `files/hummingbird-core/queue.json` via `run-as`). That is the whole
+   round trip: two picked halves, one wire string, in the grammar.
+6. Tapping the Time field reopened the picker seeded at **10:16**, its own
+   value, while the clock read 10:17 — the one-minute gap is what
+   distinguishes `hourMinute(parts.time)` from `currentHourMinute()`.
+7. The Time field's x returned the deadline to `2026-08-01` — a whole day,
+   **not** `T00:00`.
+8. The scheduled-date dialog carries no time control at all, which is the
+   date-only half of the grammar holding by construction.
+9. Clearing either field emptied it, flipped its icon back to the calendar,
+   and raised no error line — an empty date is not a problem.
+10. With a time revealed the deadline column grew and **the scheduled-date
+    field did not move**, at the width the layout test claims.
+
+Not covered here, and the one thing left: an item whose stored `deadline` is
+legacy free text, opened in `ItemDetailPanel`. It needs an item in the mirror
+and so a device token, which the emulator deliberately does not have. The
+pass-through itself is pinned in Rust
+(`the_deadline_split_binding_is_the_core_rule_verbatim`) and the Kotlin
+renders `parts.date` unconditionally, but nobody has watched it on a screen.
 
 ## Proving the lane on hardware
 
