@@ -1,7 +1,9 @@
 import type { DiagnosticEventV1DTO } from "../store/protocol";
 
 // #707's web-worker half of the shared `DiagnosticEventV1` envelope
-// (`client/core/src/diagnostics/mod.rs`). A Core-sourced event arrives
+// (`server/domain/src/diagnostics.rs`, which #711 moved it to out of
+// `client/core/src/diagnostics/mod.rs` — now re-exports only). A
+// Core-sourced event arrives
 // already built (drained verbatim from the wasm host — see
 // `diagnostics-journal.ts`); this module is what builds the envelope for
 // events the SharedWorker itself produces, `source: "web-worker"`, using
@@ -38,7 +40,7 @@ import type { DiagnosticEventV1DTO } from "../store/protocol";
 // settle. Folding both into one name with no discriminating field would
 // have made #712's cross-host interpretation table read them as the same
 // thing. `OperationAbandoned` is a new variant this slice added to
-// `client/core/src/diagnostics/mod.rs` (see that variant's own doc) —
+// `server/domain/src/diagnostics.rs` (see that variant's own doc) —
 // amending the shared owner enum, not forking a second one, which is the
 // distinction that module's header actually draws.
 //

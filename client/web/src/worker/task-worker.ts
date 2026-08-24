@@ -287,7 +287,7 @@ export interface TaskHostLike {
   mirrorSnapshot(): string;
   /** #706/#708's Core-sourced diagnostic events, drained since the last
    * call — a JSON array of `DiagnosticEventV1` envelopes
-   * (`client/core/src/diagnostics/mod.rs`), or omitted entirely.
+   * (`server/domain/src/diagnostics.rs`), or omitted entirely.
    *
    * **Optional on purpose, not yet implemented by the real wasm `TaskHost`
    * as this slice (#707) ships**: `Core::run` is called plain today, not

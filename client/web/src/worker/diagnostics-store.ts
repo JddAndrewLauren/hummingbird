@@ -37,11 +37,16 @@ import type { DiagnosticEventV1DTO } from "../store/protocol";
 // `diagnostics-retention.ts`'s `planRetention` remains the pure,
 // exhaustively-tested SPEC for this policy (oldest-first, age before size,
 // never double-counted) — its own tests are what prove the policy correct
-// in isolation, with no IndexedDB involved. This module is a different,
-// IO-efficient REALIZATION of that identical policy over indexed cursors
-// rather than a materialized list; `diagnostics-store.test.ts` proves the
-// two agree on the same observable outcomes (oldest-first, both bounds,
-// dropped-count) against a real (fake) IndexedDB.
+// in isolation, with no IndexedDB involved. **It has no runtime caller;
+// nothing in this file calls it.** This module is a different, IO-efficient
+// REALIZATION of that identical policy over indexed cursors rather than a
+// materialized list, and the two are tied together by exactly one test:
+// `diagnostics-store.test.ts`'s "evicts exactly the keys planRetention
+// plans", which appends a batch crossing BOTH bounds and asserts this
+// module's cursor sweeps deleted precisely `plan.evictKeys` (and reported
+// precisely `plan.droppedCount`). Review round 2 of PR #736 caught this
+// paragraph asserting that differential before it existed — if it is ever
+// deleted again, delete this claim with it.
 //
 // **A storage failure here must never reach the caller as a throw** — the
 // brief's own acceptance criterion ("a diagnostic storage failure is

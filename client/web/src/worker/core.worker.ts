@@ -230,7 +230,7 @@ const taskDiagnostics: TaskDiagnostics = {
  * per-view report matters here, only the origin-wide answer the cadence
  * itself consults). Recorded as `network.changed`, re-checking
  * `navigator.onLine` at the moment it flips: `DiagnosticEvent::NetworkChanged`
- * carries only `{online}` (`client/core/src/diagnostics/mod.rs`), with no
+ * carries only `{online}` (`server/domain/src/diagnostics.rs`), with no
  * field for visibility itself, so a visibility transition is folded into
  * the one shared payload shape rather than left unrecorded — see issue
  * #707's own posted finding on that gap. */

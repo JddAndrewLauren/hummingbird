@@ -28,7 +28,29 @@ export function diagnosticsExportFilename(nowMs: number): string {
 /** The exported document's own shape — `droppedCount` travels alongside
  * `events` so a reader can tell "a quiet 72 hours" from "a quiet 72 hours,
  * and 4,000 events this journal could not afford to keep" (the journal's
- * own cumulative counter, `diagnostics-store.ts`). */
+ * own cumulative counter, `diagnostics-store.ts`).
+ *
+ * **KNOWN DIVERGENCE from Android's export (#709), left standing for #712
+ * to reconcile — review round 2 of PR #736.** This ENVELOPE is
+ * `{"events", "droppedCount"}`: camelCase, and with no envelope-level
+ * `schema_version` of its own. Android's (#709, merged) is
+ * `{"schema_version", "dropped_count", "events"}`. The per-event records
+ * inside are *not* divergent — both hosts write the identical snake_case
+ * `DiagnosticEventV1` (see `DiagnosticEventV1DTO`'s own doc in
+ * `store/protocol.ts` for why that one type keeps the wire's spelling) —
+ * so the divergence is exactly the two wrapper keys plus the missing
+ * version field.
+ *
+ * That is a real inconsistency with `protocol.ts`'s own stated rule that a
+ * cross-host boundary keeps snake_case, and this envelope is such a
+ * boundary: an operator diffing a phone export against a browser export
+ * hits it immediately. It is deliberately NOT fixed here — #712 owns
+ * reconciling the two exports, and changing one side unilaterally mid-batch
+ * would just move the mismatch. Whoever picks up #712: the fix is on this
+ * side (snake_case the two keys, add an envelope `schema_version`), not on
+ * Android's, and `diagnostics-download.test.ts` plus
+ * `SettingsScreen.test.tsx`'s export-content assertions are what pin the
+ * current spelling. */
 export interface DiagnosticsExportDocument {
   events: DiagnosticEventV1DTO[];
   droppedCount: number;

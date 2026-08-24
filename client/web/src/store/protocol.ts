@@ -1094,7 +1094,7 @@ export type SyncCadenceRequest =
 // reach neither wasm host and are intercepted by `core.worker.ts`'s
 // dispatch directly (`worker/dispatch.ts`, `worker/request-router.ts`).
 
-/** `client/core/src/diagnostics/mod.rs`'s `Source` enum, wire-spelled
+/** `server/domain/src/diagnostics.rs`'s `Source` enum, wire-spelled
  * exactly (kebab-case, `#[serde(rename_all = "kebab-case")]`) — the SAME
  * spelling on every host, since an exported journal's `source` field is
  * compared across the PWA's, Android's and the authority's own exports
@@ -1102,7 +1102,7 @@ export type SyncCadenceRequest =
 export type DiagnosticSourceName = "core" | "web-worker" | "android" | "authority";
 
 /** One `{name, payload}` pair from the closed `DiagnosticEvent` enum
- * (`client/core/src/diagnostics/mod.rs`), typed loosely rather than as a
+ * (`server/domain/src/diagnostics.rs`), typed loosely rather than as a
  * mirrored discriminated union: this module never branches on a payload's
  * contents, only stores and exports it verbatim (a Core-sourced event
  * arrives pre-built from wasm; a web-worker-sourced one is built by
@@ -1132,7 +1132,9 @@ export interface DiagnosticEventV1DTO {
   source: DiagnosticSourceName;
   cycle_id: string | null;
   /** Always `null` in this slice — #708 is what starts setting it
-   * (`client/core/src/diagnostics/mod.rs`'s own doc on the field). */
+   * (`server/domain/src/diagnostics.rs`'s own doc on the field; #711 moved
+   * the envelope there out of `client/core/src/diagnostics/mod.rs`, which
+   * now only re-exports it). */
   operation_id: string | null;
   request_id: string | null;
   event: DiagnosticEventNamePayload;

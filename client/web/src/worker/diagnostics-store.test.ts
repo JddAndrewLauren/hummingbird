@@ -7,6 +7,7 @@ import {
   DIAGNOSTICS_RETENTION_MS,
   openDiagnosticsDb,
 } from "./diagnostics-store";
+import { planRetention, type RetentionRecord } from "./diagnostics-retention";
 
 // Node has no ambient `IDBKeyRange`; the store's age-eviction sweep needs
 // one to build a bounded index range, so every call below hands it
@@ -177,6 +178,76 @@ describe("createDiagnosticsStore", () => {
         0,
       );
       expect(totalBytes).toBeLessThanOrEqual(DIAGNOSTICS_MAX_BYTES);
+    });
+
+    // Review round 2 of PR #736: both `diagnostics-retention.ts` and this
+    // module's own doc claimed "`diagnostics-store.test.ts` proves the two
+    // agree on the same observable outcomes" — and no test in this file
+    // imported `planRetention` at all. There was no differential test; the
+    // claim was false. This is it.
+    //
+    // `planRetention` has NO runtime caller (the store realises the same
+    // policy over indexed cursors instead, for the IO reason both module
+    // docs state). What keeps it from being dead code is exactly this
+    // test: it is the independent ORACLE the store's cursor
+    // implementation is checked against. Delete `planRetention` and this
+    // test stops compiling — which is the property that makes the two
+    // module docs' cross-references true rather than aspirational.
+    //
+    // The comparison is exact, not "both evicted something": one `append`
+    // of the whole batch puts the store through age-then-size in a single
+    // transaction, which is precisely the order `planRetention` plans in,
+    // so the two are directly comparable on the KEY SET — not merely on a
+    // count or a surviving-byte bound (the two assertions above already
+    // cover those weaker properties).
+    it("evicts exactly the keys planRetention plans — the store's cursor sweeps against the pure policy oracle", async () => {
+      const store = newStore();
+      const nowMs = DIAGNOSTICS_RETENTION_MS + 100_000;
+      // 2.5 MiB each: two already expired (age sweep), five fresh totalling
+      // 12.5 MiB against the 10 MiB cap (size sweep). Both bounds fire in
+      // the same append, which is what makes this a real differential over
+      // the combined policy rather than over one bound at a time.
+      const pad = "x".repeat(2.5 * 1024 * 1024);
+      const events = [
+        event({ seq: 1, wall_clock_ms: 0, request_id: pad }),
+        event({ seq: 2, wall_clock_ms: 0, request_id: pad }),
+        event({ seq: 3, wall_clock_ms: nowMs, request_id: pad }),
+        event({ seq: 4, wall_clock_ms: nowMs, request_id: pad }),
+        event({ seq: 5, wall_clock_ms: nowMs, request_id: pad }),
+        event({ seq: 6, wall_clock_ms: nowMs, request_id: pad }),
+        event({ seq: 7, wall_clock_ms: nowMs, request_id: pad }),
+      ];
+
+      // The `events` object store is `autoIncrement` from 1, so the Nth
+      // event appended holds primary key N — that is what lets a surviving
+      // `seq` below be read back as a surviving KEY.
+      const records: RetentionRecord[] = events.map((e, index) => ({
+        key: index + 1,
+        wallClockMs: e.wall_clock_ms,
+        byteLength: new TextEncoder().encode(JSON.stringify(e)).length,
+      }));
+      const plan = planRetention(records, nowMs, {
+        retentionMs: DIAGNOSTICS_RETENTION_MS,
+        maxBytes: DIAGNOSTICS_MAX_BYTES,
+      });
+
+      // Guards the differential against being vacuously green: the plan
+      // must actually evict on BOTH bounds, or the key-set comparison
+      // below would pass over a policy that did nothing.
+      expect(plan.evictKeys).toContain(1);
+      expect(plan.evictKeys).toContain(2);
+      expect(plan.evictKeys.length).toBeGreaterThan(2);
+
+      await store.append(events, nowMs);
+
+      const result = await store.exportAll();
+      const survivingKeys = result.events.map((e) => e.seq);
+      const expectedSurvivors = records
+        .map((r) => r.key)
+        .filter((key) => !plan.evictKeys.includes(key));
+
+      expect(survivingKeys).toEqual(expectedSurvivors);
+      expect(result.droppedCount).toBe(plan.droppedCount);
     });
   });
 });

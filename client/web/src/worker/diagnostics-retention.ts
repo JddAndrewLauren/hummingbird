@@ -5,8 +5,10 @@
 // glue that would otherwise make it untestable (see those files' own
 // module docs for the same argument).
 //
-// **This module is a tested SPEC, not called at runtime by
-// `diagnostics-store.ts`.** It was, until review round 1 of PR #736 caught
+// **This module has NO runtime caller. It is a tested SPEC and the ORACLE
+// the real store is differentially checked against — nothing in the
+// shipped worker path calls `planRetention`.** It was called at runtime,
+// until review round 1 of PR #736 caught
 // a real cost: calling this against the WHOLE store's records on every
 // single `append` meant reading and re-`JSON.stringify`-ing up to 10 MiB on
 // every append — every 250ms during exactly the stall this journal exists
@@ -17,8 +19,17 @@
 // under budget for the size sweep — touching only the records it actually
 // evicts. This file's own tests (`diagnostics-retention.test.ts`) are what
 // pin the POLICY correct against a plain list, independent of that IO
-// concern; `diagnostics-store.test.ts` is what proves the store's
-// cursor-based realisation produces the same observable outcomes.
+// concern.
+//
+// **What keeps this from being dead code is one specific test:**
+// `diagnostics-store.test.ts`'s "evicts exactly the keys planRetention
+// plans" imports `planRetention`, plans over the same batch the store is
+// handed, and asserts the store's cursor sweeps deleted precisely
+// `plan.evictKeys`. Review round 2 of PR #736 caught this paragraph (and
+// `diagnostics-store.ts`'s matching one) claiming that differential
+// existed when it did not. If that test is ever removed, this module has
+// no remaining reason to exist — delete it rather than leaving the claim
+// standing.
 //
 // Two bounds apply, both from #707's Agent Brief: 72 hours (by an
 // **injected** clock — `nowMs` is always a caller-supplied argument, never

@@ -20,7 +20,11 @@ describe("planRetention", () => {
     const nowMs = 10 * dayMs;
     const records = [
       record(1, nowMs - 4 * dayMs), // too old
-      record(2, nowMs - 3 * dayMs, 100), // exactly at 72h boundary minus a bit
+      // Exactly ON the 72h cutoff (3 days == `retentionMs`), which is why it
+      // survives — the cutoff is exclusive. The next case pins that boundary
+      // on its own; this one is here to prove the eviction below is
+      // age-selective rather than sweeping everything but the newest.
+      record(2, nowMs - 3 * dayMs, 100),
       record(3, nowMs - 1 * dayMs), // fresh
     ];
     const plan = planRetention(records, nowMs, OPTIONS);
