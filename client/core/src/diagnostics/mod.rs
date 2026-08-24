@@ -4,19 +4,19 @@
 //! (#711) all serialize *this* envelope, never a host-local shape.
 //!
 //! **The envelope itself moved to `hummingbird-domain` in #711** (review
-//! round 1): `hummingbird-authority` — the authority's request boundary —
-//! is a member of the *server* Cargo workspace and cannot depend on this
-//! crate (a member of the *client* workspace) without dragging `chrono`,
-//! `futures-util` and (optionally) `reqwest` into
-//! `hummingbird-authority-worker`'s wasm32 build, which CLAUDE.md's
-//! thin-shim rule forbids. `hummingbird-domain` is the one crate both
-//! workspaces already compile (client: this crate, `ffi-web`, `ffi-mobile`;
-//! server: `hummingbird-authority` and transitively
-//! `hummingbird-authority-worker`) and carries nothing but
-//! `serde`/`serde_json`, so it is where [`DiagnosticEventV1`],
-//! [`DiagnosticEvent`], [`Source`] and [`route::route_template`] now live —
-//! this module re-exports them so every existing call site in this crate is
-//! unchanged. `hummingbird_authority::diagnostics` constructs real
+//! round 1). The envelope was first drafted here (#706), in a member of the
+//! *client* Cargo workspace; `hummingbird-authority` — the authority's
+//! request boundary — is a member of the *server* workspace, and a crate
+//! cannot depend across that workspace boundary. `hummingbird-domain` is
+//! the one crate both workspaces already compile (client: this crate,
+//! `ffi-web`, `ffi-mobile`; server: `hummingbird-authority` and
+//! transitively `hummingbird-authority-worker`) and carries nothing but
+//! `serde`/`serde_json`, so moving the envelope there costs the wasm32
+//! worker build nothing it wasn't already paying for `hummingbird-domain`
+//! itself. That is where [`DiagnosticEventV1`], [`DiagnosticEvent`],
+//! [`Source`] and [`route::route_template`] now live — this module
+//! re-exports them so every existing call site in this crate is unchanged.
+//! `hummingbird_authority::diagnostics` constructs real
 //! [`DiagnosticEventV1`] values from the same shared type; see that
 //! module's own docs for how (a fixed per-instance session id and a `seq`
 //! counter held in the `wasm32` shim's own state, since the authority has
@@ -28,8 +28,8 @@
 //! enum of their own, per their own briefs, and #711 does not either.
 //!
 //! **Payloads are closed types, never a string-keyed metadata map.** That is
-//! what makes the redaction rule in [`failure`]/`hummingbird_domain::diagnostics`'s
-//! own tests checkable — by scanning [`DiagnosticEvent`]'s own declaration
+//! what makes the redaction rule checkable in `hummingbird_domain::diagnostics`'s
+//! own tests — which is where all of them live, none in [`failure`] — by scanning [`DiagnosticEvent`]'s own declaration
 //! and by grepping serialized fixtures — rather than by review habit: a map
 //! could carry anything; a fixed set of typed fields cannot silently grow a
 //! `title` or a `token`.
@@ -87,6 +87,57 @@ pub use clock::DiagnosticClock;
 pub use context::{DiagnosticSession, DiagnosticsContext};
 pub use failure::FailureClass;
 pub use hummingbird_domain::diagnostics::{
-    DiagnosticEvent, DiagnosticEventV1, DiagnosticHttpMethod, DiagnosticSink, NullSink,
-    OperationOutcome, Source, SyncOutcome, SyncPhase, DIAGNOSTIC_EVENT_SCHEMA_VERSION,
+    DiagnosticEvent, DiagnosticEventV1, DiagnosticHttpMethod, OperationOutcome, Source,
+    SyncOutcome, SyncPhase, DIAGNOSTIC_EVENT_SCHEMA_VERSION,
 };
+
+/// A sink [`DiagnosticEventV1`]s are recorded to — infallible by
+/// construction (no `Result`, nothing here to propagate a failure through)
+/// so a sync cycle never behaves differently depending on whether one is
+/// wired up. Implemented per host: a ring buffer, an IndexedDB writer, an
+/// NDJSON file — none of that is this crate's concern.
+///
+/// #711 review round 2: this trait stays here rather than travelling to
+/// `hummingbird-domain` with the envelope. A sink is a *client-host*
+/// concept — nothing server-side records into one (the authority's request
+/// boundary writes `console_log!` straight to Workers Logs), and
+/// `hummingbird-domain` is the owned schema plus the wire DTOs. Only the
+/// envelope had to be shared across the workspace boundary; the sink did
+/// not, so it isn't.
+pub trait DiagnosticSink: Send + Sync {
+    fn record(&self, event: DiagnosticEventV1);
+}
+
+/// The default sink for a caller with nothing wired up yet — drops every
+/// event. Distinct from a test's [`test_support::RecordingSink`], which
+/// keeps them for assertions.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NullSink;
+
+impl DiagnosticSink for NullSink {
+    fn record(&self, _event: DiagnosticEventV1) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The null sink is exactly that — proving it does not require a caller
+    /// to do anything to satisfy [`DiagnosticSink`]'s infallibility.
+    #[test]
+    fn the_null_sink_drops_every_event_without_a_result() {
+        let sink = NullSink;
+        sink.record(DiagnosticEventV1 {
+            schema_version: DIAGNOSTIC_EVENT_SCHEMA_VERSION,
+            seq: 0,
+            wall_clock_ms: 0,
+            elapsed_ms: 0,
+            session_id: "s".to_string(),
+            source: Source::Core,
+            cycle_id: None,
+            operation_id: None,
+            request_id: None,
+            event: DiagnosticEvent::SessionStarted,
+        });
+    }
+}

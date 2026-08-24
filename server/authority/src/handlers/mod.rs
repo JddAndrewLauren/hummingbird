@@ -103,10 +103,19 @@ pub struct ApiResponse {
     /// it into the HTTP body (pinned by this crate's own tests). `None`
     /// for an unauthenticated (401) request and for the admin lane, which
     /// authenticates against `ADMIN_SECRET` and has no per-caller token
-    /// row to name. `None` on the one path that never reaches `route()` at
-    /// all — a `SqlError` `handle()` catches and turns into a 500 — since
-    /// there is no principal to name for an error the routing/auth layer
-    /// never got to run.
+    /// row to name.
+    ///
+    /// A `SqlError` becomes a 500, and *which* 500 decides this field
+    /// (#711 review round 2 — the earlier doc got this wrong):
+    /// - Raised by `auth::authenticate` itself, before a principal exists:
+    ///   `None`, and there is genuinely no principal to name.
+    /// - Raised by any handler arm after auth succeeded and the scope
+    ///   matrix passed: `Some`. `route()` turns that error into its 500
+    ///   *before* returning, so the stamp below it still runs — a routine
+    ///   DB error inside e.g. `items::create` names its caller like every
+    ///   other response does. Without that, an operator reading the 500's
+    ///   `request.finished` line would see no `token_id` and wrongly
+    ///   conclude the auth layer never ran.
     pub principal_id: Option<String>,
     /// `ApiRequest::cycle_id`, validated (#711) — response metadata, the
     /// same shape as `principal_id`. Set unconditionally by `handle()` on
@@ -288,7 +297,13 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         // Same reason as `["skills", "run"]` just above.
         (_, ["google", "calendar_token" | "calendar_write_token"]) => Ok(method_not_allowed()),
         _ => Ok(error(404, "not_found", "no such route")),
-    }?;
+    }
+    // #711 review round 2: a handler-raised `SqlError` becomes its 500
+    // *here*, not back in `handle()`, precisely so it still gets stamped
+    // below. Propagating it with `?` would have produced the one 500 that
+    // named no token even though the principal was resolved and in scope —
+    // the misdiagnosis ("auth never ran") this slice exists to prevent.
+    .unwrap_or_else(|e| error(500, "internal", &e.message));
     resp.principal_id = Some(principal.id.clone());
     Ok(resp)
 }

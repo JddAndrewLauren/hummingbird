@@ -352,26 +352,6 @@ pub fn is_valid_header_value(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-/// A sink [`DiagnosticEventV1`]s are recorded to — infallible by
-/// construction (no `Result`, nothing here to propagate a failure through)
-/// so a sync cycle never behaves differently depending on whether one is
-/// wired up. Implemented per host: a ring buffer, an IndexedDB writer, an
-/// NDJSON file — none of that is this crate's concern.
-pub trait DiagnosticSink: Send + Sync {
-    fn record(&self, event: DiagnosticEventV1);
-}
-
-/// The default sink for a caller with nothing wired up yet — drops every
-/// event. Distinct from a test's `RecordingSink`
-/// (`client/core/src/diagnostics/test_support.rs`), which keeps them for
-/// assertions.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NullSink;
-
-impl DiagnosticSink for NullSink {
-    fn record(&self, _event: DiagnosticEventV1) {}
-}
-
 /// Field names a payload must never carry (#706's redaction rule) —
 /// checked structurally, not by review habit, by two tests that cover
 /// different halves of the claim: `no_variant_declares_a_forbidden_field_name`
@@ -740,24 +720,6 @@ mod tests {
         );
     }
 
-    /// The null sink is exactly that — proving it does not require a caller
-    /// to do anything to satisfy [`DiagnosticSink`]'s infallibility.
-    #[test]
-    fn the_null_sink_drops_every_event_without_a_result() {
-        let sink = NullSink;
-        sink.record(DiagnosticEventV1 {
-            schema_version: DIAGNOSTIC_EVENT_SCHEMA_VERSION,
-            seq: 0,
-            wall_clock_ms: 0,
-            elapsed_ms: 0,
-            session_id: "s".to_string(),
-            source: Source::Core,
-            cycle_id: None,
-            operation_id: None,
-            request_id: None,
-            event: DiagnosticEvent::SessionStarted,
-        });
-    }
 
     // ------------------------------------------------- route templating
 

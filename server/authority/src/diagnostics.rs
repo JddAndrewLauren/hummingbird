@@ -151,6 +151,15 @@ pub fn classify_auth_result(path: &str, status: u16) -> AuthResult {
 /// would answer 404/405 for, so it is classified `Get` rather than adding a
 /// speculative `Other` variant to a shared, wire-committed enum for a verb
 /// this API never actually answers.
+///
+/// **Read the log line accordingly (#711 review round 2, for #712's
+/// interpretation table).** The Worker routes every `/api/*` request to the
+/// DO regardless of verb, so an `OPTIONS` or `HEAD` request is not merely
+/// *answered* 404/405 — it is *logged* as `"method":"GET"`. A `GET` line
+/// paired with a 404/405 status may therefore be an unrouted verb rather
+/// than a real `GET`; the status, not the method, is the reliable field
+/// there. If that ever matters enough to disambiguate, the fix is an
+/// `Other` variant on the shared enum, not a second method field here.
 fn parse_method(method: &str) -> DiagnosticHttpMethod {
     match method {
         "POST" => DiagnosticHttpMethod::Post,

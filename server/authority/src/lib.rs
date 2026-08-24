@@ -85,9 +85,31 @@ mod tests {
     /// the `request.received` log — a bare `.await?` before that point is
     /// fine, since no `request.received` line exists yet to leave orphaned.
     ///
+    /// **Exactly what is asserted:** that the substring `.await?` does not
+    /// occur at all in that slice, once whole-line comments are dropped
+    /// from it. Nothing narrower — review round 2 broke an earlier version
+    /// of this test that matched only `.await?;` and `.await?\n`, by
+    /// reintroducing the bug in the fully idiomatic chained form
+    /// `req.text().await?.trim().to_string()`, which that version let
+    /// through. The blunt substring is the point: any suffix (`.await?.`,
+    /// `.await?)`, `.await?,`) is caught. Comment *lines* are filtered
+    /// because both guarded call sites carry prose naming the bare
+    /// `.await?` they replaced; a trailing comment on a line of code is
+    /// not filtered, so the filter hides no code from the scan.
+    ///
+    /// **What it still does not catch,** stated rather than implied: a
+    /// plain `?` on a *synchronous* `Result` introduced below the log
+    /// point, and a panic. Neither is banned here because neither is
+    /// currently expressible in `fetch` — every fallible step after the log
+    /// is `async` — but a future edit that adds a synchronous fallible call
+    /// there would slip past this scan. Panics are out of scope for the
+    /// whole shim (nothing `catch_unwind`s in it, pre-existing).
+    ///
     /// **Mutation-tested:** reverting either fixed call site
     /// (`ensure_alarm_scheduled` or `req.text()`) back to a bare
-    /// `.await?;` reproduces this test's failure. Reverted before landing.
+    /// `.await?;` reproduces this test's failure, and so does review round
+    /// 2's chained `req.text().await?.trim().to_string()`. Each reverted
+    /// from a file copy before landing.
     #[test]
     fn no_bare_await_question_mark_follows_the_shims_request_received_log() {
         let source = include_str!("../../worker/src/lib.rs");
@@ -106,10 +128,20 @@ mod tests {
         let received_at = fetch_body
             .find(received_marker)
             .expect("fetch logs request.received via self.log_received");
-        let after_received = &fetch_body[received_at..];
+        // Whole-line comments are dropped before the scan: the fix at both
+        // guarded call sites *describes* the bare `.await?` it replaced, in
+        // prose, so an unfiltered substring scan would flag its own
+        // explanation. Only lines that are nothing but a comment go — a
+        // trailing comment on a line of code stays, so no code is hidden
+        // from the scan by this.
+        let after_received: String = fetch_body[received_at..]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
 
         assert!(
-            !after_received.contains(".await?;") && !after_received.contains(".await?\n"),
+            !after_received.contains(".await?"),
             "a bare `.await?` after the `request.received` log can propagate an \
              error without ever emitting `request.finished` — the exact false \
              \"received, never finished\" stall signature #711's review round 1 \
