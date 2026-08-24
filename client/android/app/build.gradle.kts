@@ -201,9 +201,6 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.coroutines.test)
-    // #710: `TestListenableWorkerBuilder` for `SyncWorkerTest`'s attempt-
-    // count/trigger assertions.
-    testImplementation(libs.work.testing)
     // The plain (non-`@aar`) JNA artifact, for `testDebugUnitTest` alone:
     // the `@aar` variant above bundles only Android per-ABI `.so`s, so a
     // JVM unit test that reaches a real uniffi call (`ZoneBridgeTest`,

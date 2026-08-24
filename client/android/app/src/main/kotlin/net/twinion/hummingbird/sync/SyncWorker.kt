@@ -42,6 +42,15 @@ class SyncWorker(context: Context, params: WorkerParameters) :
         val trigger = triggerOf(inputData.getString(KEY_TRIGGER))
         recorder.record(MobileDiagnosticEvent.WorkerStarted(trigger = trigger, attemptCount = runAttemptCount.toUInt()))
         val core = CoreHolder.get(applicationContext)
+        // #710 review round 1: drained here too, *before* the call that can
+        // hang — `takeDiagnosticEvents` never touches the mutex `run`
+        // below acquires, so this cannot block on it, and it means a
+        // never-returning `run` (#704's own scenario) does not strand
+        // whatever `core.wait_started`/`core.acquired`/`core.released`
+        // spans a concurrent capture/triage/read already buffered before
+        // this run started. The drain after `run` (below) still catches
+        // this run's own spans on every ordinary, non-hung completion.
+        core.takeDiagnosticEvents().forEach { line -> recorder.appendRaw(line.json, line.wallClockMs) }
         val outcome = core.run(
             System.currentTimeMillis(),
             inputData.getString(KEY_TRIGGER) ?: TRIGGER_TIMER,

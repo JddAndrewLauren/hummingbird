@@ -27,12 +27,17 @@
 //! before the wrapped `tokio::sync::MutexGuard` itself drops and actually
 //! unlocks — see [`OwnedGuard::drop`].
 //!
-//! **Source and clock, deliberately self-contained.** These events are
-//! stamped [`hummingbird_core::diagnostics::Source::Android`] and use this
-//! crate's own `seq`/`session_id` (the same process-wide
-//! `DIAGNOSTIC_SESSION` static `lib.rs`'s `session.started`/`worker.*`/
-//! `push.received` already share), *not*
-//! `hummingbird_core::diagnostics::DiagnosticsContext` — that type is
+//! **Source and clock, deliberately self-contained — but `seq` is
+//! borrowed, not owned.** These events are stamped
+//! [`hummingbird_core::diagnostics::Source::Android`] and share both the
+//! `session_id` *and* the `seq` counter `lib.rs`'s process-wide
+//! `DIAGNOSTIC_SESSION` static already uses for `session.started`/
+//! `worker.*`/`push.received`/`network.changed` — [`CoreLockSession`]
+//! holds a `&'static AtomicU64` reference to that same counter rather than
+//! minting its own (review round 1 caught an earlier version doing
+//! exactly that: two independent 0-based counters under one `session_id`,
+//! landing in one exported journal with no total order between them).
+//! *Not* `hummingbird_core::diagnostics::DiagnosticsContext` — that type is
 //! built for one *sync cycle* (it hardcodes `cycle_id: Some(..)`), and a
 //! mutex acquisition around `capture`/`triage`/a project read is not a
 //! cycle. `elapsed_ms` for these events is measured from this module's own
@@ -112,20 +117,36 @@ impl BufferingSink {
 
     /// Every buffered event, oldest first, emptying the buffer — the drain
     /// [`crate::MobileTaskHost::take_diagnostic_events`] exposes.
+    ///
+    /// **Never `.unwrap()`s a poisoned lock.** A diagnostic that panics
+    /// while observing the app it watches is worse than one that drops an
+    /// event — review round 1's own finding — so a poisoned `std::sync
+    /// ::Mutex` (some *other* panic happened while it was held; nothing in
+    /// this small critical section itself panics) recovers the guard via
+    /// `into_inner` rather than propagating. The buffered events are still
+    /// perfectly readable; only the *poisoned* flag is discarded.
     pub fn drain(&self) -> Vec<DiagnosticEventV1> {
-        std::mem::take(&mut self.events.lock().unwrap())
+        let mut events = self.events.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *events)
     }
 
     /// Test-only convenience: a copy of what is buffered, without draining.
     #[cfg(test)]
     pub fn snapshot(&self) -> Vec<DiagnosticEventV1> {
-        self.events.lock().unwrap().clone()
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 }
 
 impl DiagnosticSink for BufferingSink {
+    /// Same poison-recovery rule as [`Self::drain`] — see that doc. This is
+    /// the path [`OwnedGuard::drop`] reaches on every release, so a panic
+    /// escaping from here would abort the very process this sink exists to
+    /// observe.
     fn record(&self, event: DiagnosticEventV1) {
-        let mut events = self.events.lock().unwrap();
+        let mut events = self.events.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if events.len() >= BUFFER_CAPACITY {
             events.remove(0);
         }
@@ -145,12 +166,29 @@ impl DiagnosticSink for BufferingSink {
 /// the identity) right after. Capturing a session id at construction time
 /// would risk minting a second, disagreeing one.
 pub struct CoreLockSession {
-    seq: AtomicU64,
+    /// **Not owned.** A reference to the *one* process-wide `seq` counter
+    /// every Android-sourced event under one session shares —
+    /// `lib.rs`'s `DIAGNOSTIC_SESSION.seq`, the same counter
+    /// `diagnostic_event_json` advances for `session.started`/`worker.*`/
+    /// `push.received`/`network.changed`. Review round 1 caught an
+    /// earlier version of this type owning its own `AtomicU64::new(0)`:
+    /// two counters under one `session_id`, landing in one journal via
+    /// `record`/`appendRaw`, mint colliding `seq` values with no total
+    /// order — exactly the failure `DiagnosticSession`'s own contract
+    /// ("`seq` keeps counting … for one session") forbids. There must be
+    /// exactly one counter per session; this is a borrow of it, not a
+    /// second one.
+    seq: &'static AtomicU64,
 }
 
 impl CoreLockSession {
-    pub fn new() -> Self {
-        Self { seq: AtomicU64::new(0) }
+    /// `seq` is the caller's counter — production hands in
+    /// `&DIAGNOSTIC_SESSION.seq`; a test hands in its own `'static`
+    /// (a `static` local) so two tests never share state, the same
+    /// isolation the old owned counter gave without the cross-family
+    /// collision.
+    pub fn new(seq: &'static AtomicU64) -> Self {
+        Self { seq }
     }
 
     fn emit(&self, sink: &dyn DiagnosticSink, session_id: &str, event: DiagnosticEvent) {
@@ -201,12 +239,6 @@ impl CoreLockSession {
     }
 }
 
-impl Default for CoreLockSession {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// The tiny "who holds it right now" breadcrumb beside the real
 /// `tokio::sync::Mutex` — see the module doc for why this exists and what
 /// it is not.
@@ -220,12 +252,16 @@ impl CoreOwnershipTracker {
         Self::default()
     }
 
+    /// Poison-recovering, same rule as [`BufferingSink::record`] — this is
+    /// reached from [`OwnedGuard::drop`] on every release, so it must never
+    /// panic.
     fn snapshot(&self) -> Option<CoreOwner> {
-        *self.current.lock().unwrap()
+        *self.current.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// Poison-recovering — see [`Self::snapshot`].
     fn set(&self, owner: Option<CoreOwner>) {
-        *self.current.lock().unwrap() = owner;
+        *self.current.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = owner;
     }
 }
 
@@ -309,11 +345,20 @@ mod tests {
         sink.snapshot().into_iter().map(|e| e.event).collect()
     }
 
+    /// A fresh, test-isolated `seq` counter — [`CoreLockSession`] now
+    /// borrows one rather than owning it (review round 1's fix for the
+    /// two-counters-one-session collision), so each test that needs its
+    /// own independent counter leaks a fresh `AtomicU64` rather than
+    /// sharing `lib.rs`'s process-wide production one.
+    fn test_seq() -> &'static AtomicU64 {
+        Box::leak(Box::new(AtomicU64::new(0)))
+    }
+
     #[tokio::test]
     async fn an_uncontended_acquisition_emits_wait_started_acquired_released_in_order() {
         let mutex = tokio::sync::Mutex::new(0u32);
         let tracker = CoreOwnershipTracker::new();
-        let session = CoreLockSession::new();
+        let session = CoreLockSession::new(test_seq());
         let sink = BufferingSink::new();
 
         {
@@ -342,7 +387,7 @@ mod tests {
     async fn a_wait_behind_a_never_resolving_sync_hold_names_sync_as_the_owner() {
         let mutex = Arc::new(tokio::sync::Mutex::new(0u32));
         let tracker = Arc::new(CoreOwnershipTracker::new());
-        let session = Arc::new(CoreLockSession::new());
+        let session = Arc::new(CoreLockSession::new(test_seq()));
         let sink = Arc::new(BufferingSink::new());
 
         // "Sync" acquires the mutex and then hangs forever inside it,
@@ -409,7 +454,7 @@ mod tests {
     async fn a_cancelled_holder_still_records_core_released() {
         let mutex = Arc::new(tokio::sync::Mutex::new(0u32));
         let tracker = Arc::new(CoreOwnershipTracker::new());
-        let session = Arc::new(CoreLockSession::new());
+        let session = Arc::new(CoreLockSession::new(test_seq()));
         let sink = Arc::new(BufferingSink::new());
 
         let (m, t, s, k) = (mutex.clone(), tracker.clone(), session.clone(), sink.clone());
@@ -448,7 +493,7 @@ mod tests {
     async fn a_second_acquisition_by_the_same_owner_after_release_finds_the_lock_free() {
         let mutex = tokio::sync::Mutex::new(0u32);
         let tracker = CoreOwnershipTracker::new();
-        let session = CoreLockSession::new();
+        let session = CoreLockSession::new(test_seq());
         let sink = BufferingSink::new();
 
         {
@@ -505,5 +550,101 @@ mod tests {
         });
         assert_eq!(sink.drain().len(), 1);
         assert_eq!(sink.snapshot().len(), 0);
+    }
+
+    /// Review round 1, finding 7: a poisoned `std::sync::Mutex` must never
+    /// panic on [`CoreOwnershipTracker::snapshot`]/`set` — both are
+    /// reached from [`OwnedGuard::drop`] on every release, and a panic
+    /// escaping a `Drop` during another unwind aborts the whole process
+    /// (the exact "a diagnostic that breaks what it observes" failure
+    /// mode #707 was rejected for). Poisons the tracker's own mutex from a
+    /// second thread (lock it, then panic while it is held — the standard
+    /// way to poison a `std::sync::Mutex` in a test) and proves both
+    /// methods still answer normally afterward.
+    #[test]
+    fn a_poisoned_tracker_mutex_never_panics_on_snapshot_or_set() {
+        let tracker = Arc::new(CoreOwnershipTracker::new());
+        let poisoning = tracker.clone();
+        // `.join()`'s `Err` (the panic payload) is deliberately dropped,
+        // not unwrapped — unwrapping it would re-raise the very panic this
+        // test is using to poison the mutex.
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoning.current.lock().unwrap();
+            panic!("deliberately poisoning CoreOwnershipTracker's mutex");
+        })
+        .join();
+
+        let snapshot_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tracker.snapshot()));
+        assert!(snapshot_result.is_ok(), "snapshot() must not panic on a poisoned mutex");
+
+        let set_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tracker.set(Some(CoreOwner::Sync))
+        }));
+        assert!(set_result.is_ok(), "set() must not panic on a poisoned mutex");
+        assert_eq!(tracker.snapshot(), Some(CoreOwner::Sync), "the write through the recovered guard must still take");
+    }
+
+    /// Same proof as the tracker test above, for [`BufferingSink::record`]
+    /// — the method [`DiagnosticSink::record`] calls on every emission,
+    /// including from inside [`OwnedGuard::drop`].
+    #[test]
+    fn a_poisoned_sink_mutex_never_panics_on_record_or_drain() {
+        let sink = Arc::new(BufferingSink::new());
+        let poisoning = sink.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoning.events.lock().unwrap();
+            panic!("deliberately poisoning BufferingSink's mutex");
+        })
+        .join();
+
+        let record_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            sink.record(DiagnosticEventV1 {
+                schema_version: DIAGNOSTIC_EVENT_SCHEMA_VERSION,
+                seq: 0,
+                wall_clock_ms: 0,
+                elapsed_ms: 0,
+                session_id: "s".to_string(),
+                source: Source::Android,
+                cycle_id: None,
+                operation_id: None,
+                request_id: None,
+                event: DiagnosticEvent::OperationRequested,
+            })
+        }));
+        assert!(record_result.is_ok(), "record() must not panic on a poisoned mutex");
+
+        let drain_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink.drain()));
+        assert!(drain_result.is_ok(), "drain() must not panic on a poisoned mutex");
+        assert_eq!(drain_result.unwrap().len(), 1, "the event recorded through the recovered guard must still be there");
+    }
+
+    /// End-to-end version of the two tests above: a real `OwnedGuard` drop
+    /// (the actual call site review round 1 flagged) with the tracker's
+    /// mutex already poisoned, proving the release path itself — not just
+    /// the two methods it calls — survives.
+    #[tokio::test]
+    async fn a_guard_release_survives_a_poisoned_tracker_mutex() {
+        let mutex = tokio::sync::Mutex::new(0u32);
+        let tracker = Arc::new(CoreOwnershipTracker::new());
+        let session = CoreLockSession::new(test_seq());
+        let sink = BufferingSink::new();
+
+        let guard = lock_with_diagnostics(&mutex, &tracker, &session, &sink, "s-1", CoreOwner::Sync).await;
+
+        let poisoning = tracker.clone();
+        let _ = std::thread::spawn(move || {
+            let _inner_guard = poisoning.current.lock().unwrap();
+            panic!("deliberately poisoning CoreOwnershipTracker's mutex before release");
+        })
+        .join();
+
+        let drop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(guard)));
+        assert!(drop_result.is_ok(), "dropping the guard must not panic even with the tracker's mutex poisoned");
+
+        let events = events_of(&sink);
+        assert!(
+            events.contains(&DiagnosticEvent::CoreReleased { owner: CoreOwner::Sync }),
+            "core.released must still be recorded despite the poisoned tracker mutex: {events:?}",
+        );
     }
 }

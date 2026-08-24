@@ -293,14 +293,24 @@ pub enum CoreOwner {
     /// The web host's triage write (edit-and-promote).
     Triage,
     /// The Grill-completion trio: complete_grill, save_grill_draft,
-    /// discard_grill_draft.
+    /// discard_grill_draft — plus, on the mobile host (#710), that same
+    /// trio's own reads (grill_draft, has_grill_draft), kept under this
+    /// area rather than [`Self::Read`] since they are Grill-specific state,
+    /// not a generic getter.
     Grill,
     /// Every project-dossier write: create_project, patch_project,
-    /// project links, Route, fog, project actions, Steps.
+    /// project links, Route, fog, project actions, Steps — plus, on the
+    /// mobile host (#710), that area's own read (`projects()`), for the
+    /// identical reason [`Self::Grill`]'s doc states.
     Projects,
-    /// create_rule/patch_rule (#140/ADR-0013).
+    /// create_rule/patch_rule (#140/ADR-0013), plus the mobile host's own
+    /// `rules`/`rule` reads (#710), same reasoning as [`Self::Grill`].
     Rules,
-    /// set_binding/set_question_enabled (#118/#715).
+    /// set_binding/set_question_enabled (#118/#715), plus the mobile
+    /// host's own `api_version`/`dead_letters`/`bindings`/
+    /// `question_switches` reads (#710) — device/config state this area
+    /// already owns, kept off [`Self::Read`] for the same reason as
+    /// [`Self::Grill`]'s doc.
     Settings,
     /// A read-only getter's own acquisition (#708 review round 1,
     /// finding 1) — every one of the web host's read-only accessors

@@ -3906,7 +3906,10 @@ impl MobileTaskHost {
             }),
             calendar: tokio::sync::Mutex::new(calendar),
             core_owner: core_lock::CoreOwnershipTracker::new(),
-            diag_session: core_lock::CoreLockSession::new(),
+            // #710 review round 1: shares `DIAGNOSTIC_SESSION.seq` — the
+            // one counter every Android-sourced event in this process
+            // advances — rather than minting a second, colliding one.
+            diag_session: core_lock::CoreLockSession::new(&DIAGNOSTIC_SESSION.seq),
             diag_sink: core_lock::BufferingSink::new(),
         }))
     }
@@ -3922,9 +3925,18 @@ impl MobileTaskHost {
         self.diag_sink
             .drain()
             .into_iter()
-            .map(|event| MobileDiagnosticLine {
-                wall_clock_ms: event.wall_clock_ms,
-                json: serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string()),
+            // `DiagnosticEventV1` is plain strings/numbers/enums, so a real
+            // serialization failure here is not realistic — but on the
+            // remote chance one occurred, skipping that one line (never a
+            // synthesized `"{}"`) is the right failure mode: a caller that
+            // appends this straight to the journal (`DiagnosticJournal
+            // .append`'s own doc: "every stored line ... is already
+            // complete, valid JSON") must never receive a line this
+            // function itself knows is not the real event.
+            .filter_map(|event| {
+                serde_json::to_string(&event)
+                    .ok()
+                    .map(|json| MobileDiagnosticLine { wall_clock_ms: event.wall_clock_ms, json })
             })
             .collect()
     }
@@ -3933,7 +3945,7 @@ impl MobileTaskHost {
     /// [`core_api_version`], surfaced on the object so a host holding only
     /// the handle can show it.
     pub async fn api_version(&self) -> u32 {
-        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read)
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings)
             .await
             .core
             .api_version()
@@ -3958,7 +3970,7 @@ impl MobileTaskHost {
     /// is that each surfaces `Core` verbatim, not that they surface each
     /// other).
     pub async fn dead_letters(&self) -> Vec<MobileDeadLetterRecord> {
-        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await
             .core
             .dead_letters()
             .iter()
@@ -3968,7 +3980,7 @@ impl MobileTaskHost {
 
     /// Every standing-question binding (#535/#118), per [`Core::bindings`].
     pub async fn bindings(&self) -> Vec<MobileBindingRecord> {
-        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await
             .core
             .bindings()
             .iter()
@@ -4015,7 +4027,7 @@ impl MobileTaskHost {
     /// **Android does not render this yet** (#716); the door lands here so
     /// that slice is rendering-only.
     pub async fn question_switches(&self) -> Vec<MobileQuestionSwitch> {
-        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await
             .core
             .question_switches()
             .iter()
@@ -4161,8 +4173,9 @@ impl MobileTaskHost {
         // doc), so `operation.local_commit` is recorded synchronously
         // right after that enqueue succeeds, always before any
         // `http.started` this operation's id could ever carry (there
-        // isn't one, by construction — see `core_lock`'s module doc and
-        // this crate's own capture test for the pin).
+        // isn't one, by construction) — pinned by this module's own
+        // `a_successful_capture_orders_operation_local_commit_before_any_http_started`
+        // test, over a real `MobileTaskHost::capture` call.
         let operation_id = mint_mutation_seed("capture-op", now_ms);
         let session_id = current_diagnostic_session_id();
         self.diag_session
@@ -4205,7 +4218,7 @@ impl MobileTaskHost {
     /// the seam to Kotlin, the grouping axis needs names inside Rust and
     /// never crosses at all.
     pub async fn projects(&self) -> Vec<MobileProject> {
-        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Projects).await
             .core
             .projects()
             .into_iter()
@@ -4459,7 +4472,7 @@ impl MobileTaskHost {
     /// corruption) answers `None`, exactly like no draft at all — nothing
     /// worth resuming.
     pub async fn grill_draft(&self, item_id: String) -> Option<Vec<MobileGrillTurn>> {
-        let value = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await.core.grill_draft(&item_id)?.clone();
+        let value = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Grill).await.core.grill_draft(&item_id)?.clone();
         let turns: Vec<skills::GrillTurn> = serde_json::from_value(value).ok()?;
         Some(turns.into_iter().map(from_domain_turn).collect())
     }
@@ -4467,7 +4480,7 @@ impl MobileTaskHost {
     /// Whether `item_id` carries a saved draft — the Triage row's own
     /// "Grill me"/"Resume grill" label source, one item at a time.
     pub async fn has_grill_draft(&self, item_id: String) -> bool {
-        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await.core.has_grill_draft(&item_id)
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Grill).await.core.has_grill_draft(&item_id)
     }
 
     /// Saves (or replaces) `item_id`'s draft — #356's "every completed turn
@@ -4642,7 +4655,7 @@ impl MobileTaskHost {
     /// from a push, since the payload can arrive before the cycle that
     /// carries the row.
     pub async fn alert(&self, alert_id: String, now_ms: i64) -> Option<AlertRecord> {
-        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Act).await
             .core
             .alert(&alert_id)
             .map(|alert| to_alert_record(&alert, now_ms))
@@ -4742,7 +4755,7 @@ impl MobileTaskHost {
     /// stopped being able to fire.
     pub async fn rules(&self) -> Vec<RuleRecord> {
         let registry = rules::compiled_registry();
-        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Rules).await
             .core
             .rules()
             .iter()
@@ -4754,7 +4767,7 @@ impl MobileTaskHost {
     /// editor's own read.
     pub async fn rule(&self, rule_id: String) -> Option<RuleRecord> {
         let registry = rules::compiled_registry();
-        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Rules).await
             .core
             .rules()
             .iter()
@@ -5268,12 +5281,12 @@ impl MobileTaskHost {
 /// business asking for the device token back.
 impl MobileTaskHost {
     /// #710: the *only* way any method on this type reaches `inner` — every
-    /// existing `self.lock_inner(...).await` call site was migrated to this,
-    /// so "every acquisition… emits `core.wait_started`/`core.acquired`/
-    /// `core.released`" is true by construction, not by each call site
-    /// remembering to instrument itself. See `core_lock`'s module doc for
-    /// what `owner` means on each of the three events and why release goes
-    /// through a `Drop` guard.
+    /// existing `self.inner.lock().await` call site was migrated to a call
+    /// through this, so "every acquisition… emits `core.wait_started`/
+    /// `core.acquired`/`core.released`" is true by construction, not by
+    /// each call site remembering to instrument itself. See `core_lock`'s
+    /// module doc for what `owner` means on each of the three events and
+    /// why release goes through a `Drop` guard.
     async fn lock_inner(&self, owner: hummingbird_core::diagnostics::CoreOwner) -> core_lock::OwnedGuard<'_, Inner> {
         let session_id = current_diagnostic_session_id();
         core_lock::lock_with_diagnostics(
@@ -6605,6 +6618,82 @@ mod tests {
         assert_eq!(host.api_version().await, hummingbird_core::API_VERSION);
         assert_eq!(host.active_item_count().await, 0);
         assert_eq!(host.queue_depth().await, 0);
+    }
+
+    /// #710's acceptance criterion 7, over a real `MobileTaskHost::capture`
+    /// call rather than a citation to a test that (review round 1 caught)
+    /// did not exist: the exact event order this capture's own operation
+    /// produces, and — since `Core::capture` never touches the network —
+    /// the proof that no `http.started` anywhere in the buffer ever
+    /// carries this capture's `operation_id`.
+    #[tokio::test]
+    async fn a_successful_capture_orders_operation_local_commit_before_any_http_started() {
+        use hummingbird_core::diagnostics::{DiagnosticEvent, DiagnosticEventV1};
+
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("capture-diag-ns");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://authority.example".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        host.capture(title_only_draft("pin the ordering"), 1_000).await.unwrap();
+
+        let envelopes: Vec<DiagnosticEventV1> = host
+            .take_diagnostic_events()
+            .await
+            .iter()
+            .map(|line| serde_json::from_str(&line.json).unwrap())
+            .collect();
+
+        let names: Vec<&'static str> = envelopes
+            .iter()
+            .map(|envelope| match envelope.event {
+                DiagnosticEvent::OperationRequested => "operation.requested",
+                DiagnosticEvent::CoreWaitStarted { .. } => "core.wait_started",
+                DiagnosticEvent::CoreAcquired { .. } => "core.acquired",
+                DiagnosticEvent::OperationLocalCommit => "operation.local_commit",
+                DiagnosticEvent::CoreReleased { .. } => "core.released",
+                DiagnosticEvent::HttpStarted { .. } => "http.started",
+                _ => "other",
+            })
+            .collect();
+
+        assert_eq!(
+            names,
+            vec![
+                "operation.requested",
+                "core.wait_started",
+                "core.acquired",
+                "operation.local_commit",
+                "core.released",
+            ],
+            "capture's own diagnostic stream, in order: {names:?}",
+        );
+
+        let capture_operation_id = envelopes
+            .iter()
+            .find(|envelope| matches!(envelope.event, DiagnosticEvent::OperationLocalCommit))
+            .and_then(|envelope| envelope.operation_id.clone())
+            .expect("operation.local_commit carries the capture's operation_id");
+
+        let local_commit_index = names.iter().position(|name| *name == "operation.local_commit").unwrap();
+        if let Some(http_started_index) = names.iter().position(|name| *name == "http.started") {
+            assert!(
+                http_started_index > local_commit_index,
+                "an http.started ever emitted here must come after operation.local_commit",
+            );
+        }
+        assert!(
+            !envelopes.iter().any(|envelope| {
+                matches!(envelope.event, DiagnosticEvent::HttpStarted { .. })
+                    && envelope.operation_id.as_deref() == Some(capture_operation_id.as_str())
+            }),
+            "no http.started event may ever carry capture's own operation_id",
+        );
     }
 
     // ---------------------------------------------- the calendar (#564)
@@ -10781,6 +10870,144 @@ mod diagnostic_ffi_tests {
         assert!(value["session_id"].as_str().is_some_and(|id| !id.is_empty()));
         assert_eq!(value["source"], "android");
         assert_eq!(value["event"]["name"], "push.received");
+    }
+
+    /// Review round 1, finding 2: `core_lock`'s mutex/operation spans and
+    /// `diagnostic_event_json`'s own worker/push/network mints must share
+    /// **one** `seq` counter — two independent 0-based counters under one
+    /// `session_id`, both landing in one exported journal, would mint
+    /// colliding values with no total order, which is exactly what would
+    /// defeat #712's ability to interleave a `core.wait_started` against
+    /// the `worker.started` of the run it was contending with.
+    ///
+    /// This interleaves both families from one thread — `diagnostic_event_json`
+    /// (the `session.started`/`worker.*`/`push.received`/`network.changed`
+    /// path) around a real `MobileTaskHost::capture` (the `core_lock` path,
+    /// via `take_diagnostic_events`) — and asserts every `seq` value seen,
+    /// from both families together, is distinct and increases in call
+    /// order. `DIAGNOSTIC_SESSION.seq` is a process-wide `static` shared
+    /// with every other test in this binary, so this cannot assert
+    /// *contiguous* values (another thread may interleave its own), only
+    /// that these two families, from this one thread, never collide or
+    /// go backwards against each other.
+    #[tokio::test]
+    async fn core_lock_events_and_diagnostic_event_json_share_one_seq_counter_with_no_collision() {
+        diagnostic_init_session("shared-seq-session".to_string(), 0);
+
+        let before = diagnostic_event_json(0, 0, MobileDiagnosticEvent::PushReceived);
+        let before_seq = seq_of(&before);
+
+        let dir = tempfile::tempdir().unwrap();
+        let host = MobileTaskHost::init(
+            dir.path().join("seq-ns").to_str().unwrap().to_string(),
+            "https://authority.example".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+        let draft = CaptureDraft {
+            title: "seq collision check".to_string(),
+            destination: CaptureDestination::Triage,
+            size: String::new(),
+            energy: String::new(),
+            context: String::new(),
+            description: String::new(),
+            project_id: String::new(),
+            priority: String::new(),
+            deadline: String::new(),
+            scheduled_date: String::new(),
+        };
+        host.capture(draft, 1_000).await.unwrap();
+        let core_lock_seqs: Vec<u64> = host
+            .take_diagnostic_events()
+            .await
+            .iter()
+            .map(|line| seq_of(&line.json))
+            .collect();
+
+        let after = diagnostic_event_json(0, 0, MobileDiagnosticEvent::PushReceived);
+        let after_seq = seq_of(&after);
+
+        assert!(!core_lock_seqs.is_empty(), "capture must have produced at least one core_lock event");
+        // Every `core_lock` seq must fall strictly between the two
+        // `diagnostic_event_json` calls that bracket it in real call
+        // order, and none may repeat a value either side already used —
+        // the two families sharing one counter, proven by interleaving.
+        for &seq in &core_lock_seqs {
+            assert!(seq > before_seq, "a core_lock seq ({seq}) must exceed the bracketing before-seq ({before_seq})");
+            assert!(seq < after_seq, "a core_lock seq ({seq}) must precede the bracketing after-seq ({after_seq})");
+        }
+        let mut all_seqs = core_lock_seqs.clone();
+        all_seqs.push(before_seq);
+        all_seqs.push(after_seq);
+        let distinct: std::collections::HashSet<u64> = all_seqs.iter().copied().collect();
+        assert_eq!(distinct.len(), all_seqs.len(), "no two events from either family may share a seq: {all_seqs:?}");
+    }
+
+    fn seq_of(json: &str) -> u64 {
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        value["seq"].as_u64().unwrap()
+    }
+
+    /// Review round 1, finding 6 (numbered 1 in the coordinator's own
+    /// list): the mechanism the Kotlin-side fix depends on —
+    /// `take_diagnostic_events` must never depend on `inner`'s lock, so a
+    /// drain succeeds even while something else holds `inner` forever
+    /// (#704's own scenario: a sync stuck inside a hung network await,
+    /// with the lock held). This directly holds the real `inner` field
+    /// (the same private-field access this file's own pre-existing tests
+    /// already use, e.g. `host.inner.lock().await` at several points
+    /// above) to stand in for that hang, then proves the drain still
+    /// completes and still carries the spans a prior capture buffered.
+    #[tokio::test]
+    async fn take_diagnostic_events_drains_even_while_something_else_holds_inner_forever() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = Arc::new(
+            MobileTaskHost::init(
+                dir.path().join("drain-during-hang-ns").to_str().unwrap().to_string(),
+                "https://authority.example".to_string(),
+                String::new(),
+            )
+            .await
+            .unwrap(),
+        );
+
+        let draft = CaptureDraft {
+            title: "buffer something before the hang".to_string(),
+            destination: CaptureDestination::Triage,
+            size: String::new(),
+            energy: String::new(),
+            context: String::new(),
+            description: String::new(),
+            project_id: String::new(),
+            priority: String::new(),
+            deadline: String::new(),
+            scheduled_date: String::new(),
+        };
+        host.capture(draft, 1_000).await.unwrap();
+
+        // Stands in for #704's own incident: something holds `inner`
+        // forever (a hung network await inside a real `Core::run`, in
+        // production; here, directly, since this test's whole point is
+        // the *lock*, not what happens to be awaited while it is held).
+        let holder = host.clone();
+        let hold_task = tokio::spawn(async move {
+            let _guard = holder.inner.lock().await;
+            std::future::pending::<()>().await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let lines = tokio::time::timeout(std::time::Duration::from_secs(2), host.take_diagnostic_events())
+            .await
+            .expect("take_diagnostic_events must not hang while something else holds inner");
+
+        assert!(!lines.is_empty(), "the capture's own buffered spans must still be there");
+        assert!(
+            lines.iter().any(|line| line.json.contains("core.wait_started") || line.json.contains("core.acquired")),
+            "must contain the capture's own core.* spans: {lines:?}",
+        );
+
+        hold_task.abort();
     }
 
     #[test]
