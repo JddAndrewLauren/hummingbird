@@ -14,13 +14,15 @@ function harness(options: { taskEnqueue?: (request: TaskWorkerRequest) => Promis
   const visibility = { setHidden: vi.fn() };
   const taskEnqueue = vi.fn(options.taskEnqueue ?? (() => Promise.resolve()));
   const calendarEnqueue = vi.fn(() => Promise.resolve());
+  const diagnostics = { exportJournal: vi.fn(() => Promise.resolve()), clear: vi.fn(() => Promise.resolve()) };
   const dispatch = createDispatch<string>({
     cadence,
     visibility,
     taskEnqueueReady: Promise.resolve(taskEnqueue),
     calendarEnqueue,
+    diagnostics,
   });
-  return { cadence, visibility, taskEnqueue, calendarEnqueue, dispatch };
+  return { cadence, visibility, taskEnqueue, calendarEnqueue, diagnostics, dispatch };
 }
 
 const PUSH_KEY: TaskWorkerRequest = { type: "pushTaskApiKey", apiKey: "device-token" };
@@ -76,6 +78,28 @@ describe("createDispatch routing", () => {
     await h.dispatch(INIT_KEY, "tab-1");
 
     expect(h.taskEnqueue).toHaveBeenCalledWith(INIT_KEY);
+    expect(h.calendarEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("intercepts getDiagnostics as a journal export, reaching neither wasm queue", async () => {
+    const h = harness();
+
+    await h.dispatch({ type: "getDiagnostics" }, "tab-1");
+
+    expect(h.diagnostics.exportJournal).toHaveBeenCalledTimes(1);
+    expect(h.diagnostics.clear).not.toHaveBeenCalled();
+    expect(h.taskEnqueue).not.toHaveBeenCalled();
+    expect(h.calendarEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("intercepts clearDiagnostics as a journal clear, reaching neither wasm queue", async () => {
+    const h = harness();
+
+    await h.dispatch({ type: "clearDiagnostics" }, "tab-1");
+
+    expect(h.diagnostics.clear).toHaveBeenCalledTimes(1);
+    expect(h.diagnostics.exportJournal).not.toHaveBeenCalled();
+    expect(h.taskEnqueue).not.toHaveBeenCalled();
     expect(h.calendarEnqueue).not.toHaveBeenCalled();
   });
 
@@ -192,11 +216,13 @@ describe("the app-open sweep waits for a credential", () => {
     const visibility = { setHidden: vi.fn() };
     const taskEnqueue = vi.fn(() => Promise.resolve());
     const calendarEnqueue = vi.fn(() => Promise.resolve());
+    const diagnostics = { exportJournal: vi.fn(() => Promise.resolve()), clear: vi.fn(() => Promise.resolve()) };
     const dispatch = createDispatch<string>({
       cadence,
       visibility,
       taskEnqueueReady: Promise.resolve(taskEnqueue),
       calendarEnqueue,
+      diagnostics,
     });
 
     await dispatch(PUSH_KEY, "tab-1");
@@ -215,11 +241,13 @@ describe("the app-open sweep waits for a credential", () => {
     const visibility = { setHidden: vi.fn() };
     const taskEnqueue = vi.fn(() => Promise.resolve());
     const calendarEnqueue = vi.fn(() => Promise.resolve());
+    const diagnostics = { exportJournal: vi.fn(() => Promise.resolve()), clear: vi.fn(() => Promise.resolve()) };
     const dispatch = createDispatch<string>({
       cadence,
       visibility,
       taskEnqueueReady: Promise.resolve(taskEnqueue),
       calendarEnqueue,
+      diagnostics,
     });
 
     await dispatch(INIT_KEY, "tab-1");

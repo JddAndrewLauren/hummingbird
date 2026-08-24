@@ -12,6 +12,7 @@ mod blocked_by;
 mod calendar_token;
 mod changes;
 mod delivery;
+mod diagnostics;
 mod fcm;
 mod fog;
 mod grills;

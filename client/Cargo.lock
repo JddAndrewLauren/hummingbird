@@ -706,6 +706,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "futures-util",
  "hummingbird-domain",
  "hummingbird-rules-engine",
  "indexed_db_futures",

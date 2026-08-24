@@ -13,6 +13,7 @@
 mod api;
 mod context;
 mod deadline;
+pub mod diagnostics;
 mod event;
 mod github_repo;
 mod grill;

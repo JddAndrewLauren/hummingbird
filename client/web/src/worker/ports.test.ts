@@ -359,6 +359,70 @@ describe("PortRegistry", () => {
         message: "wasm init failed",
       });
     });
+
+    // #707, review round 1: "the journal is unexportable exactly when the
+    // core never reaches ready — which is one of the main situations an
+    // operator needs the journal." A `DiagnosticsPortHandler` is what a
+    // failed core still serves, on both of the two paths a port can reach
+    // "failed" through (queued-then-failed, and connecting-after-failure).
+    describe("a DiagnosticsPortHandler still serves the two diagnostics messages", () => {
+      function fakeDiagnosticsHandler() {
+        return {
+          isDiagnosticsRequest: vi.fn(
+            (request: { type: string }) => request.type === "getDiagnostics" || request.type === "clearDiagnostics",
+          ),
+          handle: vi.fn(),
+        };
+      }
+
+      it("wires onmessage to the handler for a port queued before the failure", () => {
+        const diagnostics = fakeDiagnosticsHandler();
+        const registry = new PortRegistry(CORE_ID, diagnostics);
+        const port = fakePort();
+        registry.connect(port);
+
+        registry.activateError("wasm init failed");
+        port.onmessage?.({ data: { type: "getDiagnostics" } } as MessageEvent);
+
+        expect(diagnostics.handle).toHaveBeenCalledWith({ type: "getDiagnostics" }, port);
+      });
+
+      it("wires onmessage to the handler for a port connecting after the failure", () => {
+        const diagnostics = fakeDiagnosticsHandler();
+        const registry = new PortRegistry(CORE_ID, diagnostics);
+        registry.activateError("wasm init failed");
+
+        const port = fakePort();
+        registry.connect(port);
+        port.onmessage?.({ data: { type: "clearDiagnostics" } } as MessageEvent);
+
+        expect(diagnostics.handle).toHaveBeenCalledWith({ type: "clearDiagnostics" }, port);
+      });
+
+      it("never routes a non-diagnostics message to the handler on a failed core", () => {
+        const diagnostics = fakeDiagnosticsHandler();
+        const registry = new PortRegistry(CORE_ID, diagnostics);
+        registry.activateError("wasm init failed");
+
+        const port = fakePort();
+        registry.connect(port);
+        port.onmessage?.({ data: { type: "getFrontier" } } as MessageEvent);
+
+        expect(diagnostics.handle).not.toHaveBeenCalled();
+      });
+
+      it("without a handler supplied, a failed core's port drops every message as before — the pre-#707 behaviour, unchanged", () => {
+        const registry = new PortRegistry(CORE_ID);
+        registry.activateError("wasm init failed");
+
+        const port = fakePort();
+        registry.connect(port);
+
+        expect(() =>
+          port.onmessage?.({ data: { type: "getDiagnostics" } } as MessageEvent),
+        ).not.toThrow();
+      });
+    });
   });
 
   // Issue #172: ADR-0010's own probe. The signal a person reads in two

@@ -1,5 +1,10 @@
-import type { CalendarWorkerRequest, SyncCadenceRequest, TaskWorkerRequest } from "../store/protocol";
-import { isSyncCadenceRequest, isTaskWorkerRequest } from "./request-router";
+import type {
+  CalendarWorkerRequest,
+  DiagnosticsWorkerRequest,
+  SyncCadenceRequest,
+  TaskWorkerRequest,
+} from "../store/protocol";
+import { isDiagnosticsWorkerRequest, isSyncCadenceRequest, isTaskWorkerRequest } from "./request-router";
 
 // `core.worker.ts`'s routing decision, as pure logic — the three-way split
 // between the shared cadence, the task binding's queue and the calendar
@@ -15,7 +20,11 @@ import { isSyncCadenceRequest, isTaskWorkerRequest } from "./request-router";
 // could be mis-routed into a wasm queue, so it is exactly the kind of
 // decision that belongs in a `.ts` module a test can execute.
 
-type AnyWorkerRequest = CalendarWorkerRequest | TaskWorkerRequest | SyncCadenceRequest;
+type AnyWorkerRequest =
+  | CalendarWorkerRequest
+  | TaskWorkerRequest
+  | SyncCadenceRequest
+  | DiagnosticsWorkerRequest;
 
 /** The slice of `sync-cadence.ts`'s controller this routing needs. */
 export interface DispatchCadence {
@@ -32,6 +41,18 @@ export interface DispatchVisibility<Port> {
   setHidden: (port: Port, hidden: boolean) => void;
 }
 
+/** #707's diagnostics-journal doors — see `diagnostics-journal.ts`. Neither
+ * method reaches a wasm host, so both are intercepted here rather than
+ * routed to either request queue, the same as `DispatchCadence` above. */
+export interface DispatchDiagnostics {
+  /** Reads the whole journal and broadcasts it as one `diagnosticsExport`
+   * — owns its own reply, since a get has to answer with data. */
+  exportJournal: () => Promise<void>;
+  /** Empties the journal. No reply — same "fire and forget" contract
+   * `clearTaskApiKey` documents in protocol.ts. */
+  clear: () => Promise<void>;
+}
+
 export interface DispatchDeps<Port> {
   cadence: DispatchCadence;
   visibility: DispatchVisibility<Port>;
@@ -41,6 +62,7 @@ export interface DispatchDeps<Port> {
    * ordered whether they arrive before or after it resolves. */
   taskEnqueueReady: Promise<(request: TaskWorkerRequest) => Promise<void>>;
   calendarEnqueue: (request: CalendarWorkerRequest) => Promise<void>;
+  diagnostics: DispatchDiagnostics;
 }
 
 export type Dispatch<Port> = (request: AnyWorkerRequest, port: Port) => Promise<void>;
@@ -52,6 +74,9 @@ export type Dispatch<Port> = (request: AnyWorkerRequest, port: Port) => Promise<
 export function createDispatch<Port>(deps: DispatchDeps<Port>): Dispatch<Port> {
   const open = openTrigger(deps.cadence);
   return (request, port) => {
+    if (isDiagnosticsWorkerRequest(request)) {
+      return request.type === "getDiagnostics" ? deps.diagnostics.exportJournal() : deps.diagnostics.clear();
+    }
     if (isSyncCadenceRequest(request)) {
       if (request.type === "setViewVisibility") {
         deps.visibility.setHidden(port, request.hidden);

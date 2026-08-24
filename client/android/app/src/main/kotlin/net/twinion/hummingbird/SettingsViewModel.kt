@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import net.twinion.hummingbird.core.CoreHolder
+import net.twinion.hummingbird.diagnostics.DiagnosticsRecorder
 import uniffi.hummingbird_ffi_mobile.MobileBindingRecord
 import uniffi.hummingbird_ffi_mobile.MobileCalendarList
 import uniffi.hummingbird_ffi_mobile.MobileCalendarSelection
@@ -63,6 +64,12 @@ class SettingsViewModel(
     private val listCalendarsFn: suspend () -> MobileCalendarList = { MobileCalendarList("no_credential", emptyList()) },
     private val readSelectionsFn: suspend () -> List<MobileCalendarSelection> = { emptyList() },
     private val writeSelectionsFn: suspend (List<MobileCalendarSelection>) -> Unit = {},
+    /** #709's Export/Clear diagnostics buttons. Injected the same way
+     * every other native-touching call on this class is, so a plain JVM
+     * test drives the screen's control flow with no `.so` in the process —
+     * `SettingsViewModelTest` never actually reaches `DiagnosticsRecorder`. */
+    private val exportDiagnosticsFn: suspend () -> ByteArray = { ByteArray(0) },
+    private val clearDiagnosticsFn: suspend () -> Unit = {},
 ) : ViewModel() {
 
     private val _bindings = MutableStateFlow<List<MobileBindingRecord>?>(null)
@@ -141,6 +148,19 @@ class SettingsViewModel(
         writeSelectionsFn(next)
     }
 
+    /** The exported diagnostics bytes — one `application/json` document,
+     * ready to write straight to the `Uri` the document-creation picker
+     * hands back. Safe to call from a coroutine this screen's own
+     * `NavBackStackEntry` can cancel: `DiagnosticsRecorder.export`'s own
+     * doc is what actually makes the write itself finish regardless — this
+     * method's cancellability is only ever "stop waiting for the result",
+     * never "stop the write". */
+    suspend fun exportDiagnostics(): ByteArray = exportDiagnosticsFn()
+
+    /** Empties the on-device diagnostic journal. Same cancellation shape
+     * as [exportDiagnostics]. */
+    suspend fun clearDiagnostics() = clearDiagnosticsFn()
+
     /** Sets one binding. The draft's worth-sending check is the screen's —
      * this trusts it and enqueues, `useBindingsWiring.ts`'s own split. */
     suspend fun setBinding(key: String, value: String, nowMs: Long) {
@@ -184,6 +204,21 @@ class SettingsViewModel(
                     // selection.
                     core().setCalendarSelections(selections, System.currentTimeMillis())
                 },
+                // #710 review round 1: drains the mobile FFI host's
+                // buffered `core.*`/`operation.*` spans before exporting —
+                // `MobileTaskHost.takeDiagnosticEvents` never touches the
+                // `inner` mutex `Core::run` holds, so this drains cleanly
+                // even while a sync is stuck mid-cycle (#704's own
+                // scenario): an export taken *during* a stall still
+                // surfaces the `core.wait_started`/`core.acquired` spans
+                // already buffered, not just whatever a previous
+                // `SyncWorker` run happened to flush.
+                exportDiagnosticsFn = {
+                    val recorder = DiagnosticsRecorder.get(context.applicationContext)
+                    core().takeDiagnosticEvents().forEach { line -> recorder.appendRaw(line.json, line.wallClockMs) }
+                    recorder.export()
+                },
+                clearDiagnosticsFn = { DiagnosticsRecorder.get(context.applicationContext).clear() },
             )
         }
 

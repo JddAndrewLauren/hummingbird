@@ -21,6 +21,11 @@ mod shim {
     use std::collections::HashMap;
     use std::rc::Rc;
 
+    use hummingbird_authority::diagnostics::{
+        accept_cycle_id, accept_request_id, classify_auth_result, request_finished_event,
+        request_received_event, route_template,
+    };
+    use hummingbird_domain::diagnostics::DiagnosticEventV1;
     use hummingbird_authority::{
         calendar_secrets_unset, calendar_write_secrets_unset, credential_rejected, forwardable,
         handle, init_schema, revoke_dead_target, run_url, unconfigured, unreachable,
@@ -124,6 +129,22 @@ mod shim {
         /// A minter of its own, so its cached bearer can never be handed to
         /// a caller of the readonly route.
         calendar_write: Option<CalendarMinter>,
+        /// #711: the `seq` counter `request_received_event`/
+        /// `request_finished_event` need — `DiagnosticEventV1::seq` is
+        /// monotonic *within one session*, and a Durable Object instance is
+        /// this authority's closest equivalent to a session (ADR-0008's
+        /// "one workspace singleton"). Incremented once per event logged,
+        /// so a request's `received`/`finished` pair gets two consecutive
+        /// values, the same way the client's own `DiagnosticSession` counts.
+        request_seq: Cell<u64>,
+        /// #711: the wall-clock reading `elapsed_ms` is measured from —
+        /// set once, on this instance's first request, and read (never
+        /// re-set) on every one after. `None` until that first request,
+        /// matching `schema_ready`'s own "idempotent, lazily set in
+        /// `fetch`" shape rather than sampling a clock in `new()`, which
+        /// would run before this object's first real request and skew
+        /// every `elapsed_ms` in the same direction.
+        session_origin_ms: Cell<Option<i64>>,
     }
 
     impl DurableObject for Authority {
@@ -135,10 +156,39 @@ mod shim {
                 fcm: FcmSender::from_env(&env).map(Rc::new),
                 calendar: CalendarMinter::from_env(&env),
                 calendar_write: CalendarMinter::write_from_env(&env),
+                request_seq: Cell::new(0),
+                session_origin_ms: Cell::new(None),
             }
         }
 
         async fn fetch(&self, mut req: Request) -> Result<Response> {
+            // #711: correlation id resolution and the `request.received`
+            // log happen before any of this function's awaited work
+            // (schema init, alarm scheduling, reading the body, `handle()`
+            // itself) — the same "write the start event before the awaited
+            // operation" shape the client's own `DiagnosticsContext` uses
+            // (`client/core/src/diagnostics/context.rs`'s `http.started`),
+            // so an incomplete span survives a hang anywhere below this
+            // point. `request_id` is resolved exactly once, here, using
+            // this instance's entropy: it is never re-derived with fresh
+            // entropy further down (`ApiRequest::request_id` below is
+            // fed this already-resolved value, and `handle()`'s own
+            // `accept_request_id` call short-circuits on an already-valid
+            // string without drawing entropy again), so the `received`
+            // line, the echoed response header and the `finished` line all
+            // name the exact same request.
+            let start_ms = Date::now().as_millis() as i64;
+            let method = req.method().to_string().to_uppercase();
+            let url = req.url()?;
+            let path = url.path().to_string();
+            let authorization = req.headers().get("authorization")?;
+            let cycle_id_header = req.headers().get("x-hummingbird-cycle-id")?;
+            let request_id_header = req.headers().get("x-hummingbird-request-id")?;
+            let route = route_template(&path);
+            let cycle_id = accept_cycle_id(cycle_id_header.as_deref());
+            let request_id = accept_request_id(request_id_header.as_deref(), &WorkersEntropy);
+            self.log_received(cycle_id.clone(), request_id.clone(), route.clone(), &method, start_ms);
+
             let sql = WorkersSql {
                 sql: self.state.storage().sql(),
             };
@@ -151,7 +201,11 @@ mod shim {
                         message: e.message,
                     })
                     .expect("ApiError serializes");
-                    return json_response(500, body);
+                    self.log_finished(
+                        cycle_id, request_id.clone(), route, &method, &path, 500, start_ms,
+                        body.len(), None,
+                    );
+                    return with_request_id_header(json_response(500, body), &request_id);
                 }
                 self.schema_ready.set(true);
             }
@@ -165,20 +219,46 @@ mod shim {
             // one first request, `schema_ready` would already be `true`,
             // every later request would skip the whole block, and nothing
             // would ever retry scheduling the alarm.
-            ensure_alarm_scheduled(&self.state.storage()).await?;
+            //
+            // #711 review round 1 finding 2: this used to be a bare
+            // `.await?`, which on failure propagated the error straight out
+            // of `fetch` with `request.received` already logged and
+            // `request.finished` never reached — exactly the false
+            // "server received, never finished" stall signature this whole
+            // slice exists to make distinguishable from a real one. Logging
+            // `finished` here first, before the `?`, closes that: the
+            // echoed header is still lost on this path (there is no
+            // `Response` to attach it to — the runtime builds its own error
+            // response from the propagated `Err`), but the log line exists.
+            if let Err(e) = ensure_alarm_scheduled(&self.state.storage()).await {
+                self.log_finished(
+                    cycle_id, request_id.clone(), route, &method, &path, 500, start_ms, 0, None,
+                );
+                return Err(e);
+            }
 
-            let method = req.method().to_string().to_uppercase();
-            let url = req.url()?;
-            let authorization = req.headers().get("authorization")?;
-            let body = req.text().await?;
+            // Same reasoning as `ensure_alarm_scheduled` just above — a
+            // failed body read must not skip `request.finished` either.
+            let body = match req.text().await {
+                Ok(body) => body,
+                Err(e) => {
+                    self.log_finished(
+                        cycle_id, request_id.clone(), route, &method, &path, 500, start_ms, 0,
+                        None,
+                    );
+                    return Err(e);
+                }
+            };
             let now_ms = Date::now().as_millis() as i64;
             let mut api = handle(
                 &ApiRequest {
                     method: &method,
-                    path: url.path(),
+                    path: &path,
                     query: url.query(),
                     body: if body.is_empty() { None } else { Some(&body) },
                     authorization: authorization.as_deref(),
+                    cycle_id: cycle_id_header.as_deref(),
+                    request_id: Some(&request_id),
                 },
                 &HandleContext {
                     now_ms,
@@ -211,12 +291,16 @@ mod shim {
             // needs no second subrequest to reach the DO: this *is* the DO,
             // already inside its own `fetch()`, and there is no cycle
             // forcing the exchange above it.
-            if url.path() == "/api/google/calendar_token" && api.status == 204 {
+            if path == "/api/google/calendar_token" && api.status == 204 {
                 let (status, body) = match &self.calendar {
                     Some(minter) => minter.token_response(now_ms).await,
                     None => calendar_secrets_unset(),
                 };
-                return calendar_json_response(status, body);
+                self.log_finished(
+                    cycle_id, request_id.clone(), route, &method, &path, status, start_ms,
+                    body.len(), api.principal_id.clone(),
+                );
+                return with_request_id_header(calendar_json_response(status, body), &request_id);
             }
 
             // The write mint (ADR-0031), the same shape over the write
@@ -225,15 +309,23 @@ mod shim {
             // allowed-holder list, which is the whole gate — a device token
             // that is not the agent's was already answered 403 above, and
             // never reaches this minter.
-            if url.path() == "/api/google/calendar_write_token" && api.status == 204 {
+            if path == "/api/google/calendar_write_token" && api.status == 204 {
                 let (status, body) = match &self.calendar_write {
                     Some(minter) => minter.token_response(now_ms).await,
                     None => calendar_write_secrets_unset(),
                 };
-                return calendar_json_response(status, body);
+                self.log_finished(
+                    cycle_id, request_id.clone(), route, &method, &path, status, start_ms,
+                    body.len(), api.principal_id.clone(),
+                );
+                return with_request_id_header(calendar_json_response(status, body), &request_id);
             }
 
-            json_response(api.status, api.body)
+            self.log_finished(
+                cycle_id, request_id.clone(), route, &method, &path, api.status, start_ms,
+                api.body.len(), api.principal_id.clone(),
+            );
+            with_request_id_header(json_response(api.status, api.body), &request_id)
         }
 
         /// The DO alarm handler (#138): evaluates every item already held
@@ -376,6 +468,104 @@ mod shim {
         headers.set("content-type", "application/json")?;
         headers.set("cache-control", "no-store")?;
         Ok(Response::ok(body)?.with_status(status).with_headers(headers))
+    }
+
+    /// #711: the accepted (or generated) request id, echoed on every
+    /// response this fetch handles — success, error, and the two calendar
+    /// mints alike — so a client can bind its own span to the server's
+    /// regardless of what the call ended up returning.
+    fn with_request_id_header(resp: Result<Response>, request_id: &str) -> Result<Response> {
+        let mut resp = resp?;
+        resp.headers_mut()
+            .set("X-Hummingbird-Request-Id", request_id)?;
+        Ok(resp)
+    }
+
+    fn log_diagnostic_event(event: DiagnosticEventV1) {
+        console_log!(
+            "{}",
+            serde_json::to_string(&event).expect("DiagnosticEventV1 serializes")
+        );
+    }
+
+    impl Authority {
+        /// #711: `seq` is monotonic *within one session* — this instance's
+        /// own lifetime, per `request_seq`'s own doc — and this is the one
+        /// place that counter advances, so a request's `received`/
+        /// `finished` pair always gets two consecutive values.
+        fn next_seq(&self) -> u64 {
+            let seq = self.request_seq.get();
+            self.request_seq.set(seq + 1);
+            seq
+        }
+
+        /// #711: `elapsed_ms` since this instance's own first request,
+        /// lazily sampled (see `session_origin_ms`'s own doc for why not in
+        /// `new()`).
+        fn elapsed_ms(&self, wall_clock_ms: i64) -> u64 {
+            if self.session_origin_ms.get().is_none() {
+                self.session_origin_ms.set(Some(wall_clock_ms));
+            }
+            let origin = self.session_origin_ms.get().expect("just set above if it was None");
+            (wall_clock_ms - origin).max(0) as u64
+        }
+
+        /// The `request.received` line (#711) — written by `fetch` before
+        /// any of its own awaited work, so an incomplete span survives a
+        /// hang. Everything decidable (the event's JSON shape) lives in
+        /// `hummingbird_authority::diagnostics::request_received_event`;
+        /// this only supplies the per-instance `seq`/`elapsed_ms` state and
+        /// calls `console_log!`.
+        fn log_received(
+            &self,
+            cycle_id: Option<String>,
+            request_id: String,
+            route: String,
+            method: &str,
+            wall_clock_ms: i64,
+        ) {
+            let seq = self.next_seq();
+            let elapsed_ms = self.elapsed_ms(wall_clock_ms);
+            log_diagnostic_event(request_received_event(
+                seq, wall_clock_ms, elapsed_ms, cycle_id, request_id, route, method,
+            ));
+        }
+
+        /// The `request.finished` line (#711) — written after the response
+        /// is built (or, on the two exit paths that can fail before
+        /// `handle()` ever runs, immediately before that failure
+        /// propagates — see `fetch`'s own comments at each call site).
+        /// Everything decidable (`AuthResult` classification, the event's
+        /// JSON shape) lives in `hummingbird_authority::diagnostics`; this
+        /// only supplies the per-instance `seq`/`elapsed_ms` state, the
+        /// duration (measured from `start_ms`, the instant `fetch()`
+        /// began) and calls `console_log!`. Takes the concrete `path` (not
+        /// the already-templated `route`) only because that is what
+        /// `classify_auth_result` is defined over; every literal segment it
+        /// checks (`admin`) survives templating unchanged either way.
+        #[allow(clippy::too_many_arguments)]
+        fn log_finished(
+            &self,
+            cycle_id: Option<String>,
+            request_id: String,
+            route: String,
+            method: &str,
+            path: &str,
+            status: u16,
+            start_ms: i64,
+            response_bytes: usize,
+            token_id: Option<String>,
+        ) {
+            let wall_clock_ms = Date::now().as_millis() as i64;
+            let duration_ms = wall_clock_ms - start_ms;
+            let seq = self.next_seq();
+            let elapsed_ms = self.elapsed_ms(wall_clock_ms);
+            let auth_result = classify_auth_result(path, status);
+            log_diagnostic_event(request_finished_event(
+                seq, wall_clock_ms, elapsed_ms, cycle_id, request_id, route, method, status,
+                duration_ms, response_bytes, token_id, auth_result,
+            ));
+        }
     }
 
     // ------------------------------------------- the skill-runner proxy

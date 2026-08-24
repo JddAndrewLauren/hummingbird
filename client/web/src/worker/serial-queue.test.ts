@@ -18,6 +18,33 @@ describe("createSerialQueue", () => {
     expect(order).toEqual(["start:a", "end:a", "start:b", "end:b"]);
   });
 
+  it("calls onEnqueue when a request joins the tail chain, before onDequeue fires", async () => {
+    const seen: string[] = [];
+    const queue = createSerialQueue<string>(
+      async () => {
+        await Promise.resolve();
+      },
+      {
+        timeoutMs: 1_000,
+        onTimeout: vi.fn(),
+        onEnqueue: (request) => seen.push(`enqueue:${request}`),
+        onDequeue: (request) => seen.push(`dequeue:${request}`),
+      },
+    );
+
+    await Promise.all([queue("a"), queue("b")]);
+
+    // Both enqueues happen synchronously as each call arrives, before
+    // either dequeue — the queue is still one-at-a-time for dequeue/run,
+    // but enqueue is a same-tick fact, not a queued one.
+    expect(seen).toEqual(["enqueue:a", "enqueue:b", "dequeue:a", "dequeue:b"]);
+  });
+
+  it("never calls onEnqueue/onDequeue when neither is supplied", async () => {
+    const queue = createSerialQueue<string>(async () => {}, { timeoutMs: 1_000, onTimeout: vi.fn() });
+    await expect(queue("a")).resolves.toBeUndefined();
+  });
+
   it("keeps draining after a handler rejects, reporting it via onError", async () => {
     const onError = vi.fn();
     const queue = createSerialQueue<string>(

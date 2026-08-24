@@ -5,6 +5,8 @@ import java.io.File
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.twinion.hummingbird.BuildConfig
+import net.twinion.hummingbird.diagnostics.DiagnosticsRecorder
+import uniffi.hummingbird_ffi_mobile.MobileDiagnosticEvent
 import uniffi.hummingbird_ffi_mobile.MobileTaskHost
 
 // One durable core per process (ADR-0010's one-core discipline, in its
@@ -32,6 +34,11 @@ object CoreHolder {
         // reload of a token we already had.
         val core = MobileTaskHost.init(namespace, BuildConfig.AUTHORITY_BASE_URL, "")
         TokenStore.load(context)?.let { core.rehydrateApiKey(it) }
+        // The mobile FFI host's own diagnostic touch point (#709): this is
+        // the moment the app's one durable core handle for this process
+        // comes into existence, which is what `session.started` means here
+        // — Android has no other session lifecycle to hang it on.
+        DiagnosticsRecorder.get(context).record(MobileDiagnosticEvent.SessionStarted)
         return core
     }
 }

@@ -118,4 +118,30 @@ class SettingsViewModelTest {
 
         assertEquals("fake heading for 2", viewModel.deadLetterHeadingText())
     }
+
+    @Test
+    fun `exportDiagnostics delegates to the injected fn and returns its bytes`() = runBlocking {
+        val exported = byteArrayOf(1, 2, 3)
+        val viewModel = SettingsViewModel(
+            fetchFn = { SettingsRead(bindings = emptyList(), deadLetters = emptyList(), queueDepth = 0u) },
+            setBindingFn = { _, _, _ -> },
+            exportDiagnosticsFn = { exported },
+        )
+
+        assertTrue(exported.contentEquals(viewModel.exportDiagnostics()))
+    }
+
+    @Test
+    fun `clearDiagnostics delegates to the injected fn`() = runBlocking {
+        var cleared = false
+        val viewModel = SettingsViewModel(
+            fetchFn = { SettingsRead(bindings = emptyList(), deadLetters = emptyList(), queueDepth = 0u) },
+            setBindingFn = { _, _, _ -> },
+            clearDiagnosticsFn = { cleared = true },
+        )
+
+        viewModel.clearDiagnostics()
+
+        assertTrue(cleared)
+    }
 }

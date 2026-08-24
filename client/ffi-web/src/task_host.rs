@@ -9,12 +9,23 @@
 //! being re-derived on the TypeScript side from `hummingbird_domain`'s own
 //! serde output.
 
+use std::cell::{Cell, RefCell};
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use hummingbird_core::bindings::{Binding, BindingKey};
 use hummingbird_core::decisions::panes::contract::QUESTION_ORDER;
+use hummingbird_core::diagnostics::{
+    DiagnosticEvent, DiagnosticEventV1, DiagnosticSession, DiagnosticSink, OperationOutcome,
+    SyncOutcome,
+};
+/// Re-exported so `lib.rs`'s wasm bindings (the checkout call sites) can
+/// name it as `task_host::CoreOwner` alongside [`TaskCoreCell`], rather
+/// than importing it from `hummingbird_core` a second way.
+pub use hummingbird_core::diagnostics::CoreOwner;
 use hummingbird_core::question_switch::QuestionSwitch;
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
 use hummingbird_core::sync::write::ReqwestMutationTransport;
-use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
+use hummingbird_core::sync::{CycleOutcome, ReqwestSyncTransport, Trigger};
 use hummingbird_core::freshness::Freshness;
 use hummingbird_core::pane::PaneSnapshot;
 use hummingbird_core::search::Group;
@@ -985,6 +996,571 @@ pub struct TaskHostCore {
     write_transport: ReqwestMutationTransport,
 }
 
+// ------------------------------------------------------------- #708: diagnostics
+
+/// A monotonic-enough millisecond reading for `core.*`/`operation.*`
+/// `elapsed_ms` — real wall-clock time on `wasm32` (`Date.now()`, callable
+/// synchronously with no `async`/`sleep` involved, unlike
+/// [`hummingbird_core::diagnostics::DiagnosticClock`]'s full contract —
+/// this crate's own checkout/operation spans never race a real network
+/// call the way a sync cycle's `http.*` slow/stalled watchdog does, so
+/// there is no `sleep_ms` to implement here), and a process-local
+/// `Instant`-based counter natively so this module's own `cargo test`
+/// suite (this file's header: "kept free of `wasm_bindgen`") sees a real,
+/// monotonic reading too — the same per-target split [`TaskStore`] above
+/// already uses for the identical reason.
+fn now_monotonic_ms() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() as u64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::time::Instant;
+        thread_local! {
+            static ORIGIN: Instant = Instant::now();
+        }
+        ORIGIN.with(|origin| origin.elapsed().as_millis() as u64)
+    }
+}
+
+/// A fresh **wall-clock** reading, for the one place this module cannot
+/// take `now_ms` as a caller-supplied argument: [`CoreGuard`]'s [`Drop`],
+/// which runs at an unpredictable moment (a normal return, an early bail,
+/// or a cancelled future) and receives no arguments at all. #708 review
+/// round 1, finding 2: an earlier version of this reused the `now_ms` the
+/// guard was *checked out* with for its `core.released` event too — so a
+/// 30-second hold showed identical wall clocks on `core.acquired` and
+/// `core.released`, exactly the number an operator would read to size the
+/// stall. This is sampled fresh at the moment of release instead, on
+/// `wasm32` via the same `Date.now()` [`now_monotonic_ms`] uses (they are
+/// the same underlying call there — wall clock and this crate's monotonic
+/// surrogate coincide), and via [`std::time::SystemTime`] natively so a
+/// released event built in a `cargo test` run still carries a real
+/// (if lower-resolution) epoch-based timestamp rather than a placeholder.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn now_wall_clock_ms() -> i64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() as i64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+}
+
+/// The most events [`DiagnosticBuffer`] holds before it starts dropping the
+/// oldest ones — #708 review round 1: an unbounded `Vec` bounded only by
+/// drain cadence still grows without limit on any path that never drains
+/// (a host wired up with no JS-side journal at all, or `NOOP_TASK_DIAGNOSTICS`
+/// in a test harness) — the exact "a diagnostic leaks memory in the host"
+/// pattern this batch already rejected twice elsewhere. 4096 is generous
+/// against #707's own drain cadence (every 250ms while a request is
+/// in-flight, plus before/after every request) — a healthy host drains
+/// long before this fills — while still being a small, bounded amount of
+/// memory (each event is a small struct) if a host is ever run with
+/// nothing draining it at all.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+const MAX_BUFFERED_EVENTS: usize = 4096;
+
+/// #708: the in-memory ring the wasm host's own `core.*`/`operation.*`
+/// events accumulate into between drains — the Rust-side half of #707's
+/// already-built JS drain contract
+/// (`client/web/src/worker/diagnostics-journal.ts`'s `drainAroundRequest`,
+/// `task-worker.ts`'s `TaskHostLike.drainDiagnostics`, both of which were
+/// written *before* this slice landed, anticipating this exact shape).
+/// Not persisted: if a session ends before a drain, whatever is still
+/// buffered is lost — the same in-memory, host-drained contract
+/// [`TaskHostCore::take_events`] already established for `CoreEvent`.
+/// Bounded at [`MAX_BUFFERED_EVENTS`], oldest-dropped-first — see that
+/// constant's own doc.
+/// A `Mutex`, not a `RefCell` — [`DiagnosticSink`] requires `Send + Sync`
+/// (`hummingbird_core::diagnostics::test_support::RecordingSink` makes the
+/// identical choice for the identical reason), even though the wasm32
+/// target this actually ships on is single-threaded.
+#[derive(Default)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub struct DiagnosticBuffer {
+    events: std::sync::Mutex<std::collections::VecDeque<DiagnosticEventV1>>,
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+impl DiagnosticBuffer {
+    /// Every event recorded since the last drain, in order, clearing the
+    /// buffer — mirrors [`TaskHostCore::take_events`]'s own "drain, don't
+    /// peek" contract.
+    pub fn drain(&self) -> Vec<DiagnosticEventV1> {
+        std::mem::take(&mut *self.events.lock().unwrap()).into_iter().collect()
+    }
+}
+
+impl DiagnosticSink for DiagnosticBuffer {
+    fn record(&self, event: DiagnosticEventV1) {
+        let mut events = self.events.lock().unwrap();
+        if events.len() >= MAX_BUFFERED_EVENTS {
+            events.pop_front();
+        }
+        events.push_back(event);
+    }
+}
+
+/// Whatever a synchronous setter had to defer because [`TaskCoreCell`]'s
+/// host was checked out. Moved here from `ffi-web/src/lib.rs`'s
+/// `TaskShared` (#708): the checkout it defers around now lives here too,
+/// so the two travel together rather than splitting the re-entrancy guard
+/// across two files.
+///
+/// **NOT simple last-wins** (round-2 review of #196's PR #202): `Push` and
+/// `Clear` always supersede whatever is pending, but a queued `Rehydrate`
+/// must never supersede a queued `Push`.
+///
+/// A same-target-object simulation makes the reason concrete. "As if not
+/// busy" — the host applies each call the instant it arrives — Push then
+/// Rehydrate resumes: `push_api_key` sets the key, clears `held`, and drops
+/// the pending prompt; `rehydrate_api_key` merely re-sets the same key
+/// afterwards, leaving the resume intact. Under plain last-wins, only the
+/// queued `Rehydrate` would apply at check-in, and `rehydrate_api_key`
+/// never touches `held` — so the credential would stay held with no
+/// pending prompt to explain why, reachable in practice through
+/// `serial-queue.ts`'s abandon-on-timeout (`TASK_REQUEST_TIMEOUT_MS`)
+/// racing a 401 re-submit against a still-running cycle. Dropping the
+/// queued `Rehydrate` in favour of the `Push` is safe: check-in's `Push`
+/// already sets the (newer, or identical) key the `Rehydrate` would have
+/// re-set. [`TaskCoreCell::push_api_key`]/[`TaskCoreCell::rehydrate_api_key`]
+/// enforce this ordering; this doc is their one shared source of the
+/// reason, not a pointer onward to either of them.
+///
+/// This ordering is pinned by `core_checkout_tests::a_queued_push_is_never_superseded_by_a_later_queued_rehydrate`
+/// and its sibling `a_later_push_supersedes_an_earlier_queued_rehydrate` —
+/// the concrete claim this PR's own review round 1 found asserted in prose
+/// but untested.
+#[derive(Debug, PartialEq)]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub enum PendingApiKeyOp {
+    Push(String),
+    /// Issue #196 (shape 2): the rehydration counterpart to `Push`.
+    Rehydrate(String),
+    Clear,
+}
+
+/// The bundle [`TaskCoreCell`] hands a checkout or a read: the session
+/// every emitted event correlates through (`seq`, `session_id`, and —
+/// #708 review round 1, finding 5 — the *one* `origin_monotonic_ms` this
+/// whole host has, owned by [`DiagnosticSession`] itself rather than
+/// duplicated here) plus the sink it writes into. A thin, `Copy`-able
+/// view — nothing here owns `TaskCoreCell`'s `RefCell`, so holding one
+/// across an `.await` is always safe.
+#[derive(Clone, Copy)]
+pub struct OperationDiagnostics<'a> {
+    session: &'a DiagnosticSession<'a>,
+    sink: &'a dyn DiagnosticSink,
+}
+
+impl<'a> OperationDiagnostics<'a> {
+    /// Samples a fresh monotonic reading and hands it, together with
+    /// `wall_clock_ms`, to [`DiagnosticSession::emit`] — which is the one
+    /// place `elapsed_ms` is actually computed, against *its own*
+    /// `origin_monotonic_ms`. This function used to compute `elapsed_ms`
+    /// itself against a second, duplicate origin field on this struct;
+    /// that field is gone now — see this type's own doc.
+    fn emit(&self, wall_clock_ms: i64, operation_id: Option<&str>, event: DiagnosticEvent) {
+        self.session.emit(self.sink, wall_clock_ms, now_monotonic_ms(), operation_id, event);
+    }
+
+    /// [`TaskHostCore::capture`]/[`TaskHostCore::triage`]'s own "did the
+    /// request even reach `Core`" marker (#708) — emitted before the seam's
+    /// validation, the one moment every attempt (accepted, rejected, or
+    /// blocked behind a busy core) shares.
+    pub fn emit_operation_requested(&self, wall_clock_ms: i64, operation_id: &str) {
+        self.emit(wall_clock_ms, Some(operation_id), DiagnosticEvent::OperationRequested);
+    }
+
+    /// The moment the durable mutation actually commits — inside the
+    /// outbound-queue enqueue path, never at the entry point (see this
+    /// module's own `capture`/`triage` docs for why the placement matters):
+    /// this is what separates "never reached the core" from "saved
+    /// locally, never synchronised" (#704's hypothesis 4).
+    pub fn emit_operation_local_commit(&self, wall_clock_ms: i64, operation_id: &str) {
+        self.emit(wall_clock_ms, Some(operation_id), DiagnosticEvent::OperationLocalCommit);
+    }
+
+    pub fn emit_operation_finished(&self, wall_clock_ms: i64, operation_id: &str, outcome: OperationOutcome) {
+        self.emit(
+            wall_clock_ms,
+            Some(operation_id),
+            DiagnosticEvent::OperationFinished { outcome },
+        );
+    }
+
+    /// #708: closes the observability gap #704 names directly — before
+    /// this, [`Core::run`]/[`Core::run_observed`] returning
+    /// [`CoreCycleOutcome::Held`] (a credential already known dead from an
+    /// earlier 401) or [`CoreCycleOutcome::NoCredential`] short-circuits
+    /// *before* any cycle diagnostics fire, so every subsequent sync
+    /// attempt while the hold lasts left the journal completely silent —
+    /// no `sync.started`, nothing. `Held` becomes a
+    /// `sync.finished{outcome: credential_needed}`, the same outcome name
+    /// the original 401 itself produced, so the journal shows the ongoing
+    /// hold rather than a gap; never the token value, only the closed
+    /// outcome name. `NoCredential` (nobody ever pushed a token) is not a
+    /// "hold" and emits nothing, the same as it always has. A real cycle
+    /// (`CoreCycleOutcome::Cycle`) is mapped the same way `client/core`'s
+    /// own `sync_outcome_of` maps [`CycleOutcome`] — covering, in
+    /// particular, a connection error (`PullFailed`) and a persistence
+    /// failure (`PersistFailed`) with the classified outcome the brief's
+    /// acceptance list asks for, since [`TaskHostCore::run`] does not (this
+    /// slice, deliberately — see its own doc) route through the full
+    /// `run_observed`/`DiagnosticsContext` machinery.
+    pub fn emit_sync_outcome(&self, wall_clock_ms: i64, outcome: &CoreCycleOutcome) {
+        let mapped = match outcome {
+            CoreCycleOutcome::NoCredential => return,
+            CoreCycleOutcome::Held => SyncOutcome::CredentialNeeded,
+            CoreCycleOutcome::Cycle(cycle) => sync_outcome_of(cycle),
+        };
+        self.emit(wall_clock_ms, None, DiagnosticEvent::SyncFinished { outcome: mapped });
+    }
+}
+
+/// Collapses [`CycleOutcome`] to the redacted [`SyncOutcome`] — the exact
+/// mapping `client/core/src/diagnostics/context.rs::sync_outcome_of` uses
+/// for its own (cycle-scoped) emission; duplicated here in miniature
+/// rather than imported because that function takes a `&DiagnosticsContext`
+/// call site this crate's own (cycle-less) `run` never builds. Kept
+/// side-by-side with that function's own doc so a future change to either
+/// vocabulary is easy to notice.
+fn sync_outcome_of(outcome: &CycleOutcome) -> SyncOutcome {
+    match outcome {
+        CycleOutcome::Skipped => SyncOutcome::Skipped,
+        CycleOutcome::Blocked { .. } => SyncOutcome::Blocked,
+        CycleOutcome::CredentialNeeded { .. } => SyncOutcome::CredentialNeeded,
+        CycleOutcome::PersistFailed { .. } => SyncOutcome::PersistFailed,
+        CycleOutcome::PullFailed { .. } => SyncOutcome::PullFailed,
+        CycleOutcome::Completed { .. } => SyncOutcome::Completed,
+    }
+}
+
+/// #708: the single [`TaskHostCore`] checkout, instrumented. Wraps the
+/// `RefCell<Option<_>>` re-entrancy guard issue #95 already required
+/// (moved here from `ffi-web/src/lib.rs`'s `TaskShared`, whose own
+/// `push_api_key`/`rehydrate_api_key`/`clear_api_key` and their deferred
+/// [`PendingApiKeyOp`] travel with it) with the `core.*` span every
+/// acquisition now gets, and tracks *who* currently holds it so a
+/// concurrent `core.busy` can name them (`DiagnosticEvent::CoreBusy`'s
+/// `owner`, #708's amendment to the shared contract) — the one fact a bare
+/// `RefCell::take()` returning `None` could never answer. Lives here
+/// rather than in `lib.rs` so it is testable with plain `cargo test`, the
+/// same reason [`TaskHostCore`] itself is (this module's own header).
+///
+/// **Held-duration scoping (#708 review round 1, and #707's own review
+/// established this as an obligation to record, not just implement).**
+/// Every event this cell emits carries `source: Source::Core` and this
+/// one cell's own `session_id` — #707's SharedWorker-level `core.wait_started`/
+/// `core.acquired` pair (its own module doc: "the web-worker layer has its
+/// own session, entirely separate from any `DiagnosticSession` a Rust core
+/// keeps") is a *different* `source`/`session_id` pair, and deliberately
+/// never resolves into a matching `core.released` at all. So "how long was
+/// X held" is only ever a well-formed question **within one
+/// `(source, session_id)` pair** — pairing a `core.wait_started` from one
+/// pair with a `core.released` from the other, or across two different
+/// `TaskCoreCell` instances, is not a real span and must never be computed
+/// as one. A reader (a future #712 interpretation table, or a human
+/// scanning an export) scopes every pairing by `(source, session_id)`
+/// first, and only orders by `seq`/`elapsed_ms` within that scope.
+///
+/// **This cell is the only writer that can name the holder (#708 review
+/// round 2).** `holder` below is private to this struct and reaches no
+/// worker response DTO — every `"busy"` answer the SharedWorker sees is a
+/// bare `kind: "busy"` string. So #707's own web-worker-sourced `core.busy`
+/// row (`client/web/src/worker/diagnostics-events.ts`'s `requestBusyEvent`)
+/// necessarily carries `owner: null`, meaning *unknown to that producer*,
+/// while this cell's `source: Source::Core` row for the same refused
+/// checkout carries `Some(owner)`. A reader wanting the holder reads the
+/// `source: core` row; the web-worker row is only the queue-level
+/// observation that a request was refused. `DiagnosticEvent::CoreBusy`'s
+/// own doc, and `hummingbird_domain::diagnostics`'s module header, carry the
+/// rule this follows.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub struct TaskCoreCell {
+    host: RefCell<Option<TaskHostCore>>,
+    /// Which [`CoreOwner`] currently holds `host`, if any.
+    holder: Cell<Option<CoreOwner>>,
+    pending_op: RefCell<Option<PendingApiKeyOp>>,
+    sink: DiagnosticBuffer,
+    session: DiagnosticSession<'static>,
+    next_operation_seq: AtomicU64,
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+impl TaskCoreCell {
+    /// `session_id` is leaked to `'static` once, for the life of this
+    /// host — a `TaskCoreCell` is constructed exactly once per browser tab
+    /// group's `SharedWorker` (ADR-0010), so this is a single, bounded
+    /// leak, not a per-call one.
+    pub fn new(host: TaskHostCore, session_id: String) -> Self {
+        let session_id: &'static str = Box::leak(session_id.into_boxed_str());
+        Self {
+            host: RefCell::new(Some(host)),
+            holder: Cell::new(None),
+            pending_op: RefCell::new(None),
+            sink: DiagnosticBuffer::default(),
+            session: DiagnosticSession::new(session_id, now_monotonic_ms()),
+            next_operation_seq: AtomicU64::new(0),
+        }
+    }
+
+    fn diagnostics(&self) -> OperationDiagnostics<'_> {
+        OperationDiagnostics {
+            session: &self.session,
+            sink: &self.sink,
+        }
+    }
+
+    /// Mints a fresh, host-local id for correlating one call's `core.*`
+    /// and (for capture/triage) `operation.*` events — independent of the
+    /// caller's own mutation `seed` (a different concept: `seed` mints a
+    /// deterministic *item* id sent to the server, ADR-0007; this
+    /// correlates *diagnostic events about one call*, purely local, and
+    /// never crosses the wire).
+    pub fn mint_operation_id(&self) -> String {
+        format!("op-{}", self.next_operation_seq.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Drains every buffered event since the last drain — the wasm
+    /// binding's `drainDiagnostics` (`lib.rs`) calls this directly.
+    pub fn drain_diagnostics(&self) -> Vec<DiagnosticEventV1> {
+        self.sink.drain()
+    }
+
+    /// Checks out the host for `owner`'s write, emitting `core.wait_started`
+    /// then either `core.acquired` (returning `Some` guard) or
+    /// `core.busy{owner: <holder>}` (returning `None`) naming whoever
+    /// currently holds it. The wait/acquire pair brackets a genuine `.take()`
+    /// attempt rather than a real async wait — see [`CoreGuard`]'s own doc
+    /// for why that is still exactly what #704 needs made visible.
+    pub fn checkout(&self, owner: CoreOwner, now_ms: i64) -> Option<CoreGuard<'_>> {
+        let diagnostics = self.diagnostics();
+        let waiting_on = self.holder.get().unwrap_or(owner);
+        diagnostics.emit(now_ms, None, DiagnosticEvent::CoreWaitStarted { owner: Some(waiting_on) });
+        match self.host.borrow_mut().take() {
+            Some(host) => {
+                self.holder.set(Some(owner));
+                diagnostics.emit(now_ms, None, DiagnosticEvent::CoreAcquired { owner: Some(owner) });
+                Some(CoreGuard {
+                    cell: self,
+                    host: Some(host),
+                    owner,
+                })
+            }
+            None => {
+                let current_holder = self.holder.get().unwrap_or(owner);
+                diagnostics.emit(
+                    now_ms,
+                    None,
+                    DiagnosticEvent::CoreBusy {
+                        owner: Some(current_holder),
+                    },
+                );
+                None
+            }
+        }
+    }
+
+    /// The read-only getters' own diagnostics twin to
+    /// [`TaskCoreCell::checkout`] — a `.borrow()`, never a `.take()`, so a
+    /// read never contends with another read, only with a write's
+    /// checkout. Emits the identical `core.wait_started`/(`core.acquired`
+    /// xor `core.busy{owner}`)/`core.released` triad every one of the web
+    /// host's read-only getters now goes through (#708 review round 1,
+    /// finding 1 — `frontier`/`ledger`/`search`/`bindings`/`pane_read`/etc.
+    /// were previously silent, understating contention on exactly the
+    /// surfaces #704's operator perceives as frozen), so a read that finds
+    /// the core held behind a sync cycle is visible in the journal exactly
+    /// the same way a blocked write is. `now_ms` is wasm-boundary supplied
+    /// (`lib.rs`'s `js_sys::Date::now()`), never sampled here. A read's own
+    /// identity is always [`CoreOwner::Read`] — see that variant's doc for
+    /// why a read needs no `owner` argument of its own.
+    pub fn read<T>(&self, now_ms: i64, on_busy: T, f: impl FnOnce(&TaskHostCore) -> T) -> T {
+        let diagnostics = self.diagnostics();
+        let waiting_on = self.holder.get().unwrap_or(CoreOwner::Read);
+        diagnostics.emit(now_ms, None, DiagnosticEvent::CoreWaitStarted { owner: Some(waiting_on) });
+        match self.host.borrow().as_ref() {
+            Some(host) => {
+                diagnostics.emit(now_ms, None, DiagnosticEvent::CoreAcquired { owner: Some(CoreOwner::Read) });
+                let result = f(host);
+                diagnostics.emit(now_ms, None, DiagnosticEvent::CoreReleased { owner: CoreOwner::Read });
+                result
+            }
+            None => {
+                let current_holder = self.holder.get().unwrap_or(CoreOwner::Read);
+                diagnostics.emit(
+                    now_ms,
+                    None,
+                    DiagnosticEvent::CoreBusy {
+                        owner: Some(current_holder),
+                    },
+                );
+                on_busy
+            }
+        }
+    }
+
+    /// [`TaskCoreCell::read`]'s `&mut TaskHostCore` twin — the one
+    /// existing read-mutation call site ([`TaskHostCore::take_events`])
+    /// needs `&mut`, not `&`, so it gets the identical instrumentation
+    /// through a `.borrow_mut()` instead of a `.borrow()`.
+    pub fn read_mut<T>(&self, now_ms: i64, on_busy: T, f: impl FnOnce(&mut TaskHostCore) -> T) -> T {
+        let diagnostics = self.diagnostics();
+        let waiting_on = self.holder.get().unwrap_or(CoreOwner::Read);
+        diagnostics.emit(now_ms, None, DiagnosticEvent::CoreWaitStarted { owner: Some(waiting_on) });
+        match self.host.borrow_mut().as_mut() {
+            Some(host) => {
+                diagnostics.emit(now_ms, None, DiagnosticEvent::CoreAcquired { owner: Some(CoreOwner::Read) });
+                let result = f(host);
+                diagnostics.emit(now_ms, None, DiagnosticEvent::CoreReleased { owner: CoreOwner::Read });
+                result
+            }
+            None => {
+                let current_holder = self.holder.get().unwrap_or(CoreOwner::Read);
+                diagnostics.emit(
+                    now_ms,
+                    None,
+                    DiagnosticEvent::CoreBusy {
+                        owner: Some(current_holder),
+                    },
+                );
+                on_busy
+            }
+        }
+    }
+
+    /// Applies whatever [`PendingApiKeyOp`] a setter deferred while the
+    /// host was checked out, then returns it — called from
+    /// [`CoreGuard`]'s check-in, the exact moment `ffi-web/src/lib.rs`'s
+    /// `TaskShared::check_in` used to.
+    fn apply_pending_op(&self, host: &mut TaskHostCore) {
+        match self.pending_op.borrow_mut().take() {
+            Some(PendingApiKeyOp::Clear) => host.clear_api_key(),
+            Some(PendingApiKeyOp::Push(api_key)) => host.push_api_key(api_key),
+            Some(PendingApiKeyOp::Rehydrate(api_key)) => host.rehydrate_api_key(api_key),
+            None => {}
+        }
+    }
+
+    /// Pushes immediately if the host is present, or queues for the next
+    /// check-in if it is currently checked out — never silently drops the
+    /// key either way. A queued push supersedes any other queued op
+    /// unconditionally, including a queued rehydration — see
+    /// [`PendingApiKeyOp`]'s doc for why that is the correct, not merely
+    /// convenient, choice.
+    pub fn push_api_key(&self, api_key: String) {
+        match self.host.borrow_mut().as_mut() {
+            Some(host) => host.push_api_key(api_key),
+            None => *self.pending_op.borrow_mut() = Some(PendingApiKeyOp::Push(api_key)),
+        }
+    }
+
+    /// Issue #196 (shape 2): the rehydration counterpart to
+    /// [`TaskCoreCell::push_api_key`] — applies immediately if the host is
+    /// present, or queues otherwise, but never resumes a hold either way.
+    /// Deliberately does NOT overwrite an already-queued `Push`.
+    pub fn rehydrate_api_key(&self, api_key: String) {
+        match self.host.borrow_mut().as_mut() {
+            Some(host) => host.rehydrate_api_key(api_key),
+            None => {
+                let mut pending = self.pending_op.borrow_mut();
+                if !matches!(*pending, Some(PendingApiKeyOp::Push(_))) {
+                    *pending = Some(PendingApiKeyOp::Rehydrate(api_key));
+                }
+            }
+        }
+    }
+
+    /// "Forget token" (#106/S8): clears immediately if the host is
+    /// present, or queues for the next check-in otherwise. A queued clear
+    /// supersedes any other queued op unconditionally, same as a queued
+    /// push.
+    pub fn clear_api_key(&self) {
+        match self.host.borrow_mut().as_mut() {
+            Some(host) => host.clear_api_key(),
+            None => *self.pending_op.borrow_mut() = Some(PendingApiKeyOp::Clear),
+        }
+    }
+}
+
+/// One checked-out [`TaskHostCore`], released through [`Drop`] rather than
+/// a hand-written call at every return — the brief's own warning, verbatim:
+/// "A hand-written release call at each `return` is the thing that will be
+/// wrong on the one path that matters." `Drop` runs whenever this value
+/// goes out of scope for *any* reason Rust's own scoping already handles —
+/// a normal `return`, an early `?`/`else` bail, or the enclosing `Future`
+/// itself being dropped mid-`.await` (a cancelled or abandoned request) —
+/// so a cancelled operation closes its `core.released` span exactly like a
+/// completed one, with no second code path to keep in sync.
+///
+/// **The release event samples a fresh clock at `Drop` time — it does
+/// not reuse the checkout's own `now_ms`.** #708 review round 1, finding
+/// 2: an earlier version reused whatever `now_ms` this guard was checked
+/// out with, and its doc *claimed* there was "no fresher one to sample at
+/// `Drop` time" — false: [`now_wall_clock_ms`]/[`now_monotonic_ms`] are
+/// both callable with no arguments, synchronously, from anywhere,
+/// including `Drop::drop`. Reusing the stale value made a 30-second hold
+/// show identical wall clocks on `core.acquired` and `core.released` —
+/// exactly the number an operator would read to size the stall. `owner` is
+/// carried so the release event can still name which [`CoreOwner`] this
+/// was — the shared `holder` slot on [`TaskCoreCell`] is cleared before
+/// this fires, so this guard's own copy is the only place that fact
+/// survives to be recorded.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub struct CoreGuard<'a> {
+    cell: &'a TaskCoreCell,
+    host: Option<TaskHostCore>,
+    owner: CoreOwner,
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+impl<'a> CoreGuard<'a> {
+    pub fn diagnostics(&self) -> OperationDiagnostics<'a> {
+        self.cell.diagnostics()
+    }
+
+    pub fn mint_operation_id(&self) -> String {
+        self.cell.mint_operation_id()
+    }
+}
+
+impl std::ops::Deref for CoreGuard<'_> {
+    type Target = TaskHostCore;
+    fn deref(&self) -> &TaskHostCore {
+        self.host.as_ref().expect("CoreGuard drops its host exactly once")
+    }
+}
+
+impl std::ops::DerefMut for CoreGuard<'_> {
+    fn deref_mut(&mut self) -> &mut TaskHostCore {
+        self.host.as_mut().expect("CoreGuard drops its host exactly once")
+    }
+}
+
+impl Drop for CoreGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(mut host) = self.host.take() {
+            self.cell.apply_pending_op(&mut host);
+            self.cell.holder.set(None);
+            *self.cell.host.borrow_mut() = Some(host);
+            self.cell.diagnostics().emit(
+                now_wall_clock_ms(),
+                None,
+                DiagnosticEvent::CoreReleased { owner: self.owner },
+            );
+        }
+    }
+}
+
 impl TaskHostCore {
     /// `base_url` is the authority's origin, host-supplied per ADR-0003 —
     /// this crate invents no deployment address of its own. `api_key` is
@@ -1944,6 +2520,25 @@ impl TaskHostCore {
     /// "reject before the seam" discipline, so an input the authority would
     /// 400 on fails here and never reaches [`Core::capture`] or the queue.
     /// `context` and `description` carry straight through unparsed.
+    ///
+    /// #708: `diagnostics`/`operation_id` bracket the attempt with
+    /// `operation.requested` (emitted here, once the core is already
+    /// checked out — a validation rejection below still counts as an
+    /// attempt) and `operation.finished{outcome}` (success or failure —
+    /// see [`CaptureResponse`]'s own doc for the two failure shapes this
+    /// distinguishes). `operation.local_commit` fires only on the success
+    /// path, immediately after [`Core::capture`]'s `.await` returns `Ok` —
+    /// that call enqueues durably and makes no network call of its own, so
+    /// this is provably after the write is durable and provably before any
+    /// later cycle's `http.started` for the same mutation. A durability
+    /// failure (`Err`) never emits `operation.local_commit` at all, which
+    /// is exactly what tells the two failure modes apart in the journal: a
+    /// capture blocked before reaching the core never gets an
+    /// `operation_id` in the first place (checkout answered `core.busy`),
+    /// while a capture whose durable commit failed has `operation.requested`
+    /// and `operation.finished{failure}` but no `operation.local_commit`
+    /// between them.
+    #[allow(clippy::too_many_arguments)]
     pub async fn capture(
         &mut self,
         seed: &str,
@@ -1951,36 +2546,48 @@ impl TaskHostCore {
         stage: &str,
         fields: CaptureFields,
         now_ms: i64,
+        diagnostics: OperationDiagnostics<'_>,
+        operation_id: &str,
     ) -> CaptureResponse {
+        diagnostics.emit_operation_requested(now_ms, operation_id);
         let fail = |message: String| CaptureResponse {
             kind: "failed",
             id: None,
             error: Some(message),
         };
         let Some(stage) = Stage::parse(stage) else {
+            diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Failure);
             return fail(format!("unrecognised stage {stage:?}"));
         };
         let size = match &fields.size {
             Some(raw) => match Size::parse(raw) {
                 Some(size) => Some(size),
-                None => return fail(format!("unrecognised size {raw:?}")),
+                None => {
+                    diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Failure);
+                    return fail(format!("unrecognised size {raw:?}"));
+                }
             },
             None => None,
         };
         let energy = match &fields.energy {
             Some(raw) => match Energy::parse(raw) {
                 Some(energy) => Some(energy),
-                None => return fail(format!("unrecognised energy {raw:?}")),
+                None => {
+                    diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Failure);
+                    return fail(format!("unrecognised energy {raw:?}"));
+                }
             },
             None => None,
         };
         if let Some(priority) = fields.priority {
             if !(0..=4).contains(&priority) {
+                diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Failure);
                 return fail("priority must be between 0 and 4".to_string());
             }
         }
         if let Some(deadline) = &fields.deadline {
             if !is_valid_deadline(deadline) {
+                diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Failure);
                 return fail("deadline must be YYYY-MM-DD or YYYY-MM-DDTHH:MM".to_string());
             }
         }
@@ -1990,6 +2597,7 @@ impl TaskHostCore {
             // month lengths) rather than re-deriving it here — `triage`'s own
             // note carries the full argument.
             if scheduled_date.len() != 10 || !is_valid_deadline(scheduled_date) {
+                diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Failure);
                 return fail("scheduled date must be YYYY-MM-DD".to_string());
             }
         }
@@ -2004,16 +2612,23 @@ impl TaskHostCore {
             scheduled_date: fields.scheduled_date,
         };
         match self.core.capture(seed, title, stage, now_ms, options).await {
-            Ok(id) => CaptureResponse {
-                kind: "ok",
-                id: Some(id),
-                error: None,
-            },
-            Err(error) => CaptureResponse {
-                kind: "failed",
-                id: None,
-                error: Some(error.to_string()),
-            },
+            Ok(id) => {
+                diagnostics.emit_operation_local_commit(now_ms, operation_id);
+                diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Success);
+                CaptureResponse {
+                    kind: "ok",
+                    id: Some(id),
+                    error: None,
+                }
+            }
+            Err(error) => {
+                diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Failure);
+                CaptureResponse {
+                    kind: "failed",
+                    id: None,
+                    error: Some(error.to_string()),
+                }
+            }
         }
     }
 
@@ -2067,6 +2682,18 @@ impl TaskHostCore {
     /// enforces with a 400 — checking here is what turns a rejected write
     /// into a message on the form instead of a dead-lettered mutation the
     /// person cannot see.
+    ///
+    /// #708: `diagnostics`/`operation_id` bracket the attempt the same way
+    /// [`TaskHostCore::capture`]'s own doc describes — `operation.requested`
+    /// once checked out, `operation.local_commit` only immediately after
+    /// [`Core::triage`]'s `.await` returns `Ok` (its own durable CAS write,
+    /// no network call of its own), and `operation.finished{outcome}`
+    /// either way, so a rejected-before-the-seam edit, an unknown item id,
+    /// and a genuine durability failure are all `Failure` with no
+    /// `operation.local_commit` between them — distinguishable from a
+    /// success, and from a triage blocked before ever reaching the core
+    /// (`core.busy`, no `operation_id` minted at all).
+    #[allow(clippy::too_many_arguments)]
     pub async fn triage(
         &mut self,
         seed: &str,
@@ -2074,37 +2701,44 @@ impl TaskHostCore {
         destination: Option<&str>,
         edits: TriageEdits,
         now_ms: i64,
+        diagnostics: OperationDiagnostics<'_>,
+        operation_id: &str,
     ) -> TriageResponse {
+        diagnostics.emit_operation_requested(now_ms, operation_id);
+        let fail_op = |response: TriageResponse| {
+            diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Failure);
+            response
+        };
         let promote_to_ready = match destination {
             Some("ready") => true,
             Some(raw) => {
-                return reject(format!("unrecognised triage destination {raw:?}"));
+                return fail_op(reject(format!("unrecognised triage destination {raw:?}")));
             }
             None => false,
         };
         if edits.title.as_deref() == Some("") {
             // The authority answers 400 on an empty title; a `NOT NULL`
             // column has no "cleared" state to fall back to.
-            return reject("title must be non-empty".to_string());
+            return fail_op(reject("title must be non-empty".to_string()));
         }
         let size = match parse_named("size", edits.size, Size::parse) {
             Ok(size) => size,
-            Err(message) => return reject(message),
+            Err(message) => return fail_op(reject(message)),
         };
         let energy = match parse_named("energy", edits.energy, Energy::parse) {
             Ok(energy) => energy,
-            Err(message) => return reject(message),
+            Err(message) => return fail_op(reject(message)),
         };
         if let Some(priority) = edits.priority {
             if !(0..=4).contains(&priority) {
-                return reject("priority must be between 0 and 4".to_string());
+                return fail_op(reject("priority must be between 0 and 4".to_string()));
             }
         }
         if let Some(Some(deadline)) = &edits.deadline {
             if !is_valid_deadline(deadline) {
-                return reject(
+                return fail_op(reject(
                     "deadline must be YYYY-MM-DD or YYYY-MM-DDTHH:MM".to_string(),
-                );
+                ));
             }
         }
         if let Some(Some(scheduled_date)) = &edits.scheduled_date {
@@ -2114,7 +2748,7 @@ impl TaskHostCore {
             // validation (leap years, month lengths) rather than re-deriving
             // it here.
             if scheduled_date.len() != 10 || !is_valid_deadline(scheduled_date) {
-                return reject("scheduled date must be YYYY-MM-DD".to_string());
+                return fail_op(reject("scheduled date must be YYYY-MM-DD".to_string()));
             }
         }
         let patch = TriagePatch {
@@ -2129,15 +2763,19 @@ impl TaskHostCore {
             scheduled_date: edits.scheduled_date,
         };
         match self.core.triage(seed, item_id, promote_to_ready, patch, now_ms).await {
-            Ok(()) => TriageResponse { kind: "ok", error: None },
-            Err(ActError::ItemNotFound) => TriageResponse {
+            Ok(()) => {
+                diagnostics.emit_operation_local_commit(now_ms, operation_id);
+                diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Success);
+                TriageResponse { kind: "ok", error: None }
+            }
+            Err(ActError::ItemNotFound) => fail_op(TriageResponse {
                 kind: "not_found",
                 error: Some("item not found".to_string()),
-            },
-            Err(error) => TriageResponse {
+            }),
+            Err(error) => fail_op(TriageResponse {
                 kind: "failed",
                 error: Some(error.to_string()),
-            },
+            }),
         }
     }
 
@@ -2305,12 +2943,26 @@ impl TaskHostCore {
     }
 
     /// Runs one [`Core::run`] cycle against the live `reqwest` transports.
+    ///
+    /// #708: deliberately still `Core::run`, not `Core::run_observed` — the
+    /// latter needs a real [`hummingbird_core::diagnostics::DiagnosticClock`]
+    /// (its slow/stalled watchdog `select`s the call against a 5s/30s
+    /// sleep), and this crate has no working `sleep_ms` to give it without
+    /// a real timer dependency this slice does not add (see this module's
+    /// header on why `wasm_bindgen` itself stays out of this file). Wiring
+    /// full `sync.*`/`http.*` cycle instrumentation into this call is
+    /// tracked as a follow-up, not silently skipped — see this issue's
+    /// posted finding. What #708 *does* close here, with no watchdog
+    /// needed at all, is [`OperationDiagnostics::emit_sync_outcome`]'s own
+    /// gap: `Held`/`NoCredential`/a real cycle's outcome are all now
+    /// visible in the journal.
     pub async fn run(
         &mut self,
         now_ms: i64,
         trigger: &str,
         force_full_sweep: bool,
         jitter_unit: f64,
+        diagnostics: OperationDiagnostics<'_>,
     ) -> RunResponse {
         let trigger = match trigger {
             "timer" => Trigger::Timer,
@@ -2327,6 +2979,7 @@ impl TaskHostCore {
                 jitter_unit,
             )
             .await;
+        diagnostics.emit_sync_outcome(now_ms, &outcome);
         map_run_outcome(outcome)
     }
 
@@ -2357,6 +3010,564 @@ impl TaskHostCore {
     }
 }
 
+/// #708: throwaway diagnostics rigs for the many pre-existing tests below
+/// that exercise [`TaskHostCore::capture`]/[`TaskHostCore::triage`]/
+/// [`TaskHostCore::run`] for reasons unrelated to diagnostics at all —
+/// letting every one of them keep calling `host.capture_test(...)` etc.
+/// with its original argument list, rather than hand-building an
+/// [`OperationDiagnostics`] at every one of those call sites. A test that
+/// DOES care what gets emitted builds its own
+/// [`DiagnosticBuffer`]/[`DiagnosticSession`] and calls the real
+/// `capture`/`triage`/`run` directly — see the `core_checkout_tests`/
+/// `operation_diagnostics_tests` modules below.
+#[cfg(test)]
+impl TaskHostCore {
+    async fn capture_test(
+        &mut self,
+        seed: &str,
+        title: &str,
+        stage: &str,
+        fields: CaptureFields,
+        now_ms: i64,
+    ) -> CaptureResponse {
+        let sink = DiagnosticBuffer::default();
+        let session = DiagnosticSession::new("test-session", 0);
+        let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
+        self.capture(seed, title, stage, fields, now_ms, diagnostics, "op-test").await
+    }
+
+    async fn triage_test(
+        &mut self,
+        seed: &str,
+        item_id: &str,
+        destination: Option<&str>,
+        edits: TriageEdits,
+        now_ms: i64,
+    ) -> TriageResponse {
+        let sink = DiagnosticBuffer::default();
+        let session = DiagnosticSession::new("test-session", 0);
+        let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
+        self.triage(seed, item_id, destination, edits, now_ms, diagnostics, "op-test").await
+    }
+
+    async fn run_test(
+        &mut self,
+        now_ms: i64,
+        trigger: &str,
+        force_full_sweep: bool,
+        jitter_unit: f64,
+    ) -> RunResponse {
+        let sink = DiagnosticBuffer::default();
+        let session = DiagnosticSession::new("test-session", 0);
+        let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
+        self.run(now_ms, trigger, force_full_sweep, jitter_unit, diagnostics).await
+    }
+}
+
+#[cfg(test)]
+mod core_checkout_tests {
+    use super::*;
+
+    fn event_names(events: &[DiagnosticEventV1]) -> Vec<String> {
+        events
+            .iter()
+            .map(|e| serde_json::to_value(&e.event).unwrap()["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    async fn fresh_cell(dir: &tempfile::TempDir, name: &str) -> TaskCoreCell {
+        let namespace = dir.path().join(name);
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        TaskCoreCell::new(host, "test-session".to_string())
+    }
+
+    /// Acceptance: "Every acquisition of the single `TaskHostCore` emits
+    /// `core.wait_started`, then `core.acquired` or `core.busy`, and
+    /// finally `core.released`." — the ordinary, uncontended path.
+    #[tokio::test]
+    async fn an_uncontended_checkout_emits_wait_started_acquired_then_released_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let cell = fresh_cell(&dir, "ns-1").await;
+
+        {
+            let _guard = cell.checkout(CoreOwner::Capture, 1_000).unwrap();
+        }
+
+        let events = cell.drain_diagnostics();
+        assert_eq!(
+            event_names(&events),
+            vec!["core.wait_started", "core.acquired", "core.released"]
+        );
+    }
+
+    /// #708 review round 1, finding 2: `core.released`'s `wall_clock_ms`
+    /// must be a fresh sample at `Drop` time, not the stale `now_ms` the
+    /// guard was checked out with — otherwise a real, multi-second hold
+    /// shows identical wall clocks on `core.acquired` and `core.released`,
+    /// exactly the number an operator would read to size the stall.
+    /// Checked out with a real current epoch reading (not the fixture
+    /// `1_000` other tests use, which would make "released > acquired"
+    /// trivially true regardless of whether this bug existed), a genuine
+    /// sleep simulates the hold, and the assertion is strictly `>` by a
+    /// margin that could not survive reusing the checkout-time value.
+    /// Mutation-tested by temporarily reintroducing a stored `now_ms` on
+    /// [`CoreGuard`] and reusing it in `Drop` — that reproduced this
+    /// exact failure (`released.wall_clock_ms == acquired.wall_clock_ms`)
+    /// before being reverted.
+    #[tokio::test]
+    async fn released_wall_clock_ms_is_a_fresh_sample_not_the_stale_checkout_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let cell = fresh_cell(&dir, "ns-wall-clock").await;
+
+        let checkout_now_ms = now_wall_clock_ms();
+        let guard = cell.checkout(CoreOwner::Sync, checkout_now_ms).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        drop(guard);
+
+        let events = cell.drain_diagnostics();
+        let acquired = events
+            .iter()
+            .find(|e| matches!(e.event, DiagnosticEvent::CoreAcquired { .. }))
+            .expect("an acquired event was recorded");
+        let released = events
+            .iter()
+            .find(|e| matches!(e.event, DiagnosticEvent::CoreReleased { .. }))
+            .expect("a released event was recorded");
+        assert!(
+            released.wall_clock_ms > acquired.wall_clock_ms,
+            "released.wall_clock_ms ({}) must be fresher than acquired.wall_clock_ms ({}) after a real hold",
+            released.wall_clock_ms,
+            acquired.wall_clock_ms
+        );
+    }
+
+    /// Acceptance: "The owner is recorded as a closed value … and a
+    /// `core.busy` event names the owner that was holding the core at the
+    /// time." — a second checkout attempted while the first is still held
+    /// sees `core.busy{owner: sync}`, naming the *holder*, never the
+    /// asker.
+    #[tokio::test]
+    async fn a_checkout_attempted_while_another_owner_holds_it_is_busy_naming_the_holder() {
+        let dir = tempfile::tempdir().unwrap();
+        let cell = fresh_cell(&dir, "ns-2").await;
+
+        let guard = cell.checkout(CoreOwner::Sync, 1_000).unwrap();
+        assert!(cell.checkout(CoreOwner::Capture, 1_000).is_none());
+
+        let events = cell.drain_diagnostics();
+        let busy = events
+            .iter()
+            .find(|e| matches!(e.event, DiagnosticEvent::CoreBusy { .. }))
+            .expect("a busy event was recorded");
+        match &busy.event {
+            DiagnosticEvent::CoreBusy { owner } => assert_eq!(*owner, Some(CoreOwner::Sync)),
+            _ => unreachable!(),
+        }
+        drop(guard);
+    }
+
+    /// Same acceptance criterion, exercised through the read-only path
+    /// (#704's "a … project read sat waiting behind [sync]"): a read
+    /// started while `Sync` holds the checkout is `busy{owner: sync}`
+    /// too, not silently blank.
+    #[tokio::test]
+    async fn a_project_read_started_behind_sync_is_busy_naming_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let cell = fresh_cell(&dir, "ns-3").await;
+
+        let guard = cell.checkout(CoreOwner::Sync, 1_000).unwrap();
+        cell.drain_diagnostics(); // discard the checkout's own wait/acquire pair
+        let result = cell.read(1_000, "busy".to_string(), |host| {
+            serde_json::to_string(&host.projects()).unwrap()
+        });
+        assert_eq!(result, "busy");
+
+        let events = cell.drain_diagnostics();
+        assert_eq!(event_names(&events), vec!["core.wait_started", "core.busy"]);
+        match &events[1].event {
+            DiagnosticEvent::CoreBusy { owner } => assert_eq!(*owner, Some(CoreOwner::Sync)),
+            _ => unreachable!(),
+        }
+        drop(guard);
+    }
+
+    /// A capture, triage attempted the same way — the brief's three named
+    /// cases (capture, triage, project read) all naming `sync`.
+    #[tokio::test]
+    async fn capture_and_triage_attempted_behind_sync_each_produce_a_wait_span_naming_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let cell = fresh_cell(&dir, "ns-4").await;
+
+        let guard = cell.checkout(CoreOwner::Sync, 1_000).unwrap();
+        assert!(cell.checkout(CoreOwner::Capture, 1_000).is_none());
+        assert!(cell.checkout(CoreOwner::Triage, 1_000).is_none());
+
+        let events = cell.drain_diagnostics();
+        let busy_owners: Vec<Option<CoreOwner>> = events
+            .iter()
+            .filter_map(|e| match &e.event {
+                DiagnosticEvent::CoreBusy { owner } => Some(*owner),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(busy_owners, vec![Some(CoreOwner::Sync), Some(CoreOwner::Sync)]);
+        drop(guard);
+    }
+
+    /// Successful read: wait_started, acquired, released — never busy.
+    #[tokio::test]
+    async fn an_uncontended_read_emits_wait_started_acquired_released() {
+        let dir = tempfile::tempdir().unwrap();
+        let cell = fresh_cell(&dir, "ns-5").await;
+
+        let result = cell.read(1_000, "busy".to_string(), |host| {
+            serde_json::to_string(&host.projects()).unwrap()
+        });
+        assert_ne!(result, "busy");
+
+        let events = cell.drain_diagnostics();
+        assert_eq!(
+            event_names(&events),
+            vec!["core.wait_started", "core.acquired", "core.released"]
+        );
+    }
+
+    /// Acceptance: "Release is recorded via a guard: a test drops or
+    /// cancels an in-flight operation mid-checkout and `core.released` is
+    /// still present." Dropping the guard *without* it ever completing an
+    /// operation — simulating a cancelled future — still checks the host
+    /// back in and records `core.released`.
+    #[tokio::test]
+    async fn dropping_a_guard_mid_checkout_still_records_core_released() {
+        let dir = tempfile::tempdir().unwrap();
+        let cell = fresh_cell(&dir, "ns-6").await;
+
+        let guard = cell.checkout(CoreOwner::Capture, 1_000).unwrap();
+        drop(guard);
+
+        let events = cell.drain_diagnostics();
+        assert!(matches!(events.last().unwrap().event, DiagnosticEvent::CoreReleased { .. }));
+        // The host is genuinely checked back in — a further checkout
+        // succeeds rather than seeing a phantom owner forever.
+        assert!(cell.checkout(CoreOwner::Sync, 2_000).is_some());
+    }
+
+    /// The same drop-based release survives a future that is dropped
+    /// mid-`.await`, not just a bare `drop(guard)` — the guard is a local
+    /// inside the future's own body, so Rust's ordinary `Drop` semantics
+    /// for a cancelled future are exactly what closes the span.
+    #[tokio::test]
+    async fn a_future_holding_the_guard_dropped_mid_await_still_records_core_released() {
+        use std::future::Future;
+        let dir = tempfile::tempdir().unwrap();
+        let cell = fresh_cell(&dir, "ns-7").await;
+
+        {
+            let future = async {
+                let _guard = cell.checkout(CoreOwner::Capture, 1_000).unwrap();
+                std::future::pending::<()>().await;
+            };
+            let mut future = Box::pin(future);
+            // Poll once: the guard is acquired, then the future parks on
+            // `pending()` — never resolving, the same shape a genuinely
+            // hung network call leaves behind.
+            let waker = std::task::Waker::noop();
+            let poll = future.as_mut().poll(&mut std::task::Context::from_waker(waker));
+            assert!(poll.is_pending());
+            // Dropping the still-pending future drops its local `_guard`.
+        }
+
+        let events = cell.drain_diagnostics();
+        assert!(matches!(events.last().unwrap().event, DiagnosticEvent::CoreReleased { .. }));
+        assert!(cell.checkout(CoreOwner::Sync, 2_000).is_some());
+    }
+
+    // --------------------------------------------- operation.* (capture/triage)
+
+    /// Acceptance: "A successful capture records `operation.local_commit`
+    /// **before** any `http.started` in the same operation." Stated
+    /// honestly (#708 review round 1, finding 5's "also fix" list): this
+    /// assertion **cannot fail against the current architecture**.
+    /// `ffi-web` never emits `http.started` at all — [`Core::capture`]
+    /// only enqueues durably, and the HTTP round trip a queued mutation
+    /// eventually takes happens later, inside an unrelated sync cycle,
+    /// under that cycle's own `cycle_id`/`request_id`, with no
+    /// `operation_id` threaded through the queue to connect the two. So
+    /// this test's "no `http.started` in the same operation" half is true
+    /// by construction, not because the ordering was raced and won — the
+    /// three-event *order* below is the only half a regression could
+    /// actually break. Closing that gap for real (an `operation_id`
+    /// carried on the queued `MutationIntent` through to its eventual
+    /// send) is issue #739, not something this test can stand in for.
+    ///
+    /// **What a reader inherits from that gap, stated for #712's
+    /// interpretation table.** No `operation_id` crosses the outbound-queue
+    /// boundary, so in an export an `operation.*` span for a capture and the
+    /// `http.*` span that eventually sends it are **not joinable** — there
+    /// is no id in common and their `cycle_id`s differ (the operation has
+    /// none; the send belongs to whichever later cycle drained it). An
+    /// `operation.finished{success}` therefore means "committed locally and
+    /// durably queued", **never** "reached the authority", and an
+    /// interpretation table must not present the two as one end-to-end
+    /// latency or infer a send from an operation's outcome. Until #739 lands,
+    /// the only honest join is by wall-clock proximity, which is a human
+    /// judgement and not a correlation the data supports.
+    #[tokio::test]
+    async fn a_successful_capture_emits_local_commit_before_finished_and_no_http_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-op-1");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let sink = DiagnosticBuffer::default();
+        let session = DiagnosticSession::new("s", 0);
+        let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
+
+        let response = host
+            .capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000, diagnostics, "op-1")
+            .await;
+        assert_eq!(response.kind, "ok");
+
+        let events = sink.drain();
+        assert_eq!(
+            event_names(&events),
+            vec!["operation.requested", "operation.local_commit", "operation.finished"]
+        );
+        assert!(events.iter().all(|e| e.operation_id.as_deref() == Some("op-1")));
+        assert!(!events.iter().any(|e| matches!(e.event, DiagnosticEvent::HttpStarted { .. })));
+        match &events[2].event {
+            DiagnosticEvent::OperationFinished { outcome } => assert_eq!(*outcome, OperationOutcome::Success),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Acceptance: "A capture whose local durable commit fails records
+    /// that failure distinctly from a capture blocked before reaching the
+    /// core." — forced here by making the namespace directory read-only
+    /// after `init` succeeds, so the enqueue's own durable write fails
+    /// with a real `io::Error` (`SnapshotError::Store`), never reaching
+    /// `operation.local_commit`.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_capture_whose_local_commit_fails_never_emits_local_commit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-op-2");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        std::fs::set_permissions(&namespace, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let sink = DiagnosticBuffer::default();
+        let session = DiagnosticSession::new("s", 0);
+        let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
+
+        let response = host
+            .capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000, diagnostics, "op-2")
+            .await;
+        assert_eq!(response.kind, "failed", "{response:?}");
+
+        // Restore permissions so `tempfile::TempDir`'s own drop can clean
+        // up; failing to do this leaks a read-only directory on disk.
+        std::fs::set_permissions(&namespace, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let events = sink.drain();
+        assert_eq!(event_names(&events), vec!["operation.requested", "operation.finished"]);
+        match &events[1].event {
+            DiagnosticEvent::OperationFinished { outcome } => assert_eq!(*outcome, OperationOutcome::Failure),
+            _ => unreachable!(),
+        }
+    }
+
+    /// A capture blocked before reaching the core (busy) never mints an
+    /// `operation_id`/`operation.*` event at all — the other half of the
+    /// same acceptance criterion, distinguishing "never reached the core"
+    /// from "reached it and failed to commit."
+    #[tokio::test]
+    async fn a_capture_blocked_by_busy_never_reaches_operation_requested() {
+        let dir = tempfile::tempdir().unwrap();
+        let cell = fresh_cell(&dir, "ns-op-3").await;
+
+        let guard = cell.checkout(CoreOwner::Sync, 1_000).unwrap();
+        assert!(cell.checkout(CoreOwner::Capture, 1_000).is_none());
+
+        let events = cell.drain_diagnostics();
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e.event, DiagnosticEvent::OperationRequested)));
+        drop(guard);
+    }
+
+    /// A rejected-before-the-seam triage (an unrecognised destination)
+    /// still counts as an attempted operation — `operation.requested` then
+    /// `operation.finished{failure}`, no `operation.local_commit`.
+    #[tokio::test]
+    async fn a_triage_rejected_before_the_seam_emits_requested_then_finished_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-op-4");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let sink = DiagnosticBuffer::default();
+        let session = DiagnosticSession::new("s", 0);
+        let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
+
+        let response = host
+            .triage(
+                "seed-1",
+                "no-such-item",
+                Some("not-a-real-destination"),
+                TriageEdits::default(),
+                1_000,
+                diagnostics,
+                "op-3",
+            )
+            .await;
+        assert_eq!(response.kind, "failed");
+
+        let events = sink.drain();
+        assert_eq!(event_names(&events), vec!["operation.requested", "operation.finished"]);
+        match &events[1].event {
+            DiagnosticEvent::OperationFinished { outcome } => assert_eq!(*outcome, OperationOutcome::Failure),
+            _ => unreachable!(),
+        }
+    }
+
+    // --------------------------------------------- sync outcome (credential hold etc.)
+
+    /// Acceptance: "A 401 during sync is followed by a credential-hold
+    /// state visible in the journal, with no token value recorded." —
+    /// `Core::run` returning `Held` (a credential already known dead from
+    /// an earlier 401) used to short-circuit with zero diagnostics; now it
+    /// emits `sync.finished{credential_needed}`, and the emitted JSON
+    /// carries no token value anywhere (`CoreCycleOutcome::Held`'s own
+    /// shape has none to begin with).
+    #[tokio::test]
+    async fn a_held_credential_emits_a_visible_sync_finished_credential_needed() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-sync-1");
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
+            .await
+            .unwrap();
+        // Force the credential into `held` without a real 401: this
+        // module's own `clear_api_key` test already establishes
+        // `clear_api_key` does not reach `held` — a genuine hold needs a
+        // real cycle outcome. `CoreCycleOutcome::Held` is exercised
+        // directly here instead, matching `map_run_outcome`'s own test
+        // style just above.
+        let sink = DiagnosticBuffer::default();
+        let session = DiagnosticSession::new("s", 0);
+        let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
+        diagnostics.emit_sync_outcome(1_000, &CoreCycleOutcome::Held);
+
+        let events = sink.drain();
+        assert_eq!(events.len(), 1);
+        match &events[0].event {
+            DiagnosticEvent::SyncFinished { outcome } => assert_eq!(*outcome, SyncOutcome::CredentialNeeded),
+            other => panic!("expected sync.finished, got {other:?}"),
+        }
+        let json = serde_json::to_string(&events[0]).unwrap();
+        assert!(!json.contains("device-token"));
+        let _ = host.frontier(); // keep `host` alive/used
+    }
+
+    /// `NoCredential` (nobody ever pushed a token) is not a "hold" and
+    /// emits nothing — unchanged from before this slice.
+    #[tokio::test]
+    async fn no_credential_emits_nothing() {
+        let sink = DiagnosticBuffer::default();
+        let session = DiagnosticSession::new("s", 0);
+        let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
+        diagnostics.emit_sync_outcome(1_000, &CoreCycleOutcome::NoCredential);
+        assert_eq!(sink.drain(), Vec::new());
+    }
+
+    /// Acceptance: "A connection error and a persistence failure are each
+    /// covered by a test asserting the classified event that results." —
+    /// exercised through a real cycle: an empty `base_url` forces
+    /// `pull_failed` (this file's own established network-free test
+    /// pattern, see `map_run_outcome`'s doc just above).
+    #[tokio::test]
+    async fn a_connection_error_during_run_emits_sync_finished_pull_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-sync-2");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
+            .await
+            .unwrap();
+        let sink = DiagnosticBuffer::default();
+        let session = DiagnosticSession::new("s", 0);
+        let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
+
+        let response = host.run(1_000, "user", true, 0.0, diagnostics).await;
+        assert_eq!(response.kind, "pull_failed");
+
+        let events = sink.drain();
+        assert_eq!(events.len(), 1);
+        match &events[0].event {
+            DiagnosticEvent::SyncFinished { outcome } => assert_eq!(*outcome, SyncOutcome::PullFailed),
+            other => panic!("expected sync.finished, got {other:?}"),
+        }
+    }
+
+    /// The persistence-failure half of the same acceptance criterion,
+    /// exercised directly against [`sync_outcome_of`] the same way
+    /// `map_run_outcome`'s own tests build a [`CycleOutcome`] by hand
+    /// rather than forcing a real store failure through a whole cycle.
+    #[test]
+    fn a_persistence_failure_outcome_maps_to_sync_finished_persist_failed() {
+        let outcome = CycleOutcome::PersistFailed {
+            message: "disk full".to_string(),
+            retry_after_ms: 1_000,
+        };
+        assert_eq!(sync_outcome_of(&outcome), SyncOutcome::PersistFailed);
+    }
+
+    // --------------------------------------------- PendingApiKeyOp ordering
+    //
+    // [`PendingApiKeyOp`]'s own doc states the round-2 (#196/PR #202)
+    // rationale in full: a queued `Push` must never be superseded by a
+    // later queued `Rehydrate`, in either arrival order. These two tests
+    // are what that doc points to as "pinned by," and #708 review round 1
+    // found the claim asserted only in prose, with no test backing it —
+    // reading `pending_op` directly (a private field, but this module is
+    // `TaskCoreCell`'s own defining module, so a descendant `#[cfg(test)]`
+    // module may read it) rather than needing a real 401 to force `held`
+    // into an observable state.
+
+    /// The order the round-2 review's own failure scenario actually
+    /// happens in: `Push` first, then a later `Rehydrate` attempt while
+    /// still checked out — the `Rehydrate` must be dropped, not applied.
+    #[tokio::test]
+    async fn a_queued_push_is_never_superseded_by_a_later_queued_rehydrate() {
+        let dir = tempfile::tempdir().unwrap();
+        let cell = fresh_cell(&dir, "ns-pending-1").await;
+
+        let _guard = cell.checkout(CoreOwner::Sync, 1_000).unwrap();
+        cell.push_api_key("tok-push".to_string());
+        cell.rehydrate_api_key("tok-rehydrate".to_string());
+
+        assert_eq!(
+            *cell.pending_op.borrow(),
+            Some(PendingApiKeyOp::Push("tok-push".to_string())),
+            "a later Rehydrate must never supersede an already-queued Push"
+        );
+    }
+
+    /// The reverse arrival order: a queued `Rehydrate`, then a `Push` —
+    /// `Push` still wins, same as [`PendingApiKeyOp::push_api_key`]'s own
+    /// "supersedes any other queued op unconditionally" contract states.
+    #[tokio::test]
+    async fn a_later_push_supersedes_an_earlier_queued_rehydrate() {
+        let dir = tempfile::tempdir().unwrap();
+        let cell = fresh_cell(&dir, "ns-pending-2").await;
+
+        let _guard = cell.checkout(CoreOwner::Sync, 1_000).unwrap();
+        cell.rehydrate_api_key("tok-rehydrate".to_string());
+        cell.push_api_key("tok-push".to_string());
+
+        assert_eq!(
+            *cell.pending_op.borrow(),
+            Some(PendingApiKeyOp::Push("tok-push".to_string())),
+            "a later Push must supersede an earlier queued Rehydrate"
+        );
+    }
+}
+
 #[cfg(test)]
 mod act_tests {
     use super::*;
@@ -2383,7 +3594,7 @@ mod act_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
+        host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
 
         let response = host.act("seed-act-1", &id, "not-an-action", 2_000).await;
@@ -2416,7 +3627,7 @@ mod act_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
+        host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
 
         let response = host.act("seed-act-1", &id, "complete", 2_000).await;
@@ -2438,7 +3649,7 @@ mod act_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
+        host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
 
         let response = host.act("seed-act-1", &id, "block", 2_000).await;
@@ -2458,7 +3669,7 @@ mod act_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
+        host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
 
         let response = host.act("seed-act-1", &id, "cancel", 2_000).await;
@@ -2485,7 +3696,7 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
+        host.capture_test("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
         let id = host.triage_inbox().items[0].item.id.clone();
 
         // "grilling" (#360) is now rejected exactly like any other
@@ -2493,7 +3704,7 @@ mod triage_tests {
         // longer a triage gesture at all; an item reaches Grilling only via
         // a `fog_remains` Grill verdict, never through this seam.
         let response = host
-            .triage("seed-triage-1", &id, Some("grilling"), TriageEdits::default(), 2_000)
+            .triage_test("seed-triage-1", &id, Some("grilling"), TriageEdits::default(), 2_000)
             .await;
 
         assert_eq!(response.kind, "failed");
@@ -2508,11 +3719,11 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
+        host.capture_test("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
         let id = host.triage_inbox().items[0].item.id.clone();
 
         let response = host
-            .triage(
+            .triage_test(
                 "seed-triage-1",
                 &id,
                 Some("ready"),
@@ -2629,7 +3840,7 @@ mod triage_tests {
         ];
         for fields in cases {
             let response = host
-                .capture("seed-1", "buy milk", "ready", fields.clone(), 1_000)
+                .capture_test("seed-1", "buy milk", "ready", fields.clone(), 1_000)
                 .await;
             assert_eq!(response.kind, "failed", "{fields:?}");
             assert!(response.error.is_some(), "{fields:?}");
@@ -2648,7 +3859,7 @@ mod triage_tests {
             .unwrap();
 
         let response = host
-            .capture(
+            .capture_test(
                 "seed-1",
                 "buy milk",
                 "ready",
@@ -2688,7 +3899,7 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
+        host.capture_test("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
         let id = host.triage_inbox().items[0].item.id.clone();
 
         let rejected: Vec<(&str, TriageEdits)> = vec![
@@ -2723,7 +3934,7 @@ mod triage_tests {
         ];
 
         for (what, edits) in rejected {
-            let response = host.triage("seed-triage-1", &id, Some("ready"), edits, 2_000).await;
+            let response = host.triage_test("seed-triage-1", &id, Some("ready"), edits, 2_000).await;
             assert_eq!(response.kind, "failed", "{what} must be refused");
             assert!(response.error.is_some(), "{what} must say what was wrong");
             assert_eq!(
@@ -2736,7 +3947,7 @@ mod triage_tests {
         // The boundaries themselves are legal: 0 and 4 are real priorities,
         // and both deadline shapes are the documented ones.
         let response = host
-            .triage(
+            .triage_test(
                 "seed-triage-ok",
                 &id,
                 Some("ready"),
@@ -2761,9 +3972,9 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
+        host.capture_test("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
         let id = host.triage_inbox().items[0].item.id.clone();
-        host.triage(
+        host.triage_test(
             "seed-triage-1",
             &id,
             Some("ready"),
@@ -2777,7 +3988,7 @@ mod triage_tests {
         .await;
 
         let response = host
-            .triage(
+            .triage_test(
                 "seed-triage-2",
                 &id,
                 Some("ready"),
@@ -2805,7 +4016,7 @@ mod triage_tests {
             .unwrap();
 
         let response = host
-            .triage("seed-triage-1", "no-such-item", Some("ready"), TriageEdits::default(), 1_000)
+            .triage_test("seed-triage-1", "no-such-item", Some("ready"), TriageEdits::default(), 1_000)
             .await;
 
         assert_eq!(response.kind, "not_found");
@@ -2822,11 +4033,11 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
+        host.capture_test("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
         let id = host.triage_inbox().items[0].item.id.clone();
 
         let response = host
-            .triage(
+            .triage_test(
                 "seed-triage-1",
                 &id,
                 Some("ready"),
@@ -2873,13 +4084,13 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
+        host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
         host.act("seed-act-1", &id, "start", 1_500).await;
         assert_eq!(host.frontier().items[0].item.stage, Stage::InProgress);
 
         let response = host
-            .triage(
+            .triage_test(
                 "seed-triage-6",
                 &id,
                 None,
@@ -2905,9 +4116,9 @@ mod triage_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
+        host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
-        host.triage(
+        host.triage_test(
             "seed-triage-7a",
             &id,
             None,
@@ -2920,7 +4131,7 @@ mod triage_tests {
         .await;
         assert_eq!(host.frontier().items[0].item.scheduled_date.as_deref(), Some("2026-08-15"));
 
-        host.triage(
+        host.triage_test(
             "seed-triage-7b",
             &id,
             None,
@@ -2939,7 +4150,7 @@ mod grill_tests {
 
     async fn captured_item(host: &mut TaskHostCore) -> String {
         let response = host
-            .capture("seed-cap", "book flights", "triage", CaptureFields::default(), 1_000)
+            .capture_test("seed-cap", "book flights", "triage", CaptureFields::default(), 1_000)
             .await;
         response.id.expect("capture always mints an id")
     }
@@ -3216,7 +4427,7 @@ mod ledger_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
+        host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
 
         let response = host.ledger(2_000);
         assert_eq!(response.kind, "ok");
@@ -3252,7 +4463,7 @@ mod ledger_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
+        host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
 
         host.act("seed-act-1", &id, "complete", 2_000).await;
@@ -3285,7 +4496,7 @@ mod search_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "buy stamps", "ready", CaptureFields::default(), 1_000).await;
+        host.capture_test("seed-1", "buy stamps", "ready", CaptureFields::default(), 1_000).await;
 
         let response = host.search("stamps", 2_000);
         assert_eq!(response.kind, "ok");
@@ -3309,7 +4520,7 @@ mod search_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "widget report", "ready", CaptureFields::default(), 1_000).await;
+        host.capture_test("seed-1", "widget report", "ready", CaptureFields::default(), 1_000).await;
         let id = host.frontier().items[0].item.id.clone();
         host.act("seed-act-1", &id, "cancel", 2_000).await;
 
@@ -3329,7 +4540,7 @@ mod search_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
             .await
             .unwrap();
-        host.capture("seed-1", "anything at all", "ready", CaptureFields::default(), 1_000).await;
+        host.capture_test("seed-1", "anything at all", "ready", CaptureFields::default(), 1_000).await;
 
         let response = host.search("", 2_000);
         assert_eq!(response.kind, "ok");
@@ -3402,7 +4613,7 @@ mod tests {
             .await
             .unwrap();
 
-        let response = host.capture("seed-1", "buy milk", "not-a-stage", CaptureFields::default(), 1_000).await;
+        let response = host.capture_test("seed-1", "buy milk", "not-a-stage", CaptureFields::default(), 1_000).await;
 
         assert_eq!(response.kind, "failed");
         assert!(response.id.is_none());
@@ -3424,7 +4635,7 @@ mod tests {
             .unwrap();
 
         let response = host
-            .capture(
+            .capture_test(
                 "seed-1",
                 "buy milk",
                 "ready",
@@ -3452,7 +4663,7 @@ mod tests {
             .unwrap();
 
         let response = host
-            .capture(
+            .capture_test(
                 "seed-1",
                 "buy milk",
                 "ready",
@@ -3482,7 +4693,7 @@ mod tests {
             .unwrap();
 
         let response = host
-            .capture(
+            .capture_test(
                 "seed-1",
                 "buy milk",
                 "ready",
@@ -3511,7 +4722,7 @@ mod tests {
             .await
             .unwrap();
 
-        let response = host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
+        let response = host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
 
         assert_eq!(response.kind, "ok");
         let id = response.id.clone().unwrap();
@@ -3546,7 +4757,7 @@ mod tests {
             .await
             .unwrap();
 
-        host.capture("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
+        host.capture_test("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
 
         assert_eq!(host.frontier().items.len(), 0);
         assert_eq!(host.triage_inbox().items.len(), 1);
@@ -3584,7 +4795,7 @@ mod tests {
             .await
             .unwrap();
 
-        let response = host.run(1_000, "user", true, 0.0).await;
+        let response = host.run_test(1_000, "user", true, 0.0).await;
 
         // An empty `base_url` builds a relative URL, which `reqwest` rejects
         // before ever opening a socket — deterministic and network-free.
@@ -3607,7 +4818,7 @@ mod tests {
             .unwrap();
 
         host.clear_api_key();
-        let response = host.run(1_000, "user", true, 0.0).await;
+        let response = host.run_test(1_000, "user", true, 0.0).await;
 
         assert_eq!(response.kind, "no_credential");
     }
@@ -3619,7 +4830,7 @@ mod tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
             .await
             .unwrap();
-        let response = host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
+        let response = host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
         let id = response.id.unwrap();
 
         host.clear_api_key();
@@ -3639,8 +4850,8 @@ mod tests {
         // Both trigger spellings reach `Core::run` rather than panicking on
         // an unrecognised string; the exact cycle outcome is `client/core`'s
         // own concern (263 tests already pin it), not this wrapper's.
-        let timer = host.run(1_000, "timer", true, 0.0).await;
-        let user = host.run(2_000, "anything-else", true, 0.0).await;
+        let timer = host.run_test(1_000, "timer", true, 0.0).await;
+        let user = host.run_test(2_000, "anything-else", true, 0.0).await;
         assert_eq!(timer.kind, "pull_failed");
         assert_eq!(user.kind, "pull_failed");
     }
@@ -3670,7 +4881,7 @@ mod tests {
             .await
             .unwrap();
 
-        host.capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
+        host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
 
         assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
     }

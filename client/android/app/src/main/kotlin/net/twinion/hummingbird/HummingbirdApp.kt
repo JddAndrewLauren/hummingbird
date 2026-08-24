@@ -7,6 +7,8 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import java.util.concurrent.TimeUnit
+import net.twinion.hummingbird.core.NetworkMonitor
+import net.twinion.hummingbird.diagnostics.DiagnosticsRecorder
 import net.twinion.hummingbird.notify.NotificationChannels
 import net.twinion.hummingbird.push.PushBootstrap
 import net.twinion.hummingbird.sync.SyncWorker
@@ -15,6 +17,16 @@ class HummingbirdApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // #709: this is what makes the process's one monotonic origin get
+        // sampled at actual process start rather than by whichever of the
+        // four writers happens to record first — `get` samples it eagerly
+        // on this thread (see `DiagnosticsRecorder.Companion.create`, which
+        // states why nothing there may be lazy). Mints no event itself —
+        // `session.started` stays `CoreHolder`'s.
+        DiagnosticsRecorder.get(this)
+        // #710: registered once here, process lifetime, same as the
+        // recorder above — see `NetworkMonitor.start`'s own doc.
+        NetworkMonitor.start(this)
         scheduleHourlySync()
         // Before any push can arrive: a notification posted against a
         // channel id that does not exist is dropped to a default channel

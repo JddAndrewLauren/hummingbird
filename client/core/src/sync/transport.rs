@@ -9,6 +9,8 @@
 
 use std::fmt;
 
+use crate::diagnostics::route::CorrelationHeaders;
+
 /// One call to either read endpoint, or the failure to make it.
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -20,6 +22,35 @@ pub trait ChangesTransport: Send + Sync {
 
     /// `GET /api/sweep`. Returns the raw JSON response body on success.
     async fn fetch_sweep(&self, access_token: &str) -> Result<String, TransportError>;
+
+    /// The same call as [`ChangesTransport::fetch_changes`], plus the four
+    /// `X-Hummingbird-*` correlation headers (#706) an observed sync cycle
+    /// attaches. Defaults to ignoring `headers` and delegating to the plain
+    /// call — every existing implementation (every test double in this
+    /// crate, and [`super::reqwest_transport::ReqwestSyncTransport`] until
+    /// it overrides this) keeps compiling and keeps its old behaviour
+    /// unchanged. Only a transport that actually reaches the network has
+    /// any reason to override this.
+    async fn fetch_changes_with_headers(
+        &self,
+        access_token: &str,
+        since: i64,
+        headers: &CorrelationHeaders<'_>,
+    ) -> Result<String, TransportError> {
+        let _ = headers;
+        self.fetch_changes(access_token, since).await
+    }
+
+    /// See [`ChangesTransport::fetch_changes_with_headers`] — the same
+    /// default-delegates-to-the-plain-call shape, for `GET /api/sweep`.
+    async fn fetch_sweep_with_headers(
+        &self,
+        access_token: &str,
+        headers: &CorrelationHeaders<'_>,
+    ) -> Result<String, TransportError> {
+        let _ = headers;
+        self.fetch_sweep(access_token).await
+    }
 }
 
 /// A failure to fetch or parse one response. Carries no partial data — the

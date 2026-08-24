@@ -64,6 +64,8 @@ function renderBoardSettings(
       online
       syncNowMs={10_000}
       onDownloadMirror={vi.fn()}
+      onDownloadDiagnostics={vi.fn()}
+      onClearDiagnostics={vi.fn()}
     />,
   );
   return { onSelectionChange };
@@ -133,6 +135,8 @@ describe("SettingsScreen — the board world's calendar card", () => {
         online
         syncNowMs={10_000}
         onDownloadMirror={vi.fn()}
+        onDownloadDiagnostics={vi.fn()}
+        onClearDiagnostics={vi.fn()}
       />,
     );
     // `status: "ready"` here also renders the device-token card's own

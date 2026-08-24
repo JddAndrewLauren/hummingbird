@@ -104,3 +104,24 @@ bindings = [{ name = "AUTHORITY", class_name = "Authority" }]
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Authority"]
+
+# Workers Logs (#711/#705), at 100% sampling rather than the platform
+# default. This traffic is low-volume — one operator, a handful of
+# devices — and the question this plan exists to answer is "did *this
+# exact* `request.received` reach the Durable Object", which a sampled log
+# cannot answer: missing a line and never having emitted it are
+# indistinguishable at anything less than full sampling. `head_sampling_rate
+# = 1` keeps every `console_log!`/`console_error!`/`console_warn!` line this
+# shim emits, including the `request.received`/`request.finished` pair
+# (`fetch`'s own doc) that is the whole point of this section.
+#
+# Retention is a platform limit, not something this file sets: 3 days on
+# the Workers Free plan, 7 days on Paid. There is no export for these lines
+# — unlike the client journals (#707/#709), which do have one — so evidence
+# that must outlive this window has to be captured by hand (a `wrangler
+# tail`/dashboard copy) before it expires. #712's `docs/diagnostics.md`
+# states this asymmetry (the server side expires first) as the operational
+# fact it is.
+[observability]
+enabled = true
+head_sampling_rate = 1

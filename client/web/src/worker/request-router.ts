@@ -1,4 +1,9 @@
-import type { CalendarWorkerRequest, SyncCadenceRequest, TaskWorkerRequest } from "../store/protocol";
+import type {
+  CalendarWorkerRequest,
+  DiagnosticsWorkerRequest,
+  SyncCadenceRequest,
+  TaskWorkerRequest,
+} from "../store/protocol";
 
 // `core.worker.ts` wires one `PortRegistry` (ports.ts) over two independent
 // request queues — the calendar binding's (#73) and the task binding's
@@ -11,7 +16,11 @@ import type { CalendarWorkerRequest, SyncCadenceRequest, TaskWorkerRequest } fro
 // that tells a request's destination apart by `type`, kept free of both the
 // wasm import and `PortRegistry` itself so it is unit-testable in isolation.
 
-type AnyWorkerRequest = CalendarWorkerRequest | TaskWorkerRequest | SyncCadenceRequest;
+type AnyWorkerRequest =
+  | CalendarWorkerRequest
+  | TaskWorkerRequest
+  | SyncCadenceRequest
+  | DiagnosticsWorkerRequest;
 
 // A `Record` keyed by every `TaskWorkerRequest["type"]` literal, rather than
 // a `Set<TaskWorkerRequest["type"]>` built from a plain array: the object
@@ -72,6 +81,13 @@ const SYNC_CADENCE_REQUEST_TYPES: Record<SyncCadenceRequest["type"], true> = {
   manualSyncTrigger: true,
 };
 
+/** Same compile-time-exhaustive shape, for #707's two diagnostics-journal
+ * messages. */
+const DIAGNOSTICS_REQUEST_TYPES: Record<DiagnosticsWorkerRequest["type"], true> = {
+  getDiagnostics: true,
+  clearDiagnostics: true,
+};
+
 /** Whether `request` belongs on the task binding's queue rather than the
  * calendar binding's. Never true for a `SyncCadenceRequest` — check
  * `isSyncCadenceRequest` first, the same order `core.worker.ts`'s dispatch
@@ -85,4 +101,14 @@ export function isTaskWorkerRequest(request: AnyWorkerRequest): request is TaskW
  * these itself. */
 export function isSyncCadenceRequest(request: AnyWorkerRequest): request is SyncCadenceRequest {
   return Object.hasOwn(SYNC_CADENCE_REQUEST_TYPES, request.type);
+}
+
+/** Whether `request` is one of #707's two diagnostics-journal messages —
+ * `core.worker.ts`'s dispatch intercepts these itself, same as
+ * `isSyncCadenceRequest` above, since the journal is SharedWorker-owned
+ * state, not either wasm host's. */
+export function isDiagnosticsWorkerRequest(
+  request: AnyWorkerRequest,
+): request is DiagnosticsWorkerRequest {
+  return Object.hasOwn(DIAGNOSTICS_REQUEST_TYPES, request.type);
 }

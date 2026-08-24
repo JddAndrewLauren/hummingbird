@@ -215,6 +215,37 @@ pub fn req_with(
     body: Option<&str>,
     now_ms: i64,
 ) -> ApiResponse {
+    req_with_correlation(
+        sql,
+        authorization,
+        admin_secret,
+        method,
+        path,
+        query,
+        body,
+        now_ms,
+        None,
+        None,
+    )
+}
+
+/// [`req_with`] plus the two raw correlation headers (#711) — the one place
+/// a fixture that cares about `X-Hummingbird-Cycle-Id`/`-Request-Id`
+/// reaches all the way down; every other helper here (including
+/// `req_with` itself) reduces to this with both `None`.
+#[allow(clippy::too_many_arguments)]
+pub fn req_with_correlation(
+    sql: &dyn Sql,
+    authorization: Option<&str>,
+    admin_secret: Option<&str>,
+    method: &str,
+    path: &str,
+    query: Option<&str>,
+    body: Option<&str>,
+    now_ms: i64,
+    cycle_id: Option<&str>,
+    request_id: Option<&str>,
+) -> ApiResponse {
     handle(
         &ApiRequest {
             method,
@@ -222,6 +253,8 @@ pub fn req_with(
             query,
             body,
             authorization,
+            cycle_id,
+            request_id,
         },
         &HandleContext {
             now_ms,

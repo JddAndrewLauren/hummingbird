@@ -458,6 +458,16 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     // neither world had before, and now the proof that opening a row really
     // reveals what it holds.
     await expect(page.getByText("trips-calendar")).toBeVisible();
+
+    // #707, review round 1: the two SharedWorker diagnostic-journal
+    // controls previously sat below the fold in every capture this file
+    // takes (`fullPage: false`), so nothing here — human review or
+    // automated assertion — ever actually saw them. A real Playwright
+    // `toBeVisible()` check is a stronger proof than the screenshot below
+    // ever was: it fails if the element is not rendered or is CSS-hidden,
+    // regardless of scroll position.
+    await expect(page.getByRole("button", { name: "Download diagnostics" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Clear diagnostics" })).toBeVisible();
   },
 };
 
@@ -932,6 +942,11 @@ for (const theme of THEMES) {
       // roster — ten questions, no toggles, no fields.
       await expect(questionRows(page)).toHaveCount(10);
       await expect(page.locator("#standing-questions").getByRole("switch")).toHaveCount(0);
+      // #707: the same proof as the board-world capture above, over the
+      // REAL core rather than the fixture — a device that has bound
+      // nothing still gets a reachable diagnostic journal.
+      await expect(page.getByRole("button", { name: "Download diagnostics" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Clear diagnostics" })).toBeVisible();
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
         path: `visual/.captures/settings-empty-${testInfo.project.name}-${theme}.png`,

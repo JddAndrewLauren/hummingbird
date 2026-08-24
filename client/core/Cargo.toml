@@ -48,6 +48,13 @@ hummingbird-rules-engine = { path = "../../server/rules-engine" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# The diagnostics module's (#706) operation.slow/operation.stalled watchdog
+# races an awaited operation against a caller-injected timer using
+# `futures_util::future::select` — pure computation, no runtime/reactor of
+# its own, so it costs nothing on the `wasm32-unknown-unknown` build the way
+# a `tokio` dependency would (this crate has none in production code; see
+# `sync/mod.rs`'s seed-minting rule for why no runtime lives here at all).
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # The write adapter's deterministic id derivation (#101) ports sweep.py's
 # `deterministic_v4` (sha256-then-force-v4-nibbles) — same primitive the
 # authority already uses for token hashing (server/authority/Cargo.toml).
