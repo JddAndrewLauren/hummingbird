@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it, vi } from "vitest";
-import type { CoreStatus } from "../store/store";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { coreStore, type CoreStatus } from "../store/store";
 import type { WorkerLike } from "../store/worker-client";
 import { act, render } from "../test/component";
 import type { TaskTokenRecord, TaskTokenStoreLike } from "../task/token-store";
@@ -56,6 +56,10 @@ function Probe({
 }
 
 describe("useTaskTokenWiring", () => {
+  beforeEach(() => {
+    coreStore.setTaskState({ needsReconnect: true });
+  });
+
   it("asks nothing and reports no token while the core is still loading", async () => {
     const worker = fakeWorker();
     render(<Probe worker={worker} status="loading" store={fakeStore(null)} />);
@@ -111,6 +115,7 @@ describe("useTaskTokenWiring", () => {
     expect(latest!.hasToken).toBe(true);
     expect(latest!.enteredAtMs).toBe(5_000);
     await expect(store.read()).resolves.toEqual({ token: "fresh-token", enteredAtMs: 5_000 });
+    expect(coreStore.getSnapshot().task.needsReconnect).toBe(false);
   });
 
   it("handleSubmitToken rejects a blank entry without touching the store or the worker", async () => {
@@ -127,6 +132,7 @@ describe("useTaskTokenWiring", () => {
     expect(outcome).toBe("blank");
     expect(worker.postMessage).not.toHaveBeenCalled();
     expect(latest!.hasToken).toBe(false);
+    expect(coreStore.getSnapshot().task.needsReconnect).toBe(true);
   });
 
   it("handleForgetToken clears the store and the live key via clearTaskApiKey", async () => {

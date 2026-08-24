@@ -127,7 +127,7 @@ describe("useSyncWiring — the ready-gated reads and the view-level reporters",
     });
     worker.postMessage.mockClear();
     rerender({ status: "ready" });
-    expect(types(worker)).not.toEqual(expect.arrayContaining(["getQueueDepth", "getDeadLetters"]));
+    expect(types(worker)).toEqual([]);
   });
 
   it("re-reports visibility on a visibilitychange event", () => {
