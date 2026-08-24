@@ -416,7 +416,7 @@ mod tests {
         // before we check", not an exact race-free bound.
         tokio::time::sleep(Duration::from_millis(20)).await;
 
-        for owner in [CoreOwner::Capture, CoreOwner::Triage, CoreOwner::Read] {
+        for owner in [CoreOwner::Capture, CoreOwner::Triage, CoreOwner::Projects] {
             let (m, t, s, k) = (mutex.clone(), tracker.clone(), session.clone(), sink.clone());
             // Each waiter would block forever behind the still-held mutex,
             // so this only needs to observe the `core.wait_started` it

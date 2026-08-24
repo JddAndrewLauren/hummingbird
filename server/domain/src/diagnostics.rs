@@ -188,7 +188,6 @@ pub enum SyncOutcome {
     Completed,
 }
 
-
 /// The closed transport vocabulary `network.changed` records —
 /// `ConnectivityManager`'s `NetworkCapabilities.getTransportInfo`/
 /// `hasTransport` collapsed to one value per reading (a real network can
@@ -269,12 +268,10 @@ pub enum DiagnosticHttpMethod {
 /// carry an owner in this tree" describes the pre-#708 enum and is false
 /// once this landed, so #710's rebase updates its own docs to match rather
 /// than the other way round. #710's own two families
-/// (`core.wait_started`/`core.acquired`) are still payload-free here, and
-/// when #710 adds `owner` to them it is bound by this module's header rule
-/// on non-Rust writers: both have live TypeScript writers today, so the
-/// field is `Option<CoreOwner>` (with the TS side emitting an explicit
-/// `payload`) unless #710 also teaches those writers to name a real owner.
-/// See this module's own header on why there is
+/// (`core.wait_started`/`core.acquired`) **also carry `owner: Option<CoreOwner>`**
+/// now — see this module's header's "Applied state of the quad" paragraph
+/// for why `Option` rather than a required field, and each variant's own
+/// doc below for the rest. See this module's own header on why there is
 /// exactly one owner enum, ever. No `Other`/catch-all variant: an
 /// unnameable owner would defeat #712's whole interpretation table, whose
 /// job is telling an operator who held the core, so every call site on
@@ -446,10 +443,20 @@ pub enum DiagnosticEvent {
     /// knows its owner and wraps it in `Some`.
     #[serde(rename = "core.wait_started")]
     CoreWaitStarted { owner: Option<CoreOwner> },
-    /// #710: `owner` is the caller that just acquired the mutex — `Option`
-    /// for the identical reason as [`DiagnosticEvent::CoreWaitStarted`]:
+    /// #710: `owner` is the caller that just acquired the mutex —
+    /// `Option`, but for a narrower reason than [`DiagnosticEvent::CoreWaitStarted`]'s.
     /// `diagnostics-events.ts`'s `requestDequeuedEvent` writes this family
-    /// too, from the same owner-blind queue layer.
+    /// too, from the SharedWorker's serial queue, and that queue layer is
+    /// **not** structurally blind here the way it is for `core.busy`/
+    /// `core.wait_started`: `onDequeue` runs with the dequeued
+    /// `TaskWorkerRequest` in scope (`task-worker.ts`'s
+    /// `createTaskRequestQueue`), so `request.type` is available and could
+    /// be mapped to a `CoreOwner`. `owner: null` here is a deliberate
+    /// choice not to — that mapping would be a second, independently
+    /// maintained copy of the identity the wasm host's own
+    /// `Source::Core` `core.acquired` row already names authoritatively,
+    /// and a second copy is exactly the kind of thing that drifts. `null`
+    /// stays "this writer did not name one," not "unreachable."
     #[serde(rename = "core.acquired")]
     CoreAcquired { owner: Option<CoreOwner> },
     /// #708's amendment: names the [`CoreOwner`] holding the checkout —
