@@ -1024,6 +1024,50 @@ fn now_monotonic_ms() -> u64 {
     }
 }
 
+/// A fresh **wall-clock** reading, for the one place this module cannot
+/// take `now_ms` as a caller-supplied argument: [`CoreGuard`]'s [`Drop`],
+/// which runs at an unpredictable moment (a normal return, an early bail,
+/// or a cancelled future) and receives no arguments at all. #708 review
+/// round 1, finding 2: an earlier version of this reused the `now_ms` the
+/// guard was *checked out* with for its `core.released` event too — so a
+/// 30-second hold showed identical wall clocks on `core.acquired` and
+/// `core.released`, exactly the number an operator would read to size the
+/// stall. This is sampled fresh at the moment of release instead, on
+/// `wasm32` via the same `Date.now()` [`now_monotonic_ms`] uses (they are
+/// the same underlying call there — wall clock and this crate's monotonic
+/// surrogate coincide), and via [`std::time::SystemTime`] natively so a
+/// released event built in a `cargo test` run still carries a real
+/// (if lower-resolution) epoch-based timestamp rather than a placeholder.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn now_wall_clock_ms() -> i64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() as i64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+}
+
+/// The most events [`DiagnosticBuffer`] holds before it starts dropping the
+/// oldest ones — #708 review round 1: an unbounded `Vec` bounded only by
+/// drain cadence still grows without limit on any path that never drains
+/// (a host wired up with no JS-side journal at all, or `NOOP_TASK_DIAGNOSTICS`
+/// in a test harness) — the exact "a diagnostic leaks memory in the host"
+/// pattern this batch already rejected twice elsewhere. 4096 is generous
+/// against #707's own drain cadence (every 250ms while a request is
+/// in-flight, plus before/after every request) — a healthy host drains
+/// long before this fills — while still being a small, bounded amount of
+/// memory (each event is a small struct) if a host is ever run with
+/// nothing draining it at all.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+const MAX_BUFFERED_EVENTS: usize = 4096;
+
 /// #708: the in-memory ring the wasm host's own `core.*`/`operation.*`
 /// events accumulate into between drains — the Rust-side half of #707's
 /// already-built JS drain contract
@@ -1033,6 +1077,8 @@ fn now_monotonic_ms() -> u64 {
 /// Not persisted: if a session ends before a drain, whatever is still
 /// buffered is lost — the same in-memory, host-drained contract
 /// [`TaskHostCore::take_events`] already established for `CoreEvent`.
+/// Bounded at [`MAX_BUFFERED_EVENTS`], oldest-dropped-first — see that
+/// constant's own doc.
 /// A `Mutex`, not a `RefCell` — [`DiagnosticSink`] requires `Send + Sync`
 /// (`hummingbird_core::diagnostics::test_support::RecordingSink` makes the
 /// identical choice for the identical reason), even though the wasm32
@@ -1040,7 +1086,7 @@ fn now_monotonic_ms() -> u64 {
 #[derive(Default)]
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub struct DiagnosticBuffer {
-    events: std::sync::Mutex<Vec<DiagnosticEventV1>>,
+    events: std::sync::Mutex<std::collections::VecDeque<DiagnosticEventV1>>,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -1049,13 +1095,17 @@ impl DiagnosticBuffer {
     /// buffer — mirrors [`TaskHostCore::take_events`]'s own "drain, don't
     /// peek" contract.
     pub fn drain(&self) -> Vec<DiagnosticEventV1> {
-        std::mem::take(&mut self.events.lock().unwrap())
+        std::mem::take(&mut *self.events.lock().unwrap()).into_iter().collect()
     }
 }
 
 impl DiagnosticSink for DiagnosticBuffer {
     fn record(&self, event: DiagnosticEventV1) {
-        self.events.lock().unwrap().push(event);
+        let mut events = self.events.lock().unwrap();
+        if events.len() >= MAX_BUFFERED_EVENTS {
+            events.pop_front();
+        }
+        events.push_back(event);
     }
 }
 
@@ -1063,33 +1113,63 @@ impl DiagnosticSink for DiagnosticBuffer {
 /// host was checked out. Moved here from `ffi-web/src/lib.rs`'s
 /// `TaskShared` (#708): the checkout it defers around now lives here too,
 /// so the two travel together rather than splitting the re-entrancy guard
-/// across two files. NOT simple last-wins — see each variant's own doc.
+/// across two files.
+///
+/// **NOT simple last-wins** (round-2 review of #196's PR #202): `Push` and
+/// `Clear` always supersede whatever is pending, but a queued `Rehydrate`
+/// must never supersede a queued `Push`.
+///
+/// A same-target-object simulation makes the reason concrete. "As if not
+/// busy" — the host applies each call the instant it arrives — Push then
+/// Rehydrate resumes: `push_api_key` sets the key, clears `held`, and drops
+/// the pending prompt; `rehydrate_api_key` merely re-sets the same key
+/// afterwards, leaving the resume intact. Under plain last-wins, only the
+/// queued `Rehydrate` would apply at check-in, and `rehydrate_api_key`
+/// never touches `held` — so the credential would stay held with no
+/// pending prompt to explain why, reachable in practice through
+/// `serial-queue.ts`'s abandon-on-timeout (`TASK_REQUEST_TIMEOUT_MS`)
+/// racing a 401 re-submit against a still-running cycle. Dropping the
+/// queued `Rehydrate` in favour of the `Push` is safe: check-in's `Push`
+/// already sets the (newer, or identical) key the `Rehydrate` would have
+/// re-set. [`TaskCoreCell::push_api_key`]/[`TaskCoreCell::rehydrate_api_key`]
+/// enforce this ordering; this doc is their one shared source of the
+/// reason, not a pointer onward to either of them.
+///
+/// This ordering is pinned by `core_checkout_tests::a_queued_push_is_never_superseded_by_a_later_queued_rehydrate`
+/// and its sibling `a_later_push_supersedes_an_earlier_queued_rehydrate` —
+/// the concrete claim this PR's own review round 1 found asserted in prose
+/// but untested.
+#[derive(Debug, PartialEq)]
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub enum PendingApiKeyOp {
     Push(String),
     /// Issue #196 (shape 2): the rehydration counterpart to `Push`.
-    /// Deliberately does NOT unconditionally supersede whatever is already
-    /// queued — see [`TaskCoreCell::rehydrate_api_key`].
     Rehydrate(String),
     Clear,
 }
 
 /// The bundle [`TaskCoreCell`] hands a checkout or a read: the session
-/// every emitted event correlates through (`seq`, `session_id`) plus the
-/// sink it writes into, and the monotonic origin `elapsed_ms` measures
-/// from. A thin, `Copy`-able view — nothing here owns `TaskCoreCell`'s
-/// `RefCell`, so holding one across an `.await` is always safe.
+/// every emitted event correlates through (`seq`, `session_id`, and —
+/// #708 review round 1, finding 5 — the *one* `origin_monotonic_ms` this
+/// whole host has, owned by [`DiagnosticSession`] itself rather than
+/// duplicated here) plus the sink it writes into. A thin, `Copy`-able
+/// view — nothing here owns `TaskCoreCell`'s `RefCell`, so holding one
+/// across an `.await` is always safe.
 #[derive(Clone, Copy)]
 pub struct OperationDiagnostics<'a> {
     session: &'a DiagnosticSession<'a>,
     sink: &'a dyn DiagnosticSink,
-    origin_monotonic_ms: u64,
 }
 
 impl<'a> OperationDiagnostics<'a> {
+    /// Samples a fresh monotonic reading and hands it, together with
+    /// `wall_clock_ms`, to [`DiagnosticSession::emit`] — which is the one
+    /// place `elapsed_ms` is actually computed, against *its own*
+    /// `origin_monotonic_ms`. This function used to compute `elapsed_ms`
+    /// itself against a second, duplicate origin field on this struct;
+    /// that field is gone now — see this type's own doc.
     fn emit(&self, wall_clock_ms: i64, operation_id: Option<&str>, event: DiagnosticEvent) {
-        let elapsed_ms = now_monotonic_ms().saturating_sub(self.origin_monotonic_ms);
-        self.session.emit(self.sink, wall_clock_ms, elapsed_ms, operation_id, event);
+        self.session.emit(self.sink, wall_clock_ms, now_monotonic_ms(), operation_id, event);
     }
 
     /// [`TaskHostCore::capture`]/[`TaskHostCore::triage`]'s own "did the
@@ -1175,6 +1255,22 @@ fn sync_outcome_of(outcome: &CycleOutcome) -> SyncOutcome {
 /// `RefCell::take()` returning `None` could never answer. Lives here
 /// rather than in `lib.rs` so it is testable with plain `cargo test`, the
 /// same reason [`TaskHostCore`] itself is (this module's own header).
+///
+/// **Held-duration scoping (#708 review round 1, and #707's own review
+/// established this as an obligation to record, not just implement).**
+/// Every event this cell emits carries `source: Source::Core` and this
+/// one cell's own `session_id` — #707's SharedWorker-level `core.wait_started`/
+/// `core.acquired` pair (its own module doc: "the web-worker layer has its
+/// own session, entirely separate from any `DiagnosticSession` a Rust core
+/// keeps") is a *different* `source`/`session_id` pair, and deliberately
+/// never resolves into a matching `core.released` at all. So "how long was
+/// X held" is only ever a well-formed question **within one
+/// `(source, session_id)` pair** — pairing a `core.wait_started` from one
+/// pair with a `core.released` from the other, or across two different
+/// `TaskCoreCell` instances, is not a real span and must never be computed
+/// as one. A reader (a future #712 interpretation table, or a human
+/// scanning an export) scopes every pairing by `(source, session_id)`
+/// first, and only orders by `seq`/`elapsed_ms` within that scope.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub struct TaskCoreCell {
     host: RefCell<Option<TaskHostCore>>,
@@ -1183,7 +1279,6 @@ pub struct TaskCoreCell {
     pending_op: RefCell<Option<PendingApiKeyOp>>,
     sink: DiagnosticBuffer,
     session: DiagnosticSession<'static>,
-    origin_monotonic_ms: u64,
     next_operation_seq: AtomicU64,
 }
 
@@ -1201,7 +1296,6 @@ impl TaskCoreCell {
             pending_op: RefCell::new(None),
             sink: DiagnosticBuffer::default(),
             session: DiagnosticSession::new(session_id, now_monotonic_ms()),
-            origin_monotonic_ms: now_monotonic_ms(),
             next_operation_seq: AtomicU64::new(0),
         }
     }
@@ -1210,7 +1304,6 @@ impl TaskCoreCell {
         OperationDiagnostics {
             session: &self.session,
             sink: &self.sink,
-            origin_monotonic_ms: self.origin_monotonic_ms,
         }
     }
 
@@ -1230,19 +1323,6 @@ impl TaskCoreCell {
         self.sink.drain()
     }
 
-    /// The bare re-entrancy slot, for the read-only getters this slice did
-    /// not extend to emit `core.*` diagnostics (a scoped decision — see
-    /// this issue's posted finding). `.borrow()`/`.borrow_mut()` on it is
-    /// exactly the un-instrumented behaviour every one of those getters
-    /// already had before #708, just reached through `TaskCoreCell` now
-    /// that it owns the slot instead of `lib.rs`'s old `TaskShared`.
-    /// [`TaskCoreCell::read`] is the instrumented alternative — used by
-    /// [`TaskHostCore::projects`]'s wasm binding specifically, since that
-    /// is the acceptance criterion's named "a project read".
-    pub fn host_ref(&self) -> &RefCell<Option<TaskHostCore>> {
-        &self.host
-    }
-
     /// Checks out the host for `owner`'s write, emitting `core.wait_started`
     /// then either `core.acquired` (returning `Some` guard) or
     /// `core.busy{owner: <holder>}` (returning `None`) naming whoever
@@ -1259,7 +1339,7 @@ impl TaskCoreCell {
                 Some(CoreGuard {
                     cell: self,
                     host: Some(host),
-                    now_ms,
+                    owner,
                 })
             }
             None => {
@@ -1275,26 +1355,57 @@ impl TaskCoreCell {
     }
 
     /// The read-only getters' own diagnostics twin to
-    /// [`TaskCoreCell::checkout`] — a `.borrow()`, never a `.take()`, so it
-    /// never contends with itself, only with a write's checkout. Emits the
-    /// identical `core.wait_started`/(`core.acquired` xor
-    /// `core.busy{owner}`)/`core.released` triad, so a read that finds the
-    /// core held behind a sync cycle is visible in the journal exactly the
-    /// same way a blocked write is — #704's "a … project read sat waiting
-    /// behind [sync]" claim, made checkable. `now_ms` is wasm-boundary
-    /// supplied (`lib.rs`'s `js_sys::Date::now()`), never sampled here.
-    pub fn read<T>(&self, owner: CoreOwner, now_ms: i64, on_busy: T, f: impl FnOnce(&TaskHostCore) -> T) -> T {
+    /// [`TaskCoreCell::checkout`] — a `.borrow()`, never a `.take()`, so a
+    /// read never contends with another read, only with a write's
+    /// checkout. Emits the identical `core.wait_started`/(`core.acquired`
+    /// xor `core.busy{owner}`)/`core.released` triad every one of the web
+    /// host's read-only getters now goes through (#708 review round 1,
+    /// finding 1 — `frontier`/`ledger`/`search`/`bindings`/`pane_read`/etc.
+    /// were previously silent, understating contention on exactly the
+    /// surfaces #704's operator perceives as frozen), so a read that finds
+    /// the core held behind a sync cycle is visible in the journal exactly
+    /// the same way a blocked write is. `now_ms` is wasm-boundary supplied
+    /// (`lib.rs`'s `js_sys::Date::now()`), never sampled here. A read's own
+    /// identity is always [`CoreOwner::Read`] — see that variant's doc for
+    /// why a read needs no `owner` argument of its own.
+    pub fn read<T>(&self, now_ms: i64, on_busy: T, f: impl FnOnce(&TaskHostCore) -> T) -> T {
         let diagnostics = self.diagnostics();
         diagnostics.emit(now_ms, None, DiagnosticEvent::CoreWaitStarted);
         match self.host.borrow().as_ref() {
             Some(host) => {
                 diagnostics.emit(now_ms, None, DiagnosticEvent::CoreAcquired);
                 let result = f(host);
-                diagnostics.emit(now_ms, None, DiagnosticEvent::CoreReleased);
+                diagnostics.emit(now_ms, None, DiagnosticEvent::CoreReleased { owner: CoreOwner::Read });
                 result
             }
             None => {
-                let current_holder = self.holder.get().unwrap_or(owner);
+                let current_holder = self.holder.get().unwrap_or(CoreOwner::Read);
+                diagnostics.emit(
+                    now_ms,
+                    None,
+                    DiagnosticEvent::CoreBusy { owner: current_holder },
+                );
+                on_busy
+            }
+        }
+    }
+
+    /// [`TaskCoreCell::read`]'s `&mut TaskHostCore` twin — the one
+    /// existing read-mutation call site ([`TaskHostCore::take_events`])
+    /// needs `&mut`, not `&`, so it gets the identical instrumentation
+    /// through a `.borrow_mut()` instead of a `.borrow()`.
+    pub fn read_mut<T>(&self, now_ms: i64, on_busy: T, f: impl FnOnce(&mut TaskHostCore) -> T) -> T {
+        let diagnostics = self.diagnostics();
+        diagnostics.emit(now_ms, None, DiagnosticEvent::CoreWaitStarted);
+        match self.host.borrow_mut().as_mut() {
+            Some(host) => {
+                diagnostics.emit(now_ms, None, DiagnosticEvent::CoreAcquired);
+                let result = f(host);
+                diagnostics.emit(now_ms, None, DiagnosticEvent::CoreReleased { owner: CoreOwner::Read });
+                result
+            }
+            None => {
+                let current_holder = self.holder.get().unwrap_or(CoreOwner::Read);
                 diagnostics.emit(
                     now_ms,
                     None,
@@ -1369,17 +1480,24 @@ impl TaskCoreCell {
 /// so a cancelled operation closes its `core.released` span exactly like a
 /// completed one, with no second code path to keep in sync.
 ///
-/// The release event's `wall_clock_ms` reuses whatever `now_ms` this guard
-/// was checked out with (there is no fresher one to sample at `Drop` time —
-/// this crate never samples a clock of its own, the same discipline
-/// `hummingbird_core::diagnostics` documents); `elapsed_ms` is real and
-/// accurate regardless of when `Drop` runs, since [`now_monotonic_ms`] is
-/// callable synchronously at any time, including from inside `Drop`.
+/// **The release event samples a fresh clock at `Drop` time — it does
+/// not reuse the checkout's own `now_ms`.** #708 review round 1, finding
+/// 2: an earlier version reused whatever `now_ms` this guard was checked
+/// out with, and its doc *claimed* there was "no fresher one to sample at
+/// `Drop` time" — false: [`now_wall_clock_ms`]/[`now_monotonic_ms`] are
+/// both callable with no arguments, synchronously, from anywhere,
+/// including `Drop::drop`. Reusing the stale value made a 30-second hold
+/// show identical wall clocks on `core.acquired` and `core.released` —
+/// exactly the number an operator would read to size the stall. `owner` is
+/// carried so the release event can still name which [`CoreOwner`] this
+/// was — the shared `holder` slot on [`TaskCoreCell`] is cleared before
+/// this fires, so this guard's own copy is the only place that fact
+/// survives to be recorded.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub struct CoreGuard<'a> {
     cell: &'a TaskCoreCell,
     host: Option<TaskHostCore>,
-    now_ms: i64,
+    owner: CoreOwner,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -1412,9 +1530,11 @@ impl Drop for CoreGuard<'_> {
             self.cell.apply_pending_op(&mut host);
             self.cell.holder.set(None);
             *self.cell.host.borrow_mut() = Some(host);
-            self.cell
-                .diagnostics()
-                .emit(self.now_ms, None, DiagnosticEvent::CoreReleased);
+            self.cell.diagnostics().emit(
+                now_wall_clock_ms(),
+                None,
+                DiagnosticEvent::CoreReleased { owner: self.owner },
+            );
         }
     }
 }
@@ -2890,7 +3010,7 @@ impl TaskHostCore {
     ) -> CaptureResponse {
         let sink = DiagnosticBuffer::default();
         let session = DiagnosticSession::new("test-session", 0);
-        let diagnostics = OperationDiagnostics { session: &session, sink: &sink, origin_monotonic_ms: 0 };
+        let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
         self.capture(seed, title, stage, fields, now_ms, diagnostics, "op-test").await
     }
 
@@ -2904,7 +3024,7 @@ impl TaskHostCore {
     ) -> TriageResponse {
         let sink = DiagnosticBuffer::default();
         let session = DiagnosticSession::new("test-session", 0);
-        let diagnostics = OperationDiagnostics { session: &session, sink: &sink, origin_monotonic_ms: 0 };
+        let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
         self.triage(seed, item_id, destination, edits, now_ms, diagnostics, "op-test").await
     }
 
@@ -2917,7 +3037,7 @@ impl TaskHostCore {
     ) -> RunResponse {
         let sink = DiagnosticBuffer::default();
         let session = DiagnosticSession::new("test-session", 0);
-        let diagnostics = OperationDiagnostics { session: &session, sink: &sink, origin_monotonic_ms: 0 };
+        let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
         self.run(now_ms, trigger, force_full_sweep, jitter_unit, diagnostics).await
     }
 }
@@ -2958,6 +3078,47 @@ mod core_checkout_tests {
         );
     }
 
+    /// #708 review round 1, finding 2: `core.released`'s `wall_clock_ms`
+    /// must be a fresh sample at `Drop` time, not the stale `now_ms` the
+    /// guard was checked out with — otherwise a real, multi-second hold
+    /// shows identical wall clocks on `core.acquired` and `core.released`,
+    /// exactly the number an operator would read to size the stall.
+    /// Checked out with a real current epoch reading (not the fixture
+    /// `1_000` other tests use, which would make "released > acquired"
+    /// trivially true regardless of whether this bug existed), a genuine
+    /// sleep simulates the hold, and the assertion is strictly `>` by a
+    /// margin that could not survive reusing the checkout-time value.
+    /// Mutation-tested by temporarily reintroducing a stored `now_ms` on
+    /// [`CoreGuard`] and reusing it in `Drop` — that reproduced this
+    /// exact failure (`released.wall_clock_ms == acquired.wall_clock_ms`)
+    /// before being reverted.
+    #[tokio::test]
+    async fn released_wall_clock_ms_is_a_fresh_sample_not_the_stale_checkout_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let cell = fresh_cell(&dir, "ns-wall-clock").await;
+
+        let checkout_now_ms = now_wall_clock_ms();
+        let guard = cell.checkout(CoreOwner::Sync, checkout_now_ms).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        drop(guard);
+
+        let events = cell.drain_diagnostics();
+        let acquired = events
+            .iter()
+            .find(|e| matches!(e.event, DiagnosticEvent::CoreAcquired))
+            .expect("an acquired event was recorded");
+        let released = events
+            .iter()
+            .find(|e| matches!(e.event, DiagnosticEvent::CoreReleased { .. }))
+            .expect("a released event was recorded");
+        assert!(
+            released.wall_clock_ms > acquired.wall_clock_ms,
+            "released.wall_clock_ms ({}) must be fresher than acquired.wall_clock_ms ({}) after a real hold",
+            released.wall_clock_ms,
+            acquired.wall_clock_ms
+        );
+    }
+
     /// Acceptance: "The owner is recorded as a closed value … and a
     /// `core.busy` event names the owner that was holding the core at the
     /// time." — a second checkout attempted while the first is still held
@@ -2994,7 +3155,7 @@ mod core_checkout_tests {
 
         let guard = cell.checkout(CoreOwner::Sync, 1_000).unwrap();
         cell.drain_diagnostics(); // discard the checkout's own wait/acquire pair
-        let result = cell.read(CoreOwner::Projects, 1_000, "busy".to_string(), |host| {
+        let result = cell.read(1_000, "busy".to_string(), |host| {
             serde_json::to_string(&host.projects()).unwrap()
         });
         assert_eq!(result, "busy");
@@ -3037,7 +3198,7 @@ mod core_checkout_tests {
         let dir = tempfile::tempdir().unwrap();
         let cell = fresh_cell(&dir, "ns-5").await;
 
-        let result = cell.read(CoreOwner::Projects, 1_000, "busy".to_string(), |host| {
+        let result = cell.read(1_000, "busy".to_string(), |host| {
             serde_json::to_string(&host.projects()).unwrap()
         });
         assert_ne!(result, "busy");
@@ -3063,7 +3224,7 @@ mod core_checkout_tests {
         drop(guard);
 
         let events = cell.drain_diagnostics();
-        assert!(matches!(events.last().unwrap().event, DiagnosticEvent::CoreReleased));
+        assert!(matches!(events.last().unwrap().event, DiagnosticEvent::CoreReleased { .. }));
         // The host is genuinely checked back in — a further checkout
         // succeeds rather than seeing a phantom owner forever.
         assert!(cell.checkout(CoreOwner::Sync, 2_000).is_some());
@@ -3095,19 +3256,27 @@ mod core_checkout_tests {
         }
 
         let events = cell.drain_diagnostics();
-        assert!(matches!(events.last().unwrap().event, DiagnosticEvent::CoreReleased));
+        assert!(matches!(events.last().unwrap().event, DiagnosticEvent::CoreReleased { .. }));
         assert!(cell.checkout(CoreOwner::Sync, 2_000).is_some());
     }
 
     // --------------------------------------------- operation.* (capture/triage)
 
     /// Acceptance: "A successful capture records `operation.local_commit`
-    /// **before** any `http.started` in the same operation." Capture makes
-    /// no network call of its own (it only enqueues durably —
-    /// [`Core::capture`]'s own doc), so the *complete* ordering claim is:
-    /// `operation.requested`, `operation.local_commit`,
-    /// `operation.finished{success}`, with no `http.started` anywhere in
-    /// between for this operation's id.
+    /// **before** any `http.started` in the same operation." Stated
+    /// honestly (#708 review round 1, finding 5's "also fix" list): this
+    /// assertion **cannot fail against the current architecture**.
+    /// `ffi-web` never emits `http.started` at all — [`Core::capture`]
+    /// only enqueues durably, and the HTTP round trip a queued mutation
+    /// eventually takes happens later, inside an unrelated sync cycle,
+    /// under that cycle's own `cycle_id`/`request_id`, with no
+    /// `operation_id` threaded through the queue to connect the two. So
+    /// this test's "no `http.started` in the same operation" half is true
+    /// by construction, not because the ordering was raced and won — the
+    /// three-event *order* below is the only half a regression could
+    /// actually break. Closing that gap for real (an `operation_id`
+    /// carried on the queued `MutationIntent` through to its eventual
+    /// send) is a follow-up, not something this test can stand in for.
     #[tokio::test]
     async fn a_successful_capture_emits_local_commit_before_finished_and_no_http_started() {
         let dir = tempfile::tempdir().unwrap();
@@ -3115,7 +3284,7 @@ mod core_checkout_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
         let sink = DiagnosticBuffer::default();
         let session = DiagnosticSession::new("s", 0);
-        let diagnostics = OperationDiagnostics { session: &session, sink: &sink, origin_monotonic_ms: 0 };
+        let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
 
         let response = host
             .capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000, diagnostics, "op-1")
@@ -3153,7 +3322,7 @@ mod core_checkout_tests {
 
         let sink = DiagnosticBuffer::default();
         let session = DiagnosticSession::new("s", 0);
-        let diagnostics = OperationDiagnostics { session: &session, sink: &sink, origin_monotonic_ms: 0 };
+        let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
 
         let response = host
             .capture("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000, diagnostics, "op-2")
@@ -3201,7 +3370,7 @@ mod core_checkout_tests {
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
         let sink = DiagnosticBuffer::default();
         let session = DiagnosticSession::new("s", 0);
-        let diagnostics = OperationDiagnostics { session: &session, sink: &sink, origin_monotonic_ms: 0 };
+        let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
 
         let response = host
             .triage(
@@ -3248,7 +3417,7 @@ mod core_checkout_tests {
         // style just above.
         let sink = DiagnosticBuffer::default();
         let session = DiagnosticSession::new("s", 0);
-        let diagnostics = OperationDiagnostics { session: &session, sink: &sink, origin_monotonic_ms: 0 };
+        let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
         diagnostics.emit_sync_outcome(1_000, &CoreCycleOutcome::Held);
 
         let events = sink.drain();
@@ -3268,7 +3437,7 @@ mod core_checkout_tests {
     async fn no_credential_emits_nothing() {
         let sink = DiagnosticBuffer::default();
         let session = DiagnosticSession::new("s", 0);
-        let diagnostics = OperationDiagnostics { session: &session, sink: &sink, origin_monotonic_ms: 0 };
+        let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
         diagnostics.emit_sync_outcome(1_000, &CoreCycleOutcome::NoCredential);
         assert_eq!(sink.drain(), Vec::new());
     }
@@ -3287,7 +3456,7 @@ mod core_checkout_tests {
             .unwrap();
         let sink = DiagnosticBuffer::default();
         let session = DiagnosticSession::new("s", 0);
-        let diagnostics = OperationDiagnostics { session: &session, sink: &sink, origin_monotonic_ms: 0 };
+        let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
 
         let response = host.run(1_000, "user", true, 0.0, diagnostics).await;
         assert_eq!(response.kind, "pull_failed");
@@ -3311,6 +3480,56 @@ mod core_checkout_tests {
             retry_after_ms: 1_000,
         };
         assert_eq!(sync_outcome_of(&outcome), SyncOutcome::PersistFailed);
+    }
+
+    // --------------------------------------------- PendingApiKeyOp ordering
+    //
+    // [`PendingApiKeyOp`]'s own doc states the round-2 (#196/PR #202)
+    // rationale in full: a queued `Push` must never be superseded by a
+    // later queued `Rehydrate`, in either arrival order. These two tests
+    // are what that doc points to as "pinned by," and #708 review round 1
+    // found the claim asserted only in prose, with no test backing it —
+    // reading `pending_op` directly (a private field, but this module is
+    // `TaskCoreCell`'s own defining module, so a descendant `#[cfg(test)]`
+    // module may read it) rather than needing a real 401 to force `held`
+    // into an observable state.
+
+    /// The order the round-2 review's own failure scenario actually
+    /// happens in: `Push` first, then a later `Rehydrate` attempt while
+    /// still checked out — the `Rehydrate` must be dropped, not applied.
+    #[tokio::test]
+    async fn a_queued_push_is_never_superseded_by_a_later_queued_rehydrate() {
+        let dir = tempfile::tempdir().unwrap();
+        let cell = fresh_cell(&dir, "ns-pending-1").await;
+
+        let _guard = cell.checkout(CoreOwner::Sync, 1_000).unwrap();
+        cell.push_api_key("tok-push".to_string());
+        cell.rehydrate_api_key("tok-rehydrate".to_string());
+
+        assert_eq!(
+            *cell.pending_op.borrow(),
+            Some(PendingApiKeyOp::Push("tok-push".to_string())),
+            "a later Rehydrate must never supersede an already-queued Push"
+        );
+    }
+
+    /// The reverse arrival order: a queued `Rehydrate`, then a `Push` —
+    /// `Push` still wins, same as [`PendingApiKeyOp::push_api_key`]'s own
+    /// "supersedes any other queued op unconditionally" contract states.
+    #[tokio::test]
+    async fn a_later_push_supersedes_an_earlier_queued_rehydrate() {
+        let dir = tempfile::tempdir().unwrap();
+        let cell = fresh_cell(&dir, "ns-pending-2").await;
+
+        let _guard = cell.checkout(CoreOwner::Sync, 1_000).unwrap();
+        cell.rehydrate_api_key("tok-rehydrate".to_string());
+        cell.push_api_key("tok-push".to_string());
+
+        assert_eq!(
+            *cell.pending_op.borrow(),
+            Some(PendingApiKeyOp::Push("tok-push".to_string())),
+            "a later Push must supersede an earlier queued Rehydrate"
+        );
     }
 }
 

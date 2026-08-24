@@ -146,42 +146,71 @@ pub enum DiagnosticHttpMethod {
     Delete,
 }
 
-/// Who currently holds the single `TaskHostCore`/mobile-equivalent
-/// checkout (#708's amendment to this shared enum, promised by #706 and
-/// #707's own docs) — a payload field of [`DiagnosticEvent::CoreBusy`]
-/// only. The asker in a `core.busy` answer already knows who *it* is; the
-/// holder is the one fact a bare re-entrancy guard (`RefCell::take()`
-/// returning `None`) could never answer on its own, so this is what makes
-/// that answer nameable rather than a bare "no."
+/// Who currently holds the single web/mobile-host task-core checkout
+/// (#708's amendment to this shared enum, promised by #706 and #707's own
+/// docs) — a payload field of `DiagnosticEvent::CoreBusy` and
+/// `DiagnosticEvent::CoreReleased`. The asker in a `core.busy` answer
+/// already knows who *it* is; the holder is the one fact a bare
+/// re-entrancy guard (a `RefCell::take()` returning `None`) could never
+/// answer on its own, so this is what makes that answer nameable rather
+/// than a bare "no." **Deliberately plain prose, no intra-doc links, in
+/// every variant's doc below**: this is `hummingbird-domain`, the one
+/// crate shared by both the client and server Cargo workspaces (this
+/// module's own header), and every concrete method this enum names —
+/// `TaskHostCore::capture`, `Core::run`, and the rest — lives in
+/// `hummingbird-core` or `hummingbird-ffi-web`, both *client*-workspace
+/// crates this crate cannot depend on or link into. A `[text]` link to one
+/// from here does not resolve; `cargo doc -p hummingbird-domain --no-deps`
+/// is the check that would have caught it.
 ///
 /// Deliberately coarser than "one variant per wasm-host entry point" —
-/// `Projects` covers every dossier-card write (`create_project`,
-/// `patch_project`, project links, `Route`, fog, actions, Steps) and
-/// `Grill` covers the Grill-completion trio (`complete_grill`,
-/// `save_grill_draft`, `discard_grill_draft`): a caller waiting behind the
+/// the web host's `Projects` owner covers every dossier-card write
+/// (create_project, patch_project, project links, Route, fog, actions,
+/// Steps) and `Grill` covers the Grill-completion trio (complete_grill,
+/// save_grill_draft, discard_grill_draft): a caller waiting behind the
 /// core cares *which area* is holding it, not which of a dozen near-
 /// identical CAS-patch methods inside that area happened to be the one.
+///
+/// **Base enum for #708/#710's reconciliation.** #708 (the web host) and
+/// #710 (the mobile host) each need this vocabulary; #708 landed first, so
+/// this is the base #710 rebases its own call sites onto rather than
+/// forking a second enum — see this module's own header on why there is
+/// exactly one owner enum, ever. No `Other`/catch-all variant: an
+/// unnameable owner would defeat #712's whole interpretation table, whose
+/// job is telling an operator who held the core, so every call site on
+/// every host must be nameable by one of the members below (add a member
+/// rather than reach for a catch-all).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CoreOwner {
-    /// A sync cycle — [`Core::run`]/[`Core::run_observed`]'s own checkout.
+    /// A sync cycle — the web host's `Core::run`/`Core::run_observed`
+    /// checkout.
     Sync,
-    /// [`TaskHostCore::capture`]'s new-item write.
+    /// The web host's capture (new-item) write.
     Capture,
-    /// [`TaskHostCore::act`]'s start/complete/block/cancel write.
+    /// The web host's act write (start/complete/block/cancel an item).
     Act,
-    /// [`TaskHostCore::triage`]'s edit-and-promote write.
+    /// The web host's triage write (edit-and-promote).
     Triage,
-    /// The Grill-completion trio: `complete_grill`, `save_grill_draft`,
-    /// `discard_grill_draft`.
+    /// The Grill-completion trio: complete_grill, save_grill_draft,
+    /// discard_grill_draft.
     Grill,
-    /// Every project-dossier write: `create_project`, `patch_project`,
+    /// Every project-dossier write: create_project, patch_project,
     /// project links, Route, fog, project actions, Steps.
     Projects,
-    /// `create_rule`/`patch_rule` (#140/ADR-0013).
+    /// create_rule/patch_rule (#140/ADR-0013).
     Rules,
-    /// `set_binding`/`set_question_enabled` (#118/#715).
+    /// set_binding/set_question_enabled (#118/#715).
     Settings,
+    /// A read-only getter's own acquisition (#708 review round 1, finding
+    /// 1) — every one of the web host's read-only accessors
+    /// (frontier/ledger/search/bindings/pane_read/etc.) shares this one
+    /// identity rather than borrowing a write category that does not
+    /// describe them. Also the defensive fallback a read's `core.busy`
+    /// answer uses in the (should-be-unreachable) case where the checkout
+    /// slot is empty but no holder was recorded — an invariant violation
+    /// this vocabulary still needs a legal value for, rather than a panic.
+    Read,
 }
 
 /// How one `operation.*`-family unit of work ended.
@@ -287,12 +316,20 @@ pub enum DiagnosticEvent {
     #[serde(rename = "core.acquired")]
     CoreAcquired,
     /// #708's amendment: names the [`CoreOwner`] holding the checkout —
-    /// see that type's own doc for why this is the one variant in this
-    /// triad that carries a payload at all.
+    /// the asker already knows who *it* is, so this is the fact only the
+    /// holder can supply.
     #[serde(rename = "core.busy")]
     CoreBusy { owner: CoreOwner },
+    /// #708 review round 1: also carries [`CoreOwner`] — a checkout's own
+    /// guard is the one thing that still knows which owner it was checked
+    /// out as by the time it releases (the shared re-entrancy slot itself
+    /// is cleared first), so the release event is where that fact would
+    /// otherwise be lost rather than merely redundant with `core.acquired`
+    /// (the two can be arbitrarily far apart in the stream once a hold
+    /// runs long, which is exactly the case this whole slice exists to
+    /// make legible).
     #[serde(rename = "core.released")]
-    CoreReleased,
+    CoreReleased { owner: CoreOwner },
 
     #[serde(rename = "operation.requested")]
     OperationRequested,
@@ -316,6 +353,22 @@ pub enum DiagnosticEvent {
     #[serde(rename = "operation.abandoned")]
     OperationAbandoned,
 
+    /// **#707's Network Information deferral, declined here rather than
+    /// left silent (#708 review round 1).** #707's brief asked for
+    /// "unavailable Network Information API fields recorded as
+    /// `unknown`," found it unsatisfiable against this payload
+    /// (`{online: bool}` only), and deferred the richer fields
+    /// (`effectiveType`/`downlink`/`rtt`/`saveData`) into whichever slice
+    /// next amended this enum — which is #708. Declining rather than
+    /// implementing it here: extending this payload is a #707-scoped
+    /// product decision (what "unknown" means per field, whether a
+    /// missing `navigator.connection` collapses to one flag or four)
+    /// that needs the TS producer
+    /// (`client/web/src/worker/diagnostics-events.ts`'s
+    /// `networkChangedEvent`) rewritten to actually populate it — real
+    /// work outside a core-ownership slice's own surface, not a
+    /// coincidental amendment to make while already touching this enum
+    /// for `CoreOwner`. Left as a named follow-up rather than guessed at.
     #[serde(rename = "network.changed")]
     NetworkChanged { online: bool },
 
@@ -522,6 +575,31 @@ mod tests {
         assert_eq!(round_tripped, event);
     }
 
+    /// #708 review round 1: `core.released` carries the same closed
+    /// [`CoreOwner`] — the checkout's own guard is the only thing left
+    /// that still knows which owner it was by the time it releases, since
+    /// the shared holder slot is cleared before this fires.
+    #[test]
+    fn a_core_released_event_names_its_own_owner_and_round_trips() {
+        let event = DiagnosticEventV1 {
+            schema_version: DIAGNOSTIC_EVENT_SCHEMA_VERSION,
+            seq: 6,
+            wall_clock_ms: 1_700_000_030_000,
+            elapsed_ms: 30_000,
+            session_id: "web-1".to_string(),
+            source: Source::Core,
+            cycle_id: None,
+            operation_id: None,
+            request_id: None,
+            event: DiagnosticEvent::CoreReleased { owner: CoreOwner::Sync },
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"name\":\"core.released\""));
+        assert!(json.contains("\"owner\":\"sync\""));
+        let round_tripped: DiagnosticEventV1 = serde_json::from_str(&json).unwrap();
+        assert_eq!(round_tripped, event);
+    }
+
     /// The authority's own two families round-trip too, with `Source::Authority`
     /// and no `cycle_id` — the common case, since most authority traffic
     /// (settings reads, admin operations) carries no client sync cycle at
@@ -615,7 +693,7 @@ mod tests {
                 DiagnosticEvent::CoreWaitStarted => DiagnosticEvent::CoreWaitStarted,
                 DiagnosticEvent::CoreAcquired => DiagnosticEvent::CoreAcquired,
                 DiagnosticEvent::CoreBusy { owner } => DiagnosticEvent::CoreBusy { owner },
-                DiagnosticEvent::CoreReleased => DiagnosticEvent::CoreReleased,
+                DiagnosticEvent::CoreReleased { owner } => DiagnosticEvent::CoreReleased { owner },
                 DiagnosticEvent::OperationRequested => DiagnosticEvent::OperationRequested,
                 DiagnosticEvent::OperationLocalCommit => DiagnosticEvent::OperationLocalCommit,
                 DiagnosticEvent::OperationFinished { outcome } => {
@@ -671,7 +749,7 @@ mod tests {
             DiagnosticEvent::CoreWaitStarted,
             DiagnosticEvent::CoreAcquired,
             DiagnosticEvent::CoreBusy { owner: CoreOwner::Sync },
-            DiagnosticEvent::CoreReleased,
+            DiagnosticEvent::CoreReleased { owner: CoreOwner::Read },
             DiagnosticEvent::OperationRequested,
             DiagnosticEvent::OperationLocalCommit,
             DiagnosticEvent::OperationFinished { outcome: OperationOutcome::Success },
