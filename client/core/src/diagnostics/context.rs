@@ -98,6 +98,39 @@ impl<'a> DiagnosticSession<'a> {
     fn next_seq(&self) -> u64 {
         self.seq.fetch_add(1, Ordering::Relaxed)
     }
+
+    /// #708: a session-scoped emit for a caller with no sync cycle of its
+    /// own to correlate by — the wasm host's own `TaskHostCore`
+    /// checkout/operation instrumentation
+    /// (`client/ffi-web/src/task_host.rs`), which correlates by
+    /// `operation_id` rather than a `cycle_id`. [`DiagnosticsContext`]
+    /// stays the cycle-scoped sibling this crate's own sync engine builds;
+    /// this is the bare session-level primitive every #706 consumer with
+    /// only a session (no cycle) needs, so it does not have to hand-roll a
+    /// second copy of `seq`/envelope bookkeeping. `wall_clock_ms` and
+    /// `elapsed_ms` are both caller-supplied, same as everywhere else in
+    /// this module — this method samples no clock of its own.
+    pub fn emit(
+        &self,
+        sink: &dyn DiagnosticSink,
+        wall_clock_ms: i64,
+        elapsed_ms: u64,
+        operation_id: Option<&str>,
+        event: DiagnosticEvent,
+    ) {
+        sink.record(DiagnosticEventV1 {
+            schema_version: DIAGNOSTIC_EVENT_SCHEMA_VERSION,
+            seq: self.next_seq(),
+            wall_clock_ms,
+            elapsed_ms,
+            session_id: self.session_id.to_string(),
+            source: Source::Core,
+            cycle_id: None,
+            operation_id: operation_id.map(str::to_string),
+            request_id: None,
+            event,
+        });
+    }
 }
 
 /// The per-cycle context every observed sync cycle carries. `cycle_id` is
@@ -443,6 +476,43 @@ mod tests {
             events[0].elapsed_ms, 10,
             "elapsed_ms must be clock(20) - the caller-supplied origin(10), not clock(20) - clock(20)"
         );
+    }
+
+    /// #708: [`DiagnosticSession::emit`] is the cycle-less sibling of
+    /// [`DiagnosticsContext::emit`] — it must carry `operation_id` and
+    /// `cycle_id: None`, never the reverse.
+    #[test]
+    fn session_emit_carries_operation_id_and_no_cycle_id() {
+        let sink = crate::diagnostics::test_support::RecordingSink::default();
+        let session = DiagnosticSession::new("s-1", 0);
+
+        session.emit(&sink, 1_000, 5, Some("op-1"), DiagnosticEvent::CoreAcquired);
+
+        let events = sink.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].operation_id.as_deref(), Some("op-1"));
+        assert_eq!(events[0].cycle_id, None);
+        assert_eq!(events[0].wall_clock_ms, 1_000);
+        assert_eq!(events[0].elapsed_ms, 5);
+        assert_eq!(events[0].session_id, "s-1");
+    }
+
+    /// `seq` keeps counting across [`DiagnosticSession::emit`] calls the
+    /// same way it does across [`DiagnosticsContext`] ones sharing the same
+    /// session — both draw from the identical counter.
+    #[test]
+    fn session_emit_shares_the_seq_counter_with_diagnostics_context() {
+        let sink = crate::diagnostics::test_support::RecordingSink::default();
+        let clock = RecordingClock::default();
+        let session = DiagnosticSession::new("s-1", 0);
+
+        session.emit(&sink, 1_000, 0, None, DiagnosticEvent::CoreWaitStarted);
+        let cycle = DiagnosticsContext::new(&sink, &clock, &session, "c-1", "core", "test", 1_000);
+        cycle.emit_sync_started(true);
+        session.emit(&sink, 1_000, 0, None, DiagnosticEvent::CoreAcquired);
+
+        let seqs: Vec<u64> = sink.events().iter().map(|e| e.seq).collect();
+        assert_eq!(seqs, vec![0, 1, 2]);
     }
 
     /// Review round 1, finding 2: `seq` must keep counting across cycles

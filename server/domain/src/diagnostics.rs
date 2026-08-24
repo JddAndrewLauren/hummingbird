@@ -146,6 +146,44 @@ pub enum DiagnosticHttpMethod {
     Delete,
 }
 
+/// Who currently holds the single `TaskHostCore`/mobile-equivalent
+/// checkout (#708's amendment to this shared enum, promised by #706 and
+/// #707's own docs) — a payload field of [`DiagnosticEvent::CoreBusy`]
+/// only. The asker in a `core.busy` answer already knows who *it* is; the
+/// holder is the one fact a bare re-entrancy guard (`RefCell::take()`
+/// returning `None`) could never answer on its own, so this is what makes
+/// that answer nameable rather than a bare "no."
+///
+/// Deliberately coarser than "one variant per wasm-host entry point" —
+/// `Projects` covers every dossier-card write (`create_project`,
+/// `patch_project`, project links, `Route`, fog, actions, Steps) and
+/// `Grill` covers the Grill-completion trio (`complete_grill`,
+/// `save_grill_draft`, `discard_grill_draft`): a caller waiting behind the
+/// core cares *which area* is holding it, not which of a dozen near-
+/// identical CAS-patch methods inside that area happened to be the one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoreOwner {
+    /// A sync cycle — [`Core::run`]/[`Core::run_observed`]'s own checkout.
+    Sync,
+    /// [`TaskHostCore::capture`]'s new-item write.
+    Capture,
+    /// [`TaskHostCore::act`]'s start/complete/block/cancel write.
+    Act,
+    /// [`TaskHostCore::triage`]'s edit-and-promote write.
+    Triage,
+    /// The Grill-completion trio: `complete_grill`, `save_grill_draft`,
+    /// `discard_grill_draft`.
+    Grill,
+    /// Every project-dossier write: `create_project`, `patch_project`,
+    /// project links, Route, fog, project actions, Steps.
+    Projects,
+    /// `create_rule`/`patch_rule` (#140/ADR-0013).
+    Rules,
+    /// `set_binding`/`set_question_enabled` (#118/#715).
+    Settings,
+}
+
 /// How one `operation.*`-family unit of work ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -248,8 +286,11 @@ pub enum DiagnosticEvent {
     CoreWaitStarted,
     #[serde(rename = "core.acquired")]
     CoreAcquired,
+    /// #708's amendment: names the [`CoreOwner`] holding the checkout —
+    /// see that type's own doc for why this is the one variant in this
+    /// triad that carries a payload at all.
     #[serde(rename = "core.busy")]
-    CoreBusy,
+    CoreBusy { owner: CoreOwner },
     #[serde(rename = "core.released")]
     CoreReleased,
 
@@ -457,6 +498,30 @@ mod tests {
         assert_eq!(round_tripped, event);
     }
 
+    /// #708's amendment: `core.busy` carries the closed [`CoreOwner`]
+    /// naming who currently holds the checkout, not the asker — and it
+    /// round-trips.
+    #[test]
+    fn a_core_busy_event_names_the_holder_and_round_trips() {
+        let event = DiagnosticEventV1 {
+            schema_version: DIAGNOSTIC_EVENT_SCHEMA_VERSION,
+            seq: 5,
+            wall_clock_ms: 1_700_000_000_000,
+            elapsed_ms: 3,
+            session_id: "web-1".to_string(),
+            source: Source::Core,
+            cycle_id: None,
+            operation_id: Some("op-1".to_string()),
+            request_id: None,
+            event: DiagnosticEvent::CoreBusy { owner: CoreOwner::Sync },
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"name\":\"core.busy\""));
+        assert!(json.contains("\"owner\":\"sync\""));
+        let round_tripped: DiagnosticEventV1 = serde_json::from_str(&json).unwrap();
+        assert_eq!(round_tripped, event);
+    }
+
     /// The authority's own two families round-trip too, with `Source::Authority`
     /// and no `cycle_id` — the common case, since most authority traffic
     /// (settings reads, admin operations) carries no client sync cycle at
@@ -549,7 +614,7 @@ mod tests {
                 },
                 DiagnosticEvent::CoreWaitStarted => DiagnosticEvent::CoreWaitStarted,
                 DiagnosticEvent::CoreAcquired => DiagnosticEvent::CoreAcquired,
-                DiagnosticEvent::CoreBusy => DiagnosticEvent::CoreBusy,
+                DiagnosticEvent::CoreBusy { owner } => DiagnosticEvent::CoreBusy { owner },
                 DiagnosticEvent::CoreReleased => DiagnosticEvent::CoreReleased,
                 DiagnosticEvent::OperationRequested => DiagnosticEvent::OperationRequested,
                 DiagnosticEvent::OperationLocalCommit => DiagnosticEvent::OperationLocalCommit,
@@ -605,7 +670,7 @@ mod tests {
             },
             DiagnosticEvent::CoreWaitStarted,
             DiagnosticEvent::CoreAcquired,
-            DiagnosticEvent::CoreBusy,
+            DiagnosticEvent::CoreBusy { owner: CoreOwner::Sync },
             DiagnosticEvent::CoreReleased,
             DiagnosticEvent::OperationRequested,
             DiagnosticEvent::OperationLocalCommit,
