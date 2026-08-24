@@ -71,6 +71,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 mod calendar_token;
+mod core_lock;
 mod diagnostics;
 
 use calendar_token::{
@@ -3833,6 +3834,13 @@ pub struct MobileTaskHost {
     /// #564's calendar lane, behind its own lock — see [`CalendarHalf`] for
     /// why it is not `inner`'s.
     calendar: tokio::sync::Mutex<CalendarHalf>,
+    /// #710: every acquisition of `inner` above goes through
+    /// [`Self::lock_inner`], which reads/updates this breadcrumb and emits
+    /// `core.wait_started`/`core.acquired`/`core.released` around it — see
+    /// `core_lock`'s own module doc.
+    core_owner: core_lock::CoreOwnershipTracker,
+    diag_session: core_lock::CoreLockSession,
+    diag_sink: core_lock::BufferingSink,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -3897,26 +3905,50 @@ impl MobileTaskHost {
                 api_key: shadow_key,
             }),
             calendar: tokio::sync::Mutex::new(calendar),
+            core_owner: core_lock::CoreOwnershipTracker::new(),
+            diag_session: core_lock::CoreLockSession::new(),
+            diag_sink: core_lock::BufferingSink::new(),
         }))
+    }
+
+    /// Drains every buffered `core.*`/`operation.*` event (#710) — see
+    /// `core_lock`'s module doc for the production-wiring tradeoff this
+    /// exists to name: a host that never calls this loses nothing (the
+    /// buffer just fills, oldest-drops-first, up to `BUFFER_CAPACITY`), it
+    /// just never sees these particular events in its exported journal.
+    /// `SyncWorker` calls this once per run and forwards each line to
+    /// `DiagnosticsRecorder.appendRaw`.
+    pub async fn take_diagnostic_events(&self) -> Vec<MobileDiagnosticLine> {
+        self.diag_sink
+            .drain()
+            .into_iter()
+            .map(|event| MobileDiagnosticLine {
+                wall_clock_ms: event.wall_clock_ms,
+                json: serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string()),
+            })
+            .collect()
     }
 
     /// The wrapped core's public API version — same value as the free
     /// [`core_api_version`], surfaced on the object so a host holding only
     /// the handle can show it.
     pub async fn api_version(&self) -> u32 {
-        self.inner.lock().await.core.api_version()
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read)
+            .await
+            .core
+            .api_version()
     }
 
     /// The mirror's active-item population (ADR-0001's watchline figure) —
     /// the M0 proof screen's number.
     pub async fn active_item_count(&self) -> u32 {
-        self.inner.lock().await.core.active_item_count() as u32
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await.core.active_item_count() as u32
     }
 
     /// The outbound queue's current depth — the "queued" sync-status
     /// figure.
     pub async fn queue_depth(&self) -> u32 {
-        self.inner.lock().await.core.queue_depth() as u32
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await.core.queue_depth() as u32
     }
 
     /// Every dead-lettered entry (#535), per [`Core::dead_letters`] — S9's
@@ -3926,9 +3958,7 @@ impl MobileTaskHost {
     /// is that each surfaces `Core` verbatim, not that they surface each
     /// other).
     pub async fn dead_letters(&self) -> Vec<MobileDeadLetterRecord> {
-        self.inner
-            .lock()
-            .await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
             .core
             .dead_letters()
             .iter()
@@ -3938,9 +3968,7 @@ impl MobileTaskHost {
 
     /// Every standing-question binding (#535/#118), per [`Core::bindings`].
     pub async fn bindings(&self) -> Vec<MobileBindingRecord> {
-        self.inner
-            .lock()
-            .await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
             .core
             .bindings()
             .iter()
@@ -3964,9 +3992,7 @@ impl MobileTaskHost {
         let Some(key) = BindingKey::parse(&key) else {
             return Err(MobileSetBindingError::UnknownKey);
         };
-        self.inner
-            .lock()
-            .await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await
             .core
             .set_binding(&seed, key, &value, now_ms)
             .await
@@ -3989,9 +4015,7 @@ impl MobileTaskHost {
     /// **Android does not render this yet** (#716); the door lands here so
     /// that slice is rendering-only.
     pub async fn question_switches(&self) -> Vec<MobileQuestionSwitch> {
-        self.inner
-            .lock()
-            .await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
             .core
             .question_switches()
             .iter()
@@ -4017,9 +4041,7 @@ impl MobileTaskHost {
         now_ms: i64,
     ) -> Result<(), MobileSetBindingError> {
         let seed = mint_mutation_seed("question-enabled", now_ms);
-        self.inner
-            .lock()
-            .await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await
             .core
             .set_question_enabled(&seed, unmap_standing_question(question), enabled, now_ms)
             .await
@@ -4032,7 +4054,7 @@ impl MobileTaskHost {
     /// after a `credential_needed` event). Always resumes a hold — see
     /// [`Core::push_api_key`].
     pub async fn push_api_key(&self, api_key: String) {
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
         inner.api_key = Some(api_key.clone());
         inner.core.push_api_key(api_key);
     }
@@ -4040,7 +4062,7 @@ impl MobileTaskHost {
     /// The host reloading a token it already had stored (app start), never
     /// resuming a hold — see [`Core::rehydrate_api_key`].
     pub async fn rehydrate_api_key(&self, api_key: String) {
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
         inner.api_key = Some(api_key.clone());
         inner.core.rehydrate_api_key(api_key);
     }
@@ -4048,7 +4070,7 @@ impl MobileTaskHost {
     /// "Forget token": clears the in-memory credential. Nothing durable to
     /// clean up — the core never persisted it.
     pub async fn clear_api_key(&self) {
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
         inner.api_key = None;
         inner.core.clear_api_key();
     }
@@ -4069,7 +4091,7 @@ impl MobileTaskHost {
             "timer" => Trigger::Timer,
             _ => Trigger::User,
         };
-        let inner = &mut *self.inner.lock().await;
+        let inner = &mut *self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Sync).await;
         let outcome = inner
             .core
             .run(
@@ -4133,14 +4155,31 @@ impl MobileTaskHost {
         };
 
         let seed = mint_mutation_seed("capture", now_ms);
-        let mut inner = self.inner.lock().await;
-        inner
+        // #710: `operation.requested`/`operation.local_commit` bracket the
+        // durable local write `Core::capture` does — this call never
+        // touches the network (it only enqueues, `Core::capture`'s own
+        // doc), so `operation.local_commit` is recorded synchronously
+        // right after that enqueue succeeds, always before any
+        // `http.started` this operation's id could ever carry (there
+        // isn't one, by construction — see `core_lock`'s module doc and
+        // this crate's own capture test for the pin).
+        let operation_id = mint_mutation_seed("capture-op", now_ms);
+        let session_id = current_diagnostic_session_id();
+        self.diag_session
+            .emit_operation_requested(&self.diag_sink, &session_id, &operation_id);
+        let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Capture).await;
+        let result = inner
             .core
             .capture(&seed, draft.title, stage, now_ms, options)
             .await
             .map_err(|error| MobileCaptureError::CaptureFailed {
                 detail: error.to_string(),
-            })
+            });
+        if result.is_ok() {
+            self.diag_session
+                .emit_operation_local_commit(&self.diag_sink, &session_id, &operation_id);
+        }
+        result
     }
 
     /// Every live project — the details disclosure's Project picker's read
@@ -4166,9 +4205,7 @@ impl MobileTaskHost {
     /// the seam to Kotlin, the grouping axis needs names inside Rust and
     /// never crosses at all.
     pub async fn projects(&self) -> Vec<MobileProject> {
-        self.inner
-            .lock()
-            .await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
             .core
             .projects()
             .into_iter()
@@ -4182,7 +4219,7 @@ impl MobileTaskHost {
     /// `done-order.ts`'s own `orderDone`. Kotlin does no ordering; the seam
     /// hands it the finished order.
     pub async fn done_items(&self) -> Vec<MobileDoneRecord> {
-        let inner = self.inner.lock().await;
+        let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await;
         let items = inner.core.done();
         let roster_items: Vec<roster::RosterItem> = items.iter().map(to_roster_item).collect();
         let order = roster::order_done(&roster_items);
@@ -4210,7 +4247,7 @@ impl MobileTaskHost {
     /// sink of `ledger-order.ts`'s three exports plus `item-actions.ts`'s
     /// widened rule, applied once here rather than per row in Kotlin.
     pub async fn ledger_rows(&self, now_ms: i64) -> Vec<MobileLedgerRowRecord> {
-        let inner = self.inner.lock().await;
+        let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await;
         let entries = inner.core.ledger(now_ms);
         let roster_items: Vec<roster::LedgerRosterItem> =
             entries.iter().map(to_ledger_roster_item).collect();
@@ -4243,9 +4280,7 @@ impl MobileTaskHost {
     /// Drains queued [`CoreEvent`]s (today: `credential_needed`) — a
     /// pull-based drain, never a host-implemented callback (ADR-0003).
     pub async fn take_events(&self) -> Vec<MobileEvent> {
-        self.inner
-            .lock()
-            .await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
             .core
             .take_events()
             .into_iter()
@@ -4284,7 +4319,7 @@ impl MobileTaskHost {
         facets: NowFacetSelectionRecord,
         now: String,
     ) -> NowBoardRecord {
-        let inner = self.inner.lock().await;
+        let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await;
         let frontier_items = inner.core.frontier();
         let triage_items = inner.core.triage_inbox();
         let grilling_items = inner.core.grilling_items();
@@ -4338,7 +4373,7 @@ impl MobileTaskHost {
             });
         };
         let seed = mint_mutation_seed("act", now_ms);
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Act).await;
         inner
             .core
             .act_acking_alert(&seed, &item_id, parsed, now_ms)
@@ -4361,9 +4396,7 @@ impl MobileTaskHost {
     /// Archived items answer here rather than `None` — history stays
     /// readable, and the record says so with `is_archived`/`is_editable`.
     pub async fn item_detail(&self, item_id: String, now_ms: i64) -> Option<ItemDetailRecord> {
-        self.inner
-            .lock()
-            .await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
             .core
             .item_detail(&item_id, now_ms)
             .map(|detail| to_item_detail_record(&detail, now_ms))
@@ -4386,7 +4419,7 @@ impl MobileTaskHost {
     ) -> Result<String, MobileGrillCompletionError> {
         let seed = mint_mutation_seed("grill", now_ms);
         let steps = to_domain_steps(&session_steps);
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Grill).await;
         inner
             .core
             .complete_grill(
@@ -4426,7 +4459,7 @@ impl MobileTaskHost {
     /// corruption) answers `None`, exactly like no draft at all — nothing
     /// worth resuming.
     pub async fn grill_draft(&self, item_id: String) -> Option<Vec<MobileGrillTurn>> {
-        let value = self.inner.lock().await.core.grill_draft(&item_id)?.clone();
+        let value = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await.core.grill_draft(&item_id)?.clone();
         let turns: Vec<skills::GrillTurn> = serde_json::from_value(value).ok()?;
         Some(turns.into_iter().map(from_domain_turn).collect())
     }
@@ -4434,7 +4467,7 @@ impl MobileTaskHost {
     /// Whether `item_id` carries a saved draft — the Triage row's own
     /// "Grill me"/"Resume grill" label source, one item at a time.
     pub async fn has_grill_draft(&self, item_id: String) -> bool {
-        self.inner.lock().await.core.has_grill_draft(&item_id)
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await.core.has_grill_draft(&item_id)
     }
 
     /// Saves (or replaces) `item_id`'s draft — #356's "every completed turn
@@ -4448,9 +4481,7 @@ impl MobileTaskHost {
         let turns: Vec<skills::GrillTurn> = turns.into_iter().map(map_turn).collect();
         let value = serde_json::to_value(&turns)
             .map_err(|error| MobileGrillDraftError::SaveFailed { detail: error.to_string() })?;
-        self.inner
-            .lock()
-            .await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Grill).await
             .core
             .save_grill_draft(&item_id, value, now_ms)
             .await
@@ -4467,9 +4498,7 @@ impl MobileTaskHost {
         item_id: String,
         now_ms: i64,
     ) -> Result<(), MobileGrillDraftError> {
-        self.inner
-            .lock()
-            .await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Grill).await
             .core
             .discard_grill_draft(&item_id, now_ms)
             .await
@@ -4495,7 +4524,7 @@ impl MobileTaskHost {
     ) -> Result<(), MobileEditError> {
         let patch = to_triage_patch(&edit).map_err(|detail| MobileEditError::EditFailed { detail })?;
         let seed = mint_mutation_seed("edit", now_ms);
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Triage).await;
         inner
             .core
             .triage(&seed, &item_id, false, patch, now_ms)
@@ -4517,7 +4546,7 @@ impl MobileTaskHost {
     /// queue on its own, for the screen whose whole reason to exist is that
     /// queue.
     pub async fn triage_board(&self, now: String) -> TriageBoardRecord {
-        let inner = self.inner.lock().await;
+        let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Triage).await;
         let triage_items = inner.core.triage_inbox();
         let grilling_items = inner.core.grilling_items();
         let draft_item_ids = inner.core.grill_draft_item_ids();
@@ -4541,7 +4570,7 @@ impl MobileTaskHost {
     ) -> Result<(), MobileEditError> {
         let patch = to_triage_patch(&edit).map_err(|detail| MobileEditError::EditFailed { detail })?;
         let seed = mint_mutation_seed("triage", now_ms);
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Triage).await;
         inner
             .core
             .triage(&seed, &item_id, promote_to_ready, patch, now_ms)
@@ -4576,7 +4605,7 @@ impl MobileTaskHost {
             ..hummingbird_core::TriagePatch::default()
         };
         let seed = mint_mutation_seed("weekend-schedule", now_ms);
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Triage).await;
         inner
             .core
             .triage(&seed, &item_id, false, patch, now_ms)
@@ -4597,9 +4626,7 @@ impl MobileTaskHost {
     /// `now`: alert liveness is instants throughout, no civil date to
     /// resolve).
     pub async fn alerts(&self, now_ms: i64) -> Vec<AlertRecord> {
-        self.inner
-            .lock()
-            .await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
             .core
             .live_alerts(now_ms)
             .iter()
@@ -4615,9 +4642,7 @@ impl MobileTaskHost {
     /// from a push, since the payload can arrive before the cycle that
     /// carries the row.
     pub async fn alert(&self, alert_id: String, now_ms: i64) -> Option<AlertRecord> {
-        self.inner
-            .lock()
-            .await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
             .core
             .alert(&alert_id)
             .map(|alert| to_alert_record(&alert, now_ms))
@@ -4640,7 +4665,7 @@ impl MobileTaskHost {
     /// retries rather than inventing a version.
     pub async fn ack_alert(&self, alert_id: String, now_ms: i64) -> Result<(), MobileAlertError> {
         let seed = mint_mutation_seed("ack", now_ms);
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Act).await;
         let Some(current) = inner.core.alert(&alert_id) else {
             return Err(MobileAlertError::AlertNotFound);
         };
@@ -4673,7 +4698,7 @@ impl MobileTaskHost {
         name: String,
         fcm_token: String,
     ) -> Result<(), MobilePushRegistrationError> {
-        let inner = self.inner.lock().await;
+        let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
         let Some(api_key) = inner.api_key.clone() else {
             return Err(MobilePushRegistrationError::Unauthorized);
         };
@@ -4717,9 +4742,7 @@ impl MobileTaskHost {
     /// stopped being able to fire.
     pub async fn rules(&self) -> Vec<RuleRecord> {
         let registry = rules::compiled_registry();
-        self.inner
-            .lock()
-            .await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
             .core
             .rules()
             .iter()
@@ -4731,9 +4754,7 @@ impl MobileTaskHost {
     /// editor's own read.
     pub async fn rule(&self, rule_id: String) -> Option<RuleRecord> {
         let registry = rules::compiled_registry();
-        self.inner
-            .lock()
-            .await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
             .core
             .rules()
             .iter()
@@ -4801,9 +4822,7 @@ impl MobileTaskHost {
         let registry = rules::compiled_registry();
         let conditions = to_conditions(&conditions, &registry, event_kind.as_deref())?;
         let seed = mint_mutation_seed("create-rule", now_ms);
-        self.inner
-            .lock()
-            .await
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Rules).await
             .core
             .create_rule(
                 &seed,
@@ -4851,7 +4870,7 @@ impl MobileTaskHost {
         now_ms: i64,
     ) -> Result<(), MobileRuleError> {
         let registry = rules::compiled_registry();
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Rules).await;
         let current = inner
             .core
             .rules()
@@ -4912,7 +4931,7 @@ impl MobileTaskHost {
     /// host owns the wall clock here as it does at every other mutation
     /// entry point in this file.
     pub async fn delete_rule(&self, rule_id: String, now_ms: i64) -> Result<(), MobileRuleError> {
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Rules).await;
         let current = inner
             .core
             .rules()
@@ -4989,7 +5008,7 @@ impl MobileTaskHost {
     /// test) — kept generic over `surface` so #537's Now questions reach
     /// it unchanged.
     pub async fn pane_zone_queries(&self, surface: MobileSurface, now_ms: i64) -> Vec<MobileZoneQuery> {
-        let inner = self.inner.lock().await;
+        let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await;
         // Phase one reads no calendar arm — it runs before any zone is
         // resolved, and every calendar window this lane needs is a function
         // of the reader's own zone. `weekend`/`vacation` ask for their zone
@@ -5026,7 +5045,7 @@ impl MobileTaskHost {
         // while holding it — see [`CalendarHalf`] for the whole of this
         // crate's lock discipline.
         let calendar = self.calendar_arm(now_ms, &zone).await;
-        let inner = self.inner.lock().await;
+        let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await;
         let inputs = mobile_pane_inputs(&inner.core, now_ms, sync, calendar);
         panes::rank_panes(map_surface(surface), &inputs, &zone)
             .into_iter()
@@ -5052,7 +5071,7 @@ impl MobileTaskHost {
     /// zero `total` from `Core::search` itself, so there is no client-side
     /// short-circuit to duplicate here.
     pub async fn search(&self, query: String, now_ms: i64) -> MobileRecallOutcome {
-        let inner = self.inner.lock().await;
+        let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await;
         let outcome = inner.core.search(&query, now_ms);
         MobileRecallOutcome {
             rows: outcome
@@ -5248,11 +5267,34 @@ impl MobileTaskHost {
 /// helper, which is Rust-side plumbing rather than a door. Kotlin has no
 /// business asking for the device token back.
 impl MobileTaskHost {
+    /// #710: the *only* way any method on this type reaches `inner` — every
+    /// existing `self.lock_inner(...).await` call site was migrated to this,
+    /// so "every acquisition… emits `core.wait_started`/`core.acquired`/
+    /// `core.released`" is true by construction, not by each call site
+    /// remembering to instrument itself. See `core_lock`'s module doc for
+    /// what `owner` means on each of the three events and why release goes
+    /// through a `Drop` guard.
+    async fn lock_inner(&self, owner: hummingbird_core::diagnostics::CoreOwner) -> core_lock::OwnedGuard<'_, Inner> {
+        let session_id = current_diagnostic_session_id();
+        core_lock::lock_with_diagnostics(
+            &self.inner,
+            &self.core_owner,
+            &self.diag_session,
+            &self.diag_sink,
+            &session_id,
+            owner,
+        )
+        .await
+    }
+
     /// The device token, copied out from under `inner`'s lock and released
     /// again before the calendar's is taken — see [`CalendarHalf`] for why
     /// that order is the whole lock discipline here.
     async fn device_token(&self) -> Option<String> {
-        self.inner.lock().await.api_key.clone()
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Calendar)
+            .await
+            .api_key
+            .clone()
     }
 
     /// The designated Trips calendar, read off the synced bindings table
@@ -5264,7 +5306,7 @@ impl MobileTaskHost {
     /// Trips calendar once, anywhere, and every device polls it. That is
     /// why the polled set cannot be the picker's list alone.
     async fn trips_calendar_id(&self) -> Option<String> {
-        let inner = self.inner.lock().await;
+        let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Calendar).await;
         inner
             .core
             .bindings()
@@ -6323,28 +6365,98 @@ pub fn is_informative_sync_outcome(kind: String) -> bool {
 /// Mirrors only the handful of [`hummingbird_core::diagnostics::DiagnosticEvent`]
 /// variants Android mints on its own — `session.started` (the mobile FFI
 /// host's own init, `CoreHolder.create`), `worker.started`/`worker.finished`
-/// (`SyncWorker`, around its `run` call) and `push.received`
-/// (`HbMessagingService.onMessageReceived`). Never the whole closed family:
-/// `Core::run_observed`'s own `sync.*`/`http.*`/`operation.*` events are
-/// #710's wiring, once Android calls the observed path at all — this is the
-/// same "mirror a Rust-owned enum, don't redefine it" shape
+/// (`SyncWorker`, around its `run` call), `push.received`
+/// (`HbMessagingService.onMessageReceived`) and, since #710,
+/// `network.changed` (`NetworkMonitor`'s `ConnectivityManager` callback).
+/// Never the whole closed family: `Core::run_observed`'s own
+/// `sync.*`/`http.*`/`operation.*` events would need Android to call the
+/// observed path, which this slice deliberately leaves unwired (see this
+/// crate's `core_lock` module doc for why) — this is the same "mirror a
+/// Rust-owned enum, don't redefine it" shape
 /// [`MobileUrgencyBand`]/[`MobileFrontierAxis`] already use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum MobileDiagnosticEvent {
     SessionStarted,
-    WorkerStarted,
-    WorkerFinished { success: bool },
+    WorkerStarted { trigger: MobileWorkerTrigger, attempt_count: u32 },
+    WorkerFinished { trigger: MobileWorkerTrigger, attempt_count: u32, success: bool },
     PushReceived,
+    NetworkChanged {
+        online: bool,
+        transport: MobileNetworkTransport,
+        internet_capable: bool,
+        validated: bool,
+        metered: bool,
+        roaming: bool,
+    },
+}
+
+/// One buffered `core.*`/`operation.*` event (#710), already serialized —
+/// [`MobileTaskHost::take_diagnostic_events`]'s return shape.
+/// `wall_clock_ms` rides alongside the JSON rather than being re-parsed out
+/// of it, the same "the caller already has this, don't make Kotlin decode
+/// JSON to get it back" rule `DiagnosticJournal.append`'s own signature
+/// follows.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileDiagnosticLine {
+    pub wall_clock_ms: i64,
+    pub json: String,
+}
+
+/// Mirrors [`hummingbird_core::diagnostics::WorkerTrigger`] — `SyncWorker`'s
+/// own two-member trigger vocabulary (`TRIGGER_TIMER`/`TRIGGER_PUSH`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileWorkerTrigger {
+    Timer,
+    Push,
+}
+
+/// Mirrors [`hummingbird_core::diagnostics::NetworkTransport`] —
+/// `ConnectivityManager`'s transport bits collapsed to one value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileNetworkTransport {
+    Cellular,
+    Wifi,
+    Vpn,
+    Other,
+    None,
 }
 
 fn map_mobile_diagnostic_event(
     event: MobileDiagnosticEvent,
 ) -> hummingbird_core::diagnostics::DiagnosticEvent {
-    use hummingbird_core::diagnostics::{DiagnosticEvent, OperationOutcome};
+    use hummingbird_core::diagnostics::{
+        DiagnosticEvent, NetworkTransport, OperationOutcome, WorkerTrigger,
+    };
+    fn map_trigger(trigger: MobileWorkerTrigger) -> WorkerTrigger {
+        match trigger {
+            MobileWorkerTrigger::Timer => WorkerTrigger::Timer,
+            MobileWorkerTrigger::Push => WorkerTrigger::Push,
+        }
+    }
+    fn map_transport(transport: MobileNetworkTransport) -> NetworkTransport {
+        match transport {
+            MobileNetworkTransport::Cellular => NetworkTransport::Cellular,
+            MobileNetworkTransport::Wifi => NetworkTransport::Wifi,
+            MobileNetworkTransport::Vpn => NetworkTransport::Vpn,
+            MobileNetworkTransport::Other => NetworkTransport::Other,
+            MobileNetworkTransport::None => NetworkTransport::None,
+        }
+    }
     match event {
         MobileDiagnosticEvent::SessionStarted => DiagnosticEvent::SessionStarted,
-        MobileDiagnosticEvent::WorkerStarted => DiagnosticEvent::WorkerStarted,
-        MobileDiagnosticEvent::WorkerFinished { success } => DiagnosticEvent::WorkerFinished {
+        MobileDiagnosticEvent::WorkerStarted { trigger, attempt_count } => {
+            DiagnosticEvent::WorkerStarted {
+                trigger: map_trigger(trigger),
+                attempt_count,
+            }
+        }
+        MobileDiagnosticEvent::WorkerFinished {
+            trigger,
+            attempt_count,
+            success,
+        } => DiagnosticEvent::WorkerFinished {
+            trigger: map_trigger(trigger),
+            attempt_count,
             outcome: if success {
                 OperationOutcome::Success
             } else {
@@ -6352,6 +6464,21 @@ fn map_mobile_diagnostic_event(
             },
         },
         MobileDiagnosticEvent::PushReceived => DiagnosticEvent::PushReceived,
+        MobileDiagnosticEvent::NetworkChanged {
+            online,
+            transport,
+            internet_capable,
+            validated,
+            metered,
+            roaming,
+        } => DiagnosticEvent::NetworkChanged {
+            online,
+            transport: Some(map_transport(transport)),
+            internet_capable: Some(internet_capable),
+            validated: Some(validated),
+            metered: Some(metered),
+            roaming: Some(roaming),
+        },
     }
 }
 
@@ -6392,6 +6519,19 @@ pub fn diagnostic_init_session(session_id: String, origin_monotonic_ms: u64) {
     let _ = DIAGNOSTIC_SESSION
         .identity
         .set((session_id, origin_monotonic_ms));
+}
+
+/// The session id [`core_lock`]'s mutex/operation spans stamp — read fresh
+/// on every emission rather than cached, since [`MobileTaskHost::init`] can
+/// run before [`diagnostic_init_session`] ever has (see `core_lock`'s own
+/// doc on [`core_lock::CoreLockSession`]). `"uninitialized"` before that
+/// call has ever landed, the same fallback [`diagnostic_event_json`] uses.
+fn current_diagnostic_session_id() -> String {
+    DIAGNOSTIC_SESSION
+        .identity
+        .get()
+        .map(|(id, _)| id.clone())
+        .unwrap_or_else(|| "uninitialized".to_string())
 }
 
 /// Mints one Android-sourced `DiagnosticEventV1` and returns it serialized
@@ -10649,10 +10789,68 @@ mod diagnostic_ffi_tests {
         let json = diagnostic_event_json(
             0,
             0,
-            MobileDiagnosticEvent::WorkerFinished { success: true },
+            MobileDiagnosticEvent::WorkerFinished {
+                trigger: MobileWorkerTrigger::Timer,
+                attempt_count: 1,
+                success: true,
+            },
         );
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["event"]["payload"]["outcome"], "success");
+        assert_eq!(value["event"]["payload"]["trigger"], "timer");
+        assert_eq!(value["event"]["payload"]["attempt_count"], 1);
+    }
+
+    /// #710's `worker.started` carries the attempt count WorkManager itself
+    /// reports — the field this whole slice exists to make visible, since
+    /// it is only available inside the worker (`runAttemptCount`).
+    #[test]
+    fn worker_started_carries_trigger_and_attempt_count() {
+        diagnostic_init_session("some-session".to_string(), 0);
+        let json = diagnostic_event_json(
+            0,
+            0,
+            MobileDiagnosticEvent::WorkerStarted {
+                trigger: MobileWorkerTrigger::Push,
+                attempt_count: 3,
+            },
+        );
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["event"]["name"], "worker.started");
+        assert_eq!(value["event"]["payload"]["trigger"], "push");
+        assert_eq!(value["event"]["payload"]["attempt_count"], 3);
+    }
+
+    /// #710's `network.changed`: no IP address or SSID field exists on the
+    /// mirror at all (there is nothing here to redact — the shape itself
+    /// carries neither), and every capability bit crosses.
+    #[test]
+    fn network_changed_carries_transport_and_capability_bits_with_no_address() {
+        diagnostic_init_session("some-session".to_string(), 0);
+        let json = diagnostic_event_json(
+            0,
+            0,
+            MobileDiagnosticEvent::NetworkChanged {
+                online: true,
+                transport: MobileNetworkTransport::Cellular,
+                internet_capable: true,
+                validated: false,
+                metered: true,
+                roaming: true,
+            },
+        );
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["event"]["name"], "network.changed");
+        let payload = &value["event"]["payload"];
+        assert_eq!(payload["online"], true);
+        assert_eq!(payload["transport"], "cellular");
+        assert_eq!(payload["internet_capable"], true);
+        assert_eq!(payload["validated"], false);
+        assert_eq!(payload["metered"], true);
+        assert_eq!(payload["roaming"], true);
+        assert!(payload.get("ip").is_none());
+        assert!(payload.get("ip_address").is_none());
+        assert!(payload.get("ssid").is_none());
     }
 
     /// Review round 1, finding: an earlier version of `diagnostic_init_session`

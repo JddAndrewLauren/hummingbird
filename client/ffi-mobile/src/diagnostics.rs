@@ -88,17 +88,20 @@ pub(crate) fn event_json(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hummingbird_core::diagnostics::OperationOutcome;
+    use hummingbird_core::diagnostics::{OperationOutcome, WorkerTrigger};
 
     #[test]
-    fn worker_started_serializes_with_no_payload_and_android_source() {
+    fn worker_started_serializes_with_its_trigger_and_attempt_count() {
         let json = event_json(
             "s-1",
             0,
             1_000,
             1_700_000_000_000,
             1_500,
-            DiagnosticEvent::WorkerStarted,
+            DiagnosticEvent::WorkerStarted {
+                trigger: WorkerTrigger::Timer,
+                attempt_count: 1,
+            },
         );
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["schema_version"], 1);
@@ -107,13 +110,15 @@ mod tests {
         assert_eq!(value["source"], "android");
         assert_eq!(value["elapsed_ms"], 500);
         assert_eq!(value["event"]["name"], "worker.started");
+        assert_eq!(value["event"]["payload"]["trigger"], "timer");
+        assert_eq!(value["event"]["payload"]["attempt_count"], 1);
         assert_eq!(value["cycle_id"], serde_json::Value::Null);
         assert_eq!(value["operation_id"], serde_json::Value::Null);
         assert_eq!(value["request_id"], serde_json::Value::Null);
     }
 
     #[test]
-    fn worker_finished_carries_its_outcome_payload() {
+    fn worker_finished_carries_its_trigger_attempt_count_and_outcome_payload() {
         let json = event_json(
             "s-1",
             1,
@@ -121,12 +126,16 @@ mod tests {
             0,
             0,
             DiagnosticEvent::WorkerFinished {
+                trigger: WorkerTrigger::Push,
+                attempt_count: 4,
                 outcome: OperationOutcome::Failure,
             },
         );
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["event"]["name"], "worker.finished");
         assert_eq!(value["event"]["payload"]["outcome"], "failure");
+        assert_eq!(value["event"]["payload"]["trigger"], "push");
+        assert_eq!(value["event"]["payload"]["attempt_count"], 4);
     }
 
     #[test]
@@ -235,16 +244,37 @@ mod tests {
     /// produces. That evidence lives here.
     #[test]
     fn no_android_minted_event_ever_carries_a_forbidden_field() {
+        use hummingbird_core::diagnostics::{CoreOwner, NetworkTransport, WorkerTrigger};
         let events = [
             DiagnosticEvent::SessionStarted,
-            DiagnosticEvent::WorkerStarted,
+            DiagnosticEvent::WorkerStarted {
+                trigger: WorkerTrigger::Timer,
+                attempt_count: 1,
+            },
             DiagnosticEvent::WorkerFinished {
+                trigger: WorkerTrigger::Timer,
+                attempt_count: 1,
                 outcome: OperationOutcome::Success,
             },
             DiagnosticEvent::WorkerFinished {
+                trigger: WorkerTrigger::Push,
+                attempt_count: 2,
                 outcome: OperationOutcome::Failure,
             },
             DiagnosticEvent::PushReceived,
+            DiagnosticEvent::NetworkChanged {
+                online: true,
+                transport: Some(NetworkTransport::Wifi),
+                internet_capable: Some(true),
+                validated: Some(true),
+                metered: Some(false),
+                roaming: Some(false),
+            },
+            DiagnosticEvent::CoreWaitStarted { owner: Some(CoreOwner::Sync) },
+            DiagnosticEvent::CoreAcquired { owner: Some(CoreOwner::Capture) },
+            DiagnosticEvent::CoreReleased { owner: CoreOwner::Triage },
+            DiagnosticEvent::OperationRequested,
+            DiagnosticEvent::OperationLocalCommit,
         ];
         for (seq, event) in events.into_iter().enumerate() {
             let json = event_json("s-1", seq as u64, 0, 1_700_000_000_000, 1_000, event);

@@ -5,6 +5,12 @@
          HTTP per ADR-0003; this is its permission). -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- #710's `NetworkMonitor`: `ConnectivityManager.registerDefaultNetworkCallback`/
+         `getNetworkCapabilities` need this to read transport and capability
+         bits at all — a normal (install-time, non-runtime) permission, no
+         prompt. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <!-- CaptureActivity's mic button: on-device SpeechRecognizer needs this
          to record, requested at tap-time (M1-5/#503), never at launch. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />

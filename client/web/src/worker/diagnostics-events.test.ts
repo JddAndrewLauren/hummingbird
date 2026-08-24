@@ -46,7 +46,7 @@ describe("event builders", () => {
       request_id: null,
       wall_clock_ms: 1_000,
     });
-    expect(event.event).toEqual({ name: "core.wait_started" });
+    expect(event.event).toEqual({ name: "core.wait_started", payload: { owner: null } });
   });
 
   it("maps enqueue/dequeue/abandon/busy to their own distinct closed-enum names", () => {
@@ -69,6 +69,22 @@ describe("event builders", () => {
   it("emits core.busy with an explicit null owner, since this layer cannot see the holder", () => {
     expect(requestBusyEvent(session, 1_000).event).toEqual({
       name: "core.busy",
+      payload: { owner: null },
+    });
+  });
+
+  // #710: `core.wait_started`/`core.acquired` gained the identical
+  // `owner: Option<CoreOwner>` treatment as `core.busy` above, for the
+  // identical reason — this queue layer cannot name a holder either. Both
+  // now require an explicit `payload` object once the shared enum makes
+  // them struct variants.
+  it("emits core.wait_started/core.acquired with an explicit null owner, since this layer cannot see the holder", () => {
+    expect(requestEnqueuedEvent(session, 1_000).event).toEqual({
+      name: "core.wait_started",
+      payload: { owner: null },
+    });
+    expect(requestDequeuedEvent(session, 1_000).event).toEqual({
+      name: "core.acquired",
       payload: { owner: null },
     });
   });
