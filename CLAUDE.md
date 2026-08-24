@@ -113,7 +113,20 @@ and so can change the operator's real calendar; every other device token,
 including every browser's, is answered 403 there. That gate is an
 allowed-holder list checked inside the handler, not a scope: a route gated
 on a token **id** is a first here, and ADR-0031 states why a fourth `Scope`
-was the wrong way to buy it. See ADR-0011 for the per-source table.
+was the wrong way to buy it. Since #711 every request the Durable Object
+handles *and authenticates* is also named in the authority's own Workers
+Logs by its acting token's non-secret `id` (`request.finished`'s `token_id`
+field) — never the token value itself. Three kinds of request carry no
+`token_id`, all for the same reason (no token was ever resolved): the admin
+lane, which authenticates against `ADMIN_SECRET` and has no per-caller id
+to name; a 401, which resolved no token at all; and a 500 raised by the
+token lookup itself. A 500 raised by a handler *after* auth succeeded does
+name its token. That is a new fact
+about what a log line reveals, not a new capability of any token: nothing
+that already held a token gained a new way to act with it, but an operator
+reading those logs (or anyone who can, since Workers Logs is a platform
+surface, not one this repo gates further) can now tell *which* device made
+a given request. See ADR-0011 for the per-source table.
 
 **An item is named to the operator by its title, never `HB-<seq>`.** That ref
 is a client-side affordance: no route accepts it, `resolve_ref` maps it onto a

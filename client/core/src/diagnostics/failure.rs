@@ -9,26 +9,16 @@
 //! message today; a mis-classified `Unknown` costs nothing (redaction wise:
 //! the message itself is never kept either way — see [`FailureClass`]'s own
 //! docs on why).
+//!
+//! [`FailureClass`] itself moved to `hummingbird_domain::diagnostics` in
+//! #711 (a payload field of `DiagnosticEvent::HttpFinished`, which lives
+//! there too — see that module's docs). This file keeps only the
+//! *classifiers*, which take client-only types (`TransportError`,
+//! `AdapterError`) the domain crate has no business naming.
 
 use crate::sync::adapter::AdapterError;
 use crate::sync::transport::TransportError;
-use serde::{Deserialize, Serialize};
-
-/// Exactly one of these seven — never the underlying message. HTTP status
-/// codes are retained (`Http`'s `status`); no response content is, which is
-/// the redaction rule this type exists to make checkable: there is no field
-/// here a raw exception string or a response body could hide inside.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum FailureClass {
-    Timeout,
-    Connect,
-    Http { status: u16 },
-    Body,
-    Decode,
-    Cancelled,
-    Unknown,
-}
+pub use hummingbird_domain::diagnostics::FailureClass;
 
 /// Classifies a read/write transport failure. A status-carrying failure is
 /// always [`FailureClass::Http`] regardless of message text — the status is

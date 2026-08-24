@@ -65,6 +65,22 @@ pub struct ApiRequest<'a> {
     /// The raw `Authorization` header value, if any. Parsing lives here in
     /// the pure crate, not the shim.
     pub authorization: Option<&'a str>,
+    /// The raw `X-Hummingbird-Cycle-Id` header value, if any (#711) — the
+    /// client's `DiagnosticsContext::correlation_headers` attaches it
+    /// already sanitized client-side, but correlation ids are
+    /// attacker-supplied strings, so `handle()` does its own validation
+    /// ([`crate::diagnostics::accept_cycle_id`]) rather than trusting the
+    /// raw value — see `handle()`'s own doc for exactly where. Never
+    /// percent-decoded — see `path`'s own doc.
+    pub cycle_id: Option<&'a str>,
+    /// The raw `X-Hummingbird-Request-Id` header value, if any (#711).
+    /// Same validation posture as `cycle_id`, via
+    /// [`crate::diagnostics::accept_request_id`]. The `wasm32` shim's own
+    /// pre-`handle()` resolution (`worker/src/lib.rs::fetch`) already
+    /// guarantees this is valid by the time it reaches here in production;
+    /// a fixture test is free to pass a genuinely unvalidated value to
+    /// exercise `handle()`'s own generate-a-fallback path directly.
+    pub request_id: Option<&'a str>,
 }
 
 /// Status + JSON body. Every response body is JSON — except the 401/403,
@@ -81,6 +97,36 @@ pub struct ApiResponse {
     /// has to unwrap. Empty for every other route: nothing else in this
     /// crate calls `deliver`.
     pub deliveries: Vec<DeliveryOutcome>,
+    /// The authenticated principal's non-secret token id (#711) — response
+    /// *metadata*, exactly like `deliveries`: the `wasm32` shim reads this
+    /// to build its `request.finished` log line and must never serialize
+    /// it into the HTTP body (pinned by this crate's own tests). `None`
+    /// for an unauthenticated (401) request and for the admin lane, which
+    /// authenticates against `ADMIN_SECRET` and has no per-caller token
+    /// row to name.
+    ///
+    /// A `SqlError` becomes a 500, and *which* 500 decides this field
+    /// (#711 review round 2 — the earlier doc got this wrong):
+    /// - Raised by `auth::authenticate` itself, before a principal exists:
+    ///   `None`, and there is genuinely no principal to name.
+    /// - Raised by any handler arm after auth succeeded and the scope
+    ///   matrix passed: `Some`. `route()` turns that error into its 500
+    ///   *before* returning, so the stamp below it still runs — a routine
+    ///   DB error inside e.g. `items::create` names its caller like every
+    ///   other response does. Without that, an operator reading the 500's
+    ///   `request.finished` line would see no `token_id` and wrongly
+    ///   conclude the auth layer never ran.
+    pub principal_id: Option<String>,
+    /// `ApiRequest::cycle_id`, validated (#711) — response metadata, the
+    /// same shape as `principal_id`. Set unconditionally by `handle()` on
+    /// every response, including the 500 fallback, so a fixture test (or
+    /// the `wasm32` shim) can read the *validated* id straight off
+    /// whatever `handle()` returns rather than re-deriving it.
+    pub cycle_id: Option<String>,
+    /// `ApiRequest::request_id`, validated-or-generated (#711). Always
+    /// present — every request gets a request id, generated when the
+    /// client sent none or an invalid one.
+    pub request_id: String,
 }
 
 /// The 400 every create route answers when its client-supplied id is not a
@@ -101,10 +147,20 @@ pub struct HandleContext<'a> {
     pub entropy: &'a dyn Entropy,
 }
 
-/// The one entry point.
+/// The one entry point. #711: `cycle_id`/`request_id` are resolved here —
+/// the pure crate's own parsing of `ApiRequest`'s two raw correlation
+/// headers, via [`crate::diagnostics::accept_cycle_id`]/
+/// [`crate::diagnostics::accept_request_id`] — and stamped onto every
+/// `ApiResponse` this function returns, `route()`'s own `Err` fallback
+/// included, so the resolved (not raw) values are always observable off
+/// this function's return value rather than only inside the `wasm32` shim.
 pub fn handle(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> ApiResponse {
-    let result = route(req, ctx, sql);
-    result.unwrap_or_else(|e| error(500, "internal", &e.message))
+    let cycle_id = crate::diagnostics::accept_cycle_id(req.cycle_id);
+    let request_id = crate::diagnostics::accept_request_id(req.request_id, ctx.entropy);
+    let mut resp = route(req, ctx, sql).unwrap_or_else(|e| error(500, "internal", &e.message));
+    resp.cycle_id = cycle_id;
+    resp.request_id = request_id;
+    resp
 }
 
 fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
@@ -137,11 +193,19 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         return Ok(empty_status(401));
     };
     if !auth::permitted(principal.scope, req.method, &segments) {
-        return Ok(empty_status(403));
+        // #711: a 403 still names *which* token was out of scope — the
+        // token resolved fine, it was the operation that didn't.
+        let mut resp = empty_status(403);
+        resp.principal_id = Some(principal.id.clone());
+        return Ok(resp);
     }
 
     let now_ms = ctx.now_ms;
-    match (req.method, segments.as_slice()) {
+    // #711: every arm below runs with a resolved, in-scope principal, so
+    // the response it produces is stamped with that principal's id before
+    // it leaves this function — the one place that has to happen, rather
+    // than threading it through every handler.
+    let mut resp = match (req.method, segments.as_slice()) {
         ("POST", ["items"]) => items::create(req.body, now_ms, sql),
         ("PATCH", ["items", id]) if !id.is_empty() => items::patch(id, req.body, now_ms, sql),
         ("POST", ["projects"]) => projects::create(req.body, now_ms, sql),
@@ -234,10 +298,28 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         (_, ["google", "calendar_token" | "calendar_write_token"]) => Ok(method_not_allowed()),
         _ => Ok(error(404, "not_found", "no such route")),
     }
+    // #711 review round 2: a handler-raised `SqlError` becomes its 500
+    // *here*, not back in `handle()`, precisely so it still gets stamped
+    // below. Propagating it with `?` would have produced the one 500 that
+    // named no token even though the principal was resolved and in scope —
+    // the misdiagnosis ("auth never ran") this slice exists to prevent.
+    .unwrap_or_else(|e| error(500, "internal", &e.message));
+    resp.principal_id = Some(principal.id.clone());
+    Ok(resp)
 }
 
 // --------------------------------------------------------------- helpers
 
+// `ApiResponse` doubles as this crate's own "answer to send back" type,
+// used as both the `Ok` and the `Err` side of a `Result` throughout this
+// module — a deliberate, pre-existing pattern (it is a plain data struct
+// every caller already unwraps directly, never propagated as a real
+// error). #711 grew it by two fields (`cycle_id`, `request_id`), which
+// pushed `parse_body`'s `Err` side past clippy's size threshold; boxing
+// `ApiResponse` to satisfy the lint would ripple `Box::new`/deref across
+// every construction site in `handlers/`, for a struct that is never
+// large enough to matter at this crate's request volume.
+#[allow(clippy::result_large_err)]
 fn parse_body<T: serde::de::DeserializeOwned>(body: Option<&str>) -> Result<T, ApiResponse> {
     let body = body
         .filter(|b| !b.is_empty())
@@ -287,6 +369,9 @@ fn json<T: Serialize>(status: u16, value: &T) -> ApiResponse {
         status,
         body: serde_json::to_string(value).expect("DTOs serialize"),
         deliveries: Vec::new(),
+        principal_id: None,
+        cycle_id: None,
+        request_id: String::new(),
     }
 }
 
@@ -310,5 +395,8 @@ fn empty_status(status: u16) -> ApiResponse {
         status,
         body: String::new(),
         deliveries: Vec::new(),
+        principal_id: None,
+        cycle_id: None,
+        request_id: String::new(),
     }
 }

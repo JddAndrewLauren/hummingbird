@@ -8,6 +8,7 @@
 
 mod codec;
 mod delivery;
+pub mod diagnostics;
 mod entropy;
 mod fcm;
 mod google_calendar;
@@ -60,6 +61,115 @@ mod tests {
                  handler logic is runtime-agnostic and natively testable",
             );
         }
+    }
+
+    /// #711 review round 1, finding 2: `hummingbird-authority-worker`'s
+    /// `fetch` used to have a bare `.await?` after logging
+    /// `request.received` (`ensure_alarm_scheduled(...).await?`) — on
+    /// failure, that propagated the error straight out of `fetch` with
+    /// `request.finished` never logged, manufacturing the exact
+    /// "server received, never finished" false-stall signature #712's
+    /// interpretation table would misread as an authority stall. Fixed by
+    /// replacing every bare `.await?` after the received log with an
+    /// explicit `match`/`if let Err` that logs `request.finished` before
+    /// returning the error.
+    ///
+    /// `server/worker` has no test harness of its own (CLAUDE.md's
+    /// thin-shim rule), so this is a source-text scan from the one crate
+    /// that *is* natively tested — the same technique
+    /// `cargo_toml_has_no_binding_or_runtime_dependencies` above already
+    /// uses on a sibling file, just aimed at `../worker/src/lib.rs`
+    /// instead of this crate's own `Cargo.toml`. It scans only the body of
+    /// `fetch` (from its own opening brace to `alarm`'s, the next method
+    /// in the same `impl` block) and only the part of that body *after*
+    /// the `request.received` log — a bare `.await?` before that point is
+    /// fine, since no `request.received` line exists yet to leave orphaned.
+    ///
+    /// **Exactly what is asserted:** that the substring `.await?` does not
+    /// occur at all in that slice, once whole-line comments are dropped
+    /// from it. Nothing narrower — review round 2 broke an earlier version
+    /// of this test that matched only `.await?;` and `.await?\n`, by
+    /// reintroducing the bug in the fully idiomatic chained form
+    /// `req.text().await?.trim().to_string()`, which that version let
+    /// through. The blunt substring is the point: any suffix (`.await?.`,
+    /// `.await?)`, `.await?,`) is caught. Comment *lines* are filtered
+    /// because both guarded call sites carry prose naming the bare
+    /// `.await?` they replaced; a trailing comment on a line of code is
+    /// not filtered, so the filter hides no code from the scan.
+    ///
+    /// **What it still does not catch,** stated rather than implied: a
+    /// plain `?` on a *synchronous* `Result` introduced below the log
+    /// point, and a panic. Neither is banned here because neither is
+    /// currently expressible in `fetch` — every fallible step after the log
+    /// is `async` — but a future edit that adds a synchronous fallible call
+    /// there would slip past this scan. Panics are out of scope for the
+    /// whole shim (nothing `catch_unwind`s in it, pre-existing).
+    ///
+    /// **Mutation-tested:** reverting either fixed call site
+    /// (`ensure_alarm_scheduled` or `req.text()`) back to a bare
+    /// `.await?;` reproduces this test's failure, and so does review round
+    /// 2's chained `req.text().await?.trim().to_string()`. Each reverted
+    /// from a file copy before landing.
+    #[test]
+    fn no_bare_await_question_mark_follows_the_shims_request_received_log() {
+        let source = include_str!("../../worker/src/lib.rs");
+        let fetch_marker = "async fn fetch(&self, mut req: Request) -> Result<Response> {";
+        let fetch_start = source
+            .find(fetch_marker)
+            .expect("the shim's fetch method exists at this signature");
+        let after_fetch_start = &source[fetch_start..];
+        let alarm_marker = "async fn alarm(&self) -> Result<Response> {";
+        let fetch_body_end = after_fetch_start
+            .find(alarm_marker)
+            .expect("alarm is the next method in the same impl block, after fetch");
+        let fetch_body = &after_fetch_start[..fetch_body_end];
+
+        let received_marker = "self.log_received(";
+        let received_at = fetch_body
+            .find(received_marker)
+            .expect("fetch logs request.received via self.log_received");
+        // Whole-line comments are dropped before the scan: the fix at both
+        // guarded call sites *describes* the bare `.await?` it replaced, in
+        // prose, so an unfiltered substring scan would flag its own
+        // explanation. Only lines that are nothing but a comment go — a
+        // trailing comment on a line of code stays, so no code is hidden
+        // from the scan by this.
+        let after_received: String = fetch_body[received_at..]
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            !after_received.contains(".await?"),
+            "a bare `.await?` after the `request.received` log can propagate an \
+             error without ever emitting `request.finished` — the exact false \
+             \"received, never finished\" stall signature #711's review round 1 \
+             found (ensure_alarm_scheduled's own `.await?`). Wrap it in an \
+             explicit match/if-let that logs `request.finished` (self.log_finished) \
+             before returning the error instead.",
+        );
+    }
+
+    /// The scan above is only as good as the slice it reads — pin that it
+    /// really found `fetch`'s own body (not the whole file, not an empty
+    /// string) so a future edit that renames `fetch`/`alarm` or reorders
+    /// them cannot silently reduce the test above to scanning nothing.
+    #[test]
+    fn the_scanned_fetch_body_contains_both_await_points_it_is_meant_to_guard() {
+        let source = include_str!("../../worker/src/lib.rs");
+        let fetch_start = source
+            .find("async fn fetch(&self, mut req: Request) -> Result<Response> {")
+            .unwrap();
+        let after_fetch_start = &source[fetch_start..];
+        let fetch_body_end = after_fetch_start
+            .find("async fn alarm(&self) -> Result<Response> {")
+            .unwrap();
+        let fetch_body = &after_fetch_start[..fetch_body_end];
+        assert!(fetch_body.contains("ensure_alarm_scheduled"));
+        assert!(fetch_body.contains("req.text()"));
+        assert!(fetch_body.contains("self.log_received("));
+        assert!(fetch_body.contains("self.log_finished("));
     }
 
     /// The serde strings of the domain enums are byte-for-byte the DDL
