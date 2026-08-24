@@ -30,6 +30,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
@@ -56,6 +57,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
@@ -89,6 +91,7 @@ import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 import net.twinion.hummingbird.ui.theme.LocalHbDark
 import uniffi.hummingbird_ffi_mobile.MobileCalendarConnection
 import uniffi.hummingbird_ffi_mobile.MobileCalendarState
+import uniffi.hummingbird_ffi_mobile.MobilePaneBand
 import uniffi.hummingbird_ffi_mobile.MobileTapTarget
 import uniffi.hummingbird_ffi_mobile.MobileTaskHost
 import uniffi.hummingbird_ffi_mobile.calendarPollIntervalMs
@@ -421,6 +424,27 @@ private fun AppRoot(
         syncTick += 1
     }
 
+    // The Status destination's own tint: the most salient band the Status
+    // surface is currently *answering*, or null when nothing there raises
+    // the nav. Decided in the core (`decisions/panes/alarm.rs`, reached
+    // through `MobileTaskHost.status_alarm`) rather than folded here, so
+    // this bar and the web's two nav forms cannot hold three opinions
+    // about when the button should shout — what stays on this side is the
+    // colour alone.
+    //
+    // **It rides `syncTick` and owns no clock** (the repo's no-competing-
+    // clocks rule). Every cycle bumps that counter, including the 60-second
+    // foreground timer below, so the tint refreshes on the one cadence this
+    // root already runs; a timer of its own would be a second clock for a
+    // reading that cannot change faster than the data behind it. Reading
+    // `SyncHistoryStore` here is not optional: `reachability` is one of the
+    // status four and bands off exactly that history, so an alarm computed
+    // without it would disagree with the board it sits under.
+    var statusAlarm by remember { mutableStateOf<MobilePaneBand?>(null) }
+    LaunchedEffect(core, syncTick) {
+        statusAlarm = core?.statusAlarm(System.currentTimeMillis(), SyncHistoryStore.load(context))
+    }
+
     // Pull-to-refresh's in-flight flag: the gesture is only a second door
     // onto the one `sync("user")` cadence above — never a screen-local
     // cycle — and the indicator spins for exactly the cycle's duration;
@@ -672,7 +696,11 @@ private fun AppRoot(
         // (which collapses the Scaffold's own slots) never touches it.
         Row {
             if (wide && NavDestination.entries.any { it.route == currentRoute }) {
-                HbNavRail(currentRoute = currentRoute, onNavigate = ::goToTab)
+                HbNavRail(
+                    currentRoute = currentRoute,
+                    onNavigate = ::goToTab,
+                    statusAlarm = statusAlarm,
+                )
             }
             Scaffold(
                 // The one hook for chrome hiding: every scrollable in every screen
@@ -721,6 +749,7 @@ private fun AppRoot(
                                 currentRoute = currentRoute,
                                 onNavigate = ::goToTab,
                                 onMore = { moreSheetOpen = true },
+                                statusAlarm = statusAlarm,
                             )
                         }
                     }
@@ -1006,10 +1035,20 @@ private fun BottomNavBar(
     currentRoute: String?,
     onNavigate: (String) -> Unit,
     onMore: () -> Unit,
+    statusAlarm: MobilePaneBand? = null,
 ) {
     val overflowActive = NavDestination.OVERFLOW.any { it.route == currentRoute }
+    val alarmColor = navAlarmColor(statusAlarm, LocalHbDark.current)
     NavigationBar {
         for (destination in NavDestination.ON_BAR) {
+            // Only Status carries an alarm, and the tint paints the glyph
+            // and the label together — `NavBarButton`'s own treatment on
+            // the web. It yields to `selected` there because that bar says
+            // "you are here" in colour and nothing else; here Material
+            // draws a filled indicator pill behind the selected item, so
+            // the colour is free to keep meaning "the board has something
+            // to say" even while Status is open.
+            val tint = if (destination == NavDestination.STATUS) alarmColor else null
             NavigationBarItem(
                 selected = destination.route == currentRoute,
                 onClick = { onNavigate(destination.route) },
@@ -1018,9 +1057,10 @@ private fun BottomNavBar(
                         painterResource(navIcon(destination)),
                         contentDescription = null,
                         modifier = Modifier.size(20.dp),
+                        tint = tint ?: LocalContentColor.current,
                     )
                 },
-                label = { Text(destination.label) },
+                label = { Text(destination.label, color = tint ?: Color.Unspecified) },
                 alwaysShowLabel = true,
             )
         }

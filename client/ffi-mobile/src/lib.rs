@@ -5043,6 +5043,36 @@ impl MobileTaskHost {
             .collect()
     }
 
+    /// [`panes::status_alarm`] — the Status nav destination's whole
+    /// reading: the most salient band the Status surface currently answers,
+    /// or `None` when nothing there raises the nav.
+    ///
+    /// **A door of its own rather than a fold over [`Self::rank_panes`].**
+    /// `MainActivity` draws the bar for every screen and holds no ranked
+    /// panes; making it call `rank_panes` and reduce the list would put the
+    /// fold's two opinions (which answer states count, which bands are
+    /// loud) in Kotlin, where the web would need its own copy — exactly the
+    /// duplication ADR-0025 sinks. What stays here is the last step alone:
+    /// which colour a band paints as.
+    ///
+    /// **Takes no zone facts but does take [`MobileSyncFacts`]**, and the
+    /// asymmetry is not an oversight. Status asks for no zone facts at all
+    /// ([`panes::status_alarm`]'s own doc), so there is nothing for a host
+    /// to resolve. The sync history is the opposite case: `reachability` is
+    /// one of the status four and *bands* off it (`reachability.rs`), so a
+    /// door that defaulted it would read every device as never-synced and
+    /// quietly disagree with the very board it sits above — the caller
+    /// hands over the same [`SyncHistoryStore`] value it gives
+    /// [`Self::rank_panes`].
+    pub async fn status_alarm(&self, now_ms: i64, sync: MobileSyncFacts) -> Option<MobilePaneBand> {
+        let inner = self.inner.lock().await;
+        // No calendar arm, and so no calendar lock taken: the status four
+        // are kimi/github/uptime/reachability, none of which reads the
+        // calendar at all — every question that does is on `Surface::Now`.
+        let inputs = mobile_pane_inputs(&inner.core, now_ms, sync, CalendarArm::default());
+        panes::status_alarm(&inputs).map(map_band)
+    }
+
     /// Recall's whole read (#542/#478): [`hummingbird_core::Core::search`]
     /// matches, groups and orders entirely core-side, capped at
     /// [`hummingbird_core::search::CAP`] — this door only maps the answer
@@ -9545,6 +9575,37 @@ mod settings_tests {
                 MobileStandingQuestion::Uptime,
                 MobileStandingQuestion::Reachability,
             ],
+        );
+    }
+
+    #[tokio::test]
+    async fn the_nav_alarm_stays_quiet_on_a_fresh_device_and_agrees_with_the_board() {
+        let host = pane_host("panes-status-alarm").await;
+        let now_ms: i64 = 1_700_000_000_000;
+
+        // Nothing polled, never synced: every one of the four is a gap, and
+        // a gap is silent on the nav (`alarm.rs`'s own rule).
+        assert_eq!(host.status_alarm(now_ms, MobileSyncFacts::default()).await, None);
+
+        // Nothing synced in a long while — `reachability` escalates to
+        // `live`, and the nav must reach the same reading the board does
+        // off the same sync history, which is why this door takes it.
+        let long_quiet = MobileSyncFacts {
+            latest_outcome_kind: Some("completed".to_string()),
+            latest_informative_at_ms: Some(now_ms - 24 * 60 * 60 * 1000),
+            last_successful_at_ms: Some(now_ms - 24 * 60 * 60 * 1000),
+        };
+        let board = host
+            .rank_panes(MobileSurface::Status, now_ms, Vec::new(), long_quiet.clone())
+            .await;
+        let reachability = board
+            .iter()
+            .find(|pane| pane.standing_question == MobileStandingQuestion::Reachability)
+            .unwrap();
+        assert_eq!(reachability.answer.band, MobilePaneBand::Live);
+        assert_eq!(
+            host.status_alarm(now_ms, long_quiet).await,
+            Some(MobilePaneBand::Live),
         );
     }
 

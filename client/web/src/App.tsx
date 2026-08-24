@@ -4,7 +4,7 @@ import { demoCalendar, demoTaskState } from "./fixtures/demo";
 import { AlertsScreen } from "./screens/AlertsScreen";
 import { DoneScreen } from "./screens/DoneScreen";
 import { LedgerScreen } from "./screens/LedgerScreen";
-import { NowScreen } from "./screens/NowScreen";
+import { NowScreen, realQuestionInputs } from "./screens/NowScreen";
 import { ProjectsScreen } from "./screens/ProjectsScreen";
 import { RulesScreen } from "./screens/RulesScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
@@ -13,6 +13,7 @@ import { TriageScreen } from "./screens/TriageScreen";
 import type { CaptureDestination } from "./screens/capture-destination";
 import { contextSuggestions } from "./screens/field-vocabulary";
 import { liveWriteFailureCount } from "./screens/write-failure";
+import { statusAlarm } from "./decisions/seam";
 import { isCaptureHotkey } from "./shell/capture-hotkey";
 import { isRecallHotkey } from "./shell/recall-hotkey";
 import { escapeClaimant, type EscapeClaimant } from "./shell/escape-claimants";
@@ -502,6 +503,36 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     alerts: liveWriteFailureCount(task.lastTriage, task.lastAct),
   };
 
+  // The Status control's own tint: the most salient band the Status surface
+  // is currently *answering*, or `undefined` when everything there is quiet
+  // — decided in the core (`decisions/panes/alarm.rs`), which is what stops
+  // the rail, the bar and Android from each holding their own opinion about
+  // when the button should shout. A gap is deliberately silent, so a cold
+  // start does not paint the nav before a single poller has run; the board
+  // below still draws that third state as its own `gap` tone, where there
+  // is room to say which gap it is.
+  //
+  // One `statusAlarm` for whichever nav is mounted, on `navCounts`' own
+  // reasoning: the two forms show the same answer, so a second call would
+  // be a second answer waiting to diverge. It ranks the Status four again
+  // rather than reading `StatusScreen`'s ranking — the screen is not
+  // mounted on any other route, and both rankings are pure functions of
+  // the same `task`, so they cannot disagree.
+  // `useMemo` for `captureContexts`' own reason, one screen up in this file:
+  // it crosses the wasm seam, and this component re-renders on sixteen
+  // pieces of local state (a sheet opening, a hotkey, a combobox). Without
+  // it every one of those renders would re-spread five item arrays and
+  // `JSON.stringify` every live item before the call — work whose answer
+  // cannot have changed unless one of these four inputs did.
+  const statusBand = useMemo(
+    () =>
+      statusAlarm({
+        ...realQuestionInputs(task, calendar.eventReads, calendar.connected),
+        nowMs: syncNowMs,
+      }),
+    [task, calendar.eventReads, calendar.connected, syncNowMs],
+  );
+
   function handleHome() {
     setScreen("now");
     if (refreshEnabled) {
@@ -527,6 +558,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           screen={screen}
           onScreen={setScreen}
           counts={navCounts}
+          statusAlarm={statusBand}
           statusLabel={coreStatusLabel(status, apiVersion)}
           theme={theme}
           onToggleTheme={() => setPreference(toggledPreference(theme))}
@@ -704,6 +736,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           screen={screen}
           onScreen={setScreen}
           counts={navCounts}
+          statusAlarm={statusBand}
           statusLabel={coreStatusLabel(status, apiVersion)}
           theme={theme}
           onToggleTheme={() => setPreference(toggledPreference(theme))}

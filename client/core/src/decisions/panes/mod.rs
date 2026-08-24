@@ -43,6 +43,7 @@
 //! [`inputs::PaneInputs`], exactly as the module header in
 //! [`super`](super) requires.
 
+pub mod alarm;
 pub mod contract;
 pub mod github;
 pub mod homework;
@@ -58,6 +59,7 @@ pub mod waste;
 pub mod weekend;
 pub mod zone;
 
+pub use alarm::status_alarm;
 pub use contract::{
     pane_key, AnswerState, Band, PaneAnswerCore, RankedPaneRecord, StandingQuestion, Surface,
     BAND_ORDER, QUESTION_ORDER,

@@ -14,6 +14,7 @@ import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "../test/component";
 import { APP_VERSION } from "./build-version";
+import type { Band as PaneBand } from "../screens/questions/contract";
 import { NavBar } from "./NavBar";
 import { NAV_BAR_OVERFLOW, NAV_BAR_PRIMARY } from "./nav-bar";
 import { SCREEN_LABELS, type Screen } from "./screens";
@@ -22,7 +23,11 @@ import { SCREEN_LABELS, type Screen } from "./screens";
 // tests supply the state `App` supplies. Escape is deliberately not exercised
 // here any more: `NavBar` binds no key handler at all, and which overlay owns
 // an Escape is `escape-claimants.test.ts`'s subject.
-function renderBar(screenName: Screen = "now", onSearch?: () => void) {
+function renderBar(
+  screenName: Screen = "now",
+  onSearch?: () => void,
+  statusAlarm?: PaneBand,
+) {
   const onScreen = vi.fn();
   const onToggleTheme = vi.fn();
   let setSheetOpen!: (open: boolean) => void;
@@ -36,6 +41,7 @@ function renderBar(screenName: Screen = "now", onSearch?: () => void) {
         onScreen={onScreen}
         counts={{ triage: 4, alerts: 3 }}
         statusLabel="api v1 · core ready"
+        statusAlarm={statusAlarm}
         theme="light"
         onToggleTheme={onToggleTheme}
         sheetOpen={sheetOpen}
@@ -211,5 +217,38 @@ describe("NavBar", () => {
     close(bar);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(more);
+  });
+});
+
+// The Status control's tint (`nav-alarm.ts` decides the colour; the core
+// decides the band), and the one place it deliberately loses.
+describe("NavBar — the Status alarm", () => {
+  it("leaves every control its ordinary colour when nothing raises the nav", () => {
+    renderBar();
+    expect(screen.getByRole("button", { name: "Status" }).style.color).toBe(
+      "var(--text-secondary)",
+    );
+  });
+
+  it("tints Status, and only Status, with the band's colour", () => {
+    renderBar("now", undefined, "live");
+    expect(screen.getByRole("button", { name: "Status" }).style.color).toBe(
+      "var(--status-danger-fg)",
+    );
+    expect(screen.getByRole("button", { name: "Triage" }).style.color).toBe(
+      "var(--text-secondary)",
+    );
+  });
+
+  // On this bar the current page is signalled by colour and nothing else,
+  // so an alarm that painted over it would leave the bar with nothing
+  // selected — the "you are nowhere" reading `isOverflowScreen` exists to
+  // prevent. The one screen it hides the tint on is the one already showing
+  // the board the tint came from.
+  it("yields to the current page, so the bar never shows nothing selected", () => {
+    renderBar("status", undefined, "live");
+    const status = screen.getByRole("button", { name: "Status" });
+    expect(status.style.color).toBe("var(--text-brand)");
+    expect(status.getAttribute("aria-current")).toBe("page");
   });
 });

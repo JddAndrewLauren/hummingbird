@@ -164,6 +164,7 @@ export interface DecisionsModule {
   parse_waste_body_json(snapshotJson: string): string;
   pane_zone_queries_json(inputsJson: string, surface: string): string;
   rank_panes_json(inputsJson: string, zoneFactsJson: string, surface: string): string;
+  status_alarm_json(inputsJson: string): string;
   order_panes_json(panesJson: string, questionOrderJson: string): string;
   same_pane_identity_json(aJson: string, bJson: string): boolean;
   pane_band_order_json(): string;
@@ -1345,6 +1346,22 @@ export function paneZoneQueries(inputs: PaneInputsSource, surface: PaneSurface):
   return JSON.parse(
     required().pane_zone_queries_json(paneInputsPayload(inputs), surface),
   ) as ZoneQuery[];
+}
+
+/** `hummingbird_core::decisions::panes::alarm::status_alarm` — the Status
+ * nav control's whole reading: the most salient band the Status surface
+ * currently answers, or `undefined` when nothing there raises the nav.
+ *
+ * Takes no zone facts, unlike `rankPanes` beside it — none of the status
+ * four is civil-date reasoning, so there is nothing for this host to
+ * resolve first (the core asserts that rather than assuming it). `null` on
+ * the wire becomes `undefined` here, so a caller spreads it into props
+ * without a second falsy value to think about. */
+export function statusAlarm(inputs: PaneInputsSource): PaneBand | undefined {
+  const band = JSON.parse(required().status_alarm_json(paneInputsPayload(inputs))) as
+    | PaneBand
+    | null;
+  return band ?? undefined;
 }
 
 export type PaneSurface = "now" | "status";
