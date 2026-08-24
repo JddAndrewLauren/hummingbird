@@ -84,11 +84,19 @@
 //! and reaches no worker response DTO); `core.released` carries a required
 //! `owner` (only a Rust guard can produce one — the TS layer deliberately
 //! emits no `core.released` at all); `core.wait_started`/`core.acquired`
-//! **also carry `owner: Option<CoreOwner>`, per #710**: both have live TS
-//! writers (`diagnostics-events.ts`'s `requestEnqueuedEvent`/
-//! `requestDequeuedEvent`) whose own layer — the SharedWorker's serial
-//! queue — cannot see a `CoreOwner` any more than `requestBusyEvent` can,
-//! so rule 1 gives them `Option<CoreOwner>` too, with the TS side emitting
+//! **also carry `owner: Option<CoreOwner>`, per #710** — for two different
+//! reasons, not one. `core.wait_started`'s `owner` is defined as *the
+//! current holder's* identity when the core is already held (see that
+//! variant's own doc), and `diagnostics-events.ts`'s `requestEnqueuedEvent`
+//! writes this family from the SharedWorker's serial queue, a layer that
+//! genuinely cannot see a `CoreOwner` any more than `requestBusyEvent`
+//! can — rule 1 applies here exactly as it does to `core.busy`.
+//! `core.acquired` is different: `requestDequeuedEvent`'s own queue layer
+//! is *not* structurally blind (`onDequeue` runs with the dequeued request
+//! in scope), so rule 1 does not derive its `Option`; it stays `Option` to
+//! avoid a second, independently maintained copy of the identity
+//! `Source::Core`'s own `core.acquired` row already names authoritatively
+//! — see that variant's own doc. Either way the TS side emits
 //! `{"owner": null}` explicitly (rule 2). Every Rust writer of these two
 //! (the web host's `TaskCoreCell::checkout`/`read`/`read_mut`, the mobile
 //! host's `lock_with_diagnostics`) always knows its owner and wraps it in

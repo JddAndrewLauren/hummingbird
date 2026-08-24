@@ -161,8 +161,20 @@ export function requestEnqueuedEvent(session: DiagnosticsSession, nowMs: number)
 }
 
 /** The queue reached this request's turn and started running its handler
- * (`serial-queue.ts`'s `onDequeue`) — `owner: null` for the identical
- * reason [`requestEnqueuedEvent`]'s own doc states. */
+ * (`serial-queue.ts`'s `onDequeue`).
+ *
+ * **`owner: null`, but not for [`requestEnqueuedEvent`]'s reason.** Unlike
+ * that wait span, this layer is NOT structurally blind here: `onDequeue`
+ * runs with the dequeued `TaskWorkerRequest` in scope (discarded at
+ * `task-worker.ts`'s `createTaskRequestQueue`), so `request.type` is
+ * available and could be mapped to a `CoreOwner`. `null` is a deliberate
+ * choice not to make that mapping — it would be a second, independently
+ * maintained copy of the identity the wasm host's own `Source::Core`
+ * `core.acquired` row already names authoritatively (every Rust writer of
+ * that row always knows its owner), and a second copy is exactly the kind
+ * of thing that drifts. See `server/domain/src/diagnostics.rs`'s
+ * `DiagnosticEvent::CoreAcquired` doc for the same reasoning, stated once
+ * canonically. */
 export function requestDequeuedEvent(session: DiagnosticsSession, nowMs: number): DiagnosticEventV1DTO {
   return envelope(session, nowMs, { name: "core.acquired", payload: { owner: null } });
 }
