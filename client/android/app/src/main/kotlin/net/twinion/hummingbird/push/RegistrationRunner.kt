@@ -10,11 +10,11 @@ import uniffi.hummingbird_ffi_mobile.MobilePushRegistrationException
  * output, kept free of `androidx.work` so the decision can be tested on a
  * plain JVM.
  *
- * #519: three of the four cases below all read as "no `.so`, no
- * WorkManager and no Firebase" success to WorkManager — [RegistrationWorker]
- * maps every one of them to `Result.success()`, and that contract does not
- * change here. What changes is that [RegistrationRunner.run] no longer
- * collapses them into one shared value before returning: a registered
+ * #519: three of the four cases below are DONE-shaped —
+ * [RegistrationWorker] maps every one of them to `Result.success()`, and
+ * that contract does not change here. What changes is that
+ * [RegistrationRunner.run] no longer collapses them into one shared value
+ * before returning: a registered
  * device, a device with nothing to register yet, and a device the authority
  * has not accepted a token for are three different situations that read
  * identically as `DONE` from the caller's side. Each now has its own
