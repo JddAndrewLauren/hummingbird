@@ -47,12 +47,14 @@ Both exports are a manual, on-demand read of an on-device file — see
 
 ## Read a `DiagnosticEventV1` row
 
-Every row, on every host, is the same envelope. A real one — `source:"core"`
-is the only source that ever names a `cycle_id`/`request_id`
+Every row, on every host, is the same envelope. A real one — only
+`source:"core"` and `source:"authority"` rows ever carry a non-null
+`cycle_id`/`request_id`; `source:"web-worker"` rows never do
 (`client/web/src/worker/diagnostics-events.ts`'s `envelope()` hardcodes all
-three ids to `null` on every `web-worker` row, and `http.*` events are
-`Source::Core`-only, always carrying a `request_id` — this join's own step
-1 below depends on that):
+three ids to `null` on every row it builds), and neither does
+`source:"android"` (`client/ffi-mobile/src/diagnostics.rs` does the same).
+`http.*` events specifically are `Source::Core`-only and always carry a
+`request_id` — this join's own step 1 below depends on that:
 
 ```json
 {"schema_version":1,"seq":4,"wall_clock_ms":1787549185637,"elapsed_ms":15,
@@ -92,7 +94,7 @@ repeatedly, because reading them wrong flips a diagnosis:
 The authority (`hummingbird-authority`, Cloudflare Workers + a Durable
 Object) logs one `request.received` line for **every** request the Durable
 Object handles — `server/worker/src/lib.rs`'s `fetch` logs it before
-authentication runs or any other awaited work (`server/worker/src/lib.rs:189`),
+authentication runs or any other awaited work (`server/worker/src/lib.rs:190`),
 deliberately, so it survives a hang anywhere below it — and one
 `request.finished` line for every outcome, including a 401, a 403, and a
 500, not only a success. Both carry the client-minted
@@ -189,16 +191,23 @@ rows below — `client/web`'s `pnpm dev`/Vite dev server was started once
 during this investigation but never produced a cited artefact: rows 1, 2,
 3 and 5's own text below shows they bypass the browser entirely, rows 4
 and 6 are `cargo test` runs, and row 7 is exactly the row that needed a
-browser and could not get one (see its own entry). Two harnesses actually
-produced the evidence cited:
+browser and could not get one (see its own entry). Three harnesses
+actually produced the evidence cited, all against the same local
+`wrangler dev` running the real `hummingbird-authority` Worker, compiled
+to wasm, over real HTTP on `127.0.0.1:8787` (this stands in for
+`hb.twinion.net` for the reason in the banner above: production has not
+deployed this batch yet):
 
-- **Rows 1, 2, 3, 5** — a local `wrangler dev` running the real
-  `hummingbird-authority` Worker, compiled to wasm, over real HTTP on
-  `127.0.0.1:8787` (this stands in for `hb.twinion.net` for the reason in
-  the banner above: production has not deployed this batch yet), hit from
-  a native Rust process driving the real `hummingbird_core::Core::run_observed`
-  sync engine directly — the same engine `client/ffi-web`/`client/ffi-mobile`
+- **Rows 1, 3, 5** — a native Rust process driving the real
+  `hummingbird_core::Core::run_observed` sync engine directly against that
+  `wrangler dev` — the same engine `client/ffi-web`/`client/ffi-mobile`
   drive, exercised here with no wasm boundary and no browser in the loop.
+- **Row 2** — a different, lower-level harness on purpose: a raw TCP
+  socket (a short Python script, not `Core::run_observed`) sending a real
+  HTTP request whose declared `Content-Length` is never fully delivered,
+  so the authority's own `fetch` genuinely blocks inside `req.text().await`
+  — see row 2's own entry for why this needed to bypass the sync engine
+  rather than go through it.
 - **Rows 4, 6** — `cargo test -p hummingbird-ffi-web`, running two
   existing, already-passing tests against the real `TaskCoreCell` lock and
   capture path (`client/ffi-web/src/task_host.rs`) that are exactly the
@@ -256,7 +265,7 @@ checked *while the socket was still open* (3 seconds into a 6-second hold):
 `duration_ms: 6013` matches the real 6-second hold — this is a genuine stall
 inside the Durable Object's `fetch`, not a fast round trip misread. Read
 `auth_result:"accepted"` on this 500 carefully: `classify_auth_result`
-derives it from `path`+`status` alone (`server/authority/src/diagnostics.rs:135`,
+derives it from `path`+`status` alone (`server/authority/src/diagnostics.rs:142`,
 its `(false, _) => AuthResult::Accepted` arm) — it is not a claim that
 authentication actually ran or succeeded on this request, and here it
 plainly didn't get far enough to.
