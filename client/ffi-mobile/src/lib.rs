@@ -3919,8 +3919,11 @@ impl MobileTaskHost {
     /// exists to name: a host that never calls this loses nothing (the
     /// buffer just fills, oldest-drops-first, up to `BUFFER_CAPACITY`), it
     /// just never sees these particular events in its exported journal.
-    /// `SyncWorker` calls this once per run and forwards each line to
-    /// `DiagnosticsRecorder.appendRaw`.
+    /// `SyncWorker` calls this twice per run — once before `core.run` and
+    /// once after it returns — and `SettingsViewModel`'s export path calls
+    /// it again before writing the export; each forwards every line to
+    /// `DiagnosticsRecorder.appendRaw`. Draining an already-empty buffer is
+    /// free, so the repetition costs nothing.
     pub async fn take_diagnostic_events(&self) -> Vec<MobileDiagnosticLine> {
         self.diag_sink
             .drain()
@@ -6623,9 +6626,16 @@ mod tests {
     /// #710's acceptance criterion 7, over a real `MobileTaskHost::capture`
     /// call rather than a citation to a test that (review round 1 caught)
     /// did not exist: the exact event order this capture's own operation
-    /// produces, and — since `Core::capture` never touches the network —
-    /// the proof that no `http.started` anywhere in the buffer ever
-    /// carries this capture's `operation_id`.
+    /// produces.
+    ///
+    /// **What the two halves of this test actually prove, stated plainly.**
+    /// The sequence assertion is a real, failable pin: reordering
+    /// `emit_operation_local_commit` against the durable write breaks it.
+    /// The `http.started` half is **vacuous by construction** — `capture`
+    /// only enqueues, so this path never issues HTTP and the buffer holds
+    /// no `http.started` for any assertion to catch. It is kept as a
+    /// regression tripwire for the day capture *does* reach the network,
+    /// not as evidence of anything today.
     #[tokio::test]
     async fn a_successful_capture_orders_operation_local_commit_before_any_http_started() {
         use hummingbird_core::diagnostics::{DiagnosticEvent, DiagnosticEventV1};

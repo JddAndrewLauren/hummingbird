@@ -71,10 +71,13 @@ class SyncWorker(context: Context, params: WorkerParameters) :
         )
         // #710: drains the mobile FFI host's own buffered `core.*`/
         // `operation.*` spans (`core_lock`'s module doc) into the real
-        // journal — the one place in this app that currently does, since
-        // no other call site has a natural "flush now" moment. Each drain
-        // is a raw pre-minted line: `appendRaw` skips `mintEventJsonFn`
-        // entirely, it never re-serializes what Rust already built.
+        // journal — the second of this run's two drains, the one that
+        // catches this run's own spans. The other drain sites are the
+        // pre-`run` drain above and `SettingsViewModel`'s export path,
+        // which flushes the same buffer before writing the export. Each
+        // drain is a raw pre-minted line: `appendRaw` skips
+        // `mintEventJsonFn` entirely, it never re-serializes what Rust
+        // already built.
         core.takeDiagnosticEvents().forEach { line -> recorder.appendRaw(line.json, line.wallClockMs) }
         return if (retryable) Result.retry() else Result.success()
     }

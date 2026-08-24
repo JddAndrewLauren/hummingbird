@@ -55,12 +55,16 @@
 //! [`MobileTaskHost`] holds a [`BufferingSink`] (bounded, drops oldest on
 //! overflow) rather than [`hummingbird_core::diagnostics::NullSink`], and
 //! [`MobileTaskHost::take_diagnostic_events`] lets a host drain it into the
-//! real journal (`DiagnosticsRecorder.appendRaw`, wired from `SyncWorker`
-//! only, in this slice). A capture/triage/projects call with no sync
+//! real journal (`DiagnosticsRecorder.appendRaw`). Two Kotlin call sites
+//! drain it in this slice: `SyncWorker.doWork` (twice per run — once
+//! before `core.run`, which can hang, and once after it returns) and
+//! `SettingsViewModel`'s `exportDiagnosticsFn`, which flushes the buffer
+//! before writing the export. A capture/triage/projects call with no sync
 //! anywhere near it still buffers its spans correctly and they still
-//! export next time a sync runs — nothing is lost — but they do not reach
-//! the on-disk journal the instant they happen. Every acceptance criterion
-//! this module exists for is proven directly against the sink in `cargo
+//! export the next time a sync runs or the operator takes an export —
+//! nothing is lost — but they do not reach the on-disk journal the instant
+//! they happen. Every acceptance criterion this module exists for is
+//! proven directly against the sink in `cargo
 //! test`, per this issue's own "Verify" section (which never asks for a
 //! Kotlin-level assertion on this half at all): the on-device confirmation
 //! it does ask for is `worker.started`/`worker.finished`, already wired to
@@ -154,10 +158,13 @@ impl DiagnosticSink for BufferingSink {
     }
 }
 
-/// The running `seq` counter these events are stamped with — constructed
-/// once per [`crate::MobileTaskHost`] and reused for every acquisition, so
-/// a whole process's core-ownership spans order correctly against each
-/// other. **Not** the session id: that is looked up fresh at every `emit`
+/// The handle to the running `seq` counter these events are stamped with —
+/// **borrowed, never constructed here** (see the field doc below): one
+/// [`Self`] is built per [`crate::MobileTaskHost`], but the counter it
+/// points at is the single process-wide one, so a whole process's
+/// core-ownership spans order correctly against each other *and* against
+/// every other Android-sourced event. **Not** the session id: that is
+/// looked up fresh at every `emit`
 /// call (a `Fn() -> String` the caller supplies, e.g. `lib.rs`'s
 /// `DIAGNOSTIC_SESSION`) rather than captured once here, because
 /// `MobileTaskHost::init` can run *before* the host has ever called
@@ -184,9 +191,9 @@ pub struct CoreLockSession {
 impl CoreLockSession {
     /// `seq` is the caller's counter — production hands in
     /// `&DIAGNOSTIC_SESSION.seq`; a test hands in its own `'static`
-    /// (a `static` local) so two tests never share state, the same
-    /// isolation the old owned counter gave without the cross-family
-    /// collision.
+    /// (`tests::test_seq`, a freshly leaked `AtomicU64`) so two tests never
+    /// share state, the same isolation the old owned counter gave without
+    /// the cross-family collision.
     pub fn new(seq: &'static AtomicU64) -> Self {
         Self { seq }
     }
@@ -252,14 +259,18 @@ impl CoreOwnershipTracker {
         Self::default()
     }
 
-    /// Poison-recovering, same rule as [`BufferingSink::record`] — this is
-    /// reached from [`OwnedGuard::drop`] on every release, so it must never
-    /// panic.
+    /// Poison-recovering, same rule as [`BufferingSink::record`] — reached
+    /// from [`lock_with_diagnostics`] before every acquisition, on the
+    /// caller's own thread, where a panic would take down the operation
+    /// this diagnostic only meant to observe.
     fn snapshot(&self) -> Option<CoreOwner> {
         *self.current.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Poison-recovering — see [`Self::snapshot`].
+    /// Poison-recovering — see [`Self::snapshot`]. This is the one of the
+    /// pair that [`OwnedGuard::drop`] reaches on every release, so it must
+    /// never panic: a panic escaping a `Drop` during another unwind aborts
+    /// the process.
     fn set(&self, owner: Option<CoreOwner>) {
         *self.current.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = owner;
     }
@@ -553,8 +564,9 @@ mod tests {
     }
 
     /// Review round 1, finding 7: a poisoned `std::sync::Mutex` must never
-    /// panic on [`CoreOwnershipTracker::snapshot`]/`set` — both are
-    /// reached from [`OwnedGuard::drop`] on every release, and a panic
+    /// panic on [`CoreOwnershipTracker::snapshot`]/`set` — `set` is
+    /// reached from [`OwnedGuard::drop`] on every release (`snapshot` from
+    /// [`lock_with_diagnostics`] before every acquisition), and a panic
     /// escaping a `Drop` during another unwind aborts the whole process
     /// (the exact "a diagnostic that breaks what it observes" failure
     /// mode #707 was rejected for). Poisons the tracker's own mutex from a
