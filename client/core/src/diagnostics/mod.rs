@@ -87,8 +87,9 @@ pub use clock::DiagnosticClock;
 pub use context::{DiagnosticSession, DiagnosticsContext};
 pub use failure::FailureClass;
 pub use hummingbird_domain::diagnostics::{
-    CoreOwner, DiagnosticEvent, DiagnosticEventV1, DiagnosticHttpMethod, OperationOutcome, Source,
-    SyncOutcome, SyncPhase, DIAGNOSTIC_EVENT_SCHEMA_VERSION,
+    CoreOwner, DiagnosticEvent, DiagnosticEventV1, DiagnosticHttpMethod, NetworkTransport,
+    OperationOutcome, Source, SyncOutcome, SyncPhase, WorkerTrigger,
+    DIAGNOSTIC_EVENT_SCHEMA_VERSION,
 };
 
 /// A sink [`DiagnosticEventV1`]s are recorded to — infallible by

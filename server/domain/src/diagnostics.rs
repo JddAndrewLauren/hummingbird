@@ -42,8 +42,12 @@
 //! payload-free variant grows a field, every writer of that family must
 //! start emitting a `payload` object — and one class of writer is not the
 //! Rust compiler's to check: `client/web/src/worker/diagnostics-events.ts`
-//! serializes this same envelope from TypeScript, and #709 does it again
-//! from Kotlin. Making [`DiagnosticEvent::CoreBusy`] a struct variant in
+//! serializes this same envelope from TypeScript. **Not Kotlin** — Android's
+//! rows are minted in Rust
+//! (`client/ffi-mobile/src/lib.rs`'s `diagnostic_event_json` over the
+//! UniFFI `MobileDiagnosticEvent` enum), so the compiler already checks
+//! that half; Kotlin only hand-builds the export wrapper
+//! (`DiagnosticJournal.kt`). Making [`DiagnosticEvent::CoreBusy`] a struct variant in
 //! #708 parted this enum from that live TypeScript writer, which kept
 //! emitting a bare `{"name":"core.busy"}` that
 //! `serde_json::from_str::<DiagnosticEvent>` rejects — invisible to every
@@ -80,9 +84,23 @@
 //! and reaches no worker response DTO); `core.released` carries a required
 //! `owner` (only a Rust guard can produce one — the TS layer deliberately
 //! emits no `core.released` at all); `core.wait_started`/`core.acquired`
-//! are still payload-free and have live TS writers, so #710 — which adds
-//! `owner` to exactly those two — follows rule 1 and gives them
-//! `Option<CoreOwner>` unless it also teaches the TS writers to name one.
+//! **also carry `owner: Option<CoreOwner>`, per #710** — for two different
+//! reasons, not one. `core.wait_started`'s `owner` is defined as *the
+//! current holder's* identity when the core is already held (see that
+//! variant's own doc), and `diagnostics-events.ts`'s `requestEnqueuedEvent`
+//! writes this family from the SharedWorker's serial queue, a layer that
+//! genuinely cannot see a `CoreOwner` any more than `requestBusyEvent`
+//! can — rule 1 applies here exactly as it does to `core.busy`.
+//! `core.acquired` is different: `requestDequeuedEvent`'s own queue layer
+//! is *not* structurally blind (`onDequeue` runs with the dequeued request
+//! in scope), so rule 1 does not derive its `Option`; it stays `Option` to
+//! avoid a second, independently maintained copy of the identity
+//! `Source::Core`'s own `core.acquired` row already names authoritatively
+//! — see that variant's own doc. Either way the TS side emits
+//! `{"owner": null}` explicitly (rule 2). Every Rust writer of these two
+//! (the web host's `TaskCoreCell::checkout`/`read`/`read_mut`, the mobile
+//! host's `lock_with_diagnostics`) always knows its owner and wraps it in
+//! `Some`.
 //!
 //! [`FailureClass`] and [`route_template`] live here for the identical
 //! cross-workspace reason: [`DiagnosticEvent::HttpFinished`]'s `failure`
@@ -178,6 +196,35 @@ pub enum SyncOutcome {
     Completed,
 }
 
+/// The closed transport vocabulary `network.changed` records —
+/// `ConnectivityManager`'s `NetworkCapabilities.getTransportInfo`/
+/// `hasTransport` collapsed to one value per reading (a real network can
+/// carry more than one transport bit; the mobile host picks the single most
+/// specific one — cellular/wifi/vpn before falling back to `Other`/`None`).
+/// `None` is itself a reading, not an absent value: "no active network" is
+/// exactly as informative as which transport is active, so it is a variant
+/// here rather than folding into `Option<NetworkTransport>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkTransport {
+    Cellular,
+    Wifi,
+    Vpn,
+    Other,
+    None,
+}
+
+/// Which trigger started one WorkManager run of `SyncWorker` — the app's
+/// own two-member vocabulary (`SyncWorker.TRIGGER_TIMER`/`TRIGGER_PUSH`),
+/// closed here for the same reason every other payload field is: a free
+/// string would let the redaction rule's own guarantee slip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerTrigger {
+    Timer,
+    Push,
+}
+
 /// The HTTP verb one `http.*`/`request.*` event's call used. `Delete` was
 /// added for #711: the authority's request boundary sees every verb its own
 /// route table answers (`DELETE /api/admin/tokens/:id`,
@@ -229,12 +276,10 @@ pub enum DiagnosticHttpMethod {
 /// carry an owner in this tree" describes the pre-#708 enum and is false
 /// once this landed, so #710's rebase updates its own docs to match rather
 /// than the other way round. #710's own two families
-/// (`core.wait_started`/`core.acquired`) are still payload-free here, and
-/// when #710 adds `owner` to them it is bound by this module's header rule
-/// on non-Rust writers: both have live TypeScript writers today, so the
-/// field is `Option<CoreOwner>` (with the TS side emitting an explicit
-/// `payload`) unless #710 also teaches those writers to name a real owner.
-/// See this module's own header on why there is
+/// (`core.wait_started`/`core.acquired`) **also carry `owner: Option<CoreOwner>`**
+/// now — see this module's header's "Applied state of the quad" paragraph
+/// for why `Option` rather than a required field, and each variant's own
+/// doc below for the rest. See this module's own header on why there is
 /// exactly one owner enum, ever. No `Other`/catch-all variant: an
 /// unnameable owner would defeat #712's whole interpretation table, whose
 /// job is telling an operator who held the core, so every call site on
@@ -253,14 +298,24 @@ pub enum CoreOwner {
     /// The web host's triage write (edit-and-promote).
     Triage,
     /// The Grill-completion trio: complete_grill, save_grill_draft,
-    /// discard_grill_draft.
+    /// discard_grill_draft — plus, on the mobile host (#710), that same
+    /// trio's own reads (grill_draft, has_grill_draft), kept under this
+    /// area rather than [`Self::Read`] since they are Grill-specific state,
+    /// not a generic getter.
     Grill,
     /// Every project-dossier write: create_project, patch_project,
-    /// project links, Route, fog, project actions, Steps.
+    /// project links, Route, fog, project actions, Steps — plus, on the
+    /// mobile host (#710), that area's own read (`projects()`), for the
+    /// identical reason [`Self::Grill`]'s doc states.
     Projects,
-    /// create_rule/patch_rule (#140/ADR-0013).
+    /// create_rule/patch_rule (#140/ADR-0013), plus the mobile host's own
+    /// `rules`/`rule` reads (#710), same reasoning as [`Self::Grill`].
     Rules,
-    /// set_binding/set_question_enabled (#118/#715).
+    /// set_binding/set_question_enabled (#118/#715), plus the mobile
+    /// host's own `api_version`/`dead_letters`/`bindings`/
+    /// `question_switches` reads (#710) — device/config state this area
+    /// already owns, kept off [`Self::Read`] for the same reason as
+    /// [`Self::Grill`]'s doc.
     Settings,
     /// A read-only getter's own acquisition (#708 review round 1,
     /// finding 1) — every one of the web host's read-only accessors
@@ -271,6 +326,17 @@ pub enum CoreOwner {
     /// slot is empty but no holder was recorded — an invariant violation
     /// this vocabulary still needs a legal value for, rather than a panic.
     Read,
+    /// #710: the mobile host's own calendar-lane reads of the shared
+    /// `inner` lock (`MobileTaskHost::device_token`/`trips_calendar_id`,
+    /// both called from `calendar_on_timer`) -- kept distinct from `Read`
+    /// so contention the calendar poll causes (or waits behind) is legible
+    /// as calendar-lane activity in the journal, not folded into the
+    /// generic read identity every other getter shares. Never the
+    /// calendar's own mutex (`MobileTaskHost::calendar`, a second lock
+    /// entirely -- see `core_lock`'s module doc on that lock's ordering);
+    /// only the brief acquisitions of `inner` the calendar lane makes
+    /// around it.
+    Calendar,
 }
 
 /// How one `operation.*`-family unit of work ended.
@@ -371,10 +437,36 @@ pub enum DiagnosticEvent {
         failure: Option<FailureClass>,
     },
 
+    /// #710: `owner` is the identity the waiter observed at the moment it
+    /// started waiting — the current holder's, when the mutex was already
+    /// held, or the waiter's own otherwise (see [`CoreOwner`]'s own doc).
+    ///
+    /// **`Option`, for the same structural reason as [`DiagnosticEvent::CoreBusy`]
+    /// (this module's header rule 1).** `client/web/src/worker/diagnostics-events.ts`'s
+    /// `requestEnqueuedEvent` also writes this family, from the
+    /// SharedWorker's serial queue — a layer that cannot see a
+    /// `CoreOwner` any more than `requestBusyEvent` can, so it emits
+    /// `None`. Every Rust writer (the web host's `TaskCoreCell::checkout`/
+    /// `read`/`read_mut`, the mobile host's `lock_with_diagnostics`) always
+    /// knows its owner and wraps it in `Some`.
     #[serde(rename = "core.wait_started")]
-    CoreWaitStarted,
+    CoreWaitStarted { owner: Option<CoreOwner> },
+    /// #710: `owner` is the caller that just acquired the mutex —
+    /// `Option`, but for a narrower reason than [`DiagnosticEvent::CoreWaitStarted`]'s.
+    /// `diagnostics-events.ts`'s `requestDequeuedEvent` writes this family
+    /// too, from the SharedWorker's serial queue, and that queue layer is
+    /// **not** structurally blind here the way it is for `core.busy`/
+    /// `core.wait_started`: `onDequeue` runs with the dequeued
+    /// `TaskWorkerRequest` in scope (`task-worker.ts`'s
+    /// `createTaskRequestQueue`), so `request.type` is available and could
+    /// be mapped to a `CoreOwner`. `owner: null` here is a deliberate
+    /// choice not to — that mapping would be a second, independently
+    /// maintained copy of the identity the wasm host's own
+    /// `Source::Core` `core.acquired` row already names authoritatively,
+    /// and a second copy is exactly the kind of thing that drifts. `null`
+    /// stays "this writer did not name one," not "unreachable."
     #[serde(rename = "core.acquired")]
-    CoreAcquired,
+    CoreAcquired { owner: Option<CoreOwner> },
     /// #708's amendment: names the [`CoreOwner`] holding the checkout —
     /// the asker already knows who *it* is, so this is the fact only the
     /// holder can supply.
@@ -405,7 +497,9 @@ pub enum DiagnosticEvent {
     /// otherwise be lost rather than merely redundant with `core.acquired`
     /// (the two can be arbitrarily far apart in the stream once a hold
     /// runs long, which is exactly the case this whole slice exists to
-    /// make legible).
+    /// make legible). #710: also true of the mobile host — `owner` is the
+    /// caller that just released the mutex, always recorded via a `Drop`
+    /// guard, so a cancelled in-flight operation still records this.
     #[serde(rename = "core.released")]
     CoreReleased { owner: CoreOwner },
 
@@ -431,29 +525,41 @@ pub enum DiagnosticEvent {
     #[serde(rename = "operation.abandoned")]
     OperationAbandoned,
 
-    /// **#707's Network Information deferral, declined here rather than
-    /// left silent (#708 review round 1).** #707's brief asked for
-    /// "unavailable Network Information API fields recorded as
-    /// `unknown`," found it unsatisfiable against this payload
-    /// (`{online: bool}` only), and deferred the richer fields
-    /// (`effectiveType`/`downlink`/`rtt`/`saveData`) into whichever slice
-    /// next amended this enum — which is #708. Declining rather than
-    /// implementing it here: extending this payload is a #707-scoped
-    /// product decision (what "unknown" means per field, whether a
-    /// missing `navigator.connection` collapses to one flag or four)
-    /// that needs the TS producer
-    /// (`client/web/src/worker/diagnostics-events.ts`'s
-    /// `networkChangedEvent`) rewritten to actually populate it — real
-    /// work outside a core-ownership slice's own surface, not a
-    /// coincidental amendment to make while already touching this enum
-    /// for `CoreOwner`. Left as a named follow-up rather than guessed at.
+    /// `online` is #707's original field (a browser's `navigator.onLine`,
+    /// still all the PWA ever supplies). The five fields below are #710's
+    /// addition, all `Option` so #707's own construction sites (which
+    /// build this variant's JSON by hand in TypeScript, never through this
+    /// Rust type) go on emitting a bare `{"online": ...}` payload without
+    /// having to name them. Android supplies every one of them from
+    /// `ConnectivityManager`'s capabilities; no IP address or SSID is ever
+    /// recorded (an SSID is as much a location fingerprint as an address,
+    /// even though the acceptance list only names the address).
     #[serde(rename = "network.changed")]
-    NetworkChanged { online: bool },
+    NetworkChanged {
+        online: bool,
+        transport: Option<NetworkTransport>,
+        internet_capable: Option<bool>,
+        validated: Option<bool>,
+        metered: Option<bool>,
+        roaming: Option<bool>,
+    },
 
+    /// #710: `trigger`/`attempt_count` are read off the `WorkManager`
+    /// worker itself (`SyncWorker`'s own `runAttemptCount`) — the one place
+    /// that distinguishes a first failure from a backoff loop.
     #[serde(rename = "worker.started")]
-    WorkerStarted,
+    WorkerStarted {
+        trigger: WorkerTrigger,
+        attempt_count: u32,
+    },
+    /// #710: same `trigger`/`attempt_count` as [`DiagnosticEvent::WorkerStarted`]'s
+    /// own run, plus the outcome that run ended with.
     #[serde(rename = "worker.finished")]
-    WorkerFinished { outcome: OperationOutcome },
+    WorkerFinished {
+        trigger: WorkerTrigger,
+        attempt_count: u32,
+        outcome: OperationOutcome,
+    },
 
     #[serde(rename = "push.received")]
     PushReceived,
@@ -712,8 +818,8 @@ mod tests {
         // `requestAbandonedEvent`, `requestBusyEvent`,
         // `networkChangedEvent` — the whole of that module's public surface.
         let rows = [
-            r#"{"schema_version":1,"seq":1,"wall_clock_ms":1700000000000,"elapsed_ms":0,"session_id":"ww-1","source":"web-worker","cycle_id":null,"operation_id":null,"request_id":null,"event":{"name":"core.wait_started"}}"#,
-            r#"{"schema_version":1,"seq":2,"wall_clock_ms":1700000000010,"elapsed_ms":10,"session_id":"ww-1","source":"web-worker","cycle_id":null,"operation_id":null,"request_id":null,"event":{"name":"core.acquired"}}"#,
+            r#"{"schema_version":1,"seq":1,"wall_clock_ms":1700000000000,"elapsed_ms":0,"session_id":"ww-1","source":"web-worker","cycle_id":null,"operation_id":null,"request_id":null,"event":{"name":"core.wait_started","payload":{"owner":null}}}"#,
+            r#"{"schema_version":1,"seq":2,"wall_clock_ms":1700000000010,"elapsed_ms":10,"session_id":"ww-1","source":"web-worker","cycle_id":null,"operation_id":null,"request_id":null,"event":{"name":"core.acquired","payload":{"owner":null}}}"#,
             r#"{"schema_version":1,"seq":3,"wall_clock_ms":1700000030000,"elapsed_ms":30000,"session_id":"ww-1","source":"web-worker","cycle_id":null,"operation_id":null,"request_id":null,"event":{"name":"operation.abandoned"}}"#,
             r#"{"schema_version":1,"seq":4,"wall_clock_ms":1700000000020,"elapsed_ms":20,"session_id":"ww-1","source":"web-worker","cycle_id":null,"operation_id":null,"request_id":null,"event":{"name":"core.busy","payload":{"owner":null}}}"#,
             r#"{"schema_version":1,"seq":5,"wall_clock_ms":1700000000030,"elapsed_ms":30,"session_id":"ww-1","source":"web-worker","cycle_id":null,"operation_id":null,"request_id":null,"event":{"name":"network.changed","payload":{"online":false}}}"#,
@@ -724,15 +830,27 @@ mod tests {
             assert_eq!(parsed.source, Source::WebWorker);
         }
 
-        // The busy row's `owner` really is read back as "unknown", not as
-        // some default owner — the distinction this module's header rule 1
-        // rests on.
+        // The wait_started/acquired/busy rows' `owner` really is read back
+        // as "unknown", not as some default owner — the distinction this
+        // module's header rule 1 rests on.
+        let wait_started: DiagnosticEventV1 = serde_json::from_str(rows[0]).unwrap();
+        assert_eq!(wait_started.event, DiagnosticEvent::CoreWaitStarted { owner: None });
+        let acquired: DiagnosticEventV1 = serde_json::from_str(rows[1]).unwrap();
+        assert_eq!(acquired.event, DiagnosticEvent::CoreAcquired { owner: None });
         let busy: DiagnosticEventV1 = serde_json::from_str(rows[3]).unwrap();
         assert_eq!(busy.event, DiagnosticEvent::CoreBusy { owner: None });
 
-        // And the shape this writer emitted before the fix is a hard
-        // failure, which is what made the drift a real defect rather than a
-        // cosmetic one.
+        // And the shape each of these writers emitted before their own fix
+        // is a hard failure, which is what makes the drift a real defect
+        // rather than a cosmetic one.
+        assert!(
+            serde_json::from_str::<DiagnosticEvent>(r#"{"name":"core.wait_started"}"#).is_err(),
+            "a bare core.wait_started with no payload must not deserialize"
+        );
+        assert!(
+            serde_json::from_str::<DiagnosticEvent>(r#"{"name":"core.acquired"}"#).is_err(),
+            "a bare core.acquired with no payload must not deserialize"
+        );
         assert!(
             serde_json::from_str::<DiagnosticEvent>(r#"{"name":"core.busy"}"#).is_err(),
             "a bare core.busy with no payload must not deserialize"
@@ -829,8 +947,8 @@ mod tests {
                     status,
                     failure,
                 },
-                DiagnosticEvent::CoreWaitStarted => DiagnosticEvent::CoreWaitStarted,
-                DiagnosticEvent::CoreAcquired => DiagnosticEvent::CoreAcquired,
+                DiagnosticEvent::CoreWaitStarted { owner } => DiagnosticEvent::CoreWaitStarted { owner },
+                DiagnosticEvent::CoreAcquired { owner } => DiagnosticEvent::CoreAcquired { owner },
                 DiagnosticEvent::CoreBusy { owner } => DiagnosticEvent::CoreBusy { owner },
                 DiagnosticEvent::CoreReleased { owner } => DiagnosticEvent::CoreReleased { owner },
                 DiagnosticEvent::OperationRequested => DiagnosticEvent::OperationRequested,
@@ -841,9 +959,33 @@ mod tests {
                 DiagnosticEvent::OperationSlow => DiagnosticEvent::OperationSlow,
                 DiagnosticEvent::OperationStalled => DiagnosticEvent::OperationStalled,
                 DiagnosticEvent::OperationAbandoned => DiagnosticEvent::OperationAbandoned,
-                DiagnosticEvent::NetworkChanged { online } => DiagnosticEvent::NetworkChanged { online },
-                DiagnosticEvent::WorkerStarted => DiagnosticEvent::WorkerStarted,
-                DiagnosticEvent::WorkerFinished { outcome } => DiagnosticEvent::WorkerFinished { outcome },
+                DiagnosticEvent::NetworkChanged {
+                    online,
+                    transport,
+                    internet_capable,
+                    validated,
+                    metered,
+                    roaming,
+                } => DiagnosticEvent::NetworkChanged {
+                    online,
+                    transport,
+                    internet_capable,
+                    validated,
+                    metered,
+                    roaming,
+                },
+                DiagnosticEvent::WorkerStarted { trigger, attempt_count } => {
+                    DiagnosticEvent::WorkerStarted { trigger, attempt_count }
+                }
+                DiagnosticEvent::WorkerFinished {
+                    trigger,
+                    attempt_count,
+                    outcome,
+                } => DiagnosticEvent::WorkerFinished {
+                    trigger,
+                    attempt_count,
+                    outcome,
+                },
                 DiagnosticEvent::PushReceived => DiagnosticEvent::PushReceived,
                 DiagnosticEvent::RequestReceived { method, route } => {
                     DiagnosticEvent::RequestReceived { method, route }
@@ -885,21 +1027,35 @@ mod tests {
                 status: Some(200),
                 failure: None,
             },
-            DiagnosticEvent::CoreWaitStarted,
-            DiagnosticEvent::CoreAcquired,
+            DiagnosticEvent::CoreWaitStarted { owner: Some(CoreOwner::Sync) },
+            DiagnosticEvent::CoreAcquired { owner: Some(CoreOwner::Capture) },
             DiagnosticEvent::CoreBusy {
                 owner: Some(CoreOwner::Sync),
             },
-            DiagnosticEvent::CoreReleased { owner: CoreOwner::Read },
+            DiagnosticEvent::CoreReleased { owner: CoreOwner::Triage },
             DiagnosticEvent::OperationRequested,
             DiagnosticEvent::OperationLocalCommit,
             DiagnosticEvent::OperationFinished { outcome: OperationOutcome::Success },
             DiagnosticEvent::OperationSlow,
             DiagnosticEvent::OperationStalled,
             DiagnosticEvent::OperationAbandoned,
-            DiagnosticEvent::NetworkChanged { online: true },
-            DiagnosticEvent::WorkerStarted,
-            DiagnosticEvent::WorkerFinished { outcome: OperationOutcome::Success },
+            DiagnosticEvent::NetworkChanged {
+                online: true,
+                transport: Some(NetworkTransport::Wifi),
+                internet_capable: Some(true),
+                validated: Some(true),
+                metered: Some(false),
+                roaming: Some(false),
+            },
+            DiagnosticEvent::WorkerStarted {
+                trigger: WorkerTrigger::Timer,
+                attempt_count: 1,
+            },
+            DiagnosticEvent::WorkerFinished {
+                trigger: WorkerTrigger::Push,
+                attempt_count: 2,
+                outcome: OperationOutcome::Success,
+            },
             DiagnosticEvent::PushReceived,
             DiagnosticEvent::RequestReceived {
                 method: DiagnosticHttpMethod::Get,

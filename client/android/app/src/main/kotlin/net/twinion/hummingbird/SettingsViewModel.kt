@@ -204,7 +204,20 @@ class SettingsViewModel(
                     // selection.
                     core().setCalendarSelections(selections, System.currentTimeMillis())
                 },
-                exportDiagnosticsFn = { DiagnosticsRecorder.get(context.applicationContext).export() },
+                // #710 review round 1: drains the mobile FFI host's
+                // buffered `core.*`/`operation.*` spans before exporting —
+                // `MobileTaskHost.takeDiagnosticEvents` never touches the
+                // `inner` mutex `Core::run` holds, so this drains cleanly
+                // even while a sync is stuck mid-cycle (#704's own
+                // scenario): an export taken *during* a stall still
+                // surfaces the `core.wait_started`/`core.acquired` spans
+                // already buffered, not just whatever a previous
+                // `SyncWorker` run happened to flush.
+                exportDiagnosticsFn = {
+                    val recorder = DiagnosticsRecorder.get(context.applicationContext)
+                    core().takeDiagnosticEvents().forEach { line -> recorder.appendRaw(line.json, line.wallClockMs) }
+                    recorder.export()
+                },
                 clearDiagnosticsFn = { DiagnosticsRecorder.get(context.applicationContext).clear() },
             )
         }

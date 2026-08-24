@@ -499,7 +499,7 @@ mod tests {
         let sink = crate::diagnostics::test_support::RecordingSink::default();
         let session = DiagnosticSession::new("s-1", 0);
 
-        session.emit(&sink, 1_000, 5, Some("op-1"), DiagnosticEvent::CoreAcquired);
+        session.emit(&sink, 1_000, 5, Some("op-1"), DiagnosticEvent::CoreAcquired { owner: None });
 
         let events = sink.events();
         assert_eq!(events.len(), 1);
@@ -520,7 +520,7 @@ mod tests {
         let sink = crate::diagnostics::test_support::RecordingSink::default();
         let session = DiagnosticSession::new("s-1", 10_000);
 
-        session.emit(&sink, 1_000, 10_030, None, DiagnosticEvent::CoreAcquired);
+        session.emit(&sink, 1_000, 10_030, None, DiagnosticEvent::CoreAcquired { owner: None });
 
         let events = sink.events();
         assert_eq!(
@@ -538,10 +538,10 @@ mod tests {
         let clock = RecordingClock::default();
         let session = DiagnosticSession::new("s-1", 0);
 
-        session.emit(&sink, 1_000, 0, None, DiagnosticEvent::CoreWaitStarted);
+        session.emit(&sink, 1_000, 0, None, DiagnosticEvent::CoreWaitStarted { owner: None });
         let cycle = DiagnosticsContext::new(&sink, &clock, &session, "c-1", "core", "test", 1_000);
         cycle.emit_sync_started(true);
-        session.emit(&sink, 1_000, 0, None, DiagnosticEvent::CoreAcquired);
+        session.emit(&sink, 1_000, 0, None, DiagnosticEvent::CoreAcquired { owner: None });
 
         let seqs: Vec<u64> = sink.events().iter().map(|e| e.seq).collect();
         assert_eq!(seqs, vec![0, 1, 2]);

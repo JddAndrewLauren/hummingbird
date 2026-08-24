@@ -1140,7 +1140,8 @@ export type CoreOwnerName =
   | "projects"
   | "rules"
   | "settings"
-  | "read";
+  | "read"
+  | "calendar";
 
 /** The closed set of events the SharedWorker itself writes
  * (`client/web/src/worker/diagnostics-events.ts`), each with the exact
@@ -1158,10 +1159,13 @@ export type CoreOwnerName =
  * `server/domain/src/diagnostics.rs` is the other half of the gate (a Rust
  * test holding these rows' literal JSON). `owner: null` on `core.busy` is
  * deliberate and required, not a placeholder — the holder never leaves the
- * wasm host; see that variant's Rust doc. */
+ * wasm host; see that variant's Rust doc. #710 gave `core.wait_started` and
+ * `core.acquired` the identical `owner: CoreOwnerName | null` shape, for
+ * the identical reason — this queue layer cannot name a holder either;
+ * `requestEnqueuedEvent`/`requestDequeuedEvent` always write `null`. */
 export type WebWorkerDiagnosticEvent =
-  | { name: "core.wait_started" }
-  | { name: "core.acquired" }
+  | { name: "core.wait_started"; payload: { owner: CoreOwnerName | null } }
+  | { name: "core.acquired"; payload: { owner: CoreOwnerName | null } }
   | { name: "core.busy"; payload: { owner: CoreOwnerName | null } }
   | { name: "operation.abandoned" }
   | { name: "network.changed"; payload: { online: boolean } };

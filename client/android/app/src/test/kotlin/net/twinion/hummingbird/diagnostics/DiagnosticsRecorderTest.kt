@@ -12,6 +12,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import uniffi.hummingbird_ffi_mobile.MobileDiagnosticEvent
+import uniffi.hummingbird_ffi_mobile.MobileWorkerTrigger
 
 /** [DiagnosticsRecorder]'s own suite (#709). `mintEventJsonFn` is always a
  * fixture here, never the real `diagnosticEventJson` — that function is a
@@ -50,10 +51,19 @@ class DiagnosticsRecorderTest {
         // "payload")]`'s real behavior for a unit variant.
         val eventField = when (event) {
             is MobileDiagnosticEvent.SessionStarted -> "{\"name\":\"session.started\"}"
-            is MobileDiagnosticEvent.WorkerStarted -> "{\"name\":\"worker.started\"}"
+            is MobileDiagnosticEvent.WorkerStarted ->
+                "{\"name\":\"worker.started\",\"payload\":{\"trigger\":\"${event.trigger.name.lowercase()}\"," +
+                    "\"attempt_count\":${event.attemptCount}}}"
             is MobileDiagnosticEvent.WorkerFinished ->
-                "{\"name\":\"worker.finished\",\"payload\":{\"outcome\":\"${if (event.success) "success" else "failure"}\"}}"
+                "{\"name\":\"worker.finished\",\"payload\":{\"trigger\":\"${event.trigger.name.lowercase()}\"," +
+                    "\"attempt_count\":${event.attemptCount}," +
+                    "\"outcome\":\"${if (event.success) "success" else "failure"}\"}}"
             is MobileDiagnosticEvent.PushReceived -> "{\"name\":\"push.received\"}"
+            is MobileDiagnosticEvent.NetworkChanged ->
+                "{\"name\":\"network.changed\",\"payload\":{\"online\":${event.online}," +
+                    "\"transport\":\"${event.transport.name.lowercase()}\"," +
+                    "\"internet_capable\":${event.internetCapable},\"validated\":${event.validated}," +
+                    "\"metered\":${event.metered},\"roaming\":${event.roaming}}}"
         }
         return "{\"schema_version\":1,\"seq\":0,\"wall_clock_ms\":$wallClockMs," +
             "\"elapsed_ms\":0,\"session_id\":\"test-session\",\"source\":\"android\"," +
@@ -94,7 +104,7 @@ class DiagnosticsRecorderTest {
     @Test
     fun `export and clear round trip through the real journal`() = runBlocking {
         val rec = recorder()
-        rec.record(MobileDiagnosticEvent.WorkerStarted)
+        rec.record(MobileDiagnosticEvent.WorkerStarted(trigger = MobileWorkerTrigger.TIMER, attemptCount = 1u))
         waitUntilExported(rec) { it.contains("worker.started") }
 
         rec.clear()
@@ -213,8 +223,8 @@ class DiagnosticsRecorderTest {
     fun `the export pipeline never introduces a forbidden field of its own`() = runBlocking {
         val rec = recorder()
         rec.record(MobileDiagnosticEvent.SessionStarted)
-        rec.record(MobileDiagnosticEvent.WorkerStarted)
-        rec.record(MobileDiagnosticEvent.WorkerFinished(success = false))
+        rec.record(MobileDiagnosticEvent.WorkerStarted(trigger = MobileWorkerTrigger.TIMER, attemptCount = 1u))
+        rec.record(MobileDiagnosticEvent.WorkerFinished(trigger = MobileWorkerTrigger.TIMER, attemptCount = 1u, success = false))
         rec.record(MobileDiagnosticEvent.PushReceived)
         waitUntilExported(rec) { it.contains("push.received") }
 

@@ -78,6 +78,21 @@ class DiagnosticsRecorder(
         }
     }
 
+    /** #710: appends one already-serialized `DiagnosticEventV1` line the
+     * mobile FFI host minted itself (`MobileTaskHost.takeDiagnosticEvents`
+     * — the `core_lock` module's own buffered `core.*`/`operation.*`
+     * spans) — no [mintEventJsonFn] call, since there is nothing left to
+     * mint: `wallClockMs` and `json` both already came from the same
+     * `DiagnosticEventV1` the real journal line is. Same enqueue-and-never-
+     * block shape as [record]. */
+    fun appendRaw(json: String, wallClockMs: Long) {
+        scope.launch {
+            withContext(NonCancellable) {
+                runCatching { journalFn().append(json, wallClockMs) }
+            }
+        }
+    }
+
     suspend fun export(): ByteArray {
         val result = scope.async {
             withContext(NonCancellable) { runCatching { journalFn().export() } }

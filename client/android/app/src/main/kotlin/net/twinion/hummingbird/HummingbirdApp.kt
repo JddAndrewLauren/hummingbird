@@ -7,6 +7,7 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import java.util.concurrent.TimeUnit
+import net.twinion.hummingbird.core.NetworkMonitor
 import net.twinion.hummingbird.diagnostics.DiagnosticsRecorder
 import net.twinion.hummingbird.notify.NotificationChannels
 import net.twinion.hummingbird.push.PushBootstrap
@@ -23,6 +24,9 @@ class HummingbirdApp : Application() {
         // states why nothing there may be lazy). Mints no event itself —
         // `session.started` stays `CoreHolder`'s.
         DiagnosticsRecorder.get(this)
+        // #710: registered once here, process lifetime, same as the
+        // recorder above — see `NetworkMonitor.start`'s own doc.
+        NetworkMonitor.start(this)
         scheduleHourlySync()
         // Before any push can arrive: a notification posted against a
         // channel id that does not exist is dropped to a default channel

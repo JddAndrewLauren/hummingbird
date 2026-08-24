@@ -1344,11 +1344,12 @@ impl TaskCoreCell {
     /// for why that is still exactly what #704 needs made visible.
     pub fn checkout(&self, owner: CoreOwner, now_ms: i64) -> Option<CoreGuard<'_>> {
         let diagnostics = self.diagnostics();
-        diagnostics.emit(now_ms, None, DiagnosticEvent::CoreWaitStarted);
+        let waiting_on = self.holder.get().unwrap_or(owner);
+        diagnostics.emit(now_ms, None, DiagnosticEvent::CoreWaitStarted { owner: Some(waiting_on) });
         match self.host.borrow_mut().take() {
             Some(host) => {
                 self.holder.set(Some(owner));
-                diagnostics.emit(now_ms, None, DiagnosticEvent::CoreAcquired);
+                diagnostics.emit(now_ms, None, DiagnosticEvent::CoreAcquired { owner: Some(owner) });
                 Some(CoreGuard {
                     cell: self,
                     host: Some(host),
@@ -1385,10 +1386,11 @@ impl TaskCoreCell {
     /// why a read needs no `owner` argument of its own.
     pub fn read<T>(&self, now_ms: i64, on_busy: T, f: impl FnOnce(&TaskHostCore) -> T) -> T {
         let diagnostics = self.diagnostics();
-        diagnostics.emit(now_ms, None, DiagnosticEvent::CoreWaitStarted);
+        let waiting_on = self.holder.get().unwrap_or(CoreOwner::Read);
+        diagnostics.emit(now_ms, None, DiagnosticEvent::CoreWaitStarted { owner: Some(waiting_on) });
         match self.host.borrow().as_ref() {
             Some(host) => {
-                diagnostics.emit(now_ms, None, DiagnosticEvent::CoreAcquired);
+                diagnostics.emit(now_ms, None, DiagnosticEvent::CoreAcquired { owner: Some(CoreOwner::Read) });
                 let result = f(host);
                 diagnostics.emit(now_ms, None, DiagnosticEvent::CoreReleased { owner: CoreOwner::Read });
                 result
@@ -1413,10 +1415,11 @@ impl TaskCoreCell {
     /// through a `.borrow_mut()` instead of a `.borrow()`.
     pub fn read_mut<T>(&self, now_ms: i64, on_busy: T, f: impl FnOnce(&mut TaskHostCore) -> T) -> T {
         let diagnostics = self.diagnostics();
-        diagnostics.emit(now_ms, None, DiagnosticEvent::CoreWaitStarted);
+        let waiting_on = self.holder.get().unwrap_or(CoreOwner::Read);
+        diagnostics.emit(now_ms, None, DiagnosticEvent::CoreWaitStarted { owner: Some(waiting_on) });
         match self.host.borrow_mut().as_mut() {
             Some(host) => {
-                diagnostics.emit(now_ms, None, DiagnosticEvent::CoreAcquired);
+                diagnostics.emit(now_ms, None, DiagnosticEvent::CoreAcquired { owner: Some(CoreOwner::Read) });
                 let result = f(host);
                 diagnostics.emit(now_ms, None, DiagnosticEvent::CoreReleased { owner: CoreOwner::Read });
                 result
@@ -3124,7 +3127,7 @@ mod core_checkout_tests {
         let events = cell.drain_diagnostics();
         let acquired = events
             .iter()
-            .find(|e| matches!(e.event, DiagnosticEvent::CoreAcquired))
+            .find(|e| matches!(e.event, DiagnosticEvent::CoreAcquired { .. }))
             .expect("an acquired event was recorded");
         let released = events
             .iter()
