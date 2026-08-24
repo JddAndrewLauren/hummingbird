@@ -103,13 +103,6 @@ class DiagnosticsRecorder(
         @Volatile
         private var instance: DiagnosticsRecorder? = null
 
-        /** Minted once per process, the first time this singleton is
-         * created — the one monotonic reading every event's `elapsed_ms`
-         * in this process is measured from
-         * (`diagnosticInitSession`'s own contract on the Rust side). */
-        private val sessionId: String by lazy { UUID.randomUUID().toString() }
-        private val originMonotonicMs: Long by lazy { SystemClock.elapsedRealtime() }
-
         /** The app-private core directory (`client/core/src/storage/fs.rs`'s
          * own name for it) — the same directory `CoreHolder` already
          * namespaces the core's snapshot store into, reused rather than a
@@ -121,17 +114,66 @@ class DiagnosticsRecorder(
             instance?.let { return it }
             synchronized(this) {
                 instance?.let { return it }
-                val directory = coreDirectory(context)
-                val created = DiagnosticsRecorder(
-                    journalFn = { DiagnosticJournal(directory) },
-                    mintEventJsonFn = { event, wallClockMs, monotonicMs ->
-                        diagnosticInitSession(sessionId, originMonotonicMs.toULong())
-                        diagnosticEventJson(wallClockMs, monotonicMs.toULong(), event)
-                    },
+                val created = create(
+                    directory = coreDirectory(context),
+                    elapsedRealtimeMs = SystemClock::elapsedRealtime,
+                    initSessionFn = ::diagnosticInitSession,
+                    eventJsonFn = ::diagnosticEventJson,
                 )
                 instance = created
                 return created
             }
+        }
+
+        /**
+         * Mints the process's one recorder, **sampling its session identity
+         * eagerly right here** — the random id, and the single monotonic
+         * reading every event's `elapsed_ms` in this process is measured
+         * from (`diagnosticInitSession`'s own contract on the Rust side).
+         * Because [get]'s only production caller is
+         * `HummingbirdApp.onCreate`, "right here" is actual process start,
+         * and nothing about the origin is deferred to the first [record].
+         *
+         * That eagerness is the whole point of this function existing, and
+         * it has now been got wrong twice: while the id and the origin sat
+         * behind companion-level `by lazy` properties, the origin was
+         * whatever the *first writer's* clock read — so every process's
+         * first-ever event reported `elapsed_ms: 0` however long the
+         * process had already been up (review round 1), and round 2 caught
+         * that calling `get()` did not fix it either, because only the mint
+         * lambda's body ever touched those properties, so `get()` forced
+         * nothing. Two locals read on this thread, before the recorder
+         * exists, is the form with no way to defer.
+         *
+         * `initSessionFn` stays *inside* the mint lambda deliberately: it
+         * is a call into the native `.so`, and there it runs under
+         * [record]'s own `runCatching`, so a diagnostics problem still
+         * cannot take down `Application.onCreate`. Repeating it per event
+         * costs nothing and cannot move the origin — the Rust side is a
+         * `OnceLock` (`diagnostic_init_session`, idempotent by
+         * construction) and is handed the same two eagerly-sampled values
+         * every time.
+         *
+         * `internal` and seam-shaped only so a plain-JVM test can hold the
+         * creation-time and record-time clock readings apart; production
+         * has exactly one caller, [get].
+         */
+        internal fun create(
+            directory: File,
+            elapsedRealtimeMs: () -> Long,
+            initSessionFn: (sessionId: String, originMonotonicMs: ULong) -> Unit,
+            eventJsonFn: (wallClockMs: Long, monotonicMs: ULong, event: MobileDiagnosticEvent) -> String,
+        ): DiagnosticsRecorder {
+            val sessionId = UUID.randomUUID().toString()
+            val originMonotonicMs = elapsedRealtimeMs()
+            return DiagnosticsRecorder(
+                journalFn = { DiagnosticJournal(directory) },
+                mintEventJsonFn = { event, wallClockMs, monotonicMs ->
+                    initSessionFn(sessionId, originMonotonicMs.toULong())
+                    eventJsonFn(wallClockMs, monotonicMs.toULong(), event)
+                },
+                elapsedRealtimeMs = elapsedRealtimeMs,
+            )
         }
     }
 }

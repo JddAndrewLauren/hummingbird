@@ -16,12 +16,12 @@ class HummingbirdApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        // #709: samples the process's one monotonic origin now, at actual
-        // process start, rather than leaving it to whichever of the four
-        // writers happens to record first (review round 1: that left every
-        // process's first-ever diagnostic event reading `elapsed_ms: 0`
-        // regardless of how long the process had actually been running).
-        // Mints no event itself — `session.started` stays `CoreHolder`'s.
+        // #709: this is what makes the process's one monotonic origin get
+        // sampled at actual process start rather than by whichever of the
+        // four writers happens to record first — `get` samples it eagerly
+        // on this thread (see `DiagnosticsRecorder.Companion.create`, which
+        // states why nothing there may be lazy). Mints no event itself —
+        // `session.started` stays `CoreHolder`'s.
         DiagnosticsRecorder.get(this)
         scheduleHourlySync()
         // Before any push can arrive: a notification posted against a

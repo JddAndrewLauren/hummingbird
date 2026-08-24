@@ -1,6 +1,7 @@
 package net.twinion.hummingbird.diagnostics
 
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -133,16 +134,63 @@ class DiagnosticsRecorderTest {
     }
 
     @Test
-    fun `clear never throws even over a journal it cannot fully read`() = runBlocking {
-        File(dir, "diagnostics.ndjson").mkdirs()
+    fun `clear swallows a failure reaching the journal and never throws`() = runBlocking {
+        // `File.delete()` cannot throw — it answers `false` — so a journal
+        // whose files merely refuse to delete hands `clear`'s `runCatching`
+        // nothing to catch, and the test this replaces passed just as well
+        // with that `runCatching` deleted (review round 2 caught exactly
+        // that vacuity). The failure `clear` genuinely has to survive is
+        // one thrown on the way to, or inside, the journal — injected
+        // through the same seam `a failure minting the event is swallowed`
+        // already uses.
         val rec = DiagnosticsRecorder(
-            journalFn = { DiagnosticJournal(dir) },
+            journalFn = { throw IOException("no journal to clear") },
             mintEventJsonFn = ::fixtureJson,
         )
 
-        // No assertion beyond "this call returns" — a throw here would
-        // fail the test on its own.
+        // No assertion beyond "this call returns": `clear` `await()`s its
+        // own coroutine, so an unswallowed throw surfaces right here.
         rec.clear()
+    }
+
+    /** The origin every `elapsed_ms` is measured from is sampled when the
+     * recorder is *created* (`HummingbirdApp.onCreate`, i.e. process
+     * start), never at the first `record()` — see
+     * `DiagnosticsRecorder.Companion.create`. Both earlier forms failed
+     * this: the first event reported `elapsed_ms: 0` however long the
+     * process had already been running. */
+    @Test
+    fun `the origin is sampled at creation, so the first event's elapsed_ms is not zero`() = runBlocking {
+        // A process that has already been up 4s when the recorder is made.
+        var monotonicMs = 4_000L
+        val originsPassedToRust = mutableListOf<Long>()
+        val rec = DiagnosticsRecorder.create(
+            directory = dir,
+            elapsedRealtimeMs = { monotonicMs },
+            initSessionFn = { _, origin -> originsPassedToRust += origin.toLong() },
+            // Stands in for the native `diagnosticEventJson`, computing
+            // `elapsed_ms` exactly as the Rust side does: the monotonic
+            // reading at record time minus the session's fixed origin.
+            eventJsonFn = { wallClockMs, monotonic, _ ->
+                val origin = originsPassedToRust.last()
+                """{"schema_version":1,"wall_clock_ms":$wallClockMs,""" +
+                    """"elapsed_ms":${monotonic.toLong() - origin},"event":{"name":"push.received"}}"""
+            },
+        )
+
+        // 5s of further process life before anything is recorded at all.
+        monotonicMs = 9_000L
+        rec.record(MobileDiagnosticEvent.PushReceived)
+        waitUntilExported(rec) { it.contains("push.received") }
+
+        // The origin handed to the Rust session is the creation-time
+        // reading, not the record-time one — every time it is handed over.
+        assertEquals(listOf(4_000L), originsPassedToRust.distinct())
+        val exported = String(rec.export())
+        assertTrue(
+            "the first recorded event must report the real process uptime, not 0; export: $exported",
+            exported.contains(""""elapsed_ms":5000"""),
+        )
     }
 
     @Test
