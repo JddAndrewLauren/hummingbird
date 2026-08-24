@@ -548,8 +548,8 @@ function RuleCard({
 
   return (
     <Card padding="var(--space-5)" style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--space-4)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+      <div className="hb-rule-card-header">
+        <div className="hb-rule-card-title">
           <span style={{ font: "var(--type-body-strong)" }}>{rule.name}</span>
           <Badge tone={rule.tier === "urgent" ? "danger" : "info"} mono>
             {rule.tier}
@@ -575,9 +575,11 @@ function RuleCard({
         </div>
       </div>
       {/* Sentence-length badges get their own wrapping row, below the
-          non-wrapping identity row above — the pattern `ConditionRow`'s
-          alarm-interval badge already uses. The identity row keeps only the
-          fixed-width mono status chips (#374). */}
+          identity row above — the pattern `ConditionRow`'s alarm-interval
+          badge already uses. The identity row itself wraps name + mono
+          status chips as a unit at narrow widths (#729); the sentence-length
+          badges stay on their own row because they are prose-width, not
+          fixed-width like the chips (#374). */}
       {!valid || isUnrankedSeverity(registry.severities, rule.severity) ? (
         <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-2)" }}>
           {!valid ? (

@@ -169,6 +169,42 @@
   white-space: nowrap;
 }
 
+/* ---- The rule card's header row ----------------------------------------- */
+
+/* `RuleCard`'s header: the name, the tier badge and the kind badge on the
+   left, the labelled `Enabled` switch on the right. `.hb-rule-card-title`
+   needs `min-width: 0` for the same reason `.hb-item-row-title` above does —
+   a flex item's automatic minimum size is its content's min-content, which
+   for this row is the name plus both badges laid out on one line, not the
+   width of its widest single word. Without it the title column refuses to
+   shrink below that width at all, so on a narrow card it pushes the switch
+   past the card's right edge instead of wrapping the name onto its own
+   lines (#729). Present in the base rule rather than only the phone block —
+   like `.hb-item-row-title`, it changes nothing where the card is wide
+   enough that shrinking is never triggered, which is every width this repo's
+   desktop forms are checked at. */
+.hb-rule-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+/* `flex-wrap: wrap` alongside the `min-width: 0` above: shrinking the name
+   span alone was not enough — the two badges are fixed-width and do not
+   shrink, so a div bounded to less than name-min-content + both badges still
+   forced the switch off the card. Letting the badges wrap under the name
+   when the row is narrow keeps this div's own width capped at whatever
+   `.hb-rule-card-header`'s `justify-content: space-between` leaves it, which
+   is what actually keeps the switch on-card rather than merely narrower. */
+.hb-rule-card-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
 /* ---- The capture box's disclosure --------------------------------------- */
 
 /* `CaptureBox`'s "More details" toggle rides at the right-hand end of the
