@@ -154,6 +154,45 @@ pub fn capture_meta_problems(deadline: &str, scheduled_date: &str) -> MetaProble
     }
 }
 
+/// [`urgency::DeadlineParts`], mirrored as a `uniffi::Record` — a deadline
+/// split into the two controls that edit it. `time` is `None` when the
+/// deadline names a whole civil day, which is the resting shape:
+/// `server/domain/src/deadline.rs` reads a date-only deadline as *end of
+/// day*, never midnight, so "no time" and `T00:00` are different facts and
+/// the `Option` is what keeps them apart across this seam.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct DeadlineParts {
+    pub date: String,
+    pub time: Option<String>,
+}
+
+/// [`urgency::split_deadline`] — the mobile twin of
+/// `ffi-web::decisions::split_deadline`, which had been this rule's only
+/// seam since M1-2 sank it. Android's deadline control needs the same split
+/// the web's `DeadlineField.tsx` has always used, and ADR-0025's
+/// sink-as-you-go step is what makes crossing the sunk function the way to
+/// get it: a Kotlin `substringBefore("T")` would be a second copy of a
+/// grammar that already has an owner, and `CaptureFieldSetStructuralTest`'s
+/// date-regex ban exists to catch exactly that.
+///
+/// A value in neither shape crosses back whole, as `date`, with no `time` —
+/// [`urgency::split_deadline`]'s own doc says why, and the Android field
+/// leans on it: a legacy free-text deadline stays visible rather than being
+/// emptied the moment a form loads it.
+#[uniffi::export]
+pub fn split_deadline(value: &str) -> DeadlineParts {
+    let parts = urgency::split_deadline(value);
+    DeadlineParts { date: parts.date, time: parts.time }
+}
+
+/// [`urgency::join_deadline`], the inverse. `Option<String>` rather than
+/// `Option<&str>` because uniffi crosses an optional argument as an owned
+/// value; the core function takes the borrow, so this hands it one.
+#[uniffi::export]
+pub fn join_deadline(date: &str, time: Option<String>) -> String {
+    urgency::join_deadline(date, time.as_deref())
+}
+
 /// [`hummingbird_core::decisions::vocabulary::VocabOption`], mirrored as a
 /// `uniffi::Record` — one `<select>`-equivalent option's wire value and
 /// display label, crossed to Kotlin so no size/energy word is ever a
@@ -6683,6 +6722,52 @@ mod tests {
                 "{draft:?} disagreed across the binding",
             );
         }
+    }
+
+    /// The deadline split/join bindings, pinned the same way: the record
+    /// mapping is the only place these can drift from the core, so both
+    /// directions are crossed against the real functions rather than
+    /// re-asserting the grammar (which `decisions::urgency`'s own suite
+    /// owns). The round-trip case is what the Android control actually
+    /// does on every keystroke of the time picker.
+    #[test]
+    fn the_deadline_split_binding_is_the_core_rule_verbatim() {
+        for value in [
+            "",
+            "2026-09-01",
+            "2026-09-01T09:30",
+            "2026-02-30T09:30",
+            "next tuesday",
+            "abcd-ef-gh",
+            // A mis-shaped time must fall to the free-text branch whole,
+            // not split into a date plus a half-time the picker would then
+            // "correct" on the reader's behalf.
+            "2026-09-01T9:3",
+        ] {
+            let core = urgency::split_deadline(value);
+            let crossed = split_deadline(value);
+            assert_eq!(crossed.date, core.date, "{value:?} split its date differently");
+            assert_eq!(crossed.time, core.time, "{value:?} split its time differently");
+            assert_eq!(
+                join_deadline(&crossed.date, crossed.time),
+                value,
+                "{value:?} did not survive a round trip across the binding",
+            );
+        }
+    }
+
+    /// `None` and `Some("")` are the same fact to the core — the Android
+    /// control clears a time by handing back the former, and the latter is
+    /// what an empty picker would produce. Both must land on a whole day
+    /// rather than on `T00:00`, which is a different deadline
+    /// (`server/domain/src/deadline.rs` reads a bare date as end of day).
+    #[test]
+    fn the_deadline_join_binding_clears_a_time_the_way_the_core_does() {
+        for time in [None, Some(String::new())] {
+            assert_eq!(join_deadline("2026-09-01", time), "2026-09-01");
+        }
+        assert_eq!(join_deadline("2026-09-01", Some("09:30".into())), "2026-09-01T09:30");
+        assert_eq!(join_deadline("", Some("09:30".into())), "");
     }
 
     /// The tap-target binding, pinned the same way: the mapping is the

@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.height
 import androidx.compose.ui.unit.width
 import java.io.File
 import net.twinion.hummingbird.ui.forms.CaptureDateField
+import net.twinion.hummingbird.ui.forms.DeadlineField
 import net.twinion.hummingbird.ui.forms.PriorityRow
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 import org.junit.Assert.assertEquals
@@ -174,8 +175,20 @@ class PriorityRowWrappingTest {
         composeTestRule.setContent {
             HummingbirdTheme {
                 Row(modifier = Modifier.width(contentWidth)) {
-                    CaptureDateField(
-                        label = "Deadline",
+                    // The deadline half is `DeadlineField` since the dates
+                    // became pickers (2026-08-24) — it wraps the same
+                    // component and adds the optional minute. Rendered as
+                    // it ships, or this measures a pair the app no longer
+                    // has. `DeadlineFieldWrappingTest` owns what the wrapper
+                    // adds; this file still owns the even split.
+                    //
+                    // This Row deliberately carries neither the surfaces'
+                    // 8dp gap nor their `Alignment.Top`: the split is what
+                    // is being measured, and both fields are empty here so
+                    // neither can grow. The surfaces' own geometry is pinned
+                    // in `CaptureSheetStructuralTest` and measured in
+                    // `DeadlineFieldWrappingTest`.
+                    DeadlineField(
                         value = "",
                         error = null,
                         onValueChange = {},

@@ -60,6 +60,7 @@ import net.twinion.hummingbird.ui.SizeGlyph
 import net.twinion.hummingbird.ui.StageBadge
 import net.twinion.hummingbird.ui.forms.CaptureDateField
 import net.twinion.hummingbird.ui.forms.ContextField
+import net.twinion.hummingbird.ui.forms.DeadlineField
 import net.twinion.hummingbird.ui.forms.LevelSlider
 import net.twinion.hummingbird.ui.forms.PriorityRow
 import net.twinion.hummingbird.ui.levelColor
@@ -816,8 +817,7 @@ private fun DetailBody(
                 // shared with the web's capture box and triage form, so a bad date
                 // is refused with the same words everywhere instead of being sent
                 // for the authority to 400.
-                CaptureDateField(
-                    label = "Deadline",
+                DeadlineField(
                     value = draft.deadline,
                     error = problems?.deadline,
                     onValueChange = { onDraftChange(draft.copy(deadline = it)) },

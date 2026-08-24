@@ -529,7 +529,13 @@ class ItemDetailPanelStructuralTest {
     @Test
     fun `the field set is the shared one, over the seam's own vocabulary`() {
         val body = functionBody(panelSrc, "DetailBody")
-        for (component in listOf("LevelSlider(", "PriorityRow(", "ContextField(", "CaptureDateField(")) {
+        for (component in listOf(
+            "LevelSlider(",
+            "PriorityRow(",
+            "ContextField(",
+            "DeadlineField(",
+            "CaptureDateField(",
+        )) {
             assertTrue("the pane must render the shared $component", body.contains(component))
         }
         assertTrue(

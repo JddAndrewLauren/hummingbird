@@ -149,7 +149,17 @@ class CaptureFieldSetStructuralTest {
         val captureActivitySrc = captureFieldSrcByName.getValue("CaptureActivity.kt")
         // `PriorityRow` joined them at #565's review, when the Triage
         // editor turned out to seed a priority it had no control for.
-        for (component in listOf("LevelSlider", "ContextField", "CaptureDateField", "PriorityRow")) {
+        // `DeadlineField` joined them when the dates became pickers
+        // (2026-08-24): it is the deadline's whole control now, so a
+        // surface that lost it would otherwise still satisfy the
+        // `CaptureDateField` entry via its scheduled-date field.
+        for (component in listOf(
+            "LevelSlider",
+            "ContextField",
+            "CaptureDateField",
+            "DeadlineField",
+            "PriorityRow",
+        )) {
             assertTrue(
                 "expected CaptureActivity.kt to import the shared $component rather than " +
                     "defining its own",
@@ -301,6 +311,129 @@ class CaptureFieldSetStructuralTest {
             assertFalse(
                 "onTranscript must not also set $field",
                 body.contains(field),
+            )
+        }
+    }
+
+    // ------------------------------------- the dates became pickers (2026-08-24)
+
+    /** Operator decision 2026-08-24: neither date may raise the keyboard.
+     * The twin of the Project-field pin above, and bounded the same way —
+     * `readOnly = true` plus `onValueChange = {}` is what makes "picked, not
+     * typed" true of the source rather than merely true of the screenshot
+     * somebody took once. */
+    @Test
+    fun `neither date field accepts typed input`() {
+        // Both of them: `CaptureDateField` is the date, and `DeadlineField`
+        // carries a second read-only field of its own for the minute. Pinning
+        // only the first let the test's own name over-claim.
+        val bodies = mapOf(
+            "CaptureDateField" to Regex("""fun CaptureDateField\([\s\S]*?\n}""")
+                .find(captureFieldSrcByName.getValue("ui/forms/CaptureDateField.kt"))
+                ?.value,
+            "DeadlineField" to Regex("""fun DeadlineField\([\s\S]*?\n}""")
+                .find(captureFieldSrcByName.getValue("ui/forms/DeadlineField.kt"))
+                ?.value,
+        )
+        for ((name, body) in bodies) {
+            checkNotNull(body) { "could not locate $name in ui/forms/$name.kt" }
+            assertTrue(
+                "$name must be read-only — no keyboard, ever",
+                body.contains("readOnly = true"),
+            )
+            assertTrue(
+                "$name must ignore typed input (onValueChange = {})",
+                body.contains("onValueChange = {}"),
+            )
+            assertFalse(
+                "$name must not go singleLine — it is what keeps a legacy " +
+                    "free-text deadline readable instead of truncated",
+                body.contains("singleLine"),
+            )
+            // A read-only field is reachable by a screen reader only through
+            // its semantics action, and that action must *perform* the click.
+            // `{ false }` reports it unhandled: TalkBack announces the label,
+            // takes the double-tap and nothing opens — and `readOnly` leaves
+            // no keyboard to fall back on.
+            assertTrue(
+                "$name's semantics onClick must perform the gesture, not just label it",
+                Regex("""onClick\(label = [^)]*\) \{\s*\w+ = true\s*true\s*\}""")
+                    .containsMatchIn(body.replace(Regex("//[^\n]*"), "")),
+            )
+        }
+    }
+
+    /** The deadline's two halves are split and rejoined by the core
+     * (`hummingbird_core::decisions::urgency`, crossed on the mobile seam),
+     * never by Kotlin. The date-regex ban above cannot see this one:
+     * `value.substringBefore("T")` carries no regex and would sail past it,
+     * and it is exactly the one-liner anybody would reach for. ADR-0025
+     * forbids the second copy; this is what notices. */
+    @Test
+    fun `the deadline splits and joins only through the seam`() {
+        val src = captureFieldSrcByName.getValue("ui/forms/DeadlineField.kt")
+        for (door in listOf(
+            "import uniffi.hummingbird_ffi_mobile.splitDeadline",
+            "import uniffi.hummingbird_ffi_mobile.joinDeadline",
+            "splitDeadline(",
+            "joinDeadline(",
+        )) {
+            assertTrue(
+                "DeadlineField must reach the core's own grammar via $door",
+                src.contains(door),
+            )
+        }
+        for (handRolled in listOf(
+            "substringBefore",
+            "substringAfter",
+            "split(\"T\")",
+            "take(10)",
+            "substring(0, 10)",
+        )) {
+            assertFalse(
+                "DeadlineField must not hand-roll the split ($handRolled) — " +
+                    "splitDeadline/joinDeadline own it",
+                src.contains(handRolled),
+            )
+        }
+    }
+
+    /** `DatePickerState.selectedDateMillis` is UTC midnight of the picked
+     * civil day by Material's own contract — a calendar day wearing an
+     * instant's clothes. Reading it in the device zone compiles, renders,
+     * and is off by one day for every reader west of Greenwich; nothing
+     * else in this module can catch that, and a hardware run at midday
+     * cannot either. `WallClock` is otherwise the file that *does* read the
+     * device zone, which is precisely why the picker's own conversions have
+     * to be pinned against doing it. */
+    @Test
+    fun `the picker's millis are read in UTC, never the device zone`() {
+        val src = repoFile(
+            "client/android/app/src/main/kotlin/net/twinion/hummingbird/core/WallClock.kt",
+        )
+        // Bounded to the two conversions that claim it, not to the file:
+        // `local` and `currentHourMinute` read the device zone on purpose,
+        // so a file-wide search would be green whatever these two did. The
+        // bound is the assertion — `client/android/README.md`'s Round 5
+        // section records what an unbounded one is worth here.
+        for (name in listOf("civilDate", "civilDateMillis")) {
+            // Bounded by the next declaration, not by a blank line. The
+            // earlier `\n\n` bound was one reformat away from swallowing
+            // `currentHourMinute`, whose `ZoneId.systemDefault()` is correct
+            // and deliberate — the pin would then have failed, loudly, about
+            // the wrong function.
+            val body = Regex("""fun $name\([\s\S]*?(?=\n\s*(/\*\*|fun |\}\s*$))""")
+                .find(src)
+                ?.value
+                ?: error("could not locate WallClock.$name")
+            assertTrue(
+                "WallClock.$name must resolve a picked civil day in UTC",
+                body.contains("ZoneOffset.UTC"),
+            )
+            assertFalse(
+                "WallClock.$name must not resolve a picked civil day in the device zone — " +
+                    "selectedDateMillis is UTC midnight by Material's contract",
+                body.contains("ZoneId.systemDefault()"),
             )
         }
     }

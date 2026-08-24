@@ -591,10 +591,14 @@ kind is named so nobody mistakes it for a visual gate:
   covers the palette only — never a screen.
 - **`ChoiceRowWrappingTest`** (#576), **`FacetLabelAlignmentTest`** (#588),
   **`AxisRowWrappingTest`** and **`PriorityRowWrappingTest`** (both the
-  round-4/round-5 operator batches, 2026-08-20) — the four things here that
+  round-4/round-5 operator batches, 2026-08-20), and
+  **`DeadlineFieldWrappingTest`** (2026-08-24, when the two capture dates
+  became pickers) — the five things here that
   measure **layout**: real Compose renders under Robolectric, asserting a
   row of choices stays hittable, a facet label seats beside its first chip
-  line, and the axis strip and the priority row each fit one line. Each
+  line, the axis strip and the priority row each fit one line, and the
+  deadline's revealed time control stays inside its half of the paired date
+  line while its "Add time" button stays a 44dp target. Each
   covers one component shape plus a negative control rendering its defect —
   never a screen's whole composition, and they photograph nothing.
   The later two moved the qualifier off 320dp deliberately: the operator
