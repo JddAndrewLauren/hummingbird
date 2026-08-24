@@ -1271,6 +1271,19 @@ fn sync_outcome_of(outcome: &CycleOutcome) -> SyncOutcome {
 /// as one. A reader (a future #712 interpretation table, or a human
 /// scanning an export) scopes every pairing by `(source, session_id)`
 /// first, and only orders by `seq`/`elapsed_ms` within that scope.
+///
+/// **This cell is the only writer that can name the holder (#708 review
+/// round 2).** `holder` below is private to this struct and reaches no
+/// worker response DTO — every `"busy"` answer the SharedWorker sees is a
+/// bare `kind: "busy"` string. So #707's own web-worker-sourced `core.busy`
+/// row (`client/web/src/worker/diagnostics-events.ts`'s `requestBusyEvent`)
+/// necessarily carries `owner: null`, meaning *unknown to that producer*,
+/// while this cell's `source: Source::Core` row for the same refused
+/// checkout carries `Some(owner)`. A reader wanting the holder reads the
+/// `source: core` row; the web-worker row is only the queue-level
+/// observation that a request was refused. `DiagnosticEvent::CoreBusy`'s
+/// own doc, and `hummingbird_domain::diagnostics`'s module header, carry the
+/// rule this follows.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub struct TaskCoreCell {
     host: RefCell<Option<TaskHostCore>>,
@@ -1347,7 +1360,9 @@ impl TaskCoreCell {
                 diagnostics.emit(
                     now_ms,
                     None,
-                    DiagnosticEvent::CoreBusy { owner: current_holder },
+                    DiagnosticEvent::CoreBusy {
+                        owner: Some(current_holder),
+                    },
                 );
                 None
             }
@@ -1383,7 +1398,9 @@ impl TaskCoreCell {
                 diagnostics.emit(
                     now_ms,
                     None,
-                    DiagnosticEvent::CoreBusy { owner: current_holder },
+                    DiagnosticEvent::CoreBusy {
+                        owner: Some(current_holder),
+                    },
                 );
                 on_busy
             }
@@ -1409,7 +1426,9 @@ impl TaskCoreCell {
                 diagnostics.emit(
                     now_ms,
                     None,
-                    DiagnosticEvent::CoreBusy { owner: current_holder },
+                    DiagnosticEvent::CoreBusy {
+                        owner: Some(current_holder),
+                    },
                 );
                 on_busy
             }
@@ -3138,7 +3157,7 @@ mod core_checkout_tests {
             .find(|e| matches!(e.event, DiagnosticEvent::CoreBusy { .. }))
             .expect("a busy event was recorded");
         match &busy.event {
-            DiagnosticEvent::CoreBusy { owner } => assert_eq!(*owner, CoreOwner::Sync),
+            DiagnosticEvent::CoreBusy { owner } => assert_eq!(*owner, Some(CoreOwner::Sync)),
             _ => unreachable!(),
         }
         drop(guard);
@@ -3163,7 +3182,7 @@ mod core_checkout_tests {
         let events = cell.drain_diagnostics();
         assert_eq!(event_names(&events), vec!["core.wait_started", "core.busy"]);
         match &events[1].event {
-            DiagnosticEvent::CoreBusy { owner } => assert_eq!(*owner, CoreOwner::Sync),
+            DiagnosticEvent::CoreBusy { owner } => assert_eq!(*owner, Some(CoreOwner::Sync)),
             _ => unreachable!(),
         }
         drop(guard);
@@ -3181,14 +3200,14 @@ mod core_checkout_tests {
         assert!(cell.checkout(CoreOwner::Triage, 1_000).is_none());
 
         let events = cell.drain_diagnostics();
-        let busy_owners: Vec<CoreOwner> = events
+        let busy_owners: Vec<Option<CoreOwner>> = events
             .iter()
             .filter_map(|e| match &e.event {
                 DiagnosticEvent::CoreBusy { owner } => Some(*owner),
                 _ => None,
             })
             .collect();
-        assert_eq!(busy_owners, vec![CoreOwner::Sync, CoreOwner::Sync]);
+        assert_eq!(busy_owners, vec![Some(CoreOwner::Sync), Some(CoreOwner::Sync)]);
         drop(guard);
     }
 
@@ -3276,7 +3295,20 @@ mod core_checkout_tests {
     /// three-event *order* below is the only half a regression could
     /// actually break. Closing that gap for real (an `operation_id`
     /// carried on the queued `MutationIntent` through to its eventual
-    /// send) is a follow-up, not something this test can stand in for.
+    /// send) is issue #739, not something this test can stand in for.
+    ///
+    /// **What a reader inherits from that gap, stated for #712's
+    /// interpretation table.** No `operation_id` crosses the outbound-queue
+    /// boundary, so in an export an `operation.*` span for a capture and the
+    /// `http.*` span that eventually sends it are **not joinable** — there
+    /// is no id in common and their `cycle_id`s differ (the operation has
+    /// none; the send belongs to whichever later cycle drained it). An
+    /// `operation.finished{success}` therefore means "committed locally and
+    /// durably queued", **never** "reached the authority", and an
+    /// interpretation table must not present the two as one end-to-end
+    /// latency or infer a send from an operation's outcome. Until #739 lands,
+    /// the only honest join is by wall-clock proximity, which is a human
+    /// judgement and not a correlation the data supports.
     #[tokio::test]
     async fn a_successful_capture_emits_local_commit_before_finished_and_no_http_started() {
         let dir = tempfile::tempdir().unwrap();
