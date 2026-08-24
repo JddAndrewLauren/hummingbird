@@ -1,20 +1,23 @@
 //! Reading a declared cadence off a workflow's own `cron:` string.
 //!
 //! **Deliberately not a general cron parser.** [`declared_cadence_ms`]
-//! recognises exactly three shapes — `*/N * * * *` (every N minutes),
-//! `0 */N * * *` (every N hours, on the hour) and a fixed `MM HH * * *`
-//! (once a day) — refusing (returning `None`) rather than guessing at
-//! anything else.
+//! recognises exactly four shapes — `*/N * * * *` (every N minutes),
+//! `0 */N * * *` (every N hours, on the hour), `MM * * * *` (hourly at a
+//! fixed minute) and a fixed `MM HH * * *` (once a day) — refusing
+//! (returning `None`) rather than guessing at anything else.
 //!
-//! **This repo's own workflows are not all inside that set.** Since #315,
-//! `.github/workflows/uptime-probe.yml`'s `5 * * * *` — hourly at a fixed
-//! minute — is a fourth shape, and this parser refuses it: a fixed minute
-//! with a wildcard hour matches none of the three arms. So that workflow's
-//! own pane reads "cadence unreadable" (`distant`) rather than "hourly".
-//! That is honest rather than green — the refusal is what `distant` means —
-//! but it is a real limitation, named here and pinned by
-//! `an_hourly_fixed_minute_shape_is_currently_unrecognised` below rather
-//! than left as a surprise.
+//! **The fourth arm was bought, not free.** For as long as this module
+//! recognised only three, `.github/workflows/uptime-probe.yml`'s
+//! `5 * * * *` matched none of them, so that workflow's own pane read
+//! "cadence unreadable" (`distant` — a permanent yellow tile) while the
+//! probe behind it was in fact running hourly and finding all three
+//! services healthy. The refusal was honest, but it was honest about the
+//! parser rather than about the deployment, and a tile that is always
+//! yellow is a tile nobody reads. `MM * * * *` is unambiguous — a fixed
+//! minute against a wildcard hour fires once an hour, on that minute, with
+//! nothing to infer — so reading it is not the guessing this module's
+//! caution is aimed at. What that caution still refuses is below:
+//! `* * * * *`, and anything naming a day or a month.
 //!
 //! A workflow whose cadence cannot be read this way still gets a pane
 //! (its conclusion is still reported, see `runs.rs`) — it simply cannot
@@ -63,11 +66,14 @@ pub fn declared_cadence_ms(cron_expression: &str) -> Option<i64> {
         return (*hour == "*").then(|| step as i64 * MINUTE_MS);
     }
 
-    // A fixed minute — either `0 */N * * *` (every N hours) or `MM HH * * *`
-    // (a fixed time once a day).
+    // A fixed minute — `0 */N * * *` (every N hours), `MM * * * *` (hourly,
+    // on that minute) or `MM HH * * *` (a fixed time once a day).
     if fixed_of(minute).is_some() {
         if let Some(step) = step_of(hour) {
             return Some(step as i64 * HOUR_MS);
+        }
+        if *hour == "*" {
+            return Some(HOUR_MS);
         }
         if fixed_of(hour).is_some() {
             return Some(DAY_MS);
@@ -113,16 +119,17 @@ mod tests {
         assert_eq!(declared_cadence_ms("40 13 * * *"), Some(DAY_MS));
     }
 
-    /// `uptime-probe.yml`'s own shape, and the one place this repo already
-    /// steps outside the three recognised ones (this module's header). A
-    /// fixed minute against a wildcard hour *is* a real hourly cadence, but
-    /// no arm here reads it, so the pane says "cadence unreadable" rather
-    /// than "hourly". Pinned so the limitation is a stated fact rather than
-    /// a surprise, and so teaching the parser this shape is a deliberate,
-    /// test-visible change.
+    /// `uptime-probe.yml`'s own shape. This assertion used to read `None`,
+    /// and that `None` was the whole reason its tile sat permanently
+    /// `distant` while the probe behind it ran fine — see the module
+    /// header. The offset minute is not incidental: it is what keeps the
+    /// probe off the top of the hour, and it must not change the cadence
+    /// this reads.
     #[test]
-    fn an_hourly_fixed_minute_shape_is_currently_unrecognised() {
-        assert_eq!(declared_cadence_ms("5 * * * *"), None);
+    fn an_hourly_fixed_minute_shape_is_read_as_hourly_whatever_the_minute() {
+        assert_eq!(declared_cadence_ms("5 * * * *"), Some(HOUR_MS));
+        assert_eq!(declared_cadence_ms("0 * * * *"), Some(HOUR_MS));
+        assert_eq!(declared_cadence_ms("59 * * * *"), Some(HOUR_MS));
     }
 
     #[test]

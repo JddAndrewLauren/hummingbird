@@ -8,6 +8,8 @@ import markLight1x from "../design/brand/app-icon-light-26.png";
 import markLight2x from "../design/brand/app-icon-light-52.png";
 import markLight3x from "../design/brand/app-icon-light-78.png";
 import type { ResolvedTheme } from "../theme/theme";
+import type { Band } from "../screens/questions/contract";
+import { navAlarmColor } from "./nav-alarm";
 import { SCREEN_ICONS } from "./screen-icons";
 import { SCREEN_LABELS, SCREENS, type Screen } from "./screens";
 import { ShellMeta } from "./ShellMeta";
@@ -20,6 +22,11 @@ export interface NavRailProps {
   counts?: Partial<Record<Screen, number>>;
   /** The core's state, already formatted (see status-label.ts). */
   statusLabel: string;
+  /** The most salient band the Status surface is currently answering, or
+   * `undefined` when nothing there raises the nav. `NavBar` takes the same
+   * value from the same `App.tsx` call — the two forms must show one
+   * answer. */
+  statusAlarm?: Band;
   theme: ResolvedTheme;
   onToggleTheme: () => void;
   /** Collapsed shows icons and counts only — labels, wordmark and status
@@ -49,6 +56,7 @@ export function NavRail({
   onScreen,
   counts = {},
   statusLabel,
+  statusAlarm,
   theme,
   onToggleTheme,
   collapsed,
@@ -162,6 +170,11 @@ export function NavRail({
           const icon = SCREEN_ICONS[item];
           const active = item === screen;
           const count = counts[item];
+          // Only Status carries an alarm. Unlike the bar's, this tint does
+          // *not* yield to `active`: the rail already says which page you
+          // are on with a filled background and a heavier weight, so the
+          // colour is free to keep meaning "the board has something to say".
+          const alarmColor = item === "status" ? navAlarmColor(statusAlarm) : undefined;
           return (
             <button
               key={item}
@@ -182,7 +195,7 @@ export function NavRail({
                 padding: collapsed ? 0 : "0 var(--space-3)",
                 position: "relative",
                 background: active ? "var(--accent-quiet)" : "transparent",
-                color: active ? "var(--text-brand)" : "var(--text-secondary)",
+                color: alarmColor ?? (active ? "var(--text-brand)" : "var(--text-secondary)"),
                 border: "1px solid transparent",
                 borderRadius: "var(--radius-control)",
                 font: `var(--weight-${active ? "semibold" : "medium"}) var(--size-body)/1 var(--font-sans)`,

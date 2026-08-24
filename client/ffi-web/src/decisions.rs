@@ -1286,6 +1286,27 @@ pub fn rank_panes_json(inputs_json: &str, zone_facts_json: &str, surface: &str) 
     }
 }
 
+/// [`panes::status_alarm`] — the Status nav control's whole reading, as a
+/// JSON band (`"near"`, `"live"`, …) or `null` when nothing on that
+/// surface raises the nav.
+///
+/// **`null`, not a sixth band.** `Band` is a closed vocabulary with no "no
+/// alarm" member, and minting one would put a value on a wire that ten pane
+/// modules and both clients' band switches already read exhaustively. The
+/// absent case belongs in the `Option`, where every other seam here already
+/// puts it.
+///
+/// Takes no zone facts, unlike [`rank_panes_json`] beside it — see
+/// [`panes::status_alarm`]'s own doc for why Status needs none and why
+/// there is deliberately no `Surface::Now` counterpart.
+#[wasm_bindgen]
+pub fn status_alarm_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&panes::status_alarm(&inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
 /// One pane as [`panes::order_panes`]/[`panes::same_pane_identity`] read it
 /// — the four fields the sort touches, and nothing the shell draws with.
 /// `paneKey` is optional on the wire and derived when absent, so a caller
@@ -2411,6 +2432,30 @@ mod tests {
         assert_eq!(status.as_array().unwrap().len(), 4);
         assert_eq!(rank_panes_json(&inputs, FACTS, "not-a-surface"), "[]");
         assert_eq!(pane_zone_queries_json(&inputs, "not-a-surface"), "[]");
+    }
+
+    #[test]
+    fn status_alarm_json_is_null_while_the_status_four_are_all_gaps() {
+        // The waste fixture polls nothing on the Status surface, so all
+        // four rank as the never-polled sentinel — a cold start, and the
+        // nav stays quiet through it.
+        let inputs = waste_inputs(BODY, bound_page());
+        assert_eq!(status_alarm_json(&inputs), "null");
+    }
+
+    #[test]
+    fn status_alarm_json_answers_the_band_string_the_shell_tints_with() {
+        let inputs = serde_json::json!({
+            "nowMs": 1_786_636_800_000i64,
+            "paneReads": { "uptime/v1": { "snapshots": [{
+                "key": "authority",
+                "envelope": {"kind":"ok","schema":"uptime/v1",
+                             "body":"{\"expected\":\"on\",\"expect_status\":401,\"observed_status\":500,\"error\":null}"},
+                "freshness": {"kind":"age","ageMs":60000,"declaredCadenceMs":3600000},
+            }]}},
+        })
+        .to_string();
+        assert_eq!(status_alarm_json(&inputs), r#""near""#);
     }
 
     #[test]

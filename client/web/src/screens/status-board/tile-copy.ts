@@ -53,7 +53,7 @@ export type TileTone = "quiet" | "warn" | "danger" | "gap";
  * headlines: live/imminent read as danger, near/distant as warn. Keeping it
  * identical is what stops a tile and the body it expands into disagreeing
  * about how bad the same answer is. */
-function bandTone(band: Band): TileTone {
+export function bandTone(band: Band): TileTone {
   switch (band) {
     case "live":
     case "imminent":

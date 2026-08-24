@@ -3,6 +3,8 @@ import { Badge } from "../components/core/Badge";
 import { Icon, type IconName } from "../components/core/Icon";
 import { IconButton } from "../components/core/IconButton";
 import type { ResolvedTheme } from "../theme/theme";
+import type { Band } from "../screens/questions/contract";
+import { navAlarmColor } from "./nav-alarm";
 import { NAV_BAR_OVERFLOW, NAV_BAR_PRIMARY, isOverflowScreen } from "./nav-bar";
 import { SCREEN_ICONS } from "./screen-icons";
 import { SCREEN_LABELS, type Screen } from "./screens";
@@ -16,6 +18,10 @@ export interface NavBarProps {
   counts?: Partial<Record<Screen, number>>;
   /** The core's state, already formatted (see `status-label.ts`). */
   statusLabel: string;
+  /** The most salient band the Status surface is currently answering, or
+   * `undefined` when nothing there raises the nav — `App.tsx` reads it from
+   * the core (`statusAlarm`) and both nav forms take the same value. */
+  statusAlarm?: Band;
   theme: ResolvedTheme;
   onToggleTheme: () => void;
   /** Whether the More sheet is open. Controlled by the shell rather than held
@@ -69,6 +75,7 @@ export function NavBar({
   onScreen,
   counts = {},
   statusLabel,
+  statusAlarm,
   theme,
   onToggleTheme,
   sheetOpen,
@@ -113,6 +120,9 @@ export function NavBar({
             active={item === screen}
             count={counts[item]}
             danger={item === "alerts"}
+            // Only Status carries an alarm; the tint is the whole of the
+            // ADR-0017 board's worst answer, pulled up onto its button.
+            alarmColor={item === "status" ? navAlarmColor(statusAlarm) : undefined}
             onClick={() => go(item)}
           />
         ))}
@@ -150,6 +160,7 @@ function NavBarButton({
   active,
   count,
   danger = false,
+  alarmColor,
   expanded,
   onClick,
 }: {
@@ -158,6 +169,14 @@ function NavBarButton({
   active: boolean;
   count?: number;
   danger?: boolean;
+  /** A band-coloured override for the glyph and the label
+   * (`nav-alarm.ts`). **Yields to `active`**: on this bar the current page
+   * is signalled by colour and nothing else, so an alarm that painted over
+   * it would leave the bar with nothing selected — the same "you are
+   * nowhere" reading `isOverflowScreen` exists to prevent. The one screen
+   * it would hide the tint on is the one already showing the board it came
+   * from. */
+  alarmColor?: string;
   /** Set only on the More control — it opens a panel rather than navigating,
    * so it carries `aria-expanded` instead of being a plain destination. */
   expanded?: boolean;
@@ -190,7 +209,7 @@ function NavBarButton({
         position: "relative",
         padding: "var(--space-4) var(--space-2)",
         background: "transparent",
-        color: active ? "var(--text-brand)" : "var(--text-secondary)",
+        color: active ? "var(--text-brand)" : (alarmColor ?? "var(--text-secondary)"),
         border: "none",
         cursor: "pointer",
         transition: "color var(--dur-fast) var(--ease-flit)",

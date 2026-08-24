@@ -51,9 +51,21 @@ class WindowWidthStructuralTest {
                 "if (wide && NavDestination.entries.any { it.route == currentRoute }) {",
             ),
         )
+        // The call's *arguments*, not its formatting. This used to pin the
+        // whole call as a one-line literal, which made it fail the first
+        // time the rail gained a third parameter (`statusAlarm`) and had to
+        // wrap — a spurious failure about line breaks, not about the two
+        // things this test actually cares about. Matching inside the
+        // argument list keeps the claim and drops the brittleness.
+        val railArgs = Regex("""HbNavRail\(([^)]*)\)""")
+            .find(mainActivitySrc)
+            ?.groupValues?.get(1)
+            ?: error("MainActivity.kt does not mount HbNavRail at all")
         assertTrue(
-            "the rail sits beside the Scaffold, which takes the Row's remaining width",
-            mainActivitySrc.contains("HbNavRail(currentRoute = currentRoute, onNavigate = ::goToTab)"),
+            "the rail sits beside the Scaffold, which takes the Row's remaining width, and is " +
+                "handed the live route and the one `goToTab` door — not a navigate of its own",
+            railArgs.contains("currentRoute = currentRoute") &&
+                railArgs.contains("onNavigate = ::goToTab"),
         )
     }
 

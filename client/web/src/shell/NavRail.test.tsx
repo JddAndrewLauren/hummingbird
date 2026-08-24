@@ -9,18 +9,25 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "../test/component";
 import { APP_VERSION } from "./build-version";
+import type { Band as PaneBand } from "../screens/questions/contract";
 import { NavRail } from "./NavRail";
 
-function renderRail(collapsed: boolean, onSearch?: () => void) {
+function renderRail(
+  collapsed: boolean,
+  onSearch?: () => void,
+  statusAlarm?: PaneBand,
+  screenName: "now" | "status" = "now",
+) {
   const onScreen = vi.fn();
   const onToggleCollapsed = vi.fn();
   const onHome = vi.fn();
   render(
     <NavRail
-      screen="now"
+      screen={screenName}
       onScreen={onScreen}
       counts={{ triage: 4, alerts: 3 }}
       statusLabel="api v1 · core ready"
+      statusAlarm={statusAlarm}
       theme="light"
       onToggleTheme={() => {}}
       collapsed={collapsed}
@@ -92,5 +99,37 @@ describe("NavRail — collapsed", () => {
   it("renders no magnifier when onSearch is absent", () => {
     renderRail(false);
     expect(screen.queryByRole("button", { name: "Search everything" })).toBeNull();
+  });
+});
+
+// The Status control's tint (`nav-alarm.ts` decides the colour; the core
+// decides the band). A pure module cannot see which element the colour
+// actually landed on, which is the whole reason this is a mount.
+describe("NavRail — the Status alarm", () => {
+  it("leaves every control its ordinary colour when nothing raises the nav", () => {
+    renderRail(false);
+    expect(screen.getByRole("button", { name: "Status" }).style.color).toBe(
+      "var(--text-secondary)",
+    );
+  });
+
+  it("tints Status, and only Status, with the band's colour", () => {
+    renderRail(false, undefined, "near");
+    expect(screen.getByRole("button", { name: "Status" }).style.color).toBe(
+      "var(--status-warn-fg)",
+    );
+    // The alarm belongs to one destination — a tint that leaked would read
+    // as "everything is wrong".
+    expect(screen.getByRole("button", { name: "Triage" }).style.color).toBe(
+      "var(--text-secondary)",
+    );
+  });
+
+  it("keeps the tint while Status is the open screen — the rail says 'you are here' with its own fill", () => {
+    renderRail(false, undefined, "live", "status");
+    const status = screen.getByRole("button", { name: "Status" });
+    expect(status.style.color).toBe("var(--status-danger-fg)");
+    expect(status.getAttribute("aria-current")).toBe("page");
+    expect(status.style.background).toBe("var(--accent-quiet)");
   });
 });

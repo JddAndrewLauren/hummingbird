@@ -232,6 +232,35 @@ mod tests {
         );
     }
 
+    /// **The gate this crate was missing.** `uptime-probe.yml` sat on the
+    /// pane as a permanent yellow "cadence unreadable" tile for as long as
+    /// `cron.rs` recognised only three shapes — the probe behind it running
+    /// hourly and finding every service healthy the whole time. Nothing
+    /// failed, because nothing asserted that a *committed* workflow's cron
+    /// is one this build can actually read: `cron.rs`'s own tests cover the
+    /// shapes it knows, and the two tests above cover which files are
+    /// scheduled, but neither pair meets in the middle.
+    ///
+    /// This is that join. A workflow added with a cron shape
+    /// [`crate::cron::declared_cadence_ms`] refuses now fails here, at the
+    /// commit that adds it, instead of turning up months later as a tile
+    /// nobody reads. Refusing a shape stays legitimate — `* * * * *` and
+    /// anything naming a day or a month are refused on purpose — but doing
+    /// it to a workflow *this repo actually ships* is now a deliberate,
+    /// test-visible choice rather than a silent one.
+    #[test]
+    fn every_committed_scheduled_workflow_declares_a_cadence_this_build_can_read() {
+        for (file_name, _, _, crons) in EVERY_SCHEDULED_WORKFLOW {
+            let crons: Vec<String> = crons.iter().map(|c| (*c).to_string()).collect();
+            assert!(
+                crate::cron::tightest_cadence_ms(&crons).is_some(),
+                "{file_name} schedules {crons:?}, and this build reads no cadence from any of \
+                 them — its pane would band `distant` (\"cadence unreadable\") forever. Teach \
+                 `cron::declared_cadence_ms` the shape, or change the workflow's cron.",
+            );
+        }
+    }
+
     /// The header's own count, pinned: ten today — both graph lanes
     /// rejoined in #486 Phase B, mail first and calendar here. No poller
     /// lane is dormant now.

@@ -126,6 +126,23 @@ exception list to empty. A bar or sheet tap goes through `goToTab`'s
 bottom-nav idiom: each tab keeps its own back stack across switches rather
 than stacking a fresh copy of Now underneath every visit.
 
+**The Status destination tints itself.** Both nav forms colour the Status
+glyph and label with the most salient band the Status surface is currently
+answering — amber for `near`/`distant`, the danger red for `live`/`imminent`,
+nothing at all when everything there is quiet. The band is
+`hummingbird-core`'s (`decisions/panes/alarm.rs`, reached through
+`MobileTaskHost.statusAlarm`), not this app's: whether a gap counts and
+whether `dormant` counts are the same questions on the web, so they are
+answered once, in Rust, and `NavAlarm.kt` is left with the colour alone.
+Two consequences worth knowing here: a never-polled question is deliberately
+**silent** on the nav (a cold start must not paint the bar red before a
+single poller has run — the board below still draws that as its own gap
+tile), and the tint rides `syncTick` rather than a clock of its own, so it
+refreshes on the 60-second foreground cadence this root already runs. The
+alarm passes `SyncHistoryStore.load` because `reachability` is one of the
+status four and bands off exactly that history — computing it without would
+put the button and the board it sits under into disagreement.
+
 `routes` (#541) renders its **live empty state only** — "No routes yet" —
 because `client/ffi-mobile/src/lib.rs` exposes no Route query at all yet.
 The web no longer has a Routes screen to reach parity with: #624 replaced
