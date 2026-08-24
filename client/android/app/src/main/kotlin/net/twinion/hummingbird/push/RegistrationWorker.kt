@@ -23,7 +23,10 @@ class RegistrationWorker(context: Context, params: WorkerParameters) :
 
     override suspend fun doWork(): Result =
         when (RegistrationRunner.create(applicationContext).run()) {
-            RegistrationOutcome.DONE -> Result.success()
+            RegistrationOutcome.REGISTERED,
+            RegistrationOutcome.NO_TOKEN,
+            RegistrationOutcome.UNAUTHORIZED,
+            -> Result.success()
             RegistrationOutcome.RETRY -> Result.retry()
         }
 
