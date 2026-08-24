@@ -355,118 +355,71 @@ mod wasm_bindings {
 
     // ------------------------------------------------------------ TaskHost
 
-    use super::task_host::{CaptureFields, CaptureResponse, TaskHostCore, TriageEdits, TriageResponse};
+    use super::task_host::{
+        CaptureFields, CaptureResponse, CoreOwner, TaskCoreCell, TaskHostCore, TriageEdits,
+        TriageResponse,
+    };
 
-    /// Whatever a synchronous setter had to defer because [`TaskShared`]'s
-    /// host was checked out. NOT simple last-wins: `Push` and `Clear` always
-    /// supersede whatever is pending, but a queued `Rehydrate` must never
-    /// supersede a queued `Push` (round-2 review of #196's PR #202).
-    ///
-    /// A same-target-object simulation makes the reason concrete. "As if not
-    /// busy" — the host applies each call the instant it arrives — Push then
-    /// Rehydrate resumes: `push_api_key` sets the key, clears `held`, and
-    /// drops the pending prompt; `rehydrate_api_key` merely re-sets the same
-    /// key afterwards, leaving the resume intact. Under plain last-wins,
-    /// only the queued `Rehydrate` would apply at check-in, and
-    /// `rehydrate_api_key` never touches `held` — so the credential would
-    /// stay held with no pending prompt to explain why, reachable in
-    /// practice through `serial-queue.ts`'s abandon-on-timeout
-    /// (`TASK_REQUEST_TIMEOUT_MS`) racing a 401 re-submit against a
-    /// still-running cycle. Dropping the queued `Rehydrate` in favour of the
-    /// `Push` is safe: `check_in`'s `Push` already sets the (newer, or
-    /// identical) key the `Rehydrate` would have re-set.
-    enum PendingApiKeyOp {
-        Push(String),
-        /// Issue #196 (shape 2): the rehydration counterpart to `Push` —
-        /// see [`TaskShared::rehydrate_api_key`]. Deliberately the only
-        /// variant that does NOT unconditionally supersede whatever is
-        /// already queued — see this enum's own doc.
-        Rehydrate(String),
-        Clear,
+    /// The exact same session-id scheme `client/web/src/worker/diagnostics-events.ts`'s
+    /// `mintSessionId` uses (#708 review round 1: an earlier version of
+    /// this crate invented a second scheme, `format!("web-{}",
+    /// js_sys::Date::now())`, when #707 already shipped one — one scheme
+    /// per host, not one per language a host happens to be written in).
+    /// `crypto.randomUUID()` when available (fetched via `js_sys::Reflect`
+    /// rather than a `web_sys::Crypto` binding — this crate has no
+    /// `web-sys` dependency, and reaching one field through `Reflect` did
+    /// not seem worth adding one), falling back to the identical
+    /// `Math.random()`-based hex-and-pad-to-length scheme the TS version
+    /// falls back to when `randomUUID` is unavailable (a non-secure-context
+    /// origin — `mintSessionId`'s own doc).
+    fn mint_session_id() -> String {
+        const SESSION_ID_LENGTH: usize = 32;
+        if let Ok(crypto) = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("crypto")) {
+            if let Ok(random_uuid) = js_sys::Reflect::get(&crypto, &JsValue::from_str("randomUUID")) {
+                if let Some(random_uuid) = random_uuid.dyn_ref::<js_sys::Function>() {
+                    if let Ok(result) = random_uuid.call0(&crypto) {
+                        if let Some(id) = result.as_string() {
+                            return id;
+                        }
+                    }
+                }
+            }
+        }
+        let mut id = String::new();
+        while id.len() < SESSION_ID_LENGTH {
+            id.push_str(&format!("{:x}", (js_sys::Math::random() * 1e16) as u64));
+        }
+        id.truncate(SESSION_ID_LENGTH);
+        id
     }
 
-    /// The same check-out/check-in shape as [`Shared`] above, generic over
-    /// which host it wraps rather than a second copy of the borrow-safety
-    /// logic — see `Shared`'s own docs for why this exists at all (a wasm
-    /// panic from a `RefCell` borrow held across an await poisons the whole
-    /// module, not just one call).
-    ///
-    /// `pending_op` mirrors [`Shared`]'s own `Pending` slot (PR #171
-    /// round-1 review): a push/rehydrate/clear requested while a
-    /// `run`/`capture` call holds the host would otherwise be silently
-    /// dropped on the floor rather than merely delayed, and nothing
-    /// upstream of #106 re-sends it — the host has no way to know its
-    /// request was lost. Applied at [`TaskShared::check_in`], same as
-    /// [`Shared::check_in`] applies a pending token/selection.
+    /// The wasm-facing wrapper `TaskCoreCell` was factored out of (#708) —
+    /// this is now a thin `Rc` shell over it. The checkout/re-entrancy
+    /// guard, the `PendingApiKeyOp` deferral, and the `core.*` diagnostics
+    /// all live in `task_host.rs`'s `TaskCoreCell` now, so this crate's
+    /// plain `cargo test` run exercises the identical logic this wasm-only
+    /// shell drives — see `TaskCoreCell`'s own doc for why it moved.
     struct TaskShared {
-        host: RefCell<Option<TaskHostCore>>,
-        pending_op: RefCell<Option<PendingApiKeyOp>>,
+        core: TaskCoreCell,
     }
 
     impl TaskShared {
         fn new(host: TaskHostCore) -> Self {
             Self {
-                host: RefCell::new(Some(host)),
-                pending_op: RefCell::new(None),
+                core: TaskCoreCell::new(host, mint_session_id()),
             }
         }
 
-        fn check_out(&self) -> Option<TaskHostCore> {
-            self.host.borrow_mut().take()
-        }
-
-        fn check_in(&self, mut host: TaskHostCore) {
-            match self.pending_op.borrow_mut().take() {
-                Some(PendingApiKeyOp::Clear) => host.clear_api_key(),
-                Some(PendingApiKeyOp::Push(api_key)) => host.push_api_key(api_key),
-                Some(PendingApiKeyOp::Rehydrate(api_key)) => host.rehydrate_api_key(api_key),
-                None => {}
-            }
-            *self.host.borrow_mut() = Some(host);
-        }
-
-        /// Pushes immediately if the host is present, or queues for the next
-        /// [`TaskShared::check_in`] if it is currently checked out — never
-        /// silently drops the key either way. A queued push supersedes any
-        /// other queued op unconditionally, including a queued rehydration —
-        /// see [`PendingApiKeyOp`]'s doc for why that is the correct, not
-        /// merely convenient, choice.
         fn push_api_key(&self, api_key: String) {
-            match self.host.borrow_mut().as_mut() {
-                Some(host) => host.push_api_key(api_key),
-                None => *self.pending_op.borrow_mut() = Some(PendingApiKeyOp::Push(api_key)),
-            }
+            self.core.push_api_key(api_key);
         }
 
-        /// Issue #196 (shape 2): the rehydration counterpart to
-        /// [`TaskShared::push_api_key`] — applies immediately if the host is
-        /// present, or queues otherwise, but never resumes a hold either
-        /// way. Deliberately does NOT overwrite an already-queued `Push`:
-        /// see [`PendingApiKeyOp`]'s doc for the failure this avoids — a
-        /// queued resume silently downgraded to a non-resuming rehydration
-        /// would leave the credential held with no prompt to explain why.
-        /// See [`TaskHostCore::rehydrate_api_key`].
         fn rehydrate_api_key(&self, api_key: String) {
-            match self.host.borrow_mut().as_mut() {
-                Some(host) => host.rehydrate_api_key(api_key),
-                None => {
-                    let mut pending = self.pending_op.borrow_mut();
-                    if !matches!(*pending, Some(PendingApiKeyOp::Push(_))) {
-                        *pending = Some(PendingApiKeyOp::Rehydrate(api_key));
-                    }
-                }
-            }
+            self.core.rehydrate_api_key(api_key);
         }
 
-        /// "Forget token" (#106/S8): clears immediately if the host is
-        /// present, or queues for the next [`TaskShared::check_in`]
-        /// otherwise. A queued clear supersedes any other queued op
-        /// unconditionally, same as a queued push.
         fn clear_api_key(&self) {
-            match self.host.borrow_mut().as_mut() {
-                Some(host) => host.clear_api_key(),
-                None => *self.pending_op.borrow_mut() = Some(PendingApiKeyOp::Clear),
-            }
+            self.core.clear_api_key();
         }
     }
 
@@ -630,33 +583,24 @@ mod wasm_bindings {
         /// — each item's own fields flattened alongside `pending` (issue
         /// #108's "a pending item is marked as such").
         pub fn frontier(&self) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => {
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_ITEM_LIST.to_string(), |host| {
                     serde_json::to_string(&host.frontier()).expect("ItemListResponse serializes")
-                }
-                None => BUSY_ITEM_LIST.to_string(),
-            }
+                })
         }
 
         /// The triage inbox, as JSON: same shape as [`TaskHost::frontier`].
         #[wasm_bindgen(js_name = triageInbox)]
         pub fn triage_inbox(&self) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => serde_json::to_string(&host.triage_inbox())
-                    .expect("ItemListResponse serializes"),
-                None => BUSY_ITEM_LIST.to_string(),
-            }
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_ITEM_LIST.to_string(), |host| serde_json::to_string(&host.triage_inbox())
+                    .expect("ItemListResponse serializes"))
         }
 
         /// Items already grilled once and still foggy, as JSON: same shape
         /// as [`TaskHost::frontier`] (#357).
         #[wasm_bindgen(js_name = grillingItems)]
         pub fn grilling_items(&self) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => serde_json::to_string(&host.grilling_items())
-                    .expect("ItemListResponse serializes"),
-                None => BUSY_ITEM_LIST.to_string(),
-            }
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_ITEM_LIST.to_string(), |host| serde_json::to_string(&host.grilling_items())
+                    .expect("ItemListResponse serializes"))
         }
 
         /// Items on an external wait (`Stage::Blocked`), as JSON: same
@@ -664,44 +608,43 @@ mod wasm_bindings {
         /// lists these (#675).
         #[wasm_bindgen(js_name = externallyBlocked)]
         pub fn externally_blocked(&self) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => serde_json::to_string(&host.externally_blocked())
-                    .expect("ItemListResponse serializes"),
-                None => BUSY_ITEM_LIST.to_string(),
-            }
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_ITEM_LIST.to_string(), |host| serde_json::to_string(&host.externally_blocked())
+                    .expect("ItemListResponse serializes"))
         }
 
         /// Relation-blocked items with the reason visible, as JSON:
         /// `{"kind": "ok"|"busy", "entries": [{"item": Item & {"pending": bool}, "blocked_by": [Item & {"pending": bool}]}]}`.
         pub fn blocked(&self) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => {
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_BLOCKED_LIST.to_string(), |host| {
                     serde_json::to_string(&host.blocked()).expect("BlockedListResponse serializes")
-                }
-                None => BUSY_BLOCKED_LIST.to_string(),
-            }
+                })
         }
 
         /// One item's Steps, as JSON: `{"kind": "ok"|"busy", "steps": [Step]}`.
         pub fn steps(&self, item_id: String) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => {
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_STEP_LIST.to_string(), |host| {
                     serde_json::to_string(&host.steps(&item_id)).expect("StepListResponse serializes")
-                }
-                None => BUSY_STEP_LIST.to_string(),
-            }
+                })
         }
 
         /// Every live project, as JSON: `{"kind": "ok"|"busy", "projects": [Project]}`
         /// — resolves the frontier's "grouped by project" display to real
         /// names (issue #108, PR #200 review).
+        ///
+        /// #708: instrumented via [`TaskCoreCell::read`] rather than a bare
+        /// `.borrow()` — the acceptance criterion's named "a project read",
+        /// so an attempt started while `sync` holds the checkout produces
+        /// a `core.busy{owner: sync}` in the journal instead of vanishing
+        /// silently, same as every other read below now. `now_ms` is this
+        /// crate's own `js_sys::Date::now()` — `task_host.rs` stays
+        /// clock-agnostic (this method's own wire signature is unchanged
+        /// for `task-worker.ts`).
         pub fn projects(&self) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => {
-                    serde_json::to_string(&host.projects()).expect("ProjectListResponse serializes")
-                }
-                None => BUSY_PROJECT_LIST.to_string(),
-            }
+            self.inner.core.read(
+                js_sys::Date::now() as i64,
+                BUSY_PROJECT_LIST.to_string(),
+                |host| serde_json::to_string(&host.projects()).expect("ProjectListResponse serializes"),
+            )
         }
 
         /// Creates a project (#624). Resolves to JSON:
@@ -714,11 +657,10 @@ mod wasm_bindings {
         pub fn create_project(&self, seed: String, name: String, now_ms: f64) -> js_sys::Promise {
             let inner = self.inner.clone();
             future_to_promise(async move {
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Projects, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_CREATE_PROJECT));
                 };
                 let response = host.create_project(&seed, &name, now_ms as i64).await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("CreateProjectResponse serializes"),
                 ))
@@ -765,7 +707,7 @@ mod wasm_bindings {
                         )))
                     }
                 };
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Projects, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_PATCH_PROJECT));
                 };
                 let response = host
@@ -782,7 +724,6 @@ mod wasm_bindings {
                         now_ms as i64,
                     )
                     .await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("PatchProjectResponse serializes"),
                 ))
@@ -794,11 +735,8 @@ mod wasm_bindings {
         /// ADR-0030 decision 4).
         #[wasm_bindgen(js_name = projectLinks)]
         pub fn project_links(&self, project_id: String) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => serde_json::to_string(&host.project_links(&project_id))
-                    .expect("ProjectLinkListResponse serializes"),
-                None => BUSY_PROJECT_LINK_LIST.to_string(),
-            }
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_PROJECT_LINK_LIST.to_string(), |host| serde_json::to_string(&host.project_links(&project_id))
+                    .expect("ProjectLinkListResponse serializes"))
         }
 
         /// Creates a project Link (#626). Resolves to JSON:
@@ -821,13 +759,12 @@ mod wasm_bindings {
         ) -> js_sys::Promise {
             let inner = self.inner.clone();
             future_to_promise(async move {
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Projects, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_CREATE_PROJECT_LINK));
                 };
                 let response = host
                     .create_project_link(&seed, &project_id, &url, label, position as i64, now_ms as i64)
                     .await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("CreateProjectLinkResponse serializes"),
                 ))
@@ -871,7 +808,7 @@ mod wasm_bindings {
                         )))
                     }
                 };
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Projects, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_PATCH_PROJECT_LINK));
                 };
                 let response = host
@@ -887,7 +824,6 @@ mod wasm_bindings {
                         now_ms as i64,
                     )
                     .await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("PatchProjectLinkResponse serializes"),
                 ))
@@ -900,12 +836,9 @@ mod wasm_bindings {
         /// when `"ok"` and when `"busy"`: every project has exactly one
         /// Route, created structurally by [`TaskHost::createProject`].
         pub fn route(&self, project_id: String) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => {
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_ROUTE.to_string(), |host| {
                     serde_json::to_string(&host.route(&project_id)).expect("RouteResponse serializes")
-                }
-                None => BUSY_ROUTE.to_string(),
-            }
+                })
         }
 
         /// Patches a project's Route (#627, ADR-0030 decision 1) — the
@@ -947,7 +880,7 @@ mod wasm_bindings {
                         )))
                     }
                 };
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Projects, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_PATCH_ROUTE));
                 };
                 let response = host
@@ -961,7 +894,6 @@ mod wasm_bindings {
                         now_ms as i64,
                     )
                     .await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("PatchRouteResponse serializes"),
                 ))
@@ -981,12 +913,9 @@ mod wasm_bindings {
         /// `/to-actions` — but nothing in `client/web` reaches it today.
         #[wasm_bindgen(js_name = openFog)]
         pub fn open_fog(&self, project_id: String) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => {
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_FOG_LIST.to_string(), |host| {
                     serde_json::to_string(&host.open_fog(&project_id)).expect("FogListResponse serializes")
-                }
-                None => BUSY_FOG_LIST.to_string(),
-            }
+                })
         }
 
         /// Creates a Fog segment (#628). Resolves to JSON: `{"kind":
@@ -1013,13 +942,12 @@ mod wasm_bindings {
         ) -> js_sys::Promise {
             let inner = self.inner.clone();
             future_to_promise(async move {
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Projects, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_CREATE_FOG));
                 };
                 let response = host
                     .create_fog(&seed, &project_id, &question, position as i64, now_ms as i64)
                     .await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("CreateFogResponse serializes"),
                 ))
@@ -1068,7 +996,7 @@ mod wasm_bindings {
                         )))
                     }
                 };
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Projects, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_PATCH_FOG));
                 };
                 let response = host
@@ -1082,7 +1010,6 @@ mod wasm_bindings {
                         now_ms as i64,
                     )
                     .await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("PatchFogResponse serializes"),
                 ))
@@ -1102,11 +1029,8 @@ mod wasm_bindings {
         /// `/to-actions` — but nothing in `client/web` reaches it today.
         #[wasm_bindgen(js_name = projectActions)]
         pub fn project_actions(&self, project_id: String) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => serde_json::to_string(&host.project_actions(&project_id))
-                    .expect("ItemListResponse serializes"),
-                None => BUSY_ITEM_LIST.to_string(),
-            }
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_ITEM_LIST.to_string(), |host| serde_json::to_string(&host.project_actions(&project_id))
+                    .expect("ItemListResponse serializes"))
         }
 
         /// Moves one Action's `project_pos` (#629) — the dossier's reorder
@@ -1143,13 +1067,12 @@ mod wasm_bindings {
                         )))
                     }
                 };
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Projects, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_PATCH_ACTION_POSITION));
                 };
                 let response = host
                     .patch_action_position(&seed, &current, position as i64, now_ms as i64)
                     .await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("PatchActionPositionResponse serializes"),
                 ))
@@ -1181,11 +1104,10 @@ mod wasm_bindings {
         ) -> js_sys::Promise {
             let inner = self.inner.clone();
             future_to_promise(async move {
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Projects, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_CREATE_STEP));
                 };
                 let response = host.create_step(&seed, &item_id, &body, position as i64, now_ms as i64).await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("CreateStepResponse serializes"),
                 ))
@@ -1234,7 +1156,7 @@ mod wasm_bindings {
                         )))
                     }
                 };
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Projects, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_PATCH_STEP));
                 };
                 let response = host
@@ -1249,7 +1171,6 @@ mod wasm_bindings {
                         now_ms as i64,
                     )
                     .await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("PatchStepResponse serializes"),
                 ))
@@ -1266,11 +1187,8 @@ mod wasm_bindings {
         /// `BUSY_LEDGER_LIST`). `now_ms` is host-supplied and resolves alert
         /// liveness.
         pub fn ledger(&self, now_ms: f64) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => serde_json::to_string(&host.ledger(now_ms as i64))
-                    .expect("LedgerListResponse serializes"),
-                None => BUSY_LEDGER_LIST.to_string(),
-            }
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_LEDGER_LIST.to_string(), |host| serde_json::to_string(&host.ledger(now_ms as i64))
+                    .expect("LedgerListResponse serializes"))
         }
 
         /// **Recall** (#478): re-find one item across the whole retained
@@ -1284,22 +1202,16 @@ mod wasm_bindings {
         /// same alert-liveness read `ledger` does (`search` shares its
         /// corpus with `ledger`).
         pub fn search(&self, query: String, now_ms: f64) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => serde_json::to_string(&host.search(&query, now_ms as i64))
-                    .expect("SearchResponse serializes"),
-                None => BUSY_SEARCH.to_string(),
-            }
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_SEARCH.to_string(), |host| serde_json::to_string(&host.search(&query, now_ms as i64))
+                    .expect("SearchResponse serializes"))
         }
 
         /// Every live `Done` item (the Done screen's read), as JSON: same
         /// shape as [`TaskHost::frontier`].
         pub fn done(&self) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => {
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_ITEM_LIST.to_string(), |host| {
                     serde_json::to_string(&host.done()).expect("ItemListResponse serializes")
-                }
-                None => BUSY_ITEM_LIST.to_string(),
-            }
+                })
         }
 
         /// How old this device's answer to one standing question is
@@ -1308,13 +1220,10 @@ mod wasm_bindings {
         /// "declared_cadence_ms":number|null}}`. `now_ms` is host-supplied.
         #[wasm_bindgen(js_name = snapshotFreshness)]
         pub fn snapshot_freshness(&self, source: String, key: String, now_ms: f64) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => {
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_FRESHNESS.to_string(), |host| {
                     serde_json::to_string(&host.snapshot_freshness(&source, &key, now_ms as i64))
                         .expect("FreshnessResponse serializes")
-                }
-                None => BUSY_FRESHNESS.to_string(),
-            }
+                })
         }
 
         /// One source's whole pane-facing read (#245, ADR-0015), as JSON:
@@ -1332,11 +1241,8 @@ mod wasm_bindings {
         /// live.
         #[wasm_bindgen(js_name = paneRead)]
         pub fn pane_read(&self, source: String, now_ms: f64) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => serde_json::to_string(&host.pane_read(&source, now_ms as i64))
-                    .expect("PaneReadResponse serializes"),
-                None => BUSY_PANE_READ.to_string(),
-            }
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_PANE_READ.to_string(), |host| serde_json::to_string(&host.pane_read(&source, now_ms as i64))
+                    .expect("PaneReadResponse serializes"))
         }
 
         /// Every standing-question binding (#118), as JSON:
@@ -1344,11 +1250,8 @@ mod wasm_bindings {
         /// bool, "pending": bool, "value": {"state":"unset"} |
         /// {"state":"text","text":string} | {"state":"other","raw":string}}]}`.
         pub fn bindings(&self) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => serde_json::to_string(&host.bindings())
-                    .expect("BindingListResponse serializes"),
-                None => BUSY_BINDINGS.to_string(),
-            }
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_BINDINGS.to_string(), |host| serde_json::to_string(&host.bindings())
+                    .expect("BindingListResponse serializes"))
         }
 
         /// Sets one binding (#118), as one absolute-value CAS `PUT`.
@@ -1366,11 +1269,10 @@ mod wasm_bindings {
         ) -> js_sys::Promise {
             let inner = self.inner.clone();
             future_to_promise(async move {
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Settings, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_SET_BINDING));
                 };
                 let response = host.set_binding(&seed, &key, &value, now_ms as i64).await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("SetBindingResponse serializes"),
                 ))
@@ -1383,11 +1285,8 @@ mod wasm_bindings {
         /// every question present whether it has a row or not.
         #[wasm_bindgen(js_name = questionSwitches)]
         pub fn question_switches(&self) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => serde_json::to_string(&host.question_switches())
-                    .expect("QuestionSwitchListResponse serializes"),
-                None => BUSY_QUESTION_SWITCHES.to_string(),
-            }
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_QUESTION_SWITCHES.to_string(), |host| serde_json::to_string(&host.question_switches())
+                    .expect("QuestionSwitchListResponse serializes"))
         }
 
         /// Switches one standing question on or off (#715), as one
@@ -1405,13 +1304,12 @@ mod wasm_bindings {
         ) -> js_sys::Promise {
             let inner = self.inner.clone();
             future_to_promise(async move {
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Settings, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_SET_QUESTION_ENABLED));
                 };
                 let response = host
                     .set_question_enabled(&seed, &question, enabled, now_ms as i64)
                     .await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response)
                         .expect("SetQuestionEnabledResponse serializes"),
@@ -1421,10 +1319,7 @@ mod wasm_bindings {
 
         /// Every rule (#140), as JSON: `{"kind": "ok"|"busy", "rules": [Rule]}`.
         pub fn rules(&self) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => serde_json::to_string(&host.rules()).expect("RuleListResponse serializes"),
-                None => BUSY_RULES.to_string(),
-            }
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_RULES.to_string(), |host| serde_json::to_string(&host.rules()).expect("RuleListResponse serializes"))
         }
 
         /// The kind registry export (#133/#140, ADR-0013), as JSON:
@@ -1460,7 +1355,7 @@ mod wasm_bindings {
         ) -> js_sys::Promise {
             let inner = self.inner.clone();
             future_to_promise(async move {
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Rules, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_CREATE_RULE));
                 };
                 let response = host
@@ -1475,7 +1370,6 @@ mod wasm_bindings {
                         now_ms as i64,
                     )
                     .await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("CreateRuleResponse serializes"),
                 ))
@@ -1523,7 +1417,7 @@ mod wasm_bindings {
                         )))
                     }
                 };
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Rules, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_PATCH_RULE));
                 };
                 let response = host
@@ -1542,7 +1436,6 @@ mod wasm_bindings {
                         now_ms as i64,
                     )
                     .await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("PatchRuleResponse serializes"),
                 ))
@@ -1553,23 +1446,35 @@ mod wasm_bindings {
         /// `{"kind": "ok"|"busy", "pending": bool}`.
         #[wasm_bindgen(js_name = isPending)]
         pub fn is_pending(&self, item_id: String) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => {
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_IS_PENDING.to_string(), |host| {
                     serde_json::to_string(&host.is_pending(&item_id)).expect("IsPendingResponse serializes")
-                }
-                None => BUSY_IS_PENDING.to_string(),
-            }
+                })
         }
 
         /// Drains every credential-needed event since the last drain, as
         /// JSON: `[{"kind": "credential_needed", "at_ms": number}]`.
         #[wasm_bindgen(js_name = takeEvents)]
         pub fn take_events(&self) -> String {
-            let events = match self.inner.host.borrow_mut().as_mut() {
-                Some(host) => host.take_events(),
-                None => Vec::new(),
-            };
+            let events = self.inner.core.read_mut(js_sys::Date::now() as i64, Vec::new(), |host| host.take_events());
             serde_json::to_string(&events).expect("TaskEventDTO serializes")
+        }
+
+        /// #706/#708's Core-sourced diagnostic events, drained since the
+        /// last call — a JSON array of `DiagnosticEventV1` envelopes
+        /// (`server/domain/src/diagnostics.rs`). This is exactly the
+        /// method `client/web/src/worker/task-worker.ts`'s `TaskHostLike`
+        /// declared as optional and defensively called
+        /// (`host.drainDiagnostics?.()`) since #707 shipped, anticipating
+        /// this slice — see that interface's own doc for the full contract
+        /// this fulfills. Never checks the host out: buffered events live
+        /// on [`TaskCoreCell`] itself, independent of whether the host is
+        /// currently checked out, so a drain mid-request (#707's own
+        /// `DRAIN_INTERVAL_MS` polling) sees events from an in-flight
+        /// operation too.
+        #[wasm_bindgen(js_name = drainDiagnostics)]
+        pub fn drain_diagnostics(&self) -> String {
+            let events = self.inner.core.drain_diagnostics();
+            serde_json::to_string(&events).expect("DiagnosticEventV1 serializes")
         }
 
         /// Captures a new item. Resolves to JSON:
@@ -1614,13 +1519,14 @@ mod wasm_bindings {
                         ));
                     }
                 };
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Capture, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_CAPTURE));
                 };
+                let diagnostics = host.diagnostics();
+                let operation_id = host.mint_operation_id();
                 let response = host
-                    .capture(&seed, &title, &stage, fields, now_ms as i64)
+                    .capture(&seed, &title, &stage, fields, now_ms as i64, diagnostics, &operation_id)
                     .await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("CaptureResponse serializes"),
                 ))
@@ -1633,11 +1539,10 @@ mod wasm_bindings {
         pub fn act(&self, seed: String, item_id: String, action: String, now_ms: f64) -> js_sys::Promise {
             let inner = self.inner.clone();
             future_to_promise(async move {
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Act, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_ACT));
                 };
                 let response = host.act(&seed, &item_id, &action, now_ms as i64).await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("ActResponse serializes"),
                 ))
@@ -1680,13 +1585,22 @@ mod wasm_bindings {
                         ));
                     }
                 };
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Triage, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_TRIAGE));
                 };
+                let diagnostics = host.diagnostics();
+                let operation_id = host.mint_operation_id();
                 let response = host
-                    .triage(&seed, &item_id, destination.as_deref(), edits, now_ms as i64)
+                    .triage(
+                        &seed,
+                        &item_id,
+                        destination.as_deref(),
+                        edits,
+                        now_ms as i64,
+                        diagnostics,
+                        &operation_id,
+                    )
                     .await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("TriageResponse serializes"),
                 ))
@@ -1722,7 +1636,7 @@ mod wasm_bindings {
         ) -> js_sys::Promise {
             let inner = self.inner.clone();
             future_to_promise(async move {
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Grill, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_COMPLETE_GRILL));
                 };
                 let response = host
@@ -1739,7 +1653,6 @@ mod wasm_bindings {
                         now_ms as i64,
                     )
                     .await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("CompleteGrillResponse serializes"),
                 ))
@@ -1755,11 +1668,10 @@ mod wasm_bindings {
         pub fn save_grill_draft(&self, item_id: String, turns: String, now_ms: f64) -> js_sys::Promise {
             let inner = self.inner.clone();
             future_to_promise(async move {
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Grill, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_SAVE_GRILL_DRAFT));
                 };
                 let response = host.save_grill_draft(&item_id, &turns, now_ms as i64).await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("SaveGrillDraftResponse serializes"),
                 ))
@@ -1773,11 +1685,10 @@ mod wasm_bindings {
         pub fn discard_grill_draft(&self, item_id: String, now_ms: f64) -> js_sys::Promise {
             let inner = self.inner.clone();
             future_to_promise(async move {
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Grill, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_DISCARD_GRILL_DRAFT));
                 };
                 let response = host.discard_grill_draft(&item_id, now_ms as i64).await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("DiscardGrillDraftResponse serializes"),
                 ))
@@ -1788,12 +1699,9 @@ mod wasm_bindings {
         /// `{"kind": "ok"|"busy", "exists": bool, "turns": array|null}`.
         #[wasm_bindgen(js_name = grillDraft)]
         pub fn grill_draft(&self, item_id: String) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => {
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_GRILL_DRAFT.to_string(), |host| {
                     serde_json::to_string(&host.grill_draft(&item_id)).expect("GrillDraftResponse serializes")
-                }
-                None => BUSY_GRILL_DRAFT.to_string(),
-            }
+                })
         }
 
         /// Every item id carrying a draft (#356) — the Triage inbox's
@@ -1801,11 +1709,8 @@ mod wasm_bindings {
         /// `{"kind": "ok"|"busy", "item_ids": [string]}`.
         #[wasm_bindgen(js_name = grillDraftItemIds)]
         pub fn grill_draft_item_ids(&self) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => serde_json::to_string(&host.grill_draft_item_ids())
-                    .expect("GrillDraftItemIdsResponse serializes"),
-                None => BUSY_GRILL_DRAFT_ITEM_IDS.to_string(),
-            }
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_GRILL_DRAFT_ITEM_IDS.to_string(), |host| serde_json::to_string(&host.grill_draft_item_ids())
+                    .expect("GrillDraftItemIdsResponse serializes"))
         }
 
         /// Runs one sync cycle. Resolves to JSON:
@@ -1820,13 +1725,13 @@ mod wasm_bindings {
         ) -> js_sys::Promise {
             let inner = self.inner.clone();
             future_to_promise(async move {
-                let Some(mut host) = inner.check_out() else {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Sync, now_ms as i64) else {
                     return Ok(JsValue::from_str(BUSY_RUN));
                 };
+                let diagnostics = host.diagnostics();
                 let response = host
-                    .run(now_ms as i64, &trigger, force_full_sweep, jitter_unit)
+                    .run(now_ms as i64, &trigger, force_full_sweep, jitter_unit, diagnostics)
                     .await;
-                inner.check_in(host);
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("RunResponse serializes"),
                 ))
@@ -1838,12 +1743,9 @@ mod wasm_bindings {
         /// "queued" figure.
         #[wasm_bindgen(js_name = queueDepth)]
         pub fn queue_depth(&self) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => {
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_QUEUE_DEPTH.to_string(), |host| {
                     serde_json::to_string(&host.queue_depth()).expect("QueueDepthResponse serializes")
-                }
-                None => BUSY_QUEUE_DEPTH.to_string(),
-            }
+                })
         }
 
         /// Every dead-lettered entry, as JSON:
@@ -1851,23 +1753,17 @@ mod wasm_bindings {
         /// edit didn't apply" affordance.
         #[wasm_bindgen(js_name = deadLetters)]
         pub fn dead_letters(&self) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => {
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_DEAD_LETTERS.to_string(), |host| {
                     serde_json::to_string(&host.dead_letters()).expect("DeadLettersResponse serializes")
-                }
-                None => BUSY_DEAD_LETTERS.to_string(),
-            }
+                })
         }
 
         /// The local mirror, as JSON: `{"kind": "ok"|"busy", "mirror":
         /// object|null}`. S9's mirror download button.
         #[wasm_bindgen(js_name = mirrorSnapshot)]
         pub fn mirror_snapshot(&self) -> String {
-            match self.inner.host.borrow().as_ref() {
-                Some(host) => serde_json::to_string(&host.mirror_snapshot())
-                    .expect("MirrorSnapshotResponse serializes"),
-                None => BUSY_MIRROR_SNAPSHOT.to_string(),
-            }
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_MIRROR_SNAPSHOT.to_string(), |host| serde_json::to_string(&host.mirror_snapshot())
+                    .expect("MirrorSnapshotResponse serializes"))
         }
     }
 }

@@ -56,6 +56,23 @@ describe("event builders", () => {
     expect(requestBusyEvent(session, 1_000).event.name).toBe("core.busy");
   });
 
+  // #708 review round 2: `core.busy` requires a `payload` object once the
+  // shared enum makes it a struct variant, and this producer cannot see the
+  // holder (see `requestBusyEvent`'s own doc). The `owner: null` and the
+  // presence of `payload` at all are both load-bearing — a bare
+  // `{name: "core.busy"}` is rejected by
+  // `serde_json::from_str::<DiagnosticEvent>`, which is the drift this pins
+  // from the TypeScript side.
+  // `server/domain/src/diagnostics.rs`'s
+  // `every_web_worker_row_the_shared_worker_writes_deserializes` pins the
+  // same row from the Rust side.
+  it("emits core.busy with an explicit null owner, since this layer cannot see the holder", () => {
+    expect(requestBusyEvent(session, 1_000).event).toEqual({
+      name: "core.busy",
+      payload: { owner: null },
+    });
+  });
+
   it("carries the online boolean on a network.changed payload", () => {
     expect(networkChangedEvent(session, 1_000, true).event).toEqual({
       name: "network.changed",

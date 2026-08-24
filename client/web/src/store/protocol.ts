@@ -1111,10 +1111,60 @@ export type DiagnosticSourceName = "core" | "web-worker" | "android" | "authorit
  * that module's header forbids every consuming slice from doing. `payload`
  * is absent for a unit variant (`serde`'s adjacently-tagged representation
  * omits it, not `null`), present otherwise. */
+/** One `DiagnosticEvent` (`server/domain/src/diagnostics.rs`) on the wire:
+ * adjacently tagged, so the family's name is `name` and its payload — when
+ * that family has one — is a `payload` object. `payload` stays `unknown`
+ * because this type also describes rows *read back* from an export, which
+ * include every family every host writes (the authority's
+ * `request.finished`, Android's, a future slice's), and this file is not the
+ * place to mirror that whole closed enum.
+ *
+ * **A writer in this repo does not use this type directly.** Rows this app
+ * *produces* go through [`WebWorkerDiagnosticEvent`] below, which pins the
+ * payload shape per family — see its doc for the drift that cost. */
 export interface DiagnosticEventNamePayload {
   name: string;
   payload?: unknown;
 }
+
+/** Who holds the wasm task-core checkout — `CoreOwner` in
+ * `server/domain/src/diagnostics.rs`, kebab/snake values as serialized
+ * there. Only the values, not the semantics: that enum's own doc is
+ * canonical. */
+export type CoreOwnerName =
+  | "sync"
+  | "capture"
+  | "act"
+  | "triage"
+  | "grill"
+  | "projects"
+  | "rules"
+  | "settings"
+  | "read";
+
+/** The closed set of events the SharedWorker itself writes
+ * (`client/web/src/worker/diagnostics-events.ts`), each with the exact
+ * payload `server/domain/src/diagnostics.rs`'s matching variant requires.
+ *
+ * **Why this exists (#708 review round 2).** `DiagnosticEventV1DTO.event`
+ * was typed as [`DiagnosticEventNamePayload`], whose optional `unknown`
+ * payload accepts literally any `{name}` object. When #708 turned
+ * `core.busy` into a struct variant, this app kept emitting a bare
+ * `{name: "core.busy"}` that `serde_json::from_str::<DiagnosticEvent>`
+ * rejects, and `pnpm run typecheck`, `pnpm run test`, `cargo test` and
+ * `cargo clippy` were all green over it. Naming the payloads here makes the
+ * next such amendment a compile error in this repo, and
+ * `every_web_worker_row_the_shared_worker_writes_deserializes` in
+ * `server/domain/src/diagnostics.rs` is the other half of the gate (a Rust
+ * test holding these rows' literal JSON). `owner: null` on `core.busy` is
+ * deliberate and required, not a placeholder — the holder never leaves the
+ * wasm host; see that variant's Rust doc. */
+export type WebWorkerDiagnosticEvent =
+  | { name: "core.wait_started" }
+  | { name: "core.acquired" }
+  | { name: "core.busy"; payload: { owner: CoreOwnerName | null } }
+  | { name: "operation.abandoned" }
+  | { name: "network.changed"; payload: { online: boolean } };
 
 /** One `DiagnosticEventV1` exactly as it appears on the wire — snake_case
  * field names, deliberately NOT remapped to this file's usual camelCase DTO
@@ -1131,7 +1181,10 @@ export interface DiagnosticEventV1DTO {
   session_id: string;
   source: DiagnosticSourceName;
   cycle_id: string | null;
-  /** Always `null` in this slice — #708 is what starts setting it
+  /** Set on `source: "core"` rows since #708 (the wasm host's own operation
+   * spans); always `null` on the `source: "web-worker"` rows this app
+   * writes, which have no operation to correlate — see
+   * `worker/diagnostics-events.ts`'s `envelope`.
    * (`server/domain/src/diagnostics.rs`'s own doc on the field; #711 moved
    * the envelope there out of `client/core/src/diagnostics/mod.rs`, which
    * now only re-exports it). */

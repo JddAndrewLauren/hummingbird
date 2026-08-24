@@ -87,7 +87,7 @@ pub use clock::DiagnosticClock;
 pub use context::{DiagnosticSession, DiagnosticsContext};
 pub use failure::FailureClass;
 pub use hummingbird_domain::diagnostics::{
-    DiagnosticEvent, DiagnosticEventV1, DiagnosticHttpMethod, OperationOutcome, Source,
+    CoreOwner, DiagnosticEvent, DiagnosticEventV1, DiagnosticHttpMethod, OperationOutcome, Source,
     SyncOutcome, SyncPhase, DIAGNOSTIC_EVENT_SCHEMA_VERSION,
 };
 

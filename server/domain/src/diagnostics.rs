@@ -36,6 +36,54 @@
 //! "one workspace singleton" — plus a per-instance `seq` counter and
 //! elapsed-time origin held in the `wasm32` shim's own state).
 //!
+//! **The cross-language payload rule for the `core.*` quad (#708 review
+//! round 2).** [`DiagnosticEvent`] is *adjacently* tagged
+//! (`#[serde(tag = "name", content = "payload")]`), so the instant a
+//! payload-free variant grows a field, every writer of that family must
+//! start emitting a `payload` object — and one class of writer is not the
+//! Rust compiler's to check: `client/web/src/worker/diagnostics-events.ts`
+//! serializes this same envelope from TypeScript, and #709 does it again
+//! from Kotlin. Making [`DiagnosticEvent::CoreBusy`] a struct variant in
+//! #708 parted this enum from that live TypeScript writer, which kept
+//! emitting a bare `{"name":"core.busy"}` that
+//! `serde_json::from_str::<DiagnosticEvent>` rejects — invisible to every
+//! gate, because the TS side's own DTO for `event` was `{name: string;
+//! payload?: unknown}`. The rule adopted so the next such amendment does
+//! not rediscover it, binding all four `core.*` members
+//! ([`DiagnosticEvent::CoreWaitStarted`], [`DiagnosticEvent::CoreAcquired`],
+//! [`DiagnosticEvent::CoreBusy`], [`DiagnosticEvent::CoreReleased`]) and
+//! anything else a non-Rust host writes:
+//!
+//! 1. **A payload field is `Option<T>` when a live non-Core writer of that
+//!    family structurally cannot observe the fact**, and required when
+//!    every possible producer can. `None`/`null` means "this producer
+//!    could not see it," never "no owner" — a reader treats a null `owner`
+//!    as *unknown*, and must not fabricate one. This is the same encoding
+//!    [`DiagnosticEvent::HttpFinished`]'s `status`/`failure` already use
+//!    for "present only when there was one to record."
+//! 2. **A non-Rust writer emits the `payload` key explicitly**, with every
+//!    field present (`{"owner": null}`, not an absent `payload`). Serde's
+//!    adjacent tagging needs the `content` key to exist once the variant is
+//!    a struct variant, so an omitted `payload` is a hard deserialization
+//!    failure rather than a defaulted one.
+//! 3. **Every non-Rust writer's exact emitted shape is pinned by a Rust
+//!    test in this module** —
+//!    `every_web_worker_row_the_shared_worker_writes_deserializes` holds the
+//!    literal JSON `diagnostics-events.ts` produces and parses it through
+//!    `serde_json::from_str::<DiagnosticEventV1>`. A field added to a
+//!    `core.*` variant without updating that writer fails *there*, loudly,
+//!    which is the only place in either language the drift is detectable.
+//!
+//! Applied state of the quad: `core.busy` carries
+//! `owner: Option<CoreOwner>` (TS writes `null` — the holder lives in a
+//! private `Cell` inside `client/ffi-web/src/task_host.rs`'s `TaskCoreCell`
+//! and reaches no worker response DTO); `core.released` carries a required
+//! `owner` (only a Rust guard can produce one — the TS layer deliberately
+//! emits no `core.released` at all); `core.wait_started`/`core.acquired`
+//! are still payload-free and have live TS writers, so #710 — which adds
+//! `owner` to exactly those two — follows rule 1 and gives them
+//! `Option<CoreOwner>` unless it also teaches the TS writers to name one.
+//!
 //! [`FailureClass`] and [`route_template`] live here for the identical
 //! cross-workspace reason: [`DiagnosticEvent::HttpFinished`]'s `failure`
 //! field needs [`FailureClass`] to be nameable from both sides, and
@@ -146,6 +194,85 @@ pub enum DiagnosticHttpMethod {
     Delete,
 }
 
+/// Who currently holds the single web/mobile-host task-core checkout
+/// (#708's amendment to this shared enum, promised by #706 and #707's own
+/// docs) — a payload field of `DiagnosticEvent::CoreBusy` (as
+/// `Option<CoreOwner>`) and `DiagnosticEvent::CoreReleased` (required).
+/// The asker in a `core.busy` answer
+/// already knows who *it* is; the holder is the one fact a bare
+/// re-entrancy guard (a `RefCell::take()` returning `None`) could never
+/// answer on its own, so this is what makes that answer nameable rather
+/// than a bare "no." **Deliberately plain prose, no intra-doc links, in
+/// every variant's doc below**: this is `hummingbird-domain`, the one
+/// crate shared by both the client and server Cargo workspaces (this
+/// module's own header), and every concrete method this enum names —
+/// `TaskHostCore::capture`, `Core::run`, and the rest — lives in
+/// `hummingbird-core` or `hummingbird-ffi-web`, both *client*-workspace
+/// crates this crate cannot depend on or link into. A `[text]` link to one
+/// from here does not resolve; `cargo doc -p hummingbird-domain --no-deps`
+/// is the check that would have caught it.
+///
+/// Deliberately coarser than "one variant per wasm-host entry point" —
+/// the web host's `Projects` owner covers every dossier-card write
+/// (create_project, patch_project, project links, Route, fog, actions,
+/// Steps) and `Grill` covers the Grill-completion trio (complete_grill,
+/// save_grill_draft, discard_grill_draft): a caller waiting behind the
+/// core cares *which area* is holding it, not which of a dozen near-
+/// identical CAS-patch methods inside that area happened to be the one.
+///
+/// **Base enum for #708/#710's reconciliation, and what #710 inherits.**
+/// #708 (the web host) and
+/// #710 (the mobile host) each need this vocabulary; #708 landed first, so
+/// this is the base #710 rebases its own call sites onto rather than
+/// forking a second enum. As of #708, `core.busy` and `core.released`
+/// **both carry an owner** — any statement that `core.busy` "does not
+/// carry an owner in this tree" describes the pre-#708 enum and is false
+/// once this landed, so #710's rebase updates its own docs to match rather
+/// than the other way round. #710's own two families
+/// (`core.wait_started`/`core.acquired`) are still payload-free here, and
+/// when #710 adds `owner` to them it is bound by this module's header rule
+/// on non-Rust writers: both have live TypeScript writers today, so the
+/// field is `Option<CoreOwner>` (with the TS side emitting an explicit
+/// `payload`) unless #710 also teaches those writers to name a real owner.
+/// See this module's own header on why there is
+/// exactly one owner enum, ever. No `Other`/catch-all variant: an
+/// unnameable owner would defeat #712's whole interpretation table, whose
+/// job is telling an operator who held the core, so every call site on
+/// every host must be nameable by one of the members below (add a member
+/// rather than reach for a catch-all).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoreOwner {
+    /// A sync cycle — the web host's `Core::run`/`Core::run_observed`
+    /// checkout.
+    Sync,
+    /// The web host's capture (new-item) write.
+    Capture,
+    /// The web host's act write (start/complete/block/cancel an item).
+    Act,
+    /// The web host's triage write (edit-and-promote).
+    Triage,
+    /// The Grill-completion trio: complete_grill, save_grill_draft,
+    /// discard_grill_draft.
+    Grill,
+    /// Every project-dossier write: create_project, patch_project,
+    /// project links, Route, fog, project actions, Steps.
+    Projects,
+    /// create_rule/patch_rule (#140/ADR-0013).
+    Rules,
+    /// set_binding/set_question_enabled (#118/#715).
+    Settings,
+    /// A read-only getter's own acquisition (#708 review round 1,
+    /// finding 1) — every one of the web host's read-only accessors
+    /// (frontier/ledger/search/bindings/pane_read/etc.) shares this one
+    /// identity rather than borrowing a write category that does not
+    /// describe them. Also the defensive fallback a read's `core.busy`
+    /// answer uses in the (should-be-unreachable) case where the checkout
+    /// slot is empty but no holder was recorded — an invariant violation
+    /// this vocabulary still needs a legal value for, rather than a panic.
+    Read,
+}
+
 /// How one `operation.*`-family unit of work ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -248,10 +375,39 @@ pub enum DiagnosticEvent {
     CoreWaitStarted,
     #[serde(rename = "core.acquired")]
     CoreAcquired,
+    /// #708's amendment: names the [`CoreOwner`] holding the checkout —
+    /// the asker already knows who *it* is, so this is the fact only the
+    /// holder can supply.
+    ///
+    /// **`Option`, because one live writer of this family structurally
+    /// cannot see the holder (#708 review round 2).** `Some(owner)` is what
+    /// `client/ffi-web/src/task_host.rs`'s `TaskCoreCell` emits: it owns the
+    /// holder slot, so it always names one. `None` is what
+    /// `client/web/src/worker/diagnostics-events.ts`'s `requestBusyEvent`
+    /// emits — the SharedWorker's serial queue learns "busy" only from a
+    /// worker response's `kind: "busy"`, and not one of those response DTOs
+    /// carries an owner; the holder never leaves that private `Cell`. That
+    /// layer's row is therefore "a queue-level observer saw a request
+    /// refused, holder unknown", which is a weaker but true fact, and the
+    /// authoritative `Some(owner)` row for the *same* checkout is in the
+    /// same journal under `source: Source::Core`. A reader (#712's
+    /// interpretation table) reads `null` as **unknown**, never as "nobody
+    /// held it", and joins to the `source: core` row by
+    /// `(source, session_id)` scoping — see `TaskCoreCell`'s own doc on why
+    /// spans never pair across sources. See this module's header for the
+    /// rule this follows and what it binds #710 to.
     #[serde(rename = "core.busy")]
-    CoreBusy,
+    CoreBusy { owner: Option<CoreOwner> },
+    /// #708 review round 1: also carries [`CoreOwner`] — a checkout's own
+    /// guard is the one thing that still knows which owner it was checked
+    /// out as by the time it releases (the shared re-entrancy slot itself
+    /// is cleared first), so the release event is where that fact would
+    /// otherwise be lost rather than merely redundant with `core.acquired`
+    /// (the two can be arbitrarily far apart in the stream once a hold
+    /// runs long, which is exactly the case this whole slice exists to
+    /// make legible).
     #[serde(rename = "core.released")]
-    CoreReleased,
+    CoreReleased { owner: CoreOwner },
 
     #[serde(rename = "operation.requested")]
     OperationRequested,
@@ -275,6 +431,22 @@ pub enum DiagnosticEvent {
     #[serde(rename = "operation.abandoned")]
     OperationAbandoned,
 
+    /// **#707's Network Information deferral, declined here rather than
+    /// left silent (#708 review round 1).** #707's brief asked for
+    /// "unavailable Network Information API fields recorded as
+    /// `unknown`," found it unsatisfiable against this payload
+    /// (`{online: bool}` only), and deferred the richer fields
+    /// (`effectiveType`/`downlink`/`rtt`/`saveData`) into whichever slice
+    /// next amended this enum — which is #708. Declining rather than
+    /// implementing it here: extending this payload is a #707-scoped
+    /// product decision (what "unknown" means per field, whether a
+    /// missing `navigator.connection` collapses to one flag or four)
+    /// that needs the TS producer
+    /// (`client/web/src/worker/diagnostics-events.ts`'s
+    /// `networkChangedEvent`) rewritten to actually populate it — real
+    /// work outside a core-ownership slice's own surface, not a
+    /// coincidental amendment to make while already touching this enum
+    /// for `CoreOwner`. Left as a named follow-up rather than guessed at.
     #[serde(rename = "network.changed")]
     NetworkChanged { online: bool },
 
@@ -457,6 +629,116 @@ mod tests {
         assert_eq!(round_tripped, event);
     }
 
+    /// #708's amendment: `core.busy` carries the closed [`CoreOwner`]
+    /// naming who currently holds the checkout, not the asker — and it
+    /// round-trips.
+    #[test]
+    fn a_core_busy_event_names_the_holder_and_round_trips() {
+        let event = DiagnosticEventV1 {
+            schema_version: DIAGNOSTIC_EVENT_SCHEMA_VERSION,
+            seq: 5,
+            wall_clock_ms: 1_700_000_000_000,
+            elapsed_ms: 3,
+            session_id: "web-1".to_string(),
+            source: Source::Core,
+            cycle_id: None,
+            operation_id: Some("op-1".to_string()),
+            request_id: None,
+            event: DiagnosticEvent::CoreBusy {
+                owner: Some(CoreOwner::Sync),
+            },
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"name\":\"core.busy\""));
+        assert!(json.contains("\"owner\":\"sync\""));
+        let round_tripped: DiagnosticEventV1 = serde_json::from_str(&json).unwrap();
+        assert_eq!(round_tripped, event);
+    }
+
+    /// #708 review round 1: `core.released` carries the same closed
+    /// [`CoreOwner`] — the checkout's own guard is the only thing left
+    /// that still knows which owner it was by the time it releases, since
+    /// the shared holder slot is cleared before this fires.
+    #[test]
+    fn a_core_released_event_names_its_own_owner_and_round_trips() {
+        let event = DiagnosticEventV1 {
+            schema_version: DIAGNOSTIC_EVENT_SCHEMA_VERSION,
+            seq: 6,
+            wall_clock_ms: 1_700_000_030_000,
+            elapsed_ms: 30_000,
+            session_id: "web-1".to_string(),
+            source: Source::Core,
+            cycle_id: None,
+            operation_id: None,
+            request_id: None,
+            event: DiagnosticEvent::CoreReleased { owner: CoreOwner::Sync },
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"name\":\"core.released\""));
+        assert!(json.contains("\"owner\":\"sync\""));
+        let round_tripped: DiagnosticEventV1 = serde_json::from_str(&json).unwrap();
+        assert_eq!(round_tripped, event);
+    }
+
+    /// **The cross-language gate (#708 review round 2).** Every row
+    /// `client/web/src/worker/diagnostics-events.ts` writes, as literal
+    /// JSON, parsed back through this module's own `Deserialize` — the only
+    /// check in either language that catches a `core.*` variant growing a
+    /// field while that TypeScript writer keeps emitting the old shape. It
+    /// caught exactly that: #708 made `core.busy` a struct variant and,
+    /// because `DiagnosticEventNamePayload` typed `payload` as
+    /// `unknown | undefined`, `pnpm run typecheck`, `pnpm run test`,
+    /// `cargo test` and `cargo clippy` all stayed green while
+    /// `requestBusyEvent` emitted a bare `{"name":"core.busy"}` that
+    /// `serde_json` rejects. The last assertion below pins that old shape
+    /// as an error, so this test is not vacuous. **Mutation-tested**:
+    /// replacing the `core.busy` literal below with the pre-fix
+    /// `{"name":"core.busy"}` fails the first block with "web-worker row
+    /// must deserialize: missing field payload at line 1 column 198".
+    /// Reverted before landing. The same mutation applied to the TypeScript
+    /// writer (dropping `payload` from `requestBusyEvent`) is now a
+    /// `pnpm run typecheck` error too — `WebWorkerDiagnosticEvent` in
+    /// `client/web/src/store/protocol.ts` is that half of the gate, since a
+    /// hand-copied literal here cannot notice the TS side drifting.
+    ///
+    /// Keep these strings byte-identical to what `diagnostics-events.ts`
+    /// serializes (`envelope`'s field order and its `null`s included) —
+    /// this module's header states the rule, and
+    /// `client/web/src/worker/diagnostics-events.test.ts` pins the same
+    /// shapes from the TypeScript side.
+    #[test]
+    fn every_web_worker_row_the_shared_worker_writes_deserializes() {
+        // `requestEnqueuedEvent`, `requestDequeuedEvent`,
+        // `requestAbandonedEvent`, `requestBusyEvent`,
+        // `networkChangedEvent` — the whole of that module's public surface.
+        let rows = [
+            r#"{"schema_version":1,"seq":1,"wall_clock_ms":1700000000000,"elapsed_ms":0,"session_id":"ww-1","source":"web-worker","cycle_id":null,"operation_id":null,"request_id":null,"event":{"name":"core.wait_started"}}"#,
+            r#"{"schema_version":1,"seq":2,"wall_clock_ms":1700000000010,"elapsed_ms":10,"session_id":"ww-1","source":"web-worker","cycle_id":null,"operation_id":null,"request_id":null,"event":{"name":"core.acquired"}}"#,
+            r#"{"schema_version":1,"seq":3,"wall_clock_ms":1700000030000,"elapsed_ms":30000,"session_id":"ww-1","source":"web-worker","cycle_id":null,"operation_id":null,"request_id":null,"event":{"name":"operation.abandoned"}}"#,
+            r#"{"schema_version":1,"seq":4,"wall_clock_ms":1700000000020,"elapsed_ms":20,"session_id":"ww-1","source":"web-worker","cycle_id":null,"operation_id":null,"request_id":null,"event":{"name":"core.busy","payload":{"owner":null}}}"#,
+            r#"{"schema_version":1,"seq":5,"wall_clock_ms":1700000000030,"elapsed_ms":30,"session_id":"ww-1","source":"web-worker","cycle_id":null,"operation_id":null,"request_id":null,"event":{"name":"network.changed","payload":{"online":false}}}"#,
+        ];
+        for row in rows {
+            let parsed: DiagnosticEventV1 = serde_json::from_str(row)
+                .unwrap_or_else(|e| panic!("web-worker row must deserialize: {e}\n  row: {row}"));
+            assert_eq!(parsed.source, Source::WebWorker);
+        }
+
+        // The busy row's `owner` really is read back as "unknown", not as
+        // some default owner — the distinction this module's header rule 1
+        // rests on.
+        let busy: DiagnosticEventV1 = serde_json::from_str(rows[3]).unwrap();
+        assert_eq!(busy.event, DiagnosticEvent::CoreBusy { owner: None });
+
+        // And the shape this writer emitted before the fix is a hard
+        // failure, which is what made the drift a real defect rather than a
+        // cosmetic one.
+        assert!(
+            serde_json::from_str::<DiagnosticEvent>(r#"{"name":"core.busy"}"#).is_err(),
+            "a bare core.busy with no payload must not deserialize"
+        );
+    }
+
     /// The authority's own two families round-trip too, with `Source::Authority`
     /// and no `cycle_id` — the common case, since most authority traffic
     /// (settings reads, admin operations) carries no client sync cycle at
@@ -549,8 +831,8 @@ mod tests {
                 },
                 DiagnosticEvent::CoreWaitStarted => DiagnosticEvent::CoreWaitStarted,
                 DiagnosticEvent::CoreAcquired => DiagnosticEvent::CoreAcquired,
-                DiagnosticEvent::CoreBusy => DiagnosticEvent::CoreBusy,
-                DiagnosticEvent::CoreReleased => DiagnosticEvent::CoreReleased,
+                DiagnosticEvent::CoreBusy { owner } => DiagnosticEvent::CoreBusy { owner },
+                DiagnosticEvent::CoreReleased { owner } => DiagnosticEvent::CoreReleased { owner },
                 DiagnosticEvent::OperationRequested => DiagnosticEvent::OperationRequested,
                 DiagnosticEvent::OperationLocalCommit => DiagnosticEvent::OperationLocalCommit,
                 DiagnosticEvent::OperationFinished { outcome } => {
@@ -605,8 +887,10 @@ mod tests {
             },
             DiagnosticEvent::CoreWaitStarted,
             DiagnosticEvent::CoreAcquired,
-            DiagnosticEvent::CoreBusy,
-            DiagnosticEvent::CoreReleased,
+            DiagnosticEvent::CoreBusy {
+                owner: Some(CoreOwner::Sync),
+            },
+            DiagnosticEvent::CoreReleased { owner: CoreOwner::Read },
             DiagnosticEvent::OperationRequested,
             DiagnosticEvent::OperationLocalCommit,
             DiagnosticEvent::OperationFinished { outcome: OperationOutcome::Success },

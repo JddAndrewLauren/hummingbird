@@ -1,4 +1,4 @@
-import type { DiagnosticEventV1DTO } from "../store/protocol";
+import type { DiagnosticEventV1DTO, WebWorkerDiagnosticEvent } from "../store/protocol";
 
 // #707's web-worker half of the shared `DiagnosticEventV1` envelope
 // (`server/domain/src/diagnostics.rs`, which #711 moved it to out of
@@ -117,10 +117,17 @@ export function createDiagnosticsSession(
   };
 }
 
+// `event` is `WebWorkerDiagnosticEvent`, not `DiagnosticEventV1DTO["event"]`:
+// the latter accepts any `{name}` object with an optional `unknown` payload,
+// which is precisely how this module shipped a payload-free `core.busy` after
+// #708 made that variant require one — green through typecheck, lint, the web
+// suite and `cargo test`, and rejected only by
+// `serde_json::from_str::<DiagnosticEvent>`. See `WebWorkerDiagnosticEvent`'s
+// own doc in `../store/protocol`.
 function envelope(
   session: DiagnosticsSession,
   nowMs: number,
-  event: DiagnosticEventV1DTO["event"],
+  event: WebWorkerDiagnosticEvent,
 ): DiagnosticEventV1DTO {
   return {
     schema_version: DIAGNOSTIC_EVENT_SCHEMA_VERSION,
@@ -161,9 +168,33 @@ export function requestAbandonedEvent(session: DiagnosticsSession, nowMs: number
 }
 
 /** A task request's own result carried `kind: "busy"` — the underlying
- * wasm host was already checked out when this request reached it. */
+ * wasm host was already checked out when this request reached it.
+ *
+ * **`owner: null`, and why this layer cannot do better (#708 review round
+ * 2).** #708 gave the shared `core.busy` variant an `owner` naming the
+ * `CoreOwner` that holds the wasm checkout. This layer cannot supply it: the
+ * only record of the holder is the private `holder` cell inside
+ * `client/ffi-web/src/task_host.rs`'s `TaskCoreCell`, and the sole signal
+ * that reaches here is a worker response's `kind: "busy"` string — not one of
+ * those response DTOs carries an owner (`task-worker.ts`'s
+ * `postAndObserveBusy` sees the response and nothing else). So `null` is the
+ * honest value, and the shared contract types the field as optional for
+ * exactly this producer: `null` means "this writer could not see the holder",
+ * never "nobody held it".
+ *
+ * Nothing is lost by it. The same refused checkout also produces a
+ * `source: "core"` `core.busy` row *with* the owner, drained into this same
+ * journal by `drainAroundRequest`. This row is the queue-level observation
+ * ("a request was refused here"); that row is the authoritative holder. A
+ * reader joins them under `TaskCoreCell`'s `(source, session_id)` scoping
+ * rule, never by merging the two spans.
+ *
+ * The `payload` key is emitted explicitly rather than omitted: the shared
+ * enum is adjacently tagged, so an absent `payload` on a struct variant is a
+ * hard deserialization failure — see `server/domain/src/diagnostics.rs`'s
+ * header rule 2. */
 export function requestBusyEvent(session: DiagnosticsSession, nowMs: number): DiagnosticEventV1DTO {
-  return envelope(session, nowMs, { name: "core.busy" });
+  return envelope(session, nowMs, { name: "core.busy", payload: { owner: null } });
 }
 
 /** A browser online/offline transition, or a visibility-state change that

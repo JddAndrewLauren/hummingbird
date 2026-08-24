@@ -9,8 +9,9 @@ import { createDiagnosticsStore } from "./diagnostics-store";
 // (`server/domain/src/diagnostics.rs`'s `FORBIDDEN_FIELD_NAMES`): a real
 // exported journal, built the same way `core.worker.ts` builds one — every
 // worker-layer event family this slice emits, plus a simulated Core-sourced
-// drain (opaque JSON this side never inspects, exactly as #708 will one day
-// hand it over) — must never carry a credential, a request/response body,
+// drain (opaque JSON this side never inspects, exactly as #708's
+// `TaskCoreCell::drain_diagnostics` now hands it
+// over) — must never carry a credential, a request/response body,
 // or any of the operator's own item text. This is the value-level half of
 // the check `diagnostics.rs`'s own test documents its limits on; this
 // file's job is only to prove THIS export path never introduces one, not to
