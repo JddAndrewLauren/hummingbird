@@ -285,6 +285,19 @@ export interface TaskHostLike {
   queueDepth(): string;
   deadLetters(): string;
   mirrorSnapshot(): string;
+  /** #706/#708's Core-sourced diagnostic events, drained since the last
+   * call — a JSON array of `DiagnosticEventV1` envelopes
+   * (`client/core/src/diagnostics/mod.rs`), or omitted entirely.
+   *
+   * **Optional on purpose, not yet implemented by the real wasm `TaskHost`
+   * as this slice (#707) ships**: `Core::run` is called plain today, not
+   * `Core::run_observed`, and #708 (the `ffi-web` checkout instrumentation
+   * that actually produces `core.*` events) has not landed. Calling this
+   * defensively (`host.drainDiagnostics?.()`) means #707's journal, drain
+   * timer and export UI are fully wired and correct now, draining zero
+   * Core events until #708 lands, with no further change needed here once
+   * it does — see issue #707's own posted finding on this sequencing. */
+  drainDiagnostics?(): string;
 }
 
 interface RawItem {
@@ -1547,22 +1560,73 @@ export async function handleTaskRequest(
  * why it is safe. */
 export const TASK_REQUEST_TIMEOUT_MS = 30_000;
 
+/** #707's hooks into this queue's own lifecycle — the narrow slice of
+ * `diagnostics-journal.ts`'s `DiagnosticsJournal` this file needs, with
+ * every clock read pushed onto the caller (`core.worker.ts`'s adapter
+ * closes over `Date.now`) so this module keeps sampling no clock of its
+ * own, the same discipline `client/core/src/diagnostics/mod.rs`'s header
+ * states for the Rust side. Optional and defaulted to a no-op below, so
+ * every existing caller/test of `createTaskRequestQueue` — none of which
+ * cares about diagnostics — is unaffected. */
+export interface TaskDiagnostics {
+  recordEnqueued(): void;
+  recordDequeued(): void;
+  recordAbandoned(): void;
+  recordBusy(): void;
+  /** Wraps one request's `run`, draining the wasm host's own diagnostic
+   * events before, after, and periodically while it is still pending — see
+   * `diagnostics-journal.ts`'s `drainAroundRequest` for the full contract. */
+  drainAroundRequest<T>(run: () => Promise<T>, drainHost: () => string | null | undefined): Promise<T>;
+}
+
+const NOOP_TASK_DIAGNOSTICS: TaskDiagnostics = {
+  recordEnqueued: () => {},
+  recordDequeued: () => {},
+  recordAbandoned: () => {},
+  recordBusy: () => {},
+  drainAroundRequest: (run) => run(),
+};
+
 /** Serialises every task request into one at-a-time chain — its own queue,
  * independent of the calendar binding's (`calendar-worker.ts`'s
  * `createRequestQueue`): the two wrap different Rust objects with their own
  * independent check-out/check-in re-entrancy guards, so nothing requires
  * ordering a `capture` against a calendar poll. Built on `serial-queue.ts`'s
  * generic abandon-on-timeout queue rather than a second copy of the
- * ordering logic `createRequestQueue` already has. */
+ * ordering logic `createRequestQueue` already has.
+ *
+ * `diagnostics` attaches #707's journal at every point this queue already
+ * knows about a request's lifecycle — enqueue (`onEnqueue`), the moment it
+ * starts running (`onDequeue`), the 30s abandonment (`onTimeout`), and a
+ * `"busy"` result (detected on whatever this queue's own `post` forwards,
+ * since that is the only signal a "busy" read/mutation result gives this
+ * layer — a read that answers `"busy"` by silently returning nothing, e.g.
+ * `getMirrorSnapshot`'s own `if (raw.kind === "busy") return;`, posts no
+ * response at all and is therefore NOT observed here; see issue #707's own
+ * posted finding on that gap). */
 export function createTaskRequestQueue(
   host: TaskHostLike,
   post: (response: TaskWorkerResponse) => void,
+  diagnostics: TaskDiagnostics = NOOP_TASK_DIAGNOSTICS,
 ): (request: TaskWorkerRequest) => Promise<void> {
+  const postAndObserveBusy = (response: TaskWorkerResponse) => {
+    if ((response as { kind?: unknown }).kind === "busy") {
+      diagnostics.recordBusy();
+    }
+    post(response);
+  };
   return createSerialQueue(
-    (request: TaskWorkerRequest) => handleTaskRequest(request, host, post),
+    (request: TaskWorkerRequest) =>
+      diagnostics.drainAroundRequest(
+        () => handleTaskRequest(request, host, postAndObserveBusy),
+        () => host.drainDiagnostics?.() ?? null,
+      ),
     {
       timeoutMs: TASK_REQUEST_TIMEOUT_MS,
+      onEnqueue: () => diagnostics.recordEnqueued(),
+      onDequeue: () => diagnostics.recordDequeued(),
       onTimeout: (request) => {
+        diagnostics.recordAbandoned();
         console.error("task worker request abandoned after timeout", request.type);
       },
       onError: (request, error) => {

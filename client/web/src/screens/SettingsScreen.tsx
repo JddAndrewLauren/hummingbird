@@ -582,6 +582,12 @@ export interface SettingsScreenProps {
   online: boolean;
   syncNowMs: number;
   onDownloadMirror: () => void;
+  /** #707's SharedWorker diagnostic journal — "Download diagnostics" and
+   * "Clear diagnostics", beside the mirror download above. A separate
+   * export from the mirror's own: the journal and the mirror are two
+   * different files, on purpose (see `shell/diagnostics-download.ts`). */
+  onDownloadDiagnostics: () => void;
+  onClearDiagnostics: () => void;
 }
 
 export function SettingsScreen({
@@ -610,6 +616,8 @@ export function SettingsScreen({
   online,
   syncNowMs,
   onDownloadMirror,
+  onDownloadDiagnostics,
+  onClearDiagnostics,
 }: SettingsScreenProps) {
   const instanceLabel = coreInstanceLabel(coreId, viewOrdinal);
   const unavailableIds = unavailableSelectedIds(
@@ -999,6 +1007,27 @@ export function SettingsScreen({
               >
                 Download mirror
               </Button>
+              {/* #707's SharedWorker diagnostic journal — a deliberate,
+                  manual export beside the mirror above, never carrying it
+                  (see `shell/diagnostics-download.ts`). */}
+              <div style={{ display: "flex", gap: "var(--space-3)", flexWrap: "wrap" }}>
+                <Button
+                  variant="secondary"
+                  iconLeft="download"
+                  onClick={onDownloadDiagnostics}
+                  style={{ alignSelf: "flex-start" }}
+                >
+                  Download diagnostics
+                </Button>
+                <Button
+                  variant="secondary"
+                  iconLeft="trash-2"
+                  onClick={onClearDiagnostics}
+                  style={{ alignSelf: "flex-start" }}
+                >
+                  Clear diagnostics
+                </Button>
+              </div>
             </Card>
 
             {task.deadLetters.length > 0 ? (

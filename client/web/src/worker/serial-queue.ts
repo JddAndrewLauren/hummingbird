@@ -29,6 +29,14 @@ export interface SerialQueueOptions<Req> {
   /** Called (never thrown) when a request's handler promise rejects.
    * Defaults to logging, matching `calendar-worker.ts`'s own queue. */
   onError?: (request: Req, error: unknown) => void;
+  /** #707's diagnostics-journal hooks — this is the machinery that already
+   * knows the two facts a journal reader needs about queueing: the moment a
+   * request joins the tail chain (its wait begins), and the moment it
+   * reaches the front and actually starts running. Optional, and never
+   * thrown, so a caller with nothing wired up (`calendar-worker.ts`'s own
+   * queue, which does not observe these) pays nothing. */
+  onEnqueue?: (request: Req) => void;
+  onDequeue?: (request: Req) => void;
 }
 
 function withTimeout<Req>(
@@ -78,7 +86,11 @@ export function createSerialQueue<Req>(
 ): (request: Req) => Promise<void> {
   let tail: Promise<void> = Promise.resolve();
   return (request) => {
-    tail = tail.then(() => withTimeout(request, () => handle(request), options));
+    options.onEnqueue?.(request);
+    tail = tail.then(() => {
+      options.onDequeue?.(request);
+      return withTimeout(request, () => handle(request), options);
+    });
     return tail;
   };
 }

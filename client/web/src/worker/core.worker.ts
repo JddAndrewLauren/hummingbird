@@ -105,11 +105,17 @@ import {
   toCoreTrigger,
 } from "../shell/sync-cadence";
 import { createRequestQueue } from "./calendar-worker";
-import { createDispatch } from "./dispatch";
+import { createDispatch, type DispatchDiagnostics, type DispatchVisibility } from "./dispatch";
 import { mintCoreId } from "./core-id";
+import { createDiagnosticsJournal } from "./diagnostics-journal";
 import { PortRegistry, type PortLike } from "./ports";
 import { createSyncRunGuard } from "./sync-run-guard";
-import { createTaskRequestQueue, TASK_REQUEST_TIMEOUT_MS, type TaskHostLike } from "./task-worker";
+import {
+  createTaskRequestQueue,
+  TASK_REQUEST_TIMEOUT_MS,
+  type TaskDiagnostics,
+  type TaskHostLike,
+} from "./task-worker";
 import { VisibilityTracker } from "./visibility-tracker";
 
 // The IndexedDB database name (ADR-0003: the host contributes exactly one
@@ -167,6 +173,56 @@ const registry = new PortRegistry(mintCoreId());
 // exist by then.
 const visibility = new VisibilityTracker<PortLike>();
 
+// #707's SharedWorker diagnostic journal: one IndexedDB-backed journal for
+// the whole origin, matching `registry`/`visibility` above — declared here,
+// alongside them, for the same reason `visibility` is: a `setViewVisibility`
+// (or, here, a `getDiagnostics`/`clearDiagnostics`) request could in
+// principle arrive as soon as any port is wired, well before the async IIFE
+// below resolves. `Date.now()` anchors the session's `elapsed_ms` origin —
+// bare wasm32 has no clock of its own, but this global scope is a real JS
+// runtime (the same reasoning the module doc above gives for calling
+// `Math.random()`/`Date.now()` directly in the cadence wiring).
+const diagnosticsJournal = createDiagnosticsJournal(Date.now());
+
+// The narrow adapter `worker/task-worker.ts`'s `createTaskRequestQueue`
+// needs (`TaskDiagnostics`) — every method there is clock-free by design
+// (see that interface's own doc), so this is the one place `Date.now()` is
+// actually sampled for the task queue's own lifecycle events.
+const taskDiagnostics: TaskDiagnostics = {
+  recordEnqueued: () => diagnosticsJournal.recordEnqueued(Date.now()),
+  recordDequeued: () => diagnosticsJournal.recordDequeued(Date.now()),
+  recordAbandoned: () => diagnosticsJournal.recordAbandoned(Date.now()),
+  recordBusy: () => diagnosticsJournal.recordBusy(Date.now()),
+  drainAroundRequest: (run, drainHost) => diagnosticsJournal.drainAroundRequest(run, drainHost, Date.now),
+};
+
+/** Wraps the shared `VisibilityTracker` so #707's journal also learns about
+ * the ONE visibility fact this global scope can observe: the aggregate
+ * `isHidden()` flipping (`worker/visibility-tracker.ts`'s own doc — no
+ * per-view report matters here, only the origin-wide answer the cadence
+ * itself consults). Recorded as `network.changed`, re-checking
+ * `navigator.onLine` at the moment it flips: `DiagnosticEvent::NetworkChanged`
+ * carries only `{online}` (`client/core/src/diagnostics/mod.rs`), with no
+ * field for visibility itself, so a visibility transition is folded into
+ * the one shared payload shape rather than left unrecorded — see issue
+ * #707's own posted finding on that gap. */
+function wrapVisibilityForDiagnostics(
+  tracker: VisibilityTracker<PortLike>,
+  journal: typeof diagnosticsJournal,
+): DispatchVisibility<PortLike> {
+  let lastHidden = tracker.isHidden();
+  return {
+    setHidden: (port, hidden) => {
+      tracker.setHidden(port, hidden);
+      const nowHidden = tracker.isHidden();
+      if (nowHidden !== lastHidden) {
+        lastHidden = nowHidden;
+        journal.recordNetworkChanged(Date.now(), self.navigator.onLine);
+      }
+    },
+  };
+}
+
 declare const self: SharedWorkerGlobalScope;
 
 // Assigned before anything below is awaited — see the header comment for
@@ -218,7 +274,7 @@ function createTaskEnqueueDeferred(
 ): Promise<TaskEnqueue> {
   const broadcast = (response: TaskWorkerResponse) => registry.broadcast(response);
   return createTaskHost(TASK_NAMESPACE, TASK_BASE_URL, "")
-    .then((taskHost) => createTaskRequestQueue(taskHost, broadcast))
+    .then((taskHost) => createTaskRequestQueue(taskHost, broadcast, taskDiagnostics))
     .catch((taskErr: unknown) => {
       const message = taskErr instanceof Error ? taskErr.message : String(taskErr);
       // Announce it once immediately, for the views already connected —
@@ -301,11 +357,23 @@ void (async () => {
     // "call once the core is ready and a task credential is known", and at
     // activation no view has had the chance to supply one yet, so firing it
     // here made every session's first cycle a spurious `no_credential`.
+    // #707's diagnostics-journal doors — neither reaches a wasm host (see
+    // `dispatch.ts`'s `DispatchDiagnostics`), so both are answered straight
+    // from `diagnosticsJournal` here.
+    const diagnosticsDispatch: DispatchDiagnostics = {
+      exportJournal: async () => {
+        const { events, droppedCount } = await diagnosticsJournal.export();
+        registry.broadcast({ type: "diagnosticsExport", events, droppedCount });
+      },
+      clear: () => diagnosticsJournal.clear(),
+    };
+
     const dispatch = createDispatch<PortLike>({
       cadence,
-      visibility,
+      visibility: wrapVisibilityForDiagnostics(visibility, diagnosticsJournal),
       taskEnqueueReady,
       calendarEnqueue,
+      diagnostics: diagnosticsDispatch,
     });
 
     registry.activate(dispatch, core_api_version);
@@ -314,7 +382,17 @@ void (async () => {
     // `online`/`offline` fire on whatever global scope implements
     // `WindowOrWorkerGlobalScope` per the HTML spec, a `SharedWorker`
     // included, so this needs no per-view forwarding.
-    self.addEventListener("online", () => cadence.onReconnect());
+    self.addEventListener("online", () => {
+      cadence.onReconnect();
+      diagnosticsJournal.recordNetworkChanged(Date.now(), true);
+    });
+    // #707: the offline counterpart. ADR-0007 has no trigger for going
+    // offline (there is nothing to sweep), so this exists purely for the
+    // journal — the shared cadence itself learns about connectivity loss
+    // the ordinary way, its next `runSync` failing.
+    self.addEventListener("offline", () => {
+      diagnosticsJournal.recordNetworkChanged(Date.now(), false);
+    });
 
     // ADR-0007's 60-second foreground timer: the ONE interval for the whole
     // origin (see the module doc above), paused while every connected view

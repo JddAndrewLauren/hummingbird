@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState } from "react";
+import { downloadDiagnosticsExport } from "./diagnostics-download";
 import { downloadMirrorSnapshot } from "./mirror-download";
 import type { CoreStatus } from "../store/store";
+import type { DiagnosticEventV1DTO } from "../store/protocol";
 import {
   reportViewVisibility,
+  requestClearDiagnostics,
   requestDeadLetters,
+  requestDiagnosticsExport,
   requestMirrorSnapshot,
   requestQueueDepth,
+  setDiagnosticsExportHandler,
   setMirrorSnapshotHandler,
   triggerSyncFocus,
   triggerSyncManual,
@@ -36,6 +41,12 @@ export interface SyncWiring {
    * other trigger. `App.tsx` calls this only when a task token is present
    * (`shell/refresh-gate.ts`). */
   handleManualSync: () => void;
+  /** #707's "Download diagnostics" button — same request-then-write-on-
+   * arrival shape as `handleDownloadMirror`. */
+  handleDownloadDiagnostics: () => void;
+  /** #707's "Clear diagnostics" button. Fire-and-forget — the worker gives
+   * no reply (`protocol.ts`'s `clearDiagnostics` doc). */
+  handleClearDiagnostics: () => void;
 }
 
 /** How often the sync-status "as of" label re-samples the clock — same
@@ -144,5 +155,34 @@ export function useSyncWiring(worker: WorkerLike, status: CoreStatus): SyncWirin
     triggerSyncManual(worker);
   }
 
-  return { nowMs, handleDownloadMirror, handleManualSync };
+  // #707: the identical request-then-write-on-arrival shape as the mirror
+  // download above, over its own single mutable slot
+  // (`worker-client.ts`'s `diagnosticsExportHandler`).
+  const pendingDiagnosticsDownloadRef = useRef(false);
+  useEffect(() => {
+    setDiagnosticsExportHandler((events: DiagnosticEventV1DTO[], droppedCount: number) => {
+      if (pendingDiagnosticsDownloadRef.current) {
+        pendingDiagnosticsDownloadRef.current = false;
+        downloadDiagnosticsExport(events, droppedCount, Date.now());
+      }
+    });
+    return () => setDiagnosticsExportHandler(null);
+  }, []);
+
+  function handleDownloadDiagnostics() {
+    pendingDiagnosticsDownloadRef.current = true;
+    requestDiagnosticsExport(worker);
+  }
+
+  function handleClearDiagnostics() {
+    requestClearDiagnostics(worker);
+  }
+
+  return {
+    nowMs,
+    handleDownloadMirror,
+    handleManualSync,
+    handleDownloadDiagnostics,
+    handleClearDiagnostics,
+  };
 }

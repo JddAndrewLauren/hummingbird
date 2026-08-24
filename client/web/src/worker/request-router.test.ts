@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { CalendarWorkerRequest, SyncCadenceRequest, TaskWorkerRequest } from "../store/protocol";
-import { isSyncCadenceRequest, isTaskWorkerRequest } from "./request-router";
+import type {
+  CalendarWorkerRequest,
+  DiagnosticsWorkerRequest,
+  SyncCadenceRequest,
+  TaskWorkerRequest,
+} from "../store/protocol";
+import {
+  isDiagnosticsWorkerRequest,
+  isSyncCadenceRequest,
+  isTaskWorkerRequest,
+} from "./request-router";
 
 describe("isTaskWorkerRequest", () => {
   it.each<TaskWorkerRequest>([
@@ -82,6 +91,36 @@ describe("isSyncCadenceRequest", () => {
     "does not mistake a calendar request ($type) for a sync-cadence one",
     (request) => {
       expect(isSyncCadenceRequest(request)).toBe(false);
+    },
+  );
+
+  it.each<DiagnosticsWorkerRequest>([{ type: "getDiagnostics" }, { type: "clearDiagnostics" }])(
+    "does not mistake a diagnostics request ($type) for a sync-cadence one",
+    (request) => {
+      expect(isSyncCadenceRequest(request)).toBe(false);
+    },
+  );
+});
+
+describe("isDiagnosticsWorkerRequest", () => {
+  it.each<DiagnosticsWorkerRequest>([{ type: "getDiagnostics" }, { type: "clearDiagnostics" }])(
+    "recognises every diagnostics request type ($type)",
+    (request) => {
+      expect(isDiagnosticsWorkerRequest(request)).toBe(true);
+    },
+  );
+
+  it.each<TaskWorkerRequest>([{ type: "getFrontier" }, { type: "getMirrorSnapshot" }])(
+    "does not mistake a task request ($type) for a diagnostics one",
+    (request) => {
+      expect(isDiagnosticsWorkerRequest(request)).toBe(false);
+    },
+  );
+
+  it.each<SyncCadenceRequest>([{ type: "syncFocusTrigger" }])(
+    "does not mistake a sync-cadence request ($type) for a diagnostics one",
+    (request) => {
+      expect(isDiagnosticsWorkerRequest(request)).toBe(false);
     },
   );
 });
