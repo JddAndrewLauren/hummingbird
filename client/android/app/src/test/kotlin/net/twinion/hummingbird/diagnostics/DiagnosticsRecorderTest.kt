@@ -240,10 +240,13 @@ class DiagnosticsRecorderTest {
     }
 
     companion object {
-        /** Mirrors `hummingbird_core::diagnostics::FORBIDDEN_FIELD_NAMES`
-         * (`client/core/src/diagnostics/mod.rs`), as exact-key JSON
-         * substrings — the same redaction rule, checked here over what
-         * Android's own export actually produces. */
+        /** Mirrors `hummingbird_domain::diagnostics::FORBIDDEN_FIELD_NAMES`
+         * (`server/domain/src/diagnostics.rs` — #711 moved the contract
+         * there; `client/core/src/diagnostics/mod.rs` only re-exports the
+         * public items and holds no list), as exact-key JSON substrings —
+         * the same redaction rule, checked here over what Android's own
+         * export actually produces. Nothing gates the two against drift
+         * (#741), so keep this pointer exact. */
         private val FORBIDDEN_FIELD_KEYS = listOf(
             "\"authorization\"", "\"access_token\"", "\"api_key\"", "\"token\"",
             "\"credential\"", "\"password\"", "\"body\"", "\"request_body\"",

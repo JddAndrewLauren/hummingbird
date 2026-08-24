@@ -185,10 +185,13 @@ mod tests {
         );
     }
 
-    /// Mirrors `hummingbird_core::diagnostics::FORBIDDEN_FIELD_NAMES` (that
-    /// list is `#[cfg(test)]`-private to `core`, so this is a deliberate
-    /// copy for the same reason `core`'s own doc gives: a fixed, named list
-    /// a reviewer can diff against the source of truth, not a guess).
+    /// Mirrors `hummingbird_domain::diagnostics::FORBIDDEN_FIELD_NAMES`
+    /// (`server/domain/src/diagnostics.rs` — #711 moved the contract there,
+    /// and that list is `#[cfg(test)]`-private, so `client/core` does not
+    /// re-export it). This is a deliberate copy for the reason the owning
+    /// doc gives: a fixed, named list a reviewer can diff against the
+    /// source of truth, not a guess. Nothing gates the two against drift
+    /// (#741), so that diff is the only control — keep this pointer exact.
     const FORBIDDEN_FIELD_NAMES: &[&str] = &[
         "authorization",
         "access_token",
