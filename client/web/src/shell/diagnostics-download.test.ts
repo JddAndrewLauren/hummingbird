@@ -96,10 +96,28 @@ describe("downloadDiagnosticsExport", () => {
     expect(captured.blob).toBeDefined();
     expect(captured.blob?.type).toBe("application/json");
     const text = await captured.blob!.text();
-    const parsed = JSON.parse(text) as { events: unknown[]; droppedCount: number };
+    const parsed = JSON.parse(text) as {
+      events: unknown[];
+      dropped_count: number;
+      schema_version: number;
+    };
     expect(parsed.events).toHaveLength(2);
     expect(parsed.events).toEqual(events);
-    expect(parsed.droppedCount).toBe(3);
+    expect(parsed.dropped_count).toBe(3);
+    expect(parsed.schema_version).toBe(1);
+  });
+
+  it("matches Android's envelope key order and casing exactly (#712 reconciliation)", async () => {
+    const captured = captureDownloadedBlob();
+
+    downloadDiagnosticsExport([], 0, 1_000);
+
+    const text = await captured.blob!.text();
+    expect(Object.keys(JSON.parse(text) as object)).toEqual([
+      "schema_version",
+      "dropped_count",
+      "events",
+    ]);
   });
 
   it("never carries the mirror, under this code path, whatever events are passed", async () => {

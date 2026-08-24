@@ -25,35 +25,32 @@ export function diagnosticsExportFilename(nowMs: number): string {
   return `hummingbird-diagnostics-${iso}.json`;
 }
 
-/** The exported document's own shape — `droppedCount` travels alongside
+/** The exported document's own shape — `dropped_count` travels alongside
  * `events` so a reader can tell "a quiet 72 hours" from "a quiet 72 hours,
  * and 4,000 events this journal could not afford to keep" (the journal's
  * own cumulative counter, `diagnostics-store.ts`).
  *
- * **KNOWN DIVERGENCE from Android's export (#709), left standing for #712
- * to reconcile — review round 2 of PR #736.** This ENVELOPE is
- * `{"events", "droppedCount"}`: camelCase, and with no envelope-level
- * `schema_version` of its own. Android's (#709, merged) is
- * `{"schema_version", "dropped_count", "events"}`. The per-event records
- * inside are *not* divergent — both hosts write the identical snake_case
- * `DiagnosticEventV1` (see `DiagnosticEventV1DTO`'s own doc in
- * `store/protocol.ts` for why that one type keeps the wire's spelling) —
- * so the divergence is exactly the two wrapper keys plus the missing
- * version field.
- *
- * That is a real inconsistency with `protocol.ts`'s own stated rule that a
- * cross-host boundary keeps snake_case, and this envelope is such a
- * boundary: an operator diffing a phone export against a browser export
- * hits it immediately. It is deliberately NOT fixed here — #712 owns
- * reconciling the two exports, and changing one side unilaterally mid-batch
- * would just move the mismatch. Whoever picks up #712: the fix is on this
- * side (snake_case the two keys, add an envelope `schema_version`), not on
- * Android's, and `diagnostics-download.test.ts` plus
- * `SettingsScreen.test.tsx`'s export-content assertions are what pin the
- * current spelling. */
+ * **#712 reconciliation of the divergence #707/#709 left standing (review
+ * round 2 of PR #736).** This envelope used to be `{"events",
+ * "droppedCount"}` — camelCase, no envelope-level `schema_version` — while
+ * Android's (#709) was already `{"schema_version", "dropped_count",
+ * "events"}`. `protocol.ts` states a cross-host boundary keeps snake_case,
+ * and this envelope is exactly such a boundary (an operator diffs a phone
+ * export against a browser export), so this side is the one that moved:
+ * it now matches Android's key set, casing and `schema_version` value
+ * exactly. The per-event records were never divergent — both hosts already
+ * write the identical snake_case `DiagnosticEventV1` (see
+ * `DiagnosticEventV1DTO`'s own doc in `store/protocol.ts`) — so only the
+ * three envelope keys changed. `1` is `DIAGNOSTIC_EVENT_SCHEMA_VERSION`'s
+ * value (`server/domain/src/diagnostics.rs`); there is no shared TS
+ * constant to import across the wasm boundary for an envelope literal, so
+ * it is hand-written here the same way Android hand-writes `1` in
+ * `DiagnosticJournal.kt`/`DiagnosticsRecorder.kt` — see `docs/diagnostics.md`
+ * for the fuller picture. */
 export interface DiagnosticsExportDocument {
+  schema_version: number;
+  dropped_count: number;
   events: DiagnosticEventV1DTO[];
-  droppedCount: number;
 }
 
 /** Writes the journal export to disk as readable, pretty-printed JSON —
@@ -63,7 +60,11 @@ export function downloadDiagnosticsExport(
   droppedCount: number,
   nowMs: number,
 ): void {
-  const exportDocument: DiagnosticsExportDocument = { events, droppedCount };
+  const exportDocument: DiagnosticsExportDocument = {
+    schema_version: 1,
+    dropped_count: droppedCount,
+    events,
+  };
   const json = JSON.stringify(exportDocument, null, 2);
   const blob = new Blob([json], { type: "application/json" });
   const url = URL.createObjectURL(blob);

@@ -66,6 +66,7 @@ grepping it.
 | Local dictation into capture (#379) | `client/web/src/speech/local-dictation.ts`, `client/web/src/screens/capture-dictation.ts` | those headers, then ADR-0022 |
 | The responsive layer and the two nav forms | `client/web/src/shell/{breakpoints.ts,responsive.css,useIsPhone.ts,NavBar.tsx,nav-bar.ts}` | `responsive.css` (why classes vs. a hook), then `nav-bar.ts` |
 | Surfaces registry (visual gate) | `client/web/visual/` | `docs/SURFACES.md` |
+| The diagnostics lane (#705/#712) — the shared wire contract, the PWA journal/export, Android's recorder/export, and the authority's correlated request events | `server/domain/src/diagnostics.rs`, `client/core/src/diagnostics/`, `client/web/src/{worker/diagnostics-*.ts,shell/diagnostics-download.ts}`, `client/android/.../diagnostics/`, `server/authority/src/diagnostics.rs` | `docs/diagnostics.md`, then `server/domain/src/diagnostics.rs`'s module header |
 
 Agent skills live in `.claude/skills/`, each with its own `SKILL.md`:
 `/next-up-hb` (select and delegate), `/to-actions` (project → actions),
