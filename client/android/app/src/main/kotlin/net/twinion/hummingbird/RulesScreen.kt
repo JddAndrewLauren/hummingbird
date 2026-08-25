@@ -224,7 +224,7 @@ private fun ListBody(
 }
 
 @Composable
-private fun RuleCard(
+internal fun RuleCard(
     rule: RuleRecord,
     /** A switch position tapped but not yet handed back, or null when the
      * row and the switch agree — [RulesViewModel.pendingEnabled]. */

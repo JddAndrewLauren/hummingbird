@@ -2,8 +2,8 @@
 //! (`scheduled_date`, `settings`), plus the notification lane's three
 //! tables (ADR-0012, amended by ADR-0013) landed here in their own slice
 //! (#131), plus the Grill interview's `grills` table (ADR-0023, #353).
-//! Sixteen tables and ten indexes; `tokens` gained a `source` column in
-//! #145.
+//! Sixteen tables and, since #289 gave every synced table a version-leading
+//! index, twenty-two indexes; `tokens` gained a `source` column in #145.
 
 use hummingbird_domain::is_url_safe_id;
 
@@ -84,7 +84,22 @@ use crate::sql::{Sql, SqlError, SqlValue};
 /// immediately before the closing paren, same as `items.agent` (4→5) and
 /// `projects`' pair (8→9) — which is why [`CREATE_RULES`] is written in
 /// that spliced form rather than as another pretty column line.
-pub const SCHEMA_VERSION: i64 = 10;
+///
+/// 11 gives every synced table a version-leading index shaped for
+/// `changes.rs`'s delta pull (#289): `(version, <that table's pull sort
+/// key>)`, since the pull is `WHERE version > ? ORDER BY version, <pk>` and
+/// a bare `(version)` serves the range predicate but leaves a sort step for
+/// the tie-break. Back to the purely-additive shape (1→2, 2→3, 5→6, 8→9):
+/// `CREATE INDEX IF NOT EXISTS` grows every store — fresh or migrated —
+/// for free, so there is no new migration machinery, only twelve more
+/// entries in [`CREATE_INDEXES`]. The five tables that already carried a
+/// bare `idx_<table>_version` (`items`, `steps`, `rules`, `grills`,
+/// `project_links`) keep that index untouched and gain a second,
+/// differently-named one (`idx_<table>_version_id`) rather than having the
+/// old one redefined in place — redefining under the same name would be a
+/// silent no-op on a store where that name already exists, which is every
+/// migrated store there is.
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// meta: the workspace version counter (one row), bumped by every write.
 /// Every mutated row stamps its `version` from this counter; the delta pull
@@ -364,7 +379,18 @@ CREATE TABLE IF NOT EXISTS grills (
   version         INTEGER NOT NULL
 )";
 
-const CREATE_INDEXES: [&str; 10] = [
+/// The last twelve entries are #289's version-leading indexes, one per
+/// synced table, each shaped `(version, <that table's own pull sort key>)`
+/// off `handlers/changes.rs`'s `pull` calls — the compound serves both the
+/// `WHERE version > ?` range predicate and the `ORDER BY version, <pk>` tie-
+/// break, where a bare `(version)` would leave a sort step. Five of the
+/// twelve (`items`, `steps`, `rules`, `grills`, `project_links`) sit
+/// alongside an existing bare `idx_<table>_version` under a different name
+/// (`idx_<table>_version_id`) rather than replacing it in place; the other
+/// seven (`projects`, `routes`, `fog`, `blocked_by`, `alerts`,
+/// `context_snapshots`, `settings`) had no version index before this and use
+/// the plain `idx_<table>_version` name.
+const CREATE_INDEXES: [&str; 22] = [
     "CREATE INDEX IF NOT EXISTS idx_items_version ON items(version)",
     "CREATE INDEX IF NOT EXISTS idx_steps_version ON steps(version)",
     "CREATE INDEX IF NOT EXISTS idx_items_live    ON items(stage) WHERE archived_at IS NULL",
@@ -375,6 +401,18 @@ const CREATE_INDEXES: [&str; 10] = [
     "CREATE INDEX IF NOT EXISTS idx_grills_item    ON grills(item_id)",
     "CREATE INDEX IF NOT EXISTS idx_project_links_version ON project_links(version)",
     "CREATE INDEX IF NOT EXISTS idx_project_links_project ON project_links(project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_projects_version ON projects(version, id)",
+    "CREATE INDEX IF NOT EXISTS idx_routes_version ON routes(version, project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_fog_version ON fog(version, id)",
+    "CREATE INDEX IF NOT EXISTS idx_blocked_by_version ON blocked_by(version, item_id, blocker_id)",
+    "CREATE INDEX IF NOT EXISTS idx_alerts_version ON alerts(version, id)",
+    "CREATE INDEX IF NOT EXISTS idx_context_snapshots_version ON context_snapshots(version, source, key)",
+    "CREATE INDEX IF NOT EXISTS idx_settings_version ON settings(version, key)",
+    "CREATE INDEX IF NOT EXISTS idx_items_version_id ON items(version, id)",
+    "CREATE INDEX IF NOT EXISTS idx_steps_version_id ON steps(version, id)",
+    "CREATE INDEX IF NOT EXISTS idx_rules_version_id ON rules(version, id)",
+    "CREATE INDEX IF NOT EXISTS idx_grills_version_id ON grills(version, id)",
+    "CREATE INDEX IF NOT EXISTS idx_project_links_version_id ON project_links(version, id)",
 ];
 
 /// Every table, parents before children (routes/fog/project_links reference

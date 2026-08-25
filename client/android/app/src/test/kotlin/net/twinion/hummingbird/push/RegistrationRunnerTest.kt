@@ -16,36 +16,39 @@ class RegistrationRunnerTest {
         installId: String = "slot-1",
         fcmToken: String? = "fcm-abc",
         register: suspend (String, String, String) -> Unit = { _, _, _ -> },
+        logFn: (String) -> Unit = {},
     ) = RegistrationRunner(
         installIdFn = { installId },
         fcmTokenFn = { fcmToken },
         registerFn = register,
+        logFn = logFn,
     )
 
     @Test
-    fun `a successful registration is done`() = runBlocking {
-        assertEquals(RegistrationOutcome.DONE, runner().run())
+    fun `a successful registration is REGISTERED`() = runBlocking {
+        assertEquals(RegistrationOutcome.REGISTERED, runner().run())
     }
 
     @Test
-    fun `no cached FCM token registers nothing and does not retry`() = runBlocking {
+    fun `no cached FCM token is NO_TOKEN and does not retry`() = runBlocking {
         var called = false
         val outcome = runner(fcmToken = null, register = { _, _, _ -> called = true }).run()
 
-        assertEquals(RegistrationOutcome.DONE, outcome)
+        assertEquals(RegistrationOutcome.NO_TOKEN, outcome)
         assertTrue("nothing to register means nothing is sent", !called)
     }
 
     @Test
-    fun `Unauthorized does not retry -- only a pasted device token changes it`() = runBlocking {
-        val outcome = runner(
-            register = { _, _, _ -> throw MobilePushRegistrationException.Unauthorized() },
-        ).run()
+    fun `Unauthorized is UNAUTHORIZED and does not retry -- only a pasted device token changes it`() =
+        runBlocking {
+            val outcome = runner(
+                register = { _, _, _ -> throw MobilePushRegistrationException.Unauthorized() },
+            ).run()
 
-        // A backoff cannot produce a credential. `MainActivity`'s
-        // onSaveToken re-enqueues this work when one arrives.
-        assertEquals(RegistrationOutcome.DONE, outcome)
-    }
+            // A backoff cannot produce a credential. `MainActivity`'s
+            // onSaveToken re-enqueues this work when one arrives.
+            assertEquals(RegistrationOutcome.UNAUTHORIZED, outcome)
+        }
 
     @Test
     fun `RegisterFailed retries -- registration is idempotent by slot id`() = runBlocking {
@@ -75,5 +78,30 @@ class RegistrationRunnerTest {
         runner(fcmToken = "fcm-rotated", register = { _, _, token -> sentToken = token }).run()
 
         assertEquals("fcm-rotated", sentToken)
+    }
+
+    // #519: the outcome alone tells the caller what to do next
+    // (`RegistrationWorker` maps it to `Result`), but a human reading logcat
+    // needs to tell the four cases apart too -- otherwise DONE-shaped
+    // outcomes read identically and the actual case is a process of
+    // elimination. Each case's line is asserted distinct from the others.
+    @Test
+    fun `each outcome emits its own distinguishable log line`() = runBlocking {
+        val lines = mutableListOf<String>()
+        val log: (String) -> Unit = { lines += it }
+
+        runner(logFn = log).run()
+        runner(fcmToken = null, logFn = log).run()
+        runner(
+            logFn = log,
+            register = { _, _, _ -> throw MobilePushRegistrationException.Unauthorized() },
+        ).run()
+        runner(
+            logFn = log,
+            register = { _, _, _ -> throw MobilePushRegistrationException.RegisterFailed("503") },
+        ).run()
+
+        assertEquals("one line per attempt", 4, lines.size)
+        assertEquals("every line is distinct", 4, lines.toSet().size)
     }
 }

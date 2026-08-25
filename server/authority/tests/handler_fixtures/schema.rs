@@ -5,7 +5,9 @@
 //! at all: the `short` → `normal` size rename (#446, ADR-0024), which
 //! rebuilds `items` — and then 7→8, back to additive: `projects.github_repo`
 //! and `projects.default_context` (#625, ADR-0030) — then 8→9, additive
-//! again: `project_links` (#626, ADR-0030 decision 4).
+//! again: `project_links` (#626, ADR-0030 decision 4) — then 9→10,
+//! `rules.deleted_at` (#727) — then 10→11, additive again: a
+//! version-leading index on every synced table (#289).
 
 use hummingbird_authority::{init_schema, SqlValue, SCHEMA_VERSION};
 
@@ -1224,6 +1226,129 @@ fn the_rules_deleted_at_migration_is_idempotent() {
         1,
         "exactly one deleted_at column",
     );
+}
+
+/// A genuine v10 store: [`v9_store`] with `rules` carrying 9→10's own
+/// `ALTER`, exactly how a real v10 store came to be. None of the twelve
+/// #289 indexes exist yet, which is what the 10→11 growth below has to add.
+fn v10_store() -> RusqliteSql {
+    let sql = v9_store();
+    sql.exec("ALTER TABLE rules ADD COLUMN deleted_at INTEGER", &[])
+        .expect("9→10's own ALTER applies");
+    sql.exec("UPDATE meta SET schema_version = 10 WHERE id = 1", &[])
+        .expect("v10 meta row seeds");
+    sql
+}
+
+/// The 10→11 growth path (#289): twelve version-leading indexes, one per
+/// synced table, purely additive — `CREATE INDEX IF NOT EXISTS` grows a v10
+/// store for free, same style as [`init_schema_grows_a_schema_5_database_additively`]
+/// and every other pure-index/table growth. `projects` had no version index
+/// at all before this; `items` already had a bare one and gains a second,
+/// differently-named compound one alongside it.
+#[test]
+fn init_schema_grows_a_schema_10_database_additively() {
+    let migrated = v10_store();
+    assert_eq!(schema_version(&migrated), 10, "starts genuinely at v10");
+    assert!(
+        !has_version_leading_index(&migrated, "projects"),
+        "the v10 fixture must not already carry a projects version index",
+    );
+    // A row written before the growth, to prove the new indexes never touch
+    // anything pre-existing.
+    migrated
+        .exec(
+            "INSERT INTO projects (id, name, created_at, updated_at, version) \
+             VALUES ('p', 'Rebuild the deck', 1000, 1000, 1)",
+            &[],
+        )
+        .unwrap();
+
+    init_schema(&migrated, 0).expect("growth init succeeds");
+
+    assert_eq!(schema_version(&migrated), SCHEMA_VERSION, "schema_version moved forward");
+    for table in [
+        "projects",
+        "routes",
+        "fog",
+        "blocked_by",
+        "alerts",
+        "context_snapshots",
+        "settings",
+        "items",
+        "steps",
+        "rules",
+        "grills",
+        "project_links",
+    ] {
+        assert!(
+            has_version_leading_index(&migrated, table),
+            "migrated store missing a version-leading index on `{table}`",
+        );
+    }
+    let rows = migrated.exec("SELECT id FROM projects", &[]).unwrap();
+    assert_eq!(rows.len(), 1, "the pre-growth row survives");
+
+    let fresh = RusqliteSql::new();
+    assert_eq!(
+        schema_ddl(&migrated),
+        schema_ddl(&fresh),
+        "a migrated v10 store and a fresh store end up with byte-identical DDL, \
+         including all twelve new indexes",
+    );
+}
+
+#[test]
+fn the_version_leading_index_growth_is_idempotent() {
+    let migrated = v10_store();
+    init_schema(&migrated, 0).expect("first growth succeeds");
+    init_schema(&migrated, 0).expect("second init is a no-op, not a duplicate-index error");
+    assert_eq!(schema_version(&migrated), SCHEMA_VERSION);
+}
+
+// ------------------------------- #289: version-leading indexes
+
+/// Tables outside the delta-pull contract (`handlers/changes.rs`'s own
+/// header): `meta` is the counter itself, `tokens`/`push_targets`/
+/// `deliveries` carry no `version` column at all. Everything else in
+/// `sqlite_master` is a synced table and must be covered — read off the
+/// schema itself rather than hand-kept, so a future synced table is caught
+/// by this test without anyone remembering to add it here.
+const NOT_SYNCED: &[&str] = &["meta", "tokens", "push_targets", "deliveries"];
+
+/// Whether `table` carries an index whose leading column is `version` —
+/// `PRAGMA index_info`'s first row, not a text search over the DDL, so a
+/// column named e.g. `version_note` cannot false-positive it.
+fn has_version_leading_index(sql: &dyn Sql, table: &str) -> bool {
+    sql.exec(&format!("PRAGMA index_list({table})"), &[])
+        .unwrap()
+        .iter()
+        .any(|idx| {
+            let name = idx.get("name").unwrap().as_text().unwrap();
+            sql.exec(&format!("PRAGMA index_info({name})"), &[])
+                .unwrap()
+                .first()
+                .and_then(|col| col.get("name"))
+                .and_then(SqlValue::as_text)
+                == Some("version")
+        })
+}
+
+/// Acceptance criterion 1: every synced table's delta pull is served by a
+/// version-leading index — all ten-plus synced tables, not only the seven
+/// the issue named, asserted from the schema rather than a hand-kept list.
+#[test]
+fn every_synced_table_has_a_version_leading_index() {
+    let sql = RusqliteSql::new();
+    for table in table_names(&sql) {
+        if NOT_SYNCED.contains(&table.as_str()) {
+            continue;
+        }
+        assert!(
+            has_version_leading_index(&sql, &table),
+            "`{table}` is synced (delta-pulled) but has no version-leading index",
+        );
+    }
 }
 
 fn schema_version(sql: &dyn Sql) -> i64 {
