@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { renderHook } from "../test/component";
 import { useSyncWiring } from "./useSyncWiring";
 import { createCoreStore } from "../store/store";
 import { attachWorkerClient, type WorkerLike } from "../store/worker-client";
