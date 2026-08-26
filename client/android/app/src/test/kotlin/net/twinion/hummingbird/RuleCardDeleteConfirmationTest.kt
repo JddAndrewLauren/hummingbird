@@ -31,8 +31,15 @@ import uniffi.hummingbird_ffi_mobile.RuleRecord
 //
 // Each assertion here was checked against a mutated `RuleCard` that wired
 // the first tap straight to `onDelete()` (skipping `confirmingDelete`
-// entirely) — the first two tests below fail against that mutation, which
+// entirely) — all three tests below fail against that mutation, which
 // is what "not gated by nothing" now means.
+//
+// This is the module's only Compose-rendering Robolectric test without
+// `@GraphicsMode(GraphicsMode.Mode.NATIVE)`, deliberately: unlike its
+// siblings (`AxisRowWrappingTest`, `AdaptiveGridWidthTest`,
+// `DeadlineFieldWrappingTest`, `ChoiceRowWrappingTest`), where NATIVE mode
+// is load-bearing because they measure layout, nothing here asserts a
+// dimension — only which nodes exist and what gets called.
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], application = android.app.Application::class)
 class RuleCardDeleteConfirmationTest {
