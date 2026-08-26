@@ -62,7 +62,9 @@ class RegistrationRunner(
     private val registerFn: suspend (id: String, name: String, token: String) -> Unit,
     /** Injected the same way as the other collaborators above, so a JVM
      * test can capture what would have gone to logcat without a mocked
-     * `android.util.Log` or Robolectric. */
+     * `android.util.Log` or Robolectric. This class set the per-class-`TAG`
+     * convention that `client/android/README.md`'s "Production logging
+     * (main/)" section now documents for the rest of `main/`. */
     private val logFn: (String) -> Unit = { msg -> Log.i(TAG, msg) },
 ) {
 
