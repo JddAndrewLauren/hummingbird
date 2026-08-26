@@ -2611,7 +2611,7 @@ impl TaskHostCore {
             deadline: fields.deadline,
             scheduled_date: fields.scheduled_date,
         };
-        match self.core.capture(seed, title, stage, now_ms, options).await {
+        match self.core.capture(seed, title, stage, now_ms, options, Some(operation_id)).await {
             Ok(id) => {
                 diagnostics.emit_operation_local_commit(now_ms, operation_id);
                 diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Success);
@@ -2762,7 +2762,7 @@ impl TaskHostCore {
             deadline: edits.deadline,
             scheduled_date: edits.scheduled_date,
         };
-        match self.core.triage(seed, item_id, promote_to_ready, patch, now_ms).await {
+        match self.core.triage(seed, item_id, promote_to_ready, patch, now_ms, Some(operation_id)).await {
             Ok(()) => {
                 diagnostics.emit_operation_local_commit(now_ms, operation_id);
                 diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Success);
@@ -3286,32 +3286,33 @@ mod core_checkout_tests {
 
     /// Acceptance: "A successful capture records `operation.local_commit`
     /// **before** any `http.started` in the same operation." Stated
-    /// honestly (#708 review round 1, finding 5's "also fix" list): this
-    /// assertion **cannot fail against the current architecture**.
-    /// `ffi-web` never emits `http.started` at all — [`Core::capture`]
-    /// only enqueues durably, and the HTTP round trip a queued mutation
-    /// eventually takes happens later, inside an unrelated sync cycle,
-    /// under that cycle's own `cycle_id`/`request_id`, with no
-    /// `operation_id` threaded through the queue to connect the two. So
-    /// this test's "no `http.started` in the same operation" half is true
-    /// by construction, not because the ordering was raced and won — the
-    /// three-event *order* below is the only half a regression could
-    /// actually break. Closing that gap for real (an `operation_id`
-    /// carried on the queued `MutationIntent` through to its eventual
-    /// send) is issue #739, not something this test can stand in for.
+    /// honestly (#708 review round 1, finding 5's "also fix" list, closed
+    /// for real by #739): this test's "no `http.started` in the same
+    /// operation" half is still true by construction here, but for a
+    /// narrower and now-plainly-scoped reason than before. #739 landed the
+    /// join key itself — [`Core::capture`] now stamps the enqueued entry's
+    /// `operation_id`, and `drain`'s eventual `http.started`/`http.finished`
+    /// carry it through (proven at the core level, spanning a real cycle
+    /// boundary, by
+    /// `sync::cycle::tests::observed::operation_local_commit_precedes_http_started_for_the_same_operation_across_the_cycle_boundary`,
+    /// including a demonstrated failure on reordering). What #739 did
+    /// **not** change is that [`TaskHostCore::run`] still drives the
+    /// unobserved `Core::run`, not `Core::run_observed` — see that method's
+    /// own doc for why (no working `sleep_ms` for the slow/stalled
+    /// watchdog on this host yet) — so `ffi-web` still never actually emits
+    /// an `http.started` from this production surface, whatever operation
+    /// id it would carry. Wiring `run_observed` into this host is that
+    /// method's own tracked follow-up, not #739's.
     ///
-    /// **What a reader inherits from that gap, stated for #712's
-    /// interpretation table.** No `operation_id` crosses the outbound-queue
-    /// boundary, so in an export an `operation.*` span for a capture and the
-    /// `http.*` span that eventually sends it are **not joinable** — there
-    /// is no id in common and their `cycle_id`s differ (the operation has
-    /// none; the send belongs to whichever later cycle drained it). An
-    /// `operation.finished{success}` therefore means "committed locally and
-    /// durably queued", **never** "reached the authority", and an
-    /// interpretation table must not present the two as one end-to-end
-    /// latency or infer a send from an operation's outcome. Until #739 lands,
-    /// the only honest join is by wall-clock proximity, which is a human
-    /// judgement and not a correlation the data supports.
+    /// **What a reader inherits, updated for #712's interpretation table.**
+    /// The join key now exists end to end (a queued write's `http.*` span
+    /// carries the same `operation_id` its `operation.local_commit` did),
+    /// but on the web host specifically an `operation.finished{success}`
+    /// still means "committed locally and durably queued", **never**
+    /// "reached the authority", because no cycle here is observed yet to
+    /// produce the `http.*` half at all. Once `run_observed` lands on this
+    /// host, the two spans become joinable by `operation_id` alone with no
+    /// further change needed here.
     #[tokio::test]
     async fn a_successful_capture_emits_local_commit_before_finished_and_no_http_started() {
         let dir = tempfile::tempdir().unwrap();
@@ -5081,6 +5082,7 @@ mod tests {
                     path: "/api/items".to_string(),
                     body: serde_json::json!({"title": "buy milk"}),
                 },
+                operation_id: None,
             },
             reason: DeadLetterReason::Permanent("validation".to_string()),
             at_ms: 5_000,
@@ -5115,6 +5117,7 @@ mod tests {
                     patch_fields: serde_json::json!({"title": "buy oat milk"}),
                     rebase_fields: None,
                 },
+                operation_id: None,
             },
             reason: DeadLetterReason::Conflict {
                 fields: vec!["title".to_string()],
@@ -5161,6 +5164,7 @@ mod tests {
                     patch_fields: serde_json::json!({}),
                     rebase_fields: None,
                 },
+                operation_id: None,
             },
             reason: DeadLetterReason::Conflict {
                 fields: vec!["context".to_string()],

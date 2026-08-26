@@ -1234,6 +1234,7 @@ where
         let entry = QueueEntry {
             id: id.clone(),
             intent: MutationIntent::Create { path: sync::write::paths::projects(), body },
+            operation_id: None,
         };
         self.cycle.enqueue(entry, now_ms).await?;
         Ok(id)
@@ -1306,6 +1307,7 @@ where
                 patch_fields,
                 rebase_fields: None,
             },
+            operation_id: None,
         };
         self.cycle.enqueue(entry, now_ms).await?;
         Ok(())
@@ -1349,6 +1351,7 @@ where
         let entry = QueueEntry {
             id: id.clone(),
             intent: MutationIntent::Create { path: sync::write::paths::project_links(), body },
+            operation_id: None,
         };
         self.cycle.enqueue(entry, now_ms).await?;
         Ok(id)
@@ -1402,6 +1405,7 @@ where
                 patch_fields,
                 rebase_fields: None,
             },
+            operation_id: None,
         };
         self.cycle.enqueue(entry, now_ms).await?;
         Ok(())
@@ -1463,6 +1467,7 @@ where
                 patch_fields,
                 rebase_fields: None,
             },
+            operation_id: None,
         };
         self.cycle.enqueue(entry, now_ms).await?;
         Ok(())
@@ -1508,6 +1513,7 @@ where
         let entry = QueueEntry {
             id: id.clone(),
             intent: MutationIntent::Create { path: sync::write::paths::fog(), body },
+            operation_id: None,
         };
         self.cycle.enqueue(entry, now_ms).await?;
         Ok(id)
@@ -1552,6 +1558,7 @@ where
                 patch_fields,
                 rebase_fields: None,
             },
+            operation_id: None,
         };
         self.cycle.enqueue(entry, now_ms).await?;
         Ok(())
@@ -1637,6 +1644,7 @@ where
                 patch_fields: serde_json::json!({ "project_pos": position }),
                 rebase_fields: None,
             },
+            operation_id: None,
         };
 
         self.cycle
@@ -1677,6 +1685,7 @@ where
         let entry = QueueEntry {
             id: id.clone(),
             intent: MutationIntent::Create { path: sync::write::paths::steps(), body: body_json },
+            operation_id: None,
         };
         self.cycle.enqueue(entry, now_ms).await?;
         Ok(id)
@@ -1725,6 +1734,7 @@ where
                 patch_fields,
                 rebase_fields: None,
             },
+            operation_id: None,
         };
         self.cycle.enqueue(entry, now_ms).await?;
         Ok(())
@@ -2303,6 +2313,7 @@ where
                 patch_fields: serde_json::json!({ "value": wire_value }),
                 rebase_fields: Some(serde_json::json!({ "value": stored_value })),
             },
+            operation_id: None,
         };
 
         self.cycle.enqueue(entry, now_ms).await?;
@@ -2373,6 +2384,7 @@ where
                 path: sync::write::paths::rules(),
                 body,
             },
+            operation_id: None,
         };
         self.cycle.enqueue(entry, now_ms).await?;
         Ok(id)
@@ -2452,6 +2464,7 @@ where
                 patch_fields,
                 rebase_fields: None,
             },
+            operation_id: None,
         };
         self.cycle.enqueue(entry, now_ms).await?;
         Ok(())
@@ -2515,6 +2528,7 @@ where
                 patch_fields,
                 rebase_fields: None,
             },
+            operation_id: None,
         };
         self.cycle.enqueue(entry, now_ms).await?;
         Ok(())
@@ -2542,6 +2556,15 @@ where
     /// controls still produces a capture with all of them absent. Deciding
     /// stays optional at capture time; what changed is that a reader who has
     /// already decided need not wait for the mint to say so.
+    ///
+    /// `operation_id` (#739) is the id of the operation that requested this
+    /// capture, if a host minted one for it (a wasm/mobile host's own
+    /// checkout/operation instrumentation — this crate mints none of its
+    /// own). Stamped onto the enqueued [`QueueEntry`] so its eventual
+    /// `http.started`/`http.finished` are joinable back to this capture's
+    /// `operation.local_commit` by this id alone. `None` for a caller with
+    /// no operation of its own — the entry's `operation_id` is then null,
+    /// never synthesized.
     pub async fn capture(
         &mut self,
         seed: &str,
@@ -2549,6 +2572,7 @@ where
         stage: Stage,
         now_ms: i64,
         options: CaptureOptions,
+        operation_id: Option<&str>,
     ) -> Result<String, SnapshotError<QS::Error>> {
         let id = sync::write::deterministic_id(seed);
         let title = title.into();
@@ -2581,6 +2605,7 @@ where
                 path: sync::write::paths::items(),
                 body,
             },
+            operation_id: operation_id.map(str::to_string),
         };
 
         self.cycle.enqueue(entry, now_ms).await?;
@@ -2674,6 +2699,7 @@ where
                 patch_fields,
                 rebase_fields: None,
             },
+            operation_id: None,
         };
 
         self.cycle
@@ -2785,6 +2811,10 @@ where
     /// `seed` mints this mutation's own queue-entry id
     /// ([`sync::write::deterministic_id`]) — caller-supplied, same reasoning
     /// as [`Core::act`]'s `seed`.
+    ///
+    /// `operation_id` (#739) is [`Core::capture`]'s own parameter, reused
+    /// here verbatim — a host-minted operation id, stamped onto the
+    /// enqueued entry, `None` when this triage has no operation of its own.
     pub async fn triage(
         &mut self,
         seed: &str,
@@ -2792,6 +2822,7 @@ where
         promote_to_ready: bool,
         patch: TriagePatch,
         now_ms: i64,
+        operation_id: Option<&str>,
     ) -> Result<(), ActError<QS::Error>> {
         let items = self.overlaid_items();
         let Some(current) = items.get(item_id) else {
@@ -2873,6 +2904,7 @@ where
                 patch_fields: serde_json::Value::Object(patch_fields),
                 rebase_fields: None,
             },
+            operation_id: operation_id.map(str::to_string),
         };
 
         self.cycle
@@ -2966,6 +2998,7 @@ where
                 item_base,
                 item_base_updated_at: current.updated_at,
             },
+            operation_id: None,
         };
 
         self.cycle
@@ -3350,7 +3383,7 @@ mod tests {
 
         let mut first = Core::init(ns, "api-key-1").await.unwrap();
         first
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
         // Only the queue is durable at this point (no cycle ever ran) —
@@ -3377,7 +3410,7 @@ mod tests {
         let secret = "sk-do-not-persist-me";
 
         let mut core = Core::init(ns, secret).await.unwrap();
-        core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+        core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
 
@@ -3399,7 +3432,7 @@ mod tests {
 
         // `capture` never touches a transport, and none is even wired up —
         // proving this needs no network call at all.
-        core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+        core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
 
@@ -3412,7 +3445,7 @@ mod tests {
     async fn an_overlaid_item_is_distinguishable_as_pending() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
 
@@ -3443,6 +3476,7 @@ mod tests {
                 deadline: Some("2026-09-01".to_string()),
                 scheduled_date: Some("2026-08-30".to_string()),
             },
+            None,
         )
         .await
         .unwrap();
@@ -3479,6 +3513,7 @@ mod tests {
                 deadline: Some("2026-09-01T09:30".to_string()),
                 scheduled_date: Some("2026-08-30".to_string()),
             },
+            None,
         )
         .await
         .unwrap();
@@ -3515,6 +3550,7 @@ mod tests {
             Stage::Ready,
             1_000,
             CaptureOptions::default(),
+            None,
         )
         .await
         .unwrap();
@@ -3544,6 +3580,7 @@ mod tests {
                 size: Some(Size::Quick),
                 ..CaptureOptions::default()
             },
+            None,
         )
         .await
         .unwrap();
@@ -3552,6 +3589,44 @@ mod tests {
         assert_eq!(frontier[0].size, Some(Size::Quick));
         assert_eq!(frontier[0].energy, None);
         assert_eq!(frontier[0].context, None);
+    }
+
+    /// #739: `capture`'s own `operation_id` parameter must reach the
+    /// `QueueEntry` it enqueues — this is the hop the review on #766 found
+    /// untested: every other #739 test hand-sets `entry.operation_id`
+    /// directly, bypassing `Core::capture` entirely, so the one line that
+    /// actually threads the parameter through
+    /// (`operation_id: operation_id.map(str::to_string)`) could be deleted
+    /// and nothing would notice.
+    #[tokio::test]
+    async fn captures_operation_id_reaches_the_enqueued_entry() {
+        let mut core = Core::new();
+        core.capture(
+            "seed-1",
+            "buy milk",
+            Stage::Ready,
+            1_000,
+            CaptureOptions::default(),
+            Some("op-1"),
+        )
+        .await
+        .unwrap();
+
+        let entry = core.cycle.queue().entries().next().unwrap();
+        assert_eq!(entry.operation_id.as_deref(), Some("op-1"));
+    }
+
+    /// The `None` half of the same contract: a capture with no operation of
+    /// its own enqueues a null `operation_id`, never a synthesized one.
+    #[tokio::test]
+    async fn a_capture_with_no_operation_id_enqueues_a_null_one() {
+        let mut core = Core::new();
+        core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
+            .await
+            .unwrap();
+
+        let entry = core.cycle.queue().entries().next().unwrap();
+        assert_eq!(entry.operation_id, None);
     }
 
     // ---------------------------------------------------------------- act
@@ -3563,7 +3638,7 @@ mod tests {
     async fn completing_offline_shows_done_immediately() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
 
@@ -3584,7 +3659,7 @@ mod tests {
     async fn starting_an_item_moves_it_to_in_progress_immediately() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
 
@@ -3601,7 +3676,7 @@ mod tests {
     async fn blocking_an_item_sets_the_blocked_stage_never_a_relation() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
 
@@ -3622,7 +3697,7 @@ mod tests {
     async fn cancelling_an_item_archives_it_rather_than_setting_a_stage() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
 
@@ -3662,7 +3737,7 @@ mod tests {
     async fn promoting_to_ready_moves_the_item_from_triage_to_the_frontier_immediately() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default())
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
         assert_eq!(core.triage_inbox().len(), 1);
@@ -3674,6 +3749,7 @@ mod tests {
             true,
             TriagePatch::default(),
             2_000,
+            None,
         )
         .await
         .unwrap();
@@ -3691,7 +3767,7 @@ mod tests {
     async fn a_multi_field_triage_is_exactly_one_queued_mutation() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default())
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
         assert_eq!(core.queue_depth(), 1, "capture itself is the first entry");
@@ -3712,6 +3788,7 @@ mod tests {
                 scheduled_date: Some(Some("2026-08-12".to_string())),
             },
             2_000,
+            None,
         )
         .await
         .unwrap();
@@ -3741,7 +3818,7 @@ mod tests {
     async fn an_unset_triage_patch_field_leaves_the_items_existing_value_untouched() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default())
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
         core.triage(
@@ -3753,6 +3830,7 @@ mod tests {
                 ..TriagePatch::default()
             },
             2_000,
+            None,
         )
         .await
         .unwrap();
@@ -3763,6 +3841,7 @@ mod tests {
             true,
             TriagePatch::default(),
             3_000,
+            None,
         )
         .await
         .unwrap();
@@ -3786,7 +3865,7 @@ mod tests {
     async fn a_cleared_triage_field_is_sent_as_an_explicit_null_and_an_untouched_one_is_absent() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default())
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
         core.triage(
@@ -3799,6 +3878,7 @@ mod tests {
                 ..TriagePatch::default()
             },
             2_000,
+            None,
         )
         .await
         .unwrap();
@@ -3813,6 +3893,7 @@ mod tests {
                 ..TriagePatch::default()
             },
             3_000,
+            None,
         )
         .await
         .unwrap();
@@ -3852,7 +3933,8 @@ mod tests {
                 true,
                 TriagePatch::default(),
                 1_000,
-            )
+            None,
+        )
             .await
             .unwrap_err();
 
@@ -3867,7 +3949,7 @@ mod tests {
     async fn triaging_offline_is_visible_immediately_with_no_transport_wired_up() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default())
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
 
@@ -3880,6 +3962,7 @@ mod tests {
                 ..TriagePatch::default()
             },
             2_000,
+            None,
         )
         .await
         .unwrap();
@@ -3895,7 +3978,7 @@ mod tests {
     async fn promote_to_ready_false_edits_fields_without_touching_stage() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "someday maybe", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "someday maybe", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
         core.act("seed-act-1", &id, ItemAction::Start, 1_500).await.unwrap();
@@ -3910,6 +3993,7 @@ mod tests {
                 ..TriagePatch::default()
             },
             2_000,
+            None,
         )
         .await
         .unwrap();
@@ -3926,7 +4010,7 @@ mod tests {
     async fn clearing_scheduled_date_is_distinct_from_leaving_it_alone() {
         let mut core = Core::new();
         let id = core
-            .capture("seed-1", "someday maybe", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "someday maybe", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
         core.triage(
@@ -3938,6 +4022,7 @@ mod tests {
                 ..TriagePatch::default()
             },
             1_500,
+            None,
         )
         .await
         .unwrap();
@@ -3950,6 +4035,7 @@ mod tests {
             false,
             TriagePatch { title: Some("buy milk".to_string()), ..TriagePatch::default() },
             1_600,
+            None,
         )
         .await
         .unwrap();
@@ -3966,6 +4052,7 @@ mod tests {
             false,
             TriagePatch { scheduled_date: Some(None), ..TriagePatch::default() },
             1_700,
+            None,
         )
         .await
         .unwrap();
@@ -3989,7 +4076,7 @@ mod tests {
 
         let mut first = Core::init(ns, "api-key-1").await.unwrap();
         let id = first
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
         first
@@ -4027,7 +4114,7 @@ mod tests {
 
         let mut first = Core::init(ns, "api-key-1").await.unwrap();
         let id = first
-            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default())
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
         first
@@ -4040,7 +4127,8 @@ mod tests {
                     ..TriagePatch::default()
                 },
                 2_000,
-            )
+            None,
+        )
             .await
             .unwrap();
         // Only the queue is durable at this point (no cycle ever ran).
@@ -4055,6 +4143,36 @@ mod tests {
         let frontier = second.frontier();
         assert_eq!(frontier.len(), 1);
         assert_eq!(frontier[0].title, "buy milk");
+    }
+
+    /// #739's same gap, `triage`'s side: its `operation_id` parameter must
+    /// reach the `QueueEntry` it enqueues too, same as `capture`'s
+    /// (`captures_operation_id_reaches_the_enqueued_entry`).
+    #[tokio::test]
+    async fn triages_operation_id_reaches_the_enqueued_entry() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default(), None)
+            .await
+            .unwrap();
+        core.triage(
+            "seed-triage-1",
+            &id,
+            true,
+            TriagePatch::default(),
+            2_000,
+            Some("op-2"),
+        )
+        .await
+        .unwrap();
+
+        let entry = core
+            .cycle
+            .queue()
+            .entries()
+            .find(|e| e.intent.path().contains(id.as_str()))
+            .expect("the triage patch must be queued");
+        assert_eq!(entry.operation_id.as_deref(), Some("op-2"));
     }
 
     // ------------------------------------------------- fixtures for `run`
@@ -4137,7 +4255,7 @@ mod tests {
         let mut core = Core::new();
         core.push_api_key("token-1");
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
 
@@ -4199,7 +4317,7 @@ mod tests {
         let mut core = Core::new();
         core.push_api_key("token-1");
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
         assert!(core.is_pending(&id));
@@ -4234,7 +4352,7 @@ mod tests {
         let mut core = Core::new();
         core.push_api_key("token-1");
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
 
@@ -4336,7 +4454,7 @@ mod tests {
         core.push_api_key("token-1");
         assert_eq!(core.queue_depth(), 0);
 
-        core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+        core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
         assert_eq!(core.queue_depth(), 1);
@@ -4355,7 +4473,7 @@ mod tests {
         assert!(core.dead_letters().is_empty());
 
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
         let read = ScriptedRead::sweep_only(vec![Ok(empty_sweep_body(1))]);
@@ -4390,7 +4508,7 @@ mod tests {
         let mut core = Core::new();
         let secret = "sk-do-not-leak-into-the-mirror";
         core.push_api_key(secret);
-        core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+        core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
 
@@ -4403,7 +4521,7 @@ mod tests {
         let mut core = Core::new();
         let secret = "sk-do-not-leak-into-the-journal";
         core.push_api_key(secret);
-        core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+        core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
 
@@ -4551,7 +4669,7 @@ mod tests {
         let mut core = Core::new();
         core.push_api_key("token-1");
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
 
@@ -4575,7 +4693,7 @@ mod tests {
         let mut core = Core::new();
         core.push_api_key("token-1");
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
 
@@ -4612,7 +4730,7 @@ mod tests {
         };
         core.push_api_key("token-1");
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
 
@@ -4643,7 +4761,7 @@ mod tests {
         let mut core = Core::new();
         core.push_api_key("token-1");
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
 
@@ -4686,7 +4804,7 @@ mod tests {
         let mut core = Core::new();
         core.push_api_key("stale-token");
         let id = core
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
 
@@ -4732,7 +4850,7 @@ mod tests {
         // succeeds), which is the one outcome that legitimately clears the
         // whole overlay — so this alone would not have caught the bug.
         let id = core
-            .capture("seed-1", "buy milk v1", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "buy milk v1", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
         let read1 = ScriptedRead::sweep_only(vec![Ok(empty_sweep_body(1))]);
@@ -4750,7 +4868,7 @@ mod tests {
         // retry pattern) — same deterministic id, back in the queue and
         // the overlay.
         let id2 = core
-            .capture("seed-1", "buy milk v2", Stage::Ready, 2_000, CaptureOptions::default())
+            .capture("seed-1", "buy milk v2", Stage::Ready, 2_000, CaptureOptions::default(), None)
             .await
             .unwrap();
         assert_eq!(id2, id, "reusing the seed must mint the identical id");
@@ -4971,7 +5089,10 @@ mod tests {
     async fn clearing_never_touches_the_overlay() {
         let mut core = Core::new();
         core.push_api_key("device-token");
-        let id = core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default()).await.unwrap();
+        let id = core
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
+            .await
+            .unwrap();
 
         core.clear_api_key();
 
@@ -4987,7 +5108,7 @@ mod tests {
     #[tokio::test]
     async fn a_default_stage_triage_capture_is_readable_from_the_triage_inbox_not_the_frontier() {
         let mut core = Core::new();
-        core.capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default())
+        core.capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
 
@@ -5010,7 +5131,7 @@ mod tests {
         let raw = "  Buy   OAT milk\tand   eggs  ";
         let mut core = Core::new();
 
-        core.capture("seed-1", raw, Stage::Triage, 1_000, CaptureOptions::default()).await.unwrap();
+        core.capture("seed-1", raw, Stage::Triage, 1_000, CaptureOptions::default(), None).await.unwrap();
 
         let inbox = core.triage_inbox();
         assert_eq!(inbox.len(), 1);
@@ -5036,9 +5157,18 @@ mod tests {
         // No `push_api_key` call yet — every capture below is enqueued
         // durably (`SyncCycle::enqueue`) with no transport ever touched,
         // which is offline capture end to end.
-        let id1 = core.capture("seed-a", "buy milk", Stage::Triage, 1_000, CaptureOptions::default()).await.unwrap();
-        let id2 = core.capture("seed-b", "call dentist", Stage::Triage, 2_000, CaptureOptions::default()).await.unwrap();
-        let id3 = core.capture("seed-c", "water plants", Stage::Triage, 3_000, CaptureOptions::default()).await.unwrap();
+        let id1 = core
+            .capture("seed-a", "buy milk", Stage::Triage, 1_000, CaptureOptions::default(), None)
+            .await
+            .unwrap();
+        let id2 = core
+            .capture("seed-b", "call dentist", Stage::Triage, 2_000, CaptureOptions::default(), None)
+            .await
+            .unwrap();
+        let id3 = core
+            .capture("seed-c", "water plants", Stage::Triage, 3_000, CaptureOptions::default(), None)
+            .await
+            .unwrap();
         assert_eq!(core.queue_depth(), 3, "all three must be durably queued before any network call");
         assert_eq!(core.triage_inbox().len(), 3, "a capture is visible in the list before any network call");
 
@@ -5474,7 +5604,7 @@ mod tests {
     #[tokio::test]
     async fn a_pending_capture_and_an_offline_complete_show_in_ledger_and_done() {
         let mut core = seeded_core(vec![fixture_item("a-1", Stage::InProgress)], vec![]).await;
-        core.capture("seed-1", "buy milk", Stage::Triage, 1_500, CaptureOptions::default())
+        core.capture("seed-1", "buy milk", Stage::Triage, 1_500, CaptureOptions::default(), None)
             .await
             .unwrap();
         core.act("seed-2", "a-1", ItemAction::Complete, 1_600)
@@ -8495,7 +8625,7 @@ mod tests {
 
         let mut first = Core::init(ns, "api-key-1").await.unwrap();
         let id = first
-            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default())
+            .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
         first
