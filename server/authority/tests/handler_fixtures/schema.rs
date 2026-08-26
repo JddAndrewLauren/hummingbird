@@ -7,7 +7,10 @@
 //! and `projects.default_context` (#625, ADR-0030) — then 8→9, additive
 //! again: `project_links` (#626, ADR-0030 decision 4) — then 9→10,
 //! `rules.deleted_at` (#727) — then 10→11, additive again: a
-//! version-leading index on every synced table (#289).
+//! version-leading index on every synced table (#289) — then 11→12, the
+//! first growth that is a pure `DROP`: the five bare version indexes #289
+//! left standing become prefix-subsumed once their `_version_id` compound
+//! sibling exists (#757).
 
 use hummingbird_authority::{init_schema, SqlValue, SCHEMA_VERSION};
 
@@ -58,11 +61,14 @@ fn init_schema_creates_every_adr_0009_table() {
     }
 }
 
-/// Pins `project_links`' two indexes (#626) by name. The migrated-vs-fresh
-/// `sqlite_master.sql` equality assertions below structurally cannot see a
-/// dropped index — deleting one from `CREATE_INDEXES` removes it from BOTH
-/// sides of the comparison, and equality still holds — so existence has to
-/// be asserted somewhere, once, by name.
+/// Pins `project_links`' surviving index (#626) by name. The migrated-vs-
+/// fresh `sqlite_master.sql` equality assertions below structurally cannot
+/// see a dropped index — deleting one from `CREATE_INDEXES` removes it from
+/// BOTH sides of the comparison, and equality still holds — so existence has
+/// to be asserted somewhere, once, by name. `idx_project_links_version` is
+/// no longer one of them: #757 dropped it as prefix-subsumed by
+/// `idx_project_links_version_id`, and its absence is asserted alongside
+/// that growth path rather than here.
 #[test]
 fn init_schema_creates_the_project_links_indexes() {
     let sql = RusqliteSql::new();
@@ -76,9 +82,13 @@ fn init_schema_creates_the_project_links_indexes() {
         .iter()
         .map(|r| r.get("name").unwrap().as_text().unwrap().to_string())
         .collect();
-    for index in ["idx_project_links_version", "idx_project_links_project"] {
+    for index in ["idx_project_links_version_id", "idx_project_links_project"] {
         assert!(names.iter().any(|n| n == index), "missing index `{index}` in {names:?}");
     }
+    assert!(
+        !names.iter().any(|n| n == "idx_project_links_version"),
+        "idx_project_links_version should be gone (#757)",
+    );
 }
 
 /// The 1→2 growth path: a schema-1 database (S0's meta + items) is grown
@@ -298,9 +308,10 @@ fn v2_store() -> RusqliteSql {
 /// initialized at the current `SCHEMA_VERSION`): `rules`, `push_targets`
 /// and `deliveries` appear additively, and the grown schema is
 /// byte-for-byte identical to a fresh store's — not just the same table
-/// names, but the same `sqlite_master.sql` for every table and index
-/// (which is what actually pins `idx_rules_version` existing, not merely
-/// the table set).
+/// names, but the same `sqlite_master.sql` for every table and index —
+/// which is what actually pins the index set, not merely the table set.
+/// (`idx_rules_version` appears transiently from the v3 fixture's own frozen
+/// DDL below, then #757's growth step drops it same as on a fresh store.)
 #[test]
 fn init_schema_grows_a_schema_2_database_additively() {
     let migrated = v2_store();
@@ -330,7 +341,7 @@ fn init_schema_grows_a_schema_2_database_additively() {
         schema_ddl(&migrated),
         schema_ddl(&fresh),
         "a migrated v2 store and a fresh store end up with byte-identical DDL, \
-         including every index (idx_rules_version among them)",
+         including every surviving index",
     );
 }
 
@@ -584,7 +595,8 @@ fn init_schema_grows_a_schema_5_database_additively() {
         schema_ddl(&migrated),
         schema_ddl(&fresh),
         "a migrated v5 store and a fresh store end up with byte-identical DDL, \
-         including both new indexes (idx_grills_version, idx_grills_item)",
+         including idx_grills_item (idx_grills_version was also new here, but #757 \
+         drops it from both sides alike)",
     );
 }
 
@@ -1129,7 +1141,8 @@ fn init_schema_grows_a_schema_8_database_additively() {
         schema_ddl(&migrated),
         schema_ddl(&fresh),
         "a migrated v8 store and a fresh store end up with byte-identical DDL, \
-         including both new indexes (idx_project_links_version, idx_project_links_project)",
+         including idx_project_links_project (idx_project_links_version was also new here, \
+         but #757 drops it from both sides alike)",
     );
 }
 
@@ -1304,6 +1317,134 @@ fn the_version_leading_index_growth_is_idempotent() {
     init_schema(&migrated, 0).expect("first growth succeeds");
     init_schema(&migrated, 0).expect("second init is a no-op, not a duplicate-index error");
     assert_eq!(schema_version(&migrated), SCHEMA_VERSION);
+}
+
+/// A genuine v11 store: [`v10_store`] with #289's twelve version-leading
+/// indexes applied by their own frozen DDL, exactly as the 10→11 growth
+/// produced them — including the five bare `idx_<table>_version` indexes
+/// standing alongside their `_version_id` compound, which is what the 11→12
+/// growth below has to drop.
+fn v11_store() -> RusqliteSql {
+    let sql = v10_store();
+    for index in [
+        "CREATE INDEX IF NOT EXISTS idx_projects_version ON projects(version, id)",
+        "CREATE INDEX IF NOT EXISTS idx_routes_version ON routes(version, project_id)",
+        "CREATE INDEX IF NOT EXISTS idx_fog_version ON fog(version, id)",
+        "CREATE INDEX IF NOT EXISTS idx_blocked_by_version ON blocked_by(version, item_id, blocker_id)",
+        "CREATE INDEX IF NOT EXISTS idx_alerts_version ON alerts(version, id)",
+        "CREATE INDEX IF NOT EXISTS idx_context_snapshots_version ON context_snapshots(version, source, key)",
+        "CREATE INDEX IF NOT EXISTS idx_settings_version ON settings(version, key)",
+        "CREATE INDEX IF NOT EXISTS idx_items_version_id ON items(version, id)",
+        "CREATE INDEX IF NOT EXISTS idx_steps_version_id ON steps(version, id)",
+        "CREATE INDEX IF NOT EXISTS idx_rules_version_id ON rules(version, id)",
+        "CREATE INDEX IF NOT EXISTS idx_grills_version_id ON grills(version, id)",
+        "CREATE INDEX IF NOT EXISTS idx_project_links_version_id ON project_links(version, id)",
+    ] {
+        sql.exec(index, &[]).expect("10→11's own DDL applies");
+    }
+    sql.exec("UPDATE meta SET schema_version = 11 WHERE id = 1", &[])
+        .expect("v11 meta row seeds");
+    sql
+}
+
+/// The names 11→12 (#757) removes — a same-table `_version_id` compound
+/// prefix-subsumes each.
+const DROPPED_BARE_VERSION_INDEXES: [&str; 5] = [
+    "idx_items_version",
+    "idx_steps_version",
+    "idx_rules_version",
+    "idx_grills_version",
+    "idx_project_links_version",
+];
+
+/// The seven plain-named indexes #289 introduced that are themselves the
+/// compound — #757 must leave every one of these standing.
+const UNTOUCHED_PLAIN_COMPOUND_INDEXES: [&str; 7] = [
+    "idx_projects_version",
+    "idx_routes_version",
+    "idx_fog_version",
+    "idx_blocked_by_version",
+    "idx_alerts_version",
+    "idx_context_snapshots_version",
+    "idx_settings_version",
+];
+
+/// The 11→12 growth path (#757): drop the five bare `idx_<table>_version`
+/// indexes a same-table `_version_id` compound has prefix-subsumed since
+/// #289. Unlike every other growth step in this file, there is no
+/// `CREATE … IF NOT EXISTS` that reaches this state for free — it is a
+/// `DROP`, so it is asserted here by name, not by the byte-identity check
+/// alone: removing an entry from `CREATE_INDEXES` would silently leave a
+/// migrated store's copy standing forever, and the byte-identity assertion
+/// below only proves the migrated store matches a fresh one, not which
+/// index names got there.
+#[test]
+fn init_schema_grows_a_schema_11_database_additively() {
+    let migrated = v11_store();
+    assert_eq!(schema_version(&migrated), 11, "starts genuinely at v11");
+    for index in DROPPED_BARE_VERSION_INDEXES {
+        assert!(
+            index_names(&migrated).contains(&index.to_string()),
+            "the v11 fixture must still carry `{index}`",
+        );
+    }
+    // A row written before the growth, to prove the drop never touches data.
+    migrated
+        .exec(
+            "INSERT INTO items (id, title, stage, created_at, updated_at, version) \
+             VALUES ('i', 'Empty the compost', 'ready', 1000, 1000, 1)",
+            &[],
+        )
+        .unwrap();
+
+    init_schema(&migrated, 0).expect("growth init succeeds");
+
+    assert_eq!(schema_version(&migrated), SCHEMA_VERSION, "schema_version moved forward");
+    let names = index_names(&migrated);
+    for index in DROPPED_BARE_VERSION_INDEXES {
+        assert!(!names.contains(&index.to_string()), "`{index}` should have been dropped");
+    }
+    for index in UNTOUCHED_PLAIN_COMPOUND_INDEXES {
+        assert!(names.contains(&index.to_string()), "`{index}` must survive untouched");
+    }
+    for index in [
+        "idx_items_version_id",
+        "idx_steps_version_id",
+        "idx_rules_version_id",
+        "idx_grills_version_id",
+        "idx_project_links_version_id",
+    ] {
+        assert!(names.contains(&index.to_string()), "`{index}` compound must survive");
+    }
+    let rows = migrated.exec("SELECT id FROM items", &[]).unwrap();
+    assert_eq!(rows.len(), 1, "the pre-growth row survives");
+
+    let fresh = RusqliteSql::new();
+    assert_eq!(
+        schema_ddl(&migrated),
+        schema_ddl(&fresh),
+        "a migrated v11 store and a fresh store end up with byte-identical DDL, \
+         with none of the five dropped bare indexes on either side",
+    );
+}
+
+#[test]
+fn the_bare_version_index_drop_is_idempotent() {
+    let migrated = v11_store();
+    init_schema(&migrated, 0).expect("first growth succeeds");
+    init_schema(&migrated, 0).expect("second init is a no-op, not a missing-index error");
+    assert_eq!(schema_version(&migrated), SCHEMA_VERSION);
+}
+
+fn index_names(sql: &dyn Sql) -> Vec<String> {
+    sql.exec(
+        "SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name",
+        &[],
+    )
+    .unwrap()
+    .iter()
+    .map(|r| r.get("name").unwrap().as_text().unwrap().to_string())
+    .collect()
 }
 
 // ------------------------------- #289: version-leading indexes
