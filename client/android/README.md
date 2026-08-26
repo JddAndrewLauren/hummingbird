@@ -47,6 +47,30 @@ a one-shot `SyncWorker` with the `"push"` trigger, which the seam maps to
 `Trigger::User` and so past the core's backoff gate. Still one clock per
 cadence (issue #8): the push leg is event-driven and schedules nothing.
 
+## Production logging (main/)
+
+`RegistrationRunner.kt` (`push/`) is the only file under `app/src/main/` that
+logs at all — #519 added it as a side effect of registration-outcome work,
+and the pattern it landed on is now the convention for whatever logs next:
+a per-class `private const val TAG` matching the class name, reached through
+an injected `logFn: (String) -> Unit = { msg -> Log.i(TAG, msg) }` rather
+than a bare `Log.i` call. Scope one subsystem at a time with
+`adb logcat -s RegistrationRunner`, the same way `-s <YourClass>` will once
+another class adopts this.
+
+Keep injecting `logFn` rather than calling `Log` directly: it is what lets
+`RegistrationRunner`'s tests run on a plain JVM, with no Robolectric and no
+mocked `android.util.Log`. Any new logging site that wants the same should
+follow suit.
+
+**This is a different channel from `HB-SKILL-PROBE`.** That tag (see
+"Proving the lane on hardware", check 19 below) is
+`GrillTurnProbeTest`'s own private channel for one instrumented device
+proof — `adb logcat -s HB-SKILL-PROBE` is a recipe for reading *that test's*
+output, not general production log guidance. Production code's tag is
+always its class name; `HB-SKILL-PROBE` never applies to it, and no
+class-named tag is ever routed through it either.
+
 ## The notification lane (M2, #141)
 
 The payload is data-only, so the client builds every notification itself
