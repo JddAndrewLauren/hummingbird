@@ -3,7 +3,8 @@
 //! tables (ADR-0012, amended by ADR-0013) landed here in their own slice
 //! (#131), plus the Grill interview's `grills` table (ADR-0023, #353).
 //! Sixteen tables and, since #289 gave every synced table a version-leading
-//! index, twenty-two indexes; `tokens` gained a `source` column in #145.
+//! index and #757 dropped the five bare indexes it prefix-subsumed,
+//! seventeen indexes; `tokens` gained a `source` column in #145.
 
 use hummingbird_domain::is_url_safe_id;
 
@@ -99,7 +100,27 @@ use crate::sql::{Sql, SqlError, SqlValue};
 /// old one redefined in place — redefining under the same name would be a
 /// silent no-op on a store where that name already exists, which is every
 /// migrated store there is.
-pub const SCHEMA_VERSION: i64 = 11;
+///
+/// 12 drops those same five bare indexes (#757). They were never wrong,
+/// only redundant once 11 landed: `version` leads both the bare index and
+/// its compound sibling, so every query the bare one served — the range
+/// predicate alone, with no tie-break — is served just as well by the
+/// compound, and the bare one buys nothing back for the extra B-tree write
+/// it costs on every insert/update to five of the busiest tables. The other
+/// seven plain-named indexes 11 introduced (`idx_projects_version` and
+/// friends) are **not** touched: those are the compounds themselves, just
+/// carrying the plain name because nothing occupied it yet, and dropping
+/// them would be a real regression, not a cleanup. `CREATE INDEX IF NOT
+/// EXISTS` cannot remove anything, so this is the first growth step whose
+/// job is a `DROP`: [`drop_superseded_version_indexes`] runs after the
+/// create loop and issues `DROP INDEX IF EXISTS` for exactly the five
+/// names, which reaches every starting version — a fresh v12 store never
+/// creates them (they are gone from [`CREATE_INDEXES`]), so the drop is a
+/// no-op there, and a migrated v11 store has them dropped out from under
+/// it. Removing an entry from [`CREATE_INDEXES`] alone would have left a
+/// v11 store's copy standing forever, silently, because the array is only
+/// ever additive.
+pub const SCHEMA_VERSION: i64 = 12;
 
 /// meta: the workspace version counter (one row), bumped by every write.
 /// Every mutated row stamps its `version` from this counter; the delta pull
@@ -383,23 +404,20 @@ CREATE TABLE IF NOT EXISTS grills (
 /// synced table, each shaped `(version, <that table's own pull sort key>)`
 /// off `handlers/changes.rs`'s `pull` calls — the compound serves both the
 /// `WHERE version > ?` range predicate and the `ORDER BY version, <pk>` tie-
-/// break, where a bare `(version)` would leave a sort step. Five of the
-/// twelve (`items`, `steps`, `rules`, `grills`, `project_links`) sit
-/// alongside an existing bare `idx_<table>_version` under a different name
-/// (`idx_<table>_version_id`) rather than replacing it in place; the other
-/// seven (`projects`, `routes`, `fog`, `blocked_by`, `alerts`,
-/// `context_snapshots`, `settings`) had no version index before this and use
-/// the plain `idx_<table>_version` name.
-const CREATE_INDEXES: [&str; 22] = [
-    "CREATE INDEX IF NOT EXISTS idx_items_version ON items(version)",
-    "CREATE INDEX IF NOT EXISTS idx_steps_version ON steps(version)",
+/// break, where a bare `(version)` would leave a sort step. Five tables
+/// (`items`, `steps`, `rules`, `grills`, `project_links`) used to also carry
+/// a bare `idx_<table>_version` alongside the compound, from before #289
+/// landed; #757 dropped those five (`drop_superseded_version_indexes`) as
+/// prefix-subsumed, so this array no longer creates them. The other seven
+/// (`projects`, `routes`, `fog`, `blocked_by`, `alerts`, `context_snapshots`,
+/// `settings`) had no version index before #289 and use the plain
+/// `idx_<table>_version` name for what is itself the compound — those seven
+/// are not touched by #757.
+const CREATE_INDEXES: [&str; 17] = [
     "CREATE INDEX IF NOT EXISTS idx_items_live    ON items(stage) WHERE archived_at IS NULL",
     "CREATE INDEX IF NOT EXISTS idx_steps_item    ON steps(item_id)",
     "CREATE INDEX IF NOT EXISTS idx_items_project ON items(project_id)",
-    "CREATE INDEX IF NOT EXISTS idx_rules_version ON rules(version)",
-    "CREATE INDEX IF NOT EXISTS idx_grills_version ON grills(version)",
     "CREATE INDEX IF NOT EXISTS idx_grills_item    ON grills(item_id)",
-    "CREATE INDEX IF NOT EXISTS idx_project_links_version ON project_links(version)",
     "CREATE INDEX IF NOT EXISTS idx_project_links_project ON project_links(project_id)",
     "CREATE INDEX IF NOT EXISTS idx_projects_version ON projects(version, id)",
     "CREATE INDEX IF NOT EXISTS idx_routes_version ON routes(version, project_id)",
@@ -461,6 +479,7 @@ pub fn init_schema(sql: &dyn Sql, now_ms: i64) -> Result<(), SqlError> {
     for ddl in CREATE_INDEXES.iter() {
         sql.exec(ddl, &[])?;
     }
+    drop_superseded_version_indexes(sql)?;
     sql.exec(
         "INSERT OR IGNORE INTO meta (id, version, schema_version) VALUES (1, 0, ?)",
         &[SqlValue::Integer(SCHEMA_VERSION)],
@@ -473,6 +492,34 @@ pub fn init_schema(sql: &dyn Sql, now_ms: i64) -> Result<(), SqlError> {
         ],
     )?;
     archive_unaddressable_items(sql, now_ms)?;
+    Ok(())
+}
+
+/// 11→12 (#757): drop the five bare `idx_<table>_version` indexes that a
+/// same-table `idx_<table>_version_id` compound has prefix-subsumed since
+/// #289 — `version` leads both, so the compound alone serves every query the
+/// bare index did. Unlike every other growth step here, there is no
+/// `CREATE … IF NOT EXISTS` that reaches this state for free: removing the
+/// five entries from [`CREATE_INDEXES`] stops a *fresh* store from ever
+/// creating them, but a store that already ran 11's growth keeps its copy
+/// forever unless something drops it — that something is this function.
+///
+/// `DROP INDEX IF EXISTS` rather than a version-gated conditional: the
+/// condition that matters is the index's presence, not the stored
+/// `schema_version`, same doctrine as [`add_missing_columns`] and
+/// [`column_exists`] — a fresh v12 store never creates these five, so the
+/// drop is an unconditional no-op there, and a migrated store converges to
+/// the same shape regardless of which version it started at.
+fn drop_superseded_version_indexes(sql: &dyn Sql) -> Result<(), SqlError> {
+    for index in [
+        "idx_items_version",
+        "idx_steps_version",
+        "idx_rules_version",
+        "idx_grills_version",
+        "idx_project_links_version",
+    ] {
+        sql.exec(&format!("DROP INDEX IF EXISTS {index}"), &[])?;
+    }
     Ok(())
 }
 
