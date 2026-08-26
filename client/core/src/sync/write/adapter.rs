@@ -165,6 +165,7 @@ const MAX_ATTEMPTS: u32 = 3;
 /// vocabulary — means the wire body already IS the entity's encoding and is
 /// diffed directly. It changes only what [`rebase::decide`] compares; the
 /// bytes sent are always `build_patch`'s.
+#[allow(clippy::too_many_arguments)]
 pub async fn patch_with_rebase<P, T>(
     transport: &impl MutationTransport,
     access_token: &str,
