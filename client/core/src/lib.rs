@@ -3591,6 +3591,44 @@ mod tests {
         assert_eq!(frontier[0].context, None);
     }
 
+    /// #739: `capture`'s own `operation_id` parameter must reach the
+    /// `QueueEntry` it enqueues — this is the hop the review on #766 found
+    /// untested: every other #739 test hand-sets `entry.operation_id`
+    /// directly, bypassing `Core::capture` entirely, so the one line that
+    /// actually threads the parameter through
+    /// (`operation_id: operation_id.map(str::to_string)`) could be deleted
+    /// and nothing would notice.
+    #[tokio::test]
+    async fn captures_operation_id_reaches_the_enqueued_entry() {
+        let mut core = Core::new();
+        core.capture(
+            "seed-1",
+            "buy milk",
+            Stage::Ready,
+            1_000,
+            CaptureOptions::default(),
+            Some("op-1"),
+        )
+        .await
+        .unwrap();
+
+        let entry = core.cycle.queue().entries().next().unwrap();
+        assert_eq!(entry.operation_id.as_deref(), Some("op-1"));
+    }
+
+    /// The `None` half of the same contract: a capture with no operation of
+    /// its own enqueues a null `operation_id`, never a synthesized one.
+    #[tokio::test]
+    async fn a_capture_with_no_operation_id_enqueues_a_null_one() {
+        let mut core = Core::new();
+        core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
+            .await
+            .unwrap();
+
+        let entry = core.cycle.queue().entries().next().unwrap();
+        assert_eq!(entry.operation_id, None);
+    }
+
     // ---------------------------------------------------------------- act
 
     /// This issue's headline acceptance: "Completing offline shows Done
@@ -4105,6 +4143,36 @@ mod tests {
         let frontier = second.frontier();
         assert_eq!(frontier.len(), 1);
         assert_eq!(frontier[0].title, "buy milk");
+    }
+
+    /// #739's same gap, `triage`'s side: its `operation_id` parameter must
+    /// reach the `QueueEntry` it enqueues too, same as `capture`'s
+    /// (`captures_operation_id_reaches_the_enqueued_entry`).
+    #[tokio::test]
+    async fn triages_operation_id_reaches_the_enqueued_entry() {
+        let mut core = Core::new();
+        let id = core
+            .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default(), None)
+            .await
+            .unwrap();
+        core.triage(
+            "seed-triage-1",
+            &id,
+            true,
+            TriagePatch::default(),
+            2_000,
+            Some("op-2"),
+        )
+        .await
+        .unwrap();
+
+        let entry = core
+            .cycle
+            .queue()
+            .entries()
+            .find(|e| e.intent.path().contains(id.as_str()))
+            .expect("the triage patch must be queued");
+        assert_eq!(entry.operation_id.as_deref(), Some("op-2"));
     }
 
     // ------------------------------------------------- fixtures for `run`
