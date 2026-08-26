@@ -466,8 +466,8 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     // `toBeVisible()` check is a stronger proof than the screenshot below
     // ever was: it fails if the element is not rendered or is CSS-hidden,
     // regardless of scroll position.
-    await expect(page.getByRole("button", { name: "Download diagnostics" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Clear diagnostics" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Download diagnostics", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Clear diagnostics", exact: true })).toBeVisible();
   },
 };
 
@@ -945,8 +945,8 @@ for (const theme of THEMES) {
       // #707: the same proof as the board-world capture above, over the
       // REAL core rather than the fixture — a device that has bound
       // nothing still gets a reachable diagnostic journal.
-      await expect(page.getByRole("button", { name: "Download diagnostics" })).toBeVisible();
-      await expect(page.getByRole("button", { name: "Clear diagnostics" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Download diagnostics", exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Clear diagnostics", exact: true })).toBeVisible();
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
         path: `visual/.captures/settings-empty-${testInfo.project.name}-${theme}.png`,

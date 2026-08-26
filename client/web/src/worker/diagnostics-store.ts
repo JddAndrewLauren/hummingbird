@@ -179,7 +179,7 @@ async function evictOverBudget(
     const cursorRequest = store.openCursor();
     cursorRequest.onsuccess = () => {
       const cursor = cursorRequest.result;
-      if (cursor === null || remaining <= maxBytes) {
+      if (cursor === null) {
         resolve();
         return;
       }
