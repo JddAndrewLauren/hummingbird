@@ -230,8 +230,9 @@ class DiagnosticsRecorderTest {
 
         val exported = String(rec.export()).lowercase()
 
-        for (forbidden in FORBIDDEN_FIELD_KEYS) {
-            assertFalse("exported diagnostics carried forbidden field: $forbidden", exported.contains(forbidden))
+        for (name in parsedForbiddenFieldNames()) {
+            val key = "\"$name\""
+            assertFalse("exported diagnostics carried forbidden field: $key", exported.contains(key))
         }
         // And the export really did carry something worth checking —
         // otherwise the loop above would pass vacuously over an empty file.
@@ -239,19 +240,57 @@ class DiagnosticsRecorderTest {
         assertTrue(exported.contains("worker.finished"))
     }
 
+    /** **The drift gate itself (#741).** Pins [parsedForbiddenFieldNames]
+     * against a hardcoded copy of the current 17-entry list — exact
+     * correspondence, not a floor, the same shape
+     * `client/web/src/worker/diagnostics-redaction.test.ts`'s own drift
+     * gate takes over the identical Rust constant. Growing or shrinking
+     * `FORBIDDEN_FIELD_NAMES` in Rust, with no edit here, fails this
+     * assertion and names the difference — this is the test the old
+     * hand-copied `FORBIDDEN_FIELD_KEYS` list had no counterpart for. */
+    @Test
+    fun `the forbidden field list matches the Rust source exactly`() {
+        assertEquals(EXPECTED_FORBIDDEN_FIELD_NAMES, parsedForbiddenFieldNames())
+    }
+
+    /** Reads `hummingbird_domain::diagnostics::FORBIDDEN_FIELD_NAMES`
+     * (`server/domain/src/diagnostics.rs`) straight off its own source
+     * text — the redaction check above scans real export output against
+     * whatever this returns, and the pin test above holds it to the
+     * hardcoded snapshot below. **Derives from the Rust list instead of
+     * hand-copying it (#741).** The old form was a hand-typed copy with a
+     * comment saying "nothing gates the two against drift" and citing this
+     * issue. This follows `ColorTokenDriftTest`'s precedent —
+     * `hummingbird.repoRoot` plus a source-text regex, the same technique
+     * `diagnostics-redaction.test.ts` uses for the identical constant — so
+     * a rename or reshape of the const that the regex can no longer find
+     * fails loudly on an empty list rather than scanning nothing. */
+    private fun parsedForbiddenFieldNames(): List<String> {
+        val root = System.getProperty("hummingbird.repoRoot")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
+        val source = File(root, "server/domain/src/diagnostics.rs").readText()
+        val listBody = Regex("""pub const FORBIDDEN_FIELD_NAMES: &\[&str\] = &\[([\s\S]*?)\];""")
+            .find(source)
+            ?.groupValues
+            ?.get(1)
+            ?: error("FORBIDDEN_FIELD_NAMES not found in diagnostics.rs — const renamed or reshaped?")
+        val names = Regex("\"([^\"]+)\"").findAll(listBody).map { it.groupValues[1] }.toList()
+        check(names.isNotEmpty()) { "parsed zero forbidden field names from diagnostics.rs — regex or file drifted" }
+        return names
+    }
+
     companion object {
-        /** Mirrors `hummingbird_domain::diagnostics::FORBIDDEN_FIELD_NAMES`
-         * (`server/domain/src/diagnostics.rs` — #711 moved the contract
-         * there; `client/core/src/diagnostics/mod.rs` only re-exports the
-         * public items and holds no list), as exact-key JSON substrings —
-         * the same redaction rule, checked here over what Android's own
-         * export actually produces. Nothing gates the two against drift
-         * (#741), so keep this pointer exact. */
-        private val FORBIDDEN_FIELD_KEYS = listOf(
-            "\"authorization\"", "\"access_token\"", "\"api_key\"", "\"token\"",
-            "\"credential\"", "\"password\"", "\"body\"", "\"request_body\"",
-            "\"response_body\"", "\"title\"", "\"description\"", "\"url\"",
-            "\"ip\"", "\"ip_address\"", "\"exception\"", "\"stack_trace\"", "\"message\"",
+        // The domain owner's current 17-entry list, copied here once so
+        // `the forbidden field list matches the Rust source exactly` can
+        // assert exact correspondence. #741's own out-of-scope note
+        // applies: this file does not add or remove entries — a future PR
+        // that legitimately grows or shrinks `FORBIDDEN_FIELD_NAMES`
+        // updates this list in the same change.
+        private val EXPECTED_FORBIDDEN_FIELD_NAMES = listOf(
+            "authorization", "access_token", "api_key", "token",
+            "credential", "password", "body", "request_body",
+            "response_body", "title", "description", "url",
+            "ip", "ip_address", "exception", "stack_trace", "message",
         )
     }
 }

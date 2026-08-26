@@ -185,38 +185,18 @@ mod tests {
         );
     }
 
-    /// Mirrors `hummingbird_domain::diagnostics::FORBIDDEN_FIELD_NAMES`
-    /// (`server/domain/src/diagnostics.rs` — #711 moved the contract there,
-    /// and that list is `#[cfg(test)]`-private, so `client/core` does not
-    /// re-export it). This is a deliberate copy for the reason the owning
-    /// doc gives: a fixed, named list a reviewer can diff against the
-    /// source of truth, not a guess. Nothing gates the two against drift
-    /// (#741), so that diff is the only control — keep this pointer exact.
-    const FORBIDDEN_FIELD_NAMES: &[&str] = &[
-        "authorization",
-        "access_token",
-        "api_key",
-        "token",
-        "credential",
-        "password",
-        "body",
-        "request_body",
-        "response_body",
-        "title",
-        "description",
-        "url",
-        "ip",
-        "ip_address",
-        "exception",
-        "stack_trace",
-        "message",
-    ];
-
     fn forbidden_keys_in(value: &serde_json::Value, found: &mut Vec<String>) {
         match value {
             serde_json::Value::Object(map) => {
                 for (key, nested) in map {
-                    if FORBIDDEN_FIELD_NAMES
+                    // `hummingbird_domain::diagnostics::FORBIDDEN_FIELD_NAMES`
+                    // (`server/domain/src/diagnostics.rs`) directly (#741):
+                    // it is `pub` now, not `#[cfg(test)]`-private, so this
+                    // crate — already depending on `hummingbird-domain` for
+                    // the `Stage` enum — links against the one real list
+                    // instead of hand-copying it. No drift is possible; a
+                    // Rust import cannot go stale the way a copy could.
+                    if hummingbird_domain::diagnostics::FORBIDDEN_FIELD_NAMES
                         .iter()
                         .any(|forbidden| forbidden.eq_ignore_ascii_case(key))
                     {
