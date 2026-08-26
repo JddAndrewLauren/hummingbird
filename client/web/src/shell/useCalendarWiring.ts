@@ -13,6 +13,7 @@ import {
   readSelectedCalendarIds,
   writeConnected,
   writeSelectedCalendarIds,
+  type StorageLike,
 } from "../calendar/persistence";
 import {
   INITIAL_REMINT_HEALTH,
@@ -106,6 +107,26 @@ function connectionDeps(worker: WorkerLike): ConnectionDeps {
   };
 }
 
+// #750: everything this hook needs that is NOT a prop — the module-level
+// singleton `TokenClient`/store and `localStorage` — collected behind one
+// trailing optional parameter. `connection` is exactly the `ConnectionDeps`
+// shape `calendar/connection.ts` already declares, not a new interface: the
+// deps a test hands in are the same deps `connectionDeps(worker)` builds for
+// the production path. `storage` covers the four persistence calls the same
+// way, so a test can start the hook from a known stored state and assert
+// what it writes, without a real `localStorage`.
+export interface CalendarWiringDeps {
+  connection: ConnectionDeps;
+  storage: StorageLike;
+}
+
+/** The default `CalendarWiringDeps` — today's behavior, unchanged: the same
+ * cached `TokenClient` singleton `connectionDeps` always built, and the
+ * real `localStorage`. */
+function defaultCalendarWiringDeps(worker: WorkerLike): CalendarWiringDeps {
+  return { connection: connectionDeps(worker), storage: localStorage };
+}
+
 export interface CalendarWiring {
   handleConnectClick: () => Promise<void>;
   handleCalendarSelectionChange: (selectedCalendarIds: string[]) => void;
@@ -120,6 +141,11 @@ export function useCalendarWiring(
    * table (`calendar/selection.ts`'s `tripsCalendarId`). It contributes to
    * the polled set at every push site below — derived, never persisted. */
   tripsCalendarId: string | null,
+  /** #750: omitted, this is `defaultCalendarWiringDeps(worker)` — the exact
+   * production path every call site used before this parameter existed.
+   * Supplied, a test drives the whole lifecycle against fakes, never
+   * touching `fetch`, IndexedDB or module state. */
+  deps: CalendarWiringDeps = defaultCalendarWiringDeps(worker),
 ): CalendarWiring {
   const [expiresAtMs, setExpiresAtMs] = useState<number | null>(null);
 
@@ -207,12 +233,12 @@ export function useCalendarWiring(
     if (status !== "ready") {
       return;
     }
-    const deps = connectionDeps(worker);
+    const connection = deps.connection;
     let cancelled = false;
     void (async () => {
-      const wasConnected = readConnected(localStorage);
-      const selectedCalendarIds = readSelectedCalendarIds(localStorage);
-      const result = await initConnection(deps, wasConnected);
+      const wasConnected = readConnected(deps.storage);
+      const selectedCalendarIds = readSelectedCalendarIds(deps.storage);
+      const result = await initConnection(connection, wasConnected);
       if (cancelled) {
         return;
       }
@@ -221,7 +247,7 @@ export function useCalendarWiring(
         // not attempt one.
         recordRemint(result);
       }
-      writeConnected(localStorage, result.connected);
+      writeConnected(deps.storage, result.connected);
       coreStore.setCalendarState({
         connected: result.connected,
         needsReconnect: result.needsReconnect,
@@ -262,10 +288,10 @@ export function useCalendarWiring(
     if (!calendar.needsReconnect || calendar.silentRemintBlocked) {
       return;
     }
-    const deps = connectionDeps(worker);
+    const connection = deps.connection;
     let cancelled = false;
     void (async () => {
-      const result = await handleCredentialNeeded(deps);
+      const result = await handleCredentialNeeded(connection);
       if (cancelled) {
         return;
       }
@@ -306,11 +332,11 @@ export function useCalendarWiring(
     ) {
       return;
     }
-    const deps = connectionDeps(worker);
+    const connection = deps.connection;
     const delayMs = msUntilRotation(expiresAtMs, Date.now());
     const id = window.setTimeout(() => {
       void (async () => {
-        const result = await handleCredentialNeeded(deps);
+        const result = await handleCredentialNeeded(connection);
         recordRemint(result);
         coreStore.setCalendarState({
           connected: result.connected,
@@ -353,10 +379,10 @@ export function useCalendarWiring(
   }, [calendar.connected, calendar.needsReconnect]);
 
   async function handleConnectClick() {
-    const deps = connectionDeps(worker);
+    const connection = deps.connection;
     const wasConnected = calendar.connected;
     coreStore.setCalendarState({ connectPending: true, connectError: null });
-    const result = await connect(deps);
+    const result = await connect(connection);
     // A successful connect is a success for the silent path's health too,
     // and lifts a block; a failed one is not evidence either way. See
     // `recordInteractive`.
@@ -377,7 +403,7 @@ export function useCalendarWiring(
       // timer stays parked and the stale `expiresAtMs` below is never used.)
       return;
     }
-    writeConnected(localStorage, result.connected);
+    writeConnected(deps.storage, result.connected);
     coreStore.setCalendarState({
       connected: result.connected,
       needsReconnect: result.needsReconnect,
@@ -404,7 +430,7 @@ export function useCalendarWiring(
     if (selectedCalendarIds === null) {
       return;
     }
-    writeSelectedCalendarIds(localStorage, selectedCalendarIds);
+    writeSelectedCalendarIds(deps.storage, selectedCalendarIds);
     coreStore.setCalendarState({ selectedCalendarIds });
     pushSelection(selectedCalendarIds);
     pollRefresh(worker, Date.now());
