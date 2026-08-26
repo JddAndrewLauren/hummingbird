@@ -659,8 +659,20 @@ pub fn is_valid_header_value(value: &str) -> bool {
 /// state what it does not cover. Exact JSON key matches, case-insensitive, so a
 /// legitimate `cycle_id`/`request_id`/`session_id`/`operation_id` (whose
 /// key is not literally one of these words) never false-positives.
-#[cfg(test)]
-const FORBIDDEN_FIELD_NAMES: &[&str] = &[
+///
+/// **Public, not `#[cfg(test)]` (#741).** This used to be test-only, which
+/// left the Kotlin recorder test hand-copying it (nothing failed when the
+/// Rust list grew) and the TypeScript redaction test pinning only a `>= 15`
+/// floor against source text (nothing failed when it shrank by up to two
+/// entries). Both non-Rust consumers still read this constant's *source
+/// text* rather than link against it — neither language can import a Rust
+/// const — but making it reachable outside a test build is what lets a
+/// human, or a future non-test Rust caller, read it without `cfg(test)`
+/// getting in the way; the two source-text readers are
+/// `client/web/src/worker/diagnostics-redaction.test.ts` and
+/// `DiagnosticsRecorderTest.kt`, both asserting an exact match against this
+/// array rather than a floor.
+pub const FORBIDDEN_FIELD_NAMES: &[&str] = &[
     "authorization",
     "access_token",
     "api_key",
@@ -1090,6 +1102,73 @@ mod tests {
             .find("\n}\n")
             .expect("DiagnosticEvent's declaration closes with a column-0 brace");
         &body[..end]
+    }
+
+    /// Every `#[serde(rename = "...")]` tag in
+    /// [`diagnostic_event_declaration`], in declaration order — one per
+    /// variant, since every variant of this enum carries its own rename
+    /// (checked elsewhere: [`a_diagnostic_event_v1_serializes_and_round_trips_stably`]
+    /// and friends pin the wire name of every family). Reads only lines
+    /// that literally start with the attribute, so the doc comment a few
+    /// lines below this one — which quotes `#[serde(rename = "title")]` as
+    /// prose — is not itself mistaken for a variant.
+    fn declared_variant_names() -> Vec<&'static str> {
+        diagnostic_event_declaration()
+            .lines()
+            .filter_map(|line| {
+                let rest = line.trim().strip_prefix("#[serde(rename = \"")?;
+                let end = rest.find('"')?;
+                Some(&rest[..end])
+            })
+            .collect()
+    }
+
+    /// **The fixture-completeness gate (#741).** Adding a variant to
+    /// [`DiagnosticEvent`] was only half compiler-enforced before this
+    /// test: [`one_of_every_event_variant`]'s exhaustive match forces a new
+    /// *arm*, but nothing forced a new *fixture entry* — a variant with an
+    /// arm and no entry in that array compiled clean and silently reduced
+    /// [`no_payload_ever_carries_a_forbidden_field_name`]'s coverage
+    /// without failing anything (demonstrated three times during the #741
+    /// batch: a `title`-carrying payload shipping with `19 passed, 0
+    /// failed`). This reads every declared variant's wire name straight off
+    /// the enum's own source text — the same declaration
+    /// [`no_variant_declares_a_forbidden_field_name`] scans, so a future
+    /// variant is covered by construction — and checks each one was
+    /// actually serialized by [`one_of_every_event_variant`], naming
+    /// whichever is missing.
+    ///
+    /// **Mutation-tested**, per this issue's own note: a nested struct
+    /// carrying a forbidden field name, declared *outside* the enum body
+    /// and referenced from a new variant with only the arm the compiler
+    /// demands, is invisible to [`no_variant_declares_a_forbidden_field_name`]
+    /// (a scan of the enum body alone) and left
+    /// [`no_payload_ever_carries_a_forbidden_field_name`] green (no
+    /// fixture to scan) — this test is the one that failed, naming the
+    /// missing variant. Reverted before landing.
+    #[test]
+    fn every_declared_variant_has_a_fixture_entry() {
+        let declared = declared_variant_names();
+        let fixtured: Vec<String> = one_of_every_event_variant()
+            .into_iter()
+            .filter_map(|event| {
+                serde_json::to_value(&event)
+                    .ok()?
+                    .get("name")
+                    .and_then(|name| name.as_str())
+                    .map(str::to_string)
+            })
+            .collect();
+        let missing: Vec<&str> = declared
+            .iter()
+            .copied()
+            .filter(|name| !fixtured.iter().any(|f| f == name))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "diagnostic event variant(s) declared with no fixture entry in \
+             `one_of_every_event_variant`: {missing:?}"
+        );
     }
 
     /// **The whole-enum half of #706's redaction rule.** Scans

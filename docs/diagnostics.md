@@ -432,14 +432,24 @@ gap where `worker.started` should be.
    the next sync or the next export. Also: `Core::run_observed` is not
    wired on Android, so Android's journal has no `Source::Core`
    `sync.*`/`http.*` rows at all — only the web PWA does.
-8. **Redaction's forbidden-field list is hand-copied per host — #741.**
-   `FORBIDDEN_FIELD_NAMES` is `#[cfg(test)]`-private in
-   `server/domain/src/diagnostics.rs`, so nothing enforces the Kotlin/
-   TypeScript scanners (wherever they exist) stay in sync with it by
-   anything but review. A `DiagnosticEvent` variant addition is only half
-   compiler-checked the same way: the `canonical` match forces a match arm,
-   but nothing forces a fixture-array entry, and a missing one compiles and
-   passes clean while silently skipping the redaction test.
+8. **Closed — #741.** `FORBIDDEN_FIELD_NAMES` in
+   `server/domain/src/diagnostics.rs` is `pub`, not `#[cfg(test)]`-private,
+   so it is reachable outside a test build. `hummingbird-ffi-mobile`'s own
+   redaction test now imports it directly rather than hand-copying it;
+   Kotlin and TypeScript, unable to link a Rust const, each read the list
+   off `diagnostics.rs`'s own source text at test time and assert exact
+   correspondence against it (`DiagnosticsRecorderTest.kt`'s `the forbidden
+   field list matches the Rust source exactly`,
+   `diagnostics-redaction.test.ts`'s `matches the owner enum's list
+   exactly`) — an addition or removal on either side fails the matching
+   test, naming the difference, rather than a hand copy silently going
+   stale or a source-text floor leaving slack. The second half — a
+   `DiagnosticEvent` variant addition being only half compiler-checked, the
+   `canonical` match forcing an arm but nothing forcing a fixture-array
+   entry — is also closed: `every_declared_variant_has_a_fixture_entry`
+   reads every variant's wire name off the enum's own declaration and
+   checks it was actually serialized in `one_of_every_event_variant`,
+   naming whichever variant is missing.
 9. **#742** collects three smaller leftovers from this batch: `cargo fmt`
    is not a usable gate under `client/`, a masked dead disjunct in
    `evictOverBudget`, and the visual gate's accessible-name pins matching by
