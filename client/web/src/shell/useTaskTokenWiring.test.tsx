@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
-import { renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { coreStore, type CoreStatus } from "../store/store";
 import type { WorkerLike } from "../store/worker-client";
+import { renderHook } from "../test/component";
 import { act } from "../test/component";
 import type { TaskTokenRecord, TaskTokenStoreLike } from "../task/token-store";
 import { useTaskTokenWiring } from "./useTaskTokenWiring";
