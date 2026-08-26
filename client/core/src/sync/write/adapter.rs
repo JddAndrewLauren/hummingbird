@@ -46,6 +46,7 @@ async fn send(
     method: HttpMethod,
     path: &str,
     body: String,
+    operation_id: Option<&str>,
 ) -> Sent {
     match transport
         .send(
@@ -54,6 +55,7 @@ async fn send(
                 method,
                 path: path.to_string(),
                 body,
+                operation_id: operation_id.map(str::to_string),
             },
         )
         .await
@@ -91,6 +93,7 @@ pub async fn create<C, T>(
     access_token: &str,
     path: &str,
     create: &C,
+    operation_id: Option<&str>,
 ) -> Result<CreateOutcome<T>, WriteError>
 where
     C: Serialize,
@@ -98,7 +101,7 @@ where
 {
     let body = serde_json::to_string(create)
         .map_err(|source| WriteError::InvalidResponse(source.to_string()))?;
-    match send(transport, access_token, HttpMethod::Post, path, body).await {
+    match send(transport, access_token, HttpMethod::Post, path, body, operation_id).await {
         Sent::Success(201, body) => Ok(CreateOutcome::Created(parse(&body)?)),
         Sent::Success(_, body) => Ok(CreateOutcome::AlreadyExisted(parse(&body)?)),
         // Creates carry no `expected_version`, so a 409 here is not this
@@ -170,6 +173,7 @@ pub async fn patch_with_rebase<P, T>(
     base: &Value,
     rebase_view: Option<&Value>,
     mut build_patch: impl FnMut(i64) -> P,
+    operation_id: Option<&str>,
 ) -> Result<T, WriteError>
 where
     P: Serialize,
@@ -201,7 +205,7 @@ where
         let body = serde_json::to_string(&patch)
             .map_err(|source| WriteError::InvalidResponse(source.to_string()))?;
 
-        match send(transport, access_token, method, path, body).await {
+        match send(transport, access_token, method, path, body, operation_id).await {
             Sent::Success(status, body) => {
                 // A create-shaped PUT (`expected_version: 0`) that lands on
                 // 200 rather than 201 is the authority's create *replay*:
@@ -358,7 +362,7 @@ mod tests {
         };
 
         let outcome: CreateOutcome<FakeItem> =
-            create(&transport, "token", "/api/items", &create_dto)
+            create(&transport, "token", "/api/items", &create_dto, None)
                 .await
                 .unwrap();
 
@@ -375,7 +379,7 @@ mod tests {
         };
 
         let outcome: CreateOutcome<FakeItem> =
-            create(&transport, "token", "/api/items", &create_dto)
+            create(&transport, "token", "/api/items", &create_dto, None)
                 .await
                 .unwrap();
 
@@ -393,11 +397,11 @@ mod tests {
             title: "buy milk".into(),
         };
 
-        let first: CreateOutcome<FakeItem> = create(&transport, "token", "/api/items", &create_dto)
+        let first: CreateOutcome<FakeItem> = create(&transport, "token", "/api/items", &create_dto, None)
             .await
             .unwrap();
         let second: CreateOutcome<FakeItem> =
-            create(&transport, "token", "/api/items", &create_dto)
+            create(&transport, "token", "/api/items", &create_dto, None)
                 .await
                 .unwrap();
 
@@ -412,7 +416,7 @@ mod tests {
             title: "buy milk".into(),
         };
 
-        let err = create::<_, FakeItem>(&transport, "token", "/api/items", &create_dto)
+        let err = create::<_, FakeItem>(&transport, "token", "/api/items", &create_dto, None)
             .await
             .unwrap_err();
 
@@ -431,7 +435,7 @@ mod tests {
             title: "".into(),
         };
 
-        let err = create::<_, FakeItem>(&transport, "token", "/api/items", &create_dto)
+        let err = create::<_, FakeItem>(&transport, "token", "/api/items", &create_dto, None)
             .await
             .unwrap_err();
 
@@ -446,7 +450,7 @@ mod tests {
             title: "buy milk".into(),
         };
 
-        let err = create::<_, FakeItem>(&transport, "token", "/api/items", &create_dto)
+        let err = create::<_, FakeItem>(&transport, "token", "/api/items", &create_dto, None)
             .await
             .unwrap_err();
 
@@ -461,7 +465,7 @@ mod tests {
             title: "buy milk".into(),
         };
 
-        let err = create::<_, FakeItem>(&transport, "token", "/api/items", &create_dto)
+        let err = create::<_, FakeItem>(&transport, "token", "/api/items", &create_dto, None)
             .await
             .unwrap_err();
 
@@ -483,7 +487,7 @@ mod tests {
             title: "buy milk".into(),
         };
 
-        let err = create::<_, FakeItem>(&transport, "token", "/api/items", &create_dto)
+        let err = create::<_, FakeItem>(&transport, "token", "/api/items", &create_dto, None)
             .await
             .unwrap_err();
 
@@ -498,7 +502,7 @@ mod tests {
             title: "buy milk".into(),
         };
 
-        let err = create::<_, FakeItem>(&transport, "token", "/api/items", &create_dto)
+        let err = create::<_, FakeItem>(&transport, "token", "/api/items", &create_dto, None)
             .await
             .unwrap_err();
 
@@ -524,6 +528,7 @@ mod tests {
             &base,
             None,
             |v| json!({"expected_version": v, "title": "buy milk"}),
+            None,
         )
         .await
         .unwrap();
@@ -554,6 +559,7 @@ mod tests {
             &base,
             None,
             |v| json!({"expected_version": v, "title": "buy oat milk"}),
+            None,
         )
         .await
         .unwrap();
@@ -584,6 +590,7 @@ mod tests {
             &base,
             None,
             |v| json!({"expected_version": v, "title": "buy oat milk"}),
+            None,
         )
         .await
         .unwrap_err();
@@ -622,6 +629,7 @@ mod tests {
             &base,
             None,
             |v| json!({"expected_version": v, "title": "buy oat milk"}),
+            None,
         )
         .await
         .unwrap();
@@ -650,6 +658,7 @@ mod tests {
             &base,
             None,
             |v| json!({"expected_version": v, "title": "buy oat milk"}),
+            None,
         )
         .await
         .unwrap();
@@ -679,6 +688,7 @@ mod tests {
             &base,
             None,
             |v| json!({"expected_version": v, "title": "buy oat milk"}),
+            None,
         )
         .await
         .unwrap();
@@ -715,6 +725,7 @@ mod tests {
             &base,
             None,
             |v| json!({"expected_version": v, "priority": 2}),
+            None,
         )
         .await
         .unwrap();
@@ -749,6 +760,7 @@ mod tests {
             &base,
             None,
             |v| json!({"expected_version": v, "priority": 2}),
+            None,
         )
         .await
         .unwrap_err();
@@ -787,6 +799,7 @@ mod tests {
             &base,
             None,
             |v| json!({"expected_version": v, "title": "buy oat milk"}),
+            None,
         )
         .await
         .unwrap_err();
@@ -831,6 +844,7 @@ mod tests {
             &base,
             None,
             |v| json!({"expected_version": v, "title": "buy oat milk", "context": "@computer"}),
+            None,
         )
         .await
         .unwrap_err();
@@ -863,6 +877,7 @@ mod tests {
             &base,
             None,
             |v| json!({"expected_version": v, "title": "buy oat milk"}),
+            None,
         )
         .await
         .unwrap_err();
@@ -899,6 +914,7 @@ mod tests {
             &base,
             None,
             |v| json!({"expected_version": v, "title": "buy oat milk"}),
+            None,
         )
         .await
         .unwrap_err();
@@ -924,6 +940,7 @@ mod tests {
             &base,
             None,
             |v| json!({"expected_version": v, "title": "buy oat milk"}),
+            None,
         )
         .await
         .unwrap_err();
@@ -968,6 +985,7 @@ mod tests {
                 done: Some(true),
                 ..Default::default()
             },
+            None,
         )
         .await
         .unwrap();
@@ -1007,6 +1025,7 @@ mod tests {
             &base,
             Some(&json!({"value": "\"motogp\""})),
             |v| json!({"expected_version": v, "value": "motogp"}),
+            None,
         )
         .await
         .unwrap();
@@ -1032,6 +1051,7 @@ mod tests {
             &base,
             Some(&json!({"value": "\"motogp\""})),
             |v| json!({"expected_version": v, "value": "motogp"}),
+            None,
         )
         .await
         .unwrap();
@@ -1054,6 +1074,7 @@ mod tests {
             &base,
             Some(&json!({"value": "\"motogp\""})),
             |v| json!({"expected_version": v, "value": "motogp"}),
+            None,
         )
         .await
         .unwrap_err();
@@ -1084,6 +1105,7 @@ mod tests {
             &base,
             Some(&json!({"value": "\"motogp\""})),
             |v| json!({"expected_version": v, "value": "motogp"}),
+            None,
         )
         .await
         .unwrap();
@@ -1108,6 +1130,7 @@ mod tests {
             &base,
             Some(&json!({"value": "\"motogp\""})),
             |v| json!({"expected_version": v, "value": "motogp"}),
+            None,
         )
         .await
         .unwrap();
@@ -1135,6 +1158,7 @@ mod tests {
             &base,
             Some(&json!({"value": "\"motogp\""})),
             |v| json!({"expected_version": v, "value": "motogp"}),
+            None,
         )
         .await
         .unwrap_err();

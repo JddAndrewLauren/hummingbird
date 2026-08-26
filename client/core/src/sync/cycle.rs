@@ -915,6 +915,7 @@ mod tests {
                 path: "/api/items".to_string(),
                 body: serde_json::json!({"id": item_id}),
             },
+            operation_id: None,
         }
     }
 
@@ -1112,6 +1113,7 @@ mod tests {
                 patch_fields: serde_json::json!({"title": "buy oat milk"}),
                 rebase_fields: None,
             },
+            operation_id: None,
         });
 
         cycle.run(&read, &write, "token", 5_000, Trigger::User, true, 0.0).await;
@@ -1154,6 +1156,7 @@ mod tests {
                 patch_fields: serde_json::json!({"title": "buy oat milk"}),
                 rebase_fields: None,
             },
+            operation_id: None,
         });
 
         let outcome = cycle
@@ -2626,6 +2629,7 @@ mod tests {
                     patch_fields: serde_json::json!({"title": "buy oat milk"}),
                     rebase_fields: None,
                 },
+                operation_id: None,
             });
 
             cycle
@@ -2647,6 +2651,132 @@ mod tests {
                     "the serialized fixture must never contain {forbidden:?}, got: {json}"
                 );
             }
+        }
+
+        // -------------------------------------------- #739: the operation join key
+
+        /// #739 acceptance: "`http.started` and `http.finished` for a queued
+        /// write carry the operation id of the operation that enqueued it."
+        /// The entry is enqueued with an `operation_id` exactly the way a
+        /// wasm/mobile host's own capture would set it (#739's own doc on
+        /// [`QueueEntry::operation_id`]); nothing else about this cycle
+        /// mints or touches it.
+        #[tokio::test]
+        async fn http_started_and_finished_carry_the_enqueuing_operations_id() {
+            let sink = RecordingSink::default();
+            let clock = RecordingClock::default();
+            let log = CallLog::default();
+            let read = ScriptedRead::sweep_only(&log, Ok(empty_body(1)));
+            let write = ScriptedWrite {
+                log: &log,
+                responses: Mutex::new(vec![ok(201, r#"{"id":"a-1","version":1}"#)].into()),
+            };
+            let session = DiagnosticSession::new("session-1", 0);
+            let diagnostics = DiagnosticsContext::new(&sink, &clock, &session, "cycle-1", "core", "test", 1_000);
+            let mut cycle = SyncCycle::new(MemorySnapshotStore::default(), MemorySnapshotStore::default());
+            let mut entry = create_entry("m-1", "a-1");
+            entry.operation_id = Some("op-1".to_string());
+            cycle.queue.enqueue(entry);
+
+            cycle
+                .run_observed(&read, &write, "token", 1_000, Trigger::User, true, 0.0, &diagnostics)
+                .await;
+
+            let events = sink.events();
+            let http_started = events
+                .iter()
+                .find(|e| matches!(e.event, DiagnosticEvent::HttpStarted { .. }))
+                .expect("http.started must have been recorded");
+            assert_eq!(http_started.operation_id.as_deref(), Some("op-1"));
+            let http_finished = events
+                .iter()
+                .find(|e| matches!(e.event, DiagnosticEvent::HttpFinished { .. }))
+                .expect("http.finished must have been recorded");
+            assert_eq!(http_finished.operation_id.as_deref(), Some("op-1"));
+        }
+
+        /// #739's central proof: "A test asserts `operation.local_commit`
+        /// precedes `http.started` filtered to one operation id, spanning
+        /// the cycle boundary. That test fails when the emits are
+        /// reordered."
+        ///
+        /// `operation.local_commit` is emitted here exactly the way a
+        /// wasm/mobile host's own operation instrumentation does — via
+        /// [`DiagnosticSession::emit`], immediately after the durable
+        /// enqueue that stands in for a real `Core::capture` — sharing the
+        /// same [`DiagnosticSession`] (and so the same monotonic `seq`) the
+        /// later cycle's own [`DiagnosticsContext`] is built from, which is
+        /// what makes "before" a real, checkable claim rather than two
+        /// independent streams glued together.
+        ///
+        /// **Demonstrated failure (issue #739's own acceptance — reorder,
+        /// paste, revert):** moving the `session.emit(...)` call below the
+        /// `run_observed` call fails this assertion — captured verbatim
+        /// from a real `cargo test` run against that reordering, then
+        /// reverted:
+        /// ```text
+        /// thread 'sync::cycle::tests::observed::operation_local_commit_precedes_http_started_for_the_same_operation_across_the_cycle_boundary' (3813026) panicked at core/src/sync/cycle.rs:2775:13:
+        /// operation.local_commit must precede http.started for the same operation id
+        /// note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+        /// test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1107 filtered out; finished in 0.01s
+        /// ```
+        /// proving the assertion is a real, failable pin, not vacuous by
+        /// construction.
+        #[tokio::test]
+        async fn operation_local_commit_precedes_http_started_for_the_same_operation_across_the_cycle_boundary(
+        ) {
+            let sink = RecordingSink::default();
+            let clock = RecordingClock::default();
+            let session = DiagnosticSession::new("session-1", 0);
+
+            // The operation: a host's own capture, durably enqueuing with
+            // this operation's id, then recording `operation.local_commit`
+            // — mirroring `TaskHostCore::capture`'s own sequence
+            // (`operation.requested` then `operation.local_commit`, once
+            // the enqueue's `.await` returns `Ok`).
+            let mut cycle = SyncCycle::new(MemorySnapshotStore::default(), MemorySnapshotStore::default());
+            let mut entry = create_entry("m-1", "a-1");
+            entry.operation_id = Some("op-1".to_string());
+            cycle.enqueue(entry, 1_000).await.unwrap();
+            session.emit(&sink, 1_000, 0, Some("op-1"), DiagnosticEvent::OperationLocalCommit);
+
+            // A later, unrelated sync cycle drains the queue — the same
+            // session, a fresh cycle id, spanning the cycle boundary #739
+            // names.
+            let log = CallLog::default();
+            let read = ScriptedRead::sweep_only(&log, Ok(empty_body(1)));
+            let write = ScriptedWrite {
+                log: &log,
+                responses: Mutex::new(vec![ok(201, r#"{"id":"a-1","version":1}"#)].into()),
+            };
+            let diagnostics = DiagnosticsContext::new(&sink, &clock, &session, "cycle-1", "core", "test", 2_000);
+            cycle
+                .run_observed(&read, &write, "token", 2_000, Trigger::User, true, 0.0, &diagnostics)
+                .await;
+
+            // Filtered to this one operation id — the scoping #739 asks
+            // for, so an unrelated `sync.*`/`http.*` event (no operation id
+            // at all) never confuses the ordering.
+            let mut events: Vec<_> = sink
+                .events()
+                .into_iter()
+                .filter(|e| e.operation_id.as_deref() == Some("op-1"))
+                .collect();
+            events.sort_by_key(|e| e.seq);
+
+            let local_commit_index = events
+                .iter()
+                .position(|e| matches!(e.event, DiagnosticEvent::OperationLocalCommit))
+                .expect("operation.local_commit must carry op-1");
+            let http_started_index = events
+                .iter()
+                .position(|e| matches!(e.event, DiagnosticEvent::HttpStarted { .. }))
+                .expect("http.started for the queued write must carry op-1");
+
+            assert!(
+                local_commit_index < http_started_index,
+                "operation.local_commit must precede http.started for the same operation id"
+            );
         }
     }
 }

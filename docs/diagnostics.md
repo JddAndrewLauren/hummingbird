@@ -360,10 +360,10 @@ run directly, result `ok`):
 
 with no `http.started` anywhere in the same journal — a real local commit
 that this proof never sent anywhere, which is exactly what "no later sync"
-looks like in an export. (This is also where the #739 gap in "Known gaps"
-above bites hardest: even a real send afterward would share no id with this
-operation, so the join a human would want to draw here does not exist yet
-in the data.)
+looks like in an export. (Since #739, a real send afterward *would* share
+this operation's id — the join key now exists — but `TaskHostCore::run`
+still drives the unobserved `Core::run`, so no host emits the `http.*` half
+in production yet regardless; see "Known gaps" item 2.)
 
 ### Row 7 — local commit, no UI-visible change: not induced
 
@@ -403,14 +403,23 @@ gap where `worker.started` should be.
    (`client/web/src/shell/diagnostics-download.ts`) — the side `protocol.ts`'s
    own cross-host snake_case rule already said should move. Per-event
    records were never divergent.
-2. **`operation_id` does not cross the outbound-queue boundary — #739.**
-   An `operation.*` span and its eventual `http.*` span for the same
-   logical write share no id and different `cycle_id`s, so they are not
-   programmatically joinable — only ordering (`operation.local_commit`
-   before any later `http.started`) is provable, not identity. Acceptance
-   criterion 7 in both #708 and #710 ("`operation.local_commit` before any
-   `http.started` in the same operation") is therefore met by construction
-   and by ordering, not by an id join.
+2. **Closed — #739.** `operation_id` now crosses the outbound-queue
+   boundary: `sync::queue::QueueEntry` carries the originating operation's
+   id (`#[serde(default)]`, no schema-version bump — the same
+   `rebase_fields` precedent), `drain` threads it through the write adapter
+   into `MutationRequest`, and `InstrumentedMutationTransport` stamps it
+   onto that write's `http.started`/`http.finished`. An `operation.*` span
+   and the `http.*` span for the same logical write are now joinable by
+   `operation_id` alone, across the cycle boundary, with no timestamp
+   needed — proven, including a demonstrated failure on reordering, by
+   `hummingbird_core::sync::cycle::tests::observed::operation_local_commit_precedes_http_started_for_the_same_operation_across_the_cycle_boundary`.
+   An entry enqueued by a path with no operation of its own still carries a
+   null `operation_id`, never a synthesized one. What #739 did **not**
+   change: neither host's own `run` drives `Core::run_observed` yet (item 7
+   below, and `TaskHostCore::run`'s own doc) — so in production, on either
+   host, no `http.*` is actually emitted for a queued write to join against
+   today. The join key exists end to end; the production wiring that would
+   let a reader exercise it is each host's own tracked follow-up.
 3. **`core.busy`/`core.wait_started`/`core.acquired`'s `owner` can be
    `null` while the core is genuinely held.** See "Read a
    `DiagnosticEventV1` row" above — this is the single most misreadable
@@ -530,6 +539,9 @@ PRs' review threads (#733–#738) for the alternatives-considered record an
 ADR would otherwise carry. Writing an ADR now would either restate that
 header (drifting the moment one of them is next amended) or under-describe
 it. If a future change to this lane makes a decision that has no such
-home — e.g. changing who owns `operation_id` across the queue boundary
-(#739) in a way that trades off two real alternatives — that change is the
-one that should open an ADR, not this doc.
+home — e.g. wiring `Core::run_observed` into a host's own `run` in a way
+that trades off two real alternatives — that change is the one that should
+open an ADR, not this doc. (#739 itself needed none: giving
+`sync::queue::QueueEntry` an `operation_id` followed an existing precedent —
+`rebase_fields`'s own `#[serde(default)]`, no schema-version bump — rather
+than choosing between real alternatives.)

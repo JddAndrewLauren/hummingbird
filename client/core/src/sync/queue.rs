@@ -302,6 +302,25 @@ pub struct MutationSubject {
 pub struct QueueEntry {
     pub id: String,
     pub intent: MutationIntent,
+    /// The id of the operation that requested this write (#739), if it was
+    /// requested by one — a wasm/mobile host's own checkout/operation
+    /// instrumentation mints it, not this crate (see
+    /// [`crate::diagnostics::DiagnosticSession::emit`]'s own doc). Carried
+    /// through `drain`'s eventual `http.started`/`http.finished` so an
+    /// operation's local commit and its send are joinable by this id alone,
+    /// across the cycle boundary and without consulting timestamps.
+    ///
+    /// `#[serde(default)]` so entries durable before this field existed
+    /// still deserialise into the identical entry rather than degrading
+    /// into an empty queue (see [`QUEUE_SCHEMA_VERSION`], which this
+    /// addition does not bump) — the same discipline
+    /// [`MutationIntent::Patch::rebase_fields`] already established. `None`
+    /// for every entry enqueued by a path with no operation of its own
+    /// (most of them): a synthesized id here would misrepresent what
+    /// requested the write, so this stays genuinely optional rather than
+    /// defaulting to something invented.
+    #[serde(default)]
+    pub operation_id: Option<String>,
 }
 
 /// Why an entry was moved to the dead-letter journal rather than retried —
@@ -457,7 +476,14 @@ impl OutboundQueue {
                 return DrainOutcome::Completed { dead_lettered };
             };
 
-            match attempt(transport, access_token, &entry.intent).await {
+            match attempt(
+                transport,
+                access_token,
+                &entry.intent,
+                entry.operation_id.as_deref(),
+            )
+            .await
+            {
                 Ok(()) => {
                     self.entries.pop_front();
                 }
@@ -510,10 +536,11 @@ async fn attempt(
     transport: &impl MutationTransport,
     access_token: &str,
     intent: &MutationIntent,
+    operation_id: Option<&str>,
 ) -> Result<(), WriteError> {
     match intent {
         MutationIntent::Create { path, body } => {
-            create::<Value, Value>(transport, access_token, path, body)
+            create::<Value, Value>(transport, access_token, path, body, operation_id)
                 .await
                 .map(|_| ())
         }
@@ -542,6 +569,7 @@ async fn attempt(
                 base,
                 rebase_fields.as_ref(),
                 build_patch,
+                operation_id,
             )
             .await
             .map(|_| ())
@@ -576,6 +604,7 @@ async fn attempt(
                 item_base,
                 None,
                 build_body,
+                operation_id,
             )
             .await
             .map(|_| ())
@@ -644,6 +673,7 @@ mod tests {
                 path: "/api/items".to_string(),
                 body: json!({"id": item_id, "title": format!("item {item_id}")}),
             },
+            operation_id: None,
         }
     }
 
@@ -658,6 +688,7 @@ mod tests {
                 patch_fields: json!({"title": "buy oat milk"}),
                 rebase_fields: None,
             },
+            operation_id: None,
         }
     }
 
@@ -897,6 +928,7 @@ mod tests {
                 patch_fields: json!({"priority": 2}),
                 rebase_fields: None,
             },
+            operation_id: None,
         });
 
         let outcome = queue.drain(&transport, "token", 1_000).await;
@@ -1090,6 +1122,7 @@ mod tests {
                 patch_fields: json!({"stage": "done"}),
                 rebase_fields: None,
             },
+            operation_id: None,
         };
 
         let mut queue = OutboundQueue::new();
@@ -1150,6 +1183,77 @@ mod tests {
         assert!(restored.dead_letters().is_empty());
     }
 
+    // ------------------------------------------- #739: the operation join key
+
+    /// #739 acceptance: "A queue entry carries the originating operation's
+    /// id, and it survives a round-trip through the durable store."
+    #[tokio::test]
+    async fn an_entrys_operation_id_survives_a_round_trip_through_the_durable_store() {
+        let store = MemorySnapshotStore::default();
+        let mut queue = OutboundQueue::new();
+        let mut entry = create_entry("m-1", "a-1");
+        entry.operation_id = Some("op-1".to_string());
+        queue.enqueue(entry);
+
+        save_snapshot(&store, QUEUE_SCHEMA_VERSION, 1, &queue)
+            .await
+            .unwrap();
+        let loaded: OutboundQueue = load_snapshot(&store).await.unwrap().unwrap().payload;
+
+        assert_eq!(
+            loaded.entries().next().unwrap().operation_id.as_deref(),
+            Some("op-1"),
+            "the operation id must survive the durable round trip"
+        );
+    }
+
+    /// #739 acceptance: "Queue bytes serialized without the new field still
+    /// deserialize into an equivalent entry." A literal pre-change payload —
+    /// not a round trip of the new type, which cannot catch a field that was
+    /// never written in the first place.
+    #[test]
+    fn queue_bytes_with_no_operation_id_field_at_all_still_deserialise() {
+        let old_bytes = br#"{
+            "entries": [
+                {
+                    "id": "m-1",
+                    "intent": {
+                        "Create": {
+                            "path": "/api/items",
+                            "body": {"id": "a-1", "title": "item a-1"}
+                        }
+                    }
+                }
+            ],
+            "dead_letters": []
+        }"#;
+
+        let restored: OutboundQueue = serde_json::from_slice(old_bytes)
+            .expect("bytes with no operation_id key must still deserialise");
+
+        assert_eq!(restored.len(), 1);
+        assert_eq!(
+            restored.entries().next().unwrap().operation_id,
+            None,
+            "an entry with no operation_id key deserialises to a null id, not a synthesized one"
+        );
+    }
+
+    /// #739 acceptance: "An entry enqueued with no originating operation
+    /// emits a null operation id and is not rejected."
+    #[tokio::test]
+    async fn an_entry_enqueued_with_no_operation_drains_normally_with_a_null_operation_id() {
+        let transport = ScriptedTransport::new(vec![ok(201, r#"{"id":"a-1","version":1}"#)]);
+        let mut queue = OutboundQueue::new();
+        let entry = create_entry("m-1", "a-1");
+        assert_eq!(entry.operation_id, None);
+        queue.enqueue(entry);
+
+        let outcome = queue.drain(&transport, "token", 1_000).await;
+
+        assert_eq!(outcome, DrainOutcome::Completed { dead_lettered: 0 });
+    }
+
     /// The claim [`MutationIntent::subject`] rests on: it needed no schema
     /// bump and no migration because it reads what the entry *already* holds.
     /// That is only true if an entry written before the method existed still
@@ -1203,6 +1307,7 @@ mod tests {
                 item_base: json!({"id": item_id, "stage": "triage", "version": item_version}),
                 item_base_updated_at: 1_000,
             },
+            operation_id: None,
         }
     }
 
