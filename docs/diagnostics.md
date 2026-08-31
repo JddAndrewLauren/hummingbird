@@ -459,10 +459,18 @@ gap where `worker.started` should be.
    reads every variant's wire name off the enum's own declaration and
    checks it was actually serialized in `one_of_every_event_variant`,
    naming whichever variant is missing.
-9. **#742** collects three smaller leftovers from this batch: `cargo fmt`
-   is not a usable gate under `client/`, a masked dead disjunct in
-   `evictOverBudget`, and the visual gate's accessible-name pins matching by
-   substring.
+9. **Two of #742's three smaller leftovers from this batch are closed; one
+   is not.** Closed — #742: the masked dead disjunct in `evictOverBudget`
+   (`client/web/src/worker/diagnostics-store.ts`) is gone — the function
+   early-returns when the starting total is already within budget, so the
+   loop-top budget check could never be the reason the cursor walk stopped;
+   deleting it leaves the post-delete check as the sole halting condition
+   (plus an exhausted cursor), pinned by a test that stops the walk midway
+   through the store. Also closed — #742: the visual gate's accessible-name
+   pins no longer match by substring; the four diagnostics assertions in
+   `client/web/visual/surfaces.spec.ts` now pass `exact: true`, the form
+   already used elsewhere in that file. **Still open:** `cargo fmt` is not a
+   usable gate under `client/`.
 10. **A connection failure and a client-side timeout can log identically.**
     `classify_transport_error` (`client/core/src/diagnostics/failure.rs`)
     falls back to matching words like `"timeout"`/`"connect"` in
