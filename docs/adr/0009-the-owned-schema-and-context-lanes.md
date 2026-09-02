@@ -213,8 +213,9 @@ CREATE INDEX idx_items_project ON items(project_id);
 
 *This DDL is the schema as accepted, not the current schema: later ADRs add
 to it and their DDL stays with them — see the amendment pointers in the
-Status header (and the `items.agent` amendment at the foot of this file).
-`server/authority/src/schema.rs` is what actually runs.*
+Status header (and the `items.agent` and `items.vault_path` amendments at
+the foot of this file). `server/authority/src/schema.rs` is what actually
+runs.*
 
 ### What dissolved from the S1 model, deliberately
 
@@ -447,3 +448,50 @@ none — so `alerts` (which ends in `UNIQUE(source, source_key)`) takes
 `subject_key` inline on `version`'s line, while `items` (which has no table
 constraint) takes `agent` after the newline, immediately before the `)`.
 The two are formatted differently on purpose.
+
+## Amendment (2026-09-02, #771): `items.vault_path`, the note pointer
+
+```sql
+vault_path  TEXT   -- one vault-relative path into the operator's Obsidian
+                   --   vault, e.g. 'Hummingbird/Knee rehab.md'
+```
+
+`SCHEMA_VERSION` 12 → 13, the sixth `add_missing_columns` arm. Nullable,
+so the growth is additive on both the constraint and the data: every item
+minted before this points at nothing, which is the same fact as an operator
+who has not written a note yet.
+
+**Why a column rather than a client-local value.** The alternative was
+`localStorage` on the web, which is free and wrong: it dies with site data,
+it is invisible from the phone, and it would be rewritten as a column within
+a month. This is one string per item — the cheapest thing the owned schema
+can hold — and it rides the ordinary delta pull like everything else here.
+
+**Why a path and not a URI.** `obsidian://new?vault=…&file=…&append` is
+transport for one vendor's desktop app; the *path* is the domain fact. A
+stored URI would name the vault in every row and go stale on a vault rename,
+and it would put a scheme in the schema that no other client can act on. The
+vault the path is relative to is the `obsidian-vault` binding (ADR-0015),
+held once per workspace rather than once per item. The URI is assembled
+client-side, in `client/web/src/obsidian/vault-uri.ts`, which is the whole
+of this feature's vendor knowledge.
+
+**Why it is patchable when `source_url` beside it is not.** `ItemPatch`
+excludes `source`/`source_key`/`source_url` because provenance belongs to
+whatever captured the item. `vault_path` sits in the same row and is the
+opposite kind of thing: an operator choice, set and re-pointed and cleared
+from the item panel long after capture. It carries the full three-state
+`Option<Option<String>>`, so clearing the pointer is a real `null`.
+
+**It is interim, and shaped to be superseded cleanly.** #192 holds the real
+answer — an owned notes lane with an editor, a renderer and a body-merge
+decision — and is under consideration, not queued. Because this column holds
+a path and not a URI, its values are a direct import key for that lane: the
+migration reads paths, not transport.
+
+**The migration's own trap is `items.agent`'s, one column further along.**
+`items` has no table constraint, so `ALTER TABLE items ADD COLUMN vault_path
+TEXT` splices before the closing paren, after `agent`, on that same line —
+`, agent INTEGER NOT NULL DEFAULT 0, vault_path TEXT)`. Verified against a
+real migrated store's `sqlite_master`, not reasoned out
+(`init_schema_grows_a_schema_12_database_additively`).

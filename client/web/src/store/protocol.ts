@@ -230,7 +230,13 @@ export interface GrillDraftTurnDTO {
  * `source`/`sourceKey`/`sourceUrl` are deliberately absent — provenance
  * belongs to whatever captured the item. So are `stage` (that IS
  * `destination`), `archivedAt` (cancelling is an act), `projectPos` (a Route's
- * ordering) and every server-stamped field. */
+ * ordering) and every server-stamped field.
+ *
+ * `vaultPath` (#771) sits beside `sourceUrl` in the `items` row and is
+ * present here anyway, deliberately: which note an item points at is an
+ * operator *choice*, set and re-pointed and cleared from the item panel long
+ * after capture, so the provenance exclusion above does not reach it. The
+ * asymmetry is not an oversight. */
 export interface TriageEdits {
   title?: string;
   description?: string | null;
@@ -246,6 +252,11 @@ export interface TriageEdits {
   deadline?: string | null;
   /** A whole civil day, `YYYY-MM-DD` — a do-date has no minute. */
   scheduledDate?: string | null;
+  /** #771: the item's one vault-relative Obsidian path, e.g.
+   * `Hummingbird/Knee rehab.md`. `null` clears the pointer. Non-empty after
+   * trim is the whole of what the authority checks; the path's shape is
+   * `obsidian/vault-uri.ts`'s `isValidVaultPath`. */
+  vaultPath?: string | null;
 }
 
 /** Every field the capture box may set on a brand-new item, exactly as the
@@ -314,6 +325,11 @@ export interface TaskItemDTO {
   source: string | null;
   sourceKey: string | null;
   sourceUrl: string | null;
+  /** #771: where this item's thinking lives, outside the app — one
+   * vault-relative path into the operator's Obsidian vault, or `null`. The
+   * vault it is relative to is the `obsidian-vault` binding, never stored
+   * here. */
+  vaultPath: string | null;
   archivedAt: number | null;
   createdAt: number;
   updatedAt: number;

@@ -275,18 +275,39 @@ mod tests {
         );
     }
 
+    /// Keys that answer no standing question at all. A binding is not a
+    /// pane input by definition — `bindings.rs` documents the vocabulary as
+    /// "cross-device facts", and since #771 one of them
+    /// (`BindingKey::ObsidianVault`) is read by an *item's* panel rather
+    /// than by any question's pane. Such a key lands in
+    /// `groupBindingsByQuestion`'s `other` group, which already exists and
+    /// is already editable, so it is configurable rather than invisible —
+    /// which is the failure the claim test below actually guards against.
+    ///
+    /// This list is the gate: a key added here is a deliberate statement
+    /// that it answers nothing, not an omission from `question_bindings`.
+    const ANSWERS_NO_QUESTION: &[BindingKey] = &[BindingKey::ObsidianVault];
+
     #[test]
-    fn every_binding_key_is_claimed_by_exactly_one_question() {
-        // The other direction of the same relation: a key nothing claims
-        // would render in Settings under no question at all, which is the
-        // flat list this slice replaced.
+    fn no_binding_key_is_claimed_by_two_questions() {
+        // The other direction of the relation: a key claimed twice would
+        // render under two headings, and a key claimed by nothing would
+        // render under none — which is the flat list this slice replaced,
+        // and why the second case is an explicit list rather than a
+        // wildcard.
         for key in BindingKey::ALL {
             let claimants: Vec<StandingQuestion> = QUESTION_ORDER
                 .iter()
                 .copied()
                 .filter(|question| question_bindings(*question).contains(key))
                 .collect();
-            assert_eq!(claimants.len(), 1, "{} is claimed by {claimants:?}", key.as_str());
+            let expected = usize::from(!ANSWERS_NO_QUESTION.contains(key));
+            assert_eq!(
+                claimants.len(),
+                expected,
+                "{} is claimed by {claimants:?}",
+                key.as_str()
+            );
         }
     }
 

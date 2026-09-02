@@ -47,6 +47,7 @@ function item(context: string | null): TaskItemDTO {
     source: null,
     sourceKey: null,
     sourceUrl: null,
+    vaultPath: null,
     archivedAt: null,
     createdAt: 1,
     updatedAt: 1,

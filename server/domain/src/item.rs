@@ -142,6 +142,22 @@ pub struct Item {
     pub source: Option<String>,
     pub source_key: Option<String>,
     pub source_url: Option<String>,
+    /// Where this item's thinking lives, outside the app (#771): one
+    /// vault-relative path into the operator's Obsidian vault, e.g.
+    /// `Hummingbird/Knee rehab.md`. A **path**, never a URI — the vault it
+    /// is relative to is a per-device binding (`obsidian-vault`), so a vault
+    /// rename leaves every stored value correct, and the values import
+    /// directly into the owned notes lane #192 will hold. Deliberately not
+    /// provenance (`source_url`) and not an attachment (ADR-0023): the
+    /// operator chooses it, so unlike `source_url` it is editable and
+    /// clearable.
+    ///
+    /// `#[serde(default)]` for `agent`'s own reason: a client mirror
+    /// snapshot persisted before this column existed carries no such key and
+    /// must still parse rather than force a `SYNC_MIRROR_SCHEMA_VERSION`
+    /// bump.
+    #[serde(default)]
+    pub vault_path: Option<String>,
     /// ms epoch; `None` = live. Rows are never deleted, only flagged.
     pub archived_at: Option<i64>,
     /// #10's fourth axis, *who does this*: `true` = an agent could do this
@@ -229,6 +245,7 @@ mod tests {
             source: Some("web/v1".into()),
             source_key: None,
             source_url: None,
+            vault_path: None,
             archived_at: None,
             agent: false,
             created_at: 1,

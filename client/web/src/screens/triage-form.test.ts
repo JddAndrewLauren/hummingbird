@@ -51,6 +51,7 @@ describe("draftFromItem", () => {
       projectId: "p1",
       deadline: "2026-08-14T09:30",
       scheduledDate: "2026-08-12",
+      vaultPath: "",
     });
     expect(draftFromItem(item)).toEqual({
       title: "vague thing",
@@ -62,6 +63,7 @@ describe("draftFromItem", () => {
       projectId: "",
       deadline: "",
       scheduledDate: "",
+      vaultPath: "",
     });
   });
 });
@@ -350,5 +352,27 @@ describe("awaitingProjectCreate", () => {
     expect(awaitingProjectCreate([], null)).toBe(false);
     expect(awaitingProjectCreate([], write("failed", { error: "boom" }))).toBe(false);
     expect(awaitingProjectCreate([], write("busy"))).toBe(false);
+  });
+});
+
+/** #771: the vault path travels the same three-instruction path every other
+ * nullable field here does, and its one validity rule is `vault-uri.ts`'s. */
+describe("vaultPath", () => {
+  it("sends a typed path, and an emptied one as an explicit clear", () => {
+    const pointed = itemDTO({ vaultPath: "Hummingbird/Old.md" });
+    expect(
+      buildTriageEdits({ ...draftFromItem(pointed), vaultPath: "Reading/New.md" }, pointed),
+    ).toEqual({ vaultPath: "Reading/New.md" });
+    expect(buildTriageEdits({ ...draftFromItem(pointed), vaultPath: "" }, pointed)).toEqual({
+      vaultPath: null,
+    });
+    expect(buildTriageEdits(draftFromItem(pointed), pointed)).toEqual({});
+  });
+
+  it("reports a path that tries to leave the vault, and never a blank one", () => {
+    expect(triageDraftProblems({ ...draftFromItem(item), vaultPath: "" }).vaultPath).toBeUndefined();
+    expect(
+      triageDraftProblems({ ...draftFromItem(item), vaultPath: "../outside.md" }).vaultPath,
+    ).toBeTruthy();
   });
 });

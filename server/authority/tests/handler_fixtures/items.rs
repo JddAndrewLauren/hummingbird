@@ -424,6 +424,59 @@ fn patch_accepts_a_valid_deadline_and_can_clear_it() {
     assert_eq!(item(&resp).deadline, None, "explicit null clears");
 }
 
+/// #771: `vault_path` is the one nullable `items` column outside the
+/// provenance trio a patch may touch — set at create, re-set, and cleared
+/// with an explicit `null`, unlike `source_url` which `ItemPatch` does not
+/// carry at all.
+#[test]
+fn vault_path_is_created_repointed_and_cleared() {
+    let sql = RusqliteSql::new();
+    let resp = post(
+        &sql,
+        r#"{"id": "a-1", "title": "hello", "vault_path": "Hummingbird/Knee rehab.md"}"#,
+        1000,
+    );
+    assert_eq!(resp.status, 201, "{}", resp.body);
+    assert_eq!(item(&resp).vault_path.as_deref(), Some("Hummingbird/Knee rehab.md"));
+
+    let resp = patch(
+        &sql,
+        "a-1",
+        r#"{"expected_version": 1, "vault_path": "Reading/Knee rehab"}"#,
+        2000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    assert_eq!(
+        item(&resp).vault_path.as_deref(),
+        Some("Reading/Knee rehab"),
+        "no `.md` is required — the vault also holds .canvas and .base files",
+    );
+
+    let resp = patch(&sql, "a-1", r#"{"expected_version": 2, "vault_path": null}"#, 3000);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    assert_eq!(item(&resp).vault_path, None, "explicit null clears the pointer");
+}
+
+/// Non-empty after trim, and nothing more — the same one rule
+/// `project_links`' `url` carries. Clearing is `null`, never `""`.
+#[test]
+fn a_blank_vault_path_is_rejected_on_both_doors() {
+    let sql = RusqliteSql::new();
+    for body in [
+        r#"{"id": "a", "title": "t", "vault_path": ""}"#,
+        r#"{"id": "a", "title": "t", "vault_path": "   "}"#,
+    ] {
+        assert_eq!(post(&sql, body, 0).status, 400, "{body}");
+    }
+    post(&sql, r#"{"id": "a-1", "title": "hello"}"#, 1000);
+    for body in [
+        r#"{"expected_version": 1, "vault_path": ""}"#,
+        r#"{"expected_version": 1, "vault_path": "  "}"#,
+    ] {
+        assert_eq!(patch(&sql, "a-1", body, 2000).status, 400, "{body}");
+    }
+}
+
 #[test]
 fn patch_can_attach_and_detach_a_real_project() {
     let sql = RusqliteSql::new();

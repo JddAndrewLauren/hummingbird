@@ -411,6 +411,7 @@ mod tests {
             source: None,
             source_key: None,
             source_url: None,
+            vault_path: None,
             archived_at: None,
             agent: false,
             created_at: 1_000,

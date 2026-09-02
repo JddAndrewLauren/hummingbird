@@ -53,6 +53,10 @@ export interface TriageRowProps {
    * `item-actions.ts`'s `grillButtonLabel`. `false` when there is no draft
    * to have read. */
   hasGrillDraft?: boolean;
+  /** #771's bound Obsidian vault name, forwarded to `ItemPanel` — which
+   * carries the whole of what it means. Threaded rather than read here: this
+   * row has no `TaskState`. */
+  vaultName?: string | null;
   /** The most recent triage result any row got back (`TaskState.lastTriage`)
    * — matched here by the item id the result itself carries, the same
    * broadcast-recognition contract `NowScreen`'s `actError` uses for
@@ -95,6 +99,7 @@ export function TriageRow({
   onComplete,
   onGrillMe,
   hasGrillDraft = false,
+  vaultName = null,
   lastTriage,
   onCreateProject,
   lastProjectWrite,
@@ -238,6 +243,7 @@ export function TriageRow({
           lastTriage={lastTriage}
           onGrillMe={onGrillMe}
           hasGrillDraft={hasGrillDraft}
+          vaultName={vaultName}
           grillMeId={grillMeButtonId(item.id)}
         />
       ) : null}
