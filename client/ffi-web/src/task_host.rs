@@ -1320,14 +1320,35 @@ impl TaskCoreCell {
         }
     }
 
-    /// Mints a fresh, host-local id for correlating one call's `core.*`
-    /// and (for capture/triage) `operation.*` events — independent of the
-    /// caller's own mutation `seed` (a different concept: `seed` mints a
+    /// Mints a fresh id for correlating one call's `core.*` and (for
+    /// capture/triage) `operation.*` events — independent of the caller's
+    /// own mutation `seed` (a different concept: `seed` mints a
     /// deterministic *item* id sent to the server, ADR-0007; this
-    /// correlates *diagnostic events about one call*, purely local, and
-    /// never crosses the wire).
+    /// correlates *diagnostic events about one call*, and never crosses
+    /// the wire to the authority).
+    ///
+    /// **Scoped to the session id, not just the counter (#739 review).**
+    /// Since #739 an operation id is persisted onto the `QueueEntry` it
+    /// requested (`hummingbird_core::sync::queue::QueueEntry::operation_id`)
+    /// and so *outlives the session that minted it*: an entry queued
+    /// offline is drained by whichever later session finds it. A
+    /// `TaskCoreCell` is built once per `SharedWorker` (ADR-0010), so
+    /// `next_operation_seq` restarts at 0 on every worker restart — a bare
+    /// `op-0` would then name both the surviving entry and the new
+    /// session's first capture. `session_id` cannot break that tie the way
+    /// it does elsewhere, because the survivor's `http.started`/
+    /// `http.finished` are emitted by the *draining* session and carry its
+    /// id, identical to the fresh operation's. Prefixing here is what
+    /// makes the id restart-unique, while keeping the ordinal that makes
+    /// within-session ordering readable. `ffi-mobile`'s
+    /// `mint_mutation_seed` reaches the same property with a random
+    /// suffix.
     pub fn mint_operation_id(&self) -> String {
-        format!("op-{}", self.next_operation_seq.fetch_add(1, Ordering::Relaxed))
+        format!(
+            "{}-op-{}",
+            self.session.session_id(),
+            self.next_operation_seq.fetch_add(1, Ordering::Relaxed)
+        )
     }
 
     /// Drains every buffered event since the last drain — the wasm
@@ -3076,9 +3097,60 @@ mod core_checkout_tests {
     }
 
     async fn fresh_cell(dir: &tempfile::TempDir, name: &str) -> TaskCoreCell {
+        fresh_cell_in_session(dir, name, "test-session").await
+    }
+
+    /// [`fresh_cell`] with the session id named, for the tests that turn on
+    /// a *restart* — a second `TaskCoreCell` over the same namespace is
+    /// exactly what a `SharedWorker` restart builds (ADR-0010).
+    async fn fresh_cell_in_session(dir: &tempfile::TempDir, name: &str, session_id: &str) -> TaskCoreCell {
         let namespace = dir.path().join(name);
         let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
-        TaskCoreCell::new(host, "test-session".to_string())
+        TaskCoreCell::new(host, session_id.to_string())
+    }
+
+    /// #739 review: an `operation_id` is persisted onto the `QueueEntry` it
+    /// requested, so it outlives its session — an entry queued offline is
+    /// drained by whichever later session finds it. `next_operation_seq`
+    /// restarts at 0 on every worker restart, so a bare `op-<n>` collided:
+    /// the surviving entry and the new session's first capture both
+    /// answered to `op-0`, and `session_id` could not break the tie because
+    /// the survivor's `http.*` events are emitted by the *draining*
+    /// session. Minting across a restart must not repeat an id.
+    #[tokio::test]
+    async fn a_restarted_host_never_remints_an_operation_id_its_queue_may_still_carry() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let before = fresh_cell_in_session(&dir, "ns-restart", "session-before").await;
+        let queued = before.mint_operation_id();
+        drop(before);
+
+        // The restart: same namespace (so the durable queue, and any entry
+        // still carrying `queued`, is the same), fresh session.
+        let after = fresh_cell_in_session(&dir, "ns-restart", "session-after").await;
+        let minted = after.mint_operation_id();
+
+        assert_ne!(
+            queued, minted,
+            "a restarted host reminted an operation id an undrained queue entry may still carry"
+        );
+    }
+
+    /// The prefix must not cost the within-session ordering the ordinal is
+    /// there to give: two ids from one session still differ, and still
+    /// carry that session's own id.
+    #[tokio::test]
+    async fn operation_ids_stay_ordered_and_session_scoped_within_one_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let cell = fresh_cell_in_session(&dir, "ns-order", "session-x").await;
+
+        let first = cell.mint_operation_id();
+        let second = cell.mint_operation_id();
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("session-x-"), "unexpected id {first:?}");
+        assert!(first.ends_with("-op-0"), "unexpected id {first:?}");
+        assert!(second.ends_with("-op-1"), "unexpected id {second:?}");
     }
 
     /// Acceptance: "Every acquisition of the single `TaskHostCore` emits

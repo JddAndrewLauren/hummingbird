@@ -84,10 +84,14 @@ repeatedly, because reading them wrong flips a diagnosis:
   `null` owner as "the core was free" is the exact misdiagnosis this
   paragraph exists to prevent.
 - **`operation.finished{success}` means "committed locally and durably
-  queued for send," never "reached the authority."** See **Known gaps**
-  below — `operation_id` does not cross the outbound-queue boundary, so this
-  event and the eventual `http.*` span for the same logical write share no
-  id.
+  queued for send," never "reached the authority."** Since #739 the two
+  spans *are* joinable in principle — `operation_id` crosses the
+  outbound-queue boundary on the `QueueEntry` and is stamped onto that
+  write's `http.started`/`http.finished`. But the production wiring that
+  would emit an `http.*` for a queued write to join against is each host's
+  own tracked follow-up — read **Known gaps** item 2 for exactly what #739
+  did and did not change before relying on the join. Either way this event
+  never means the write landed.
 
 ## Query the authority's side (Cloudflare)
 
@@ -414,7 +418,13 @@ gap where `worker.started` should be.
    needed — proven, including a demonstrated failure on reordering, by
    `hummingbird_core::sync::cycle::tests::observed::operation_local_commit_precedes_http_started_for_the_same_operation_across_the_cycle_boundary`.
    An entry enqueued by a path with no operation of its own still carries a
-   null `operation_id`, never a synthesized one. What #739 did **not**
+   null `operation_id`, never a synthesized one. Because a queued entry's
+   id now **outlives the session that minted it**, each host's minted ids
+   have to be unique across a restart, not just within one session: the web
+   seam prefixes its per-`SharedWorker` ordinal with the session id
+   (`TaskCoreCell::mint_operation_id`, whose own doc carries the collision
+   this closed), and `ffi-mobile`'s `mint_mutation_seed` reaches the same
+   property with a random suffix. What #739 did **not**
    change: neither host's own `run` drives `Core::run_observed` yet (item 7
    below, and `TaskHostCore::run`'s own doc) — so in production, on either
    host, no `http.*` is actually emitted for a queued write to join against

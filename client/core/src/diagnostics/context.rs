@@ -95,6 +95,16 @@ impl<'a> DiagnosticSession<'a> {
         }
     }
 
+    /// This session's id — the same value [`Self::emit`] stamps on every
+    /// event. Exposed because a host that mints its own `operation_id`s
+    /// needs to scope them to the session (`client/ffi-web`'s
+    /// `TaskCoreCell::mint_operation_id`): an operation id now outlives the
+    /// session that minted it, so a host-local counter alone repeats after
+    /// a restart.
+    pub fn session_id(&self) -> &'a str {
+        self.session_id
+    }
+
     fn next_seq(&self) -> u64 {
         self.seq.fetch_add(1, Ordering::Relaxed)
     }
