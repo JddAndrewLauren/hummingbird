@@ -1,0 +1,62 @@
+# The Orca setup hook for a new hummingbird worktree.
+#
+# Orca runs `scripts.setup` with `/bin/bash` and `set -e`, working directory
+# = the newly created worktree. Every line below is therefore a gate: the
+# first non-zero exit stops the hook and the workspace reports failed setup.
+#
+# Requires Orca's Windows default shell to be **WSL** (Settings > Terminal).
+# The toolchain this repo needs exists only inside the WSL distro -- there is
+# no native Windows cargo -- so under PowerShell or CMD this hook cannot run
+# at all.
+#
+# What is *not* here is deliberate. A worktree shares the machine, so
+# toolchain installs (rustup, corepack, cargo-ndk, the Android SDK) belong to
+# a one-time host bootstrap and would otherwise re-run per workspace. Cargo
+# builds are left cold: `client/` and `server/` each carry their own
+# `target/`, and pre-warming them would put minutes into every workspace
+# creation for work most workspaces never touch. There is no `archive` hook
+# because removing a worktree removes its directory, artefacts and all.
+scripts:
+  setup: |
+    # **Load-bearing, not boilerplate.** `~/.local/node/bin` (node, pnpm) is
+    # exported at ~/.bashrc:121 -- *after* the stock Ubuntu non-interactive
+    # guard at ~/.bashrc:6-9 -- so it is set for interactive shells only.
+    # Neither a plain `bash -c` nor Orca's login `bash -lc` sees pnpm without
+    # this. (Cargo survives a login shell because ~/.cargo/env is sourced
+    # from ~/.profile:29, outside that guard -- but not a plain one.)
+    # Probed rather than hardcoded so the same file works on the Mac.
+    for d in "$HOME/.cargo/bin" "$HOME/.local/node/bin" \
+             "$HOME/.local/bin" /opt/homebrew/bin; do
+      [ -d "$d" ] && PATH="$d:$PATH"
+    done
+    export PATH
+
+    # Named up front so a missing tool reads as one line in Orca's setup log
+    # rather than as a 127 from somewhere inside pnpm.
+    for tool in cargo rustup wasm-pack pnpm node; do
+      command -v "$tool" >/dev/null || {
+        echo "setup: $tool is not on PATH -- see client/web/README.md and client/android/README.md" >&2
+        exit 1
+      }
+    done
+
+    # ADR-0004 wants lockfile-pinned client builds and `.github/workflows/
+    # client.yml` pins wasm-pack to v0.13.1 for exactly that reason: a
+    # floating wasm-pack can change the shipped artifact with no repository
+    # change. Surfaced, not enforced — pinning here would cost a multi-minute
+    # `cargo install` on every workspace create.
+    wasm-pack --version | grep -q '0\.13\.1' || \
+      echo "warn: local $(wasm-pack --version) != CI's wasm-pack 0.13.1 (ADR-0004)" >&2
+
+    # `rust-toolchain.toml` pins the channel and its components but declares
+    # no `targets`, so nothing else in the repo installs wasm32 — and neither
+    # `client/ffi-web` nor `server/worker` builds without it. Idempotent, so
+    # it costs nothing on a machine that already has it.
+    rustup target add wasm32-unknown-unknown
+
+    cd client/web
+    pnpm install --frozen-lockfile
+
+    # `src/wasm/pkg/` is gitignored and regenerated, so a fresh worktree has
+    # none — and `pnpm test`, `typecheck`, `lint` and `dev` all need it.
+    pnpm run build:wasm
