@@ -31,10 +31,11 @@ retargeted off Linear in
 | --- | --- |
 | `sweep.py` | The whole sweeper: the drain engine plus both adapters. Python 3 stdlib only, one-shot, importable for tests. |
 | `denylist.json` | Tasks lists to skip, keyed by list id, title as the value. |
-| `crontab` | `*/15 * * * *` — read by supercronic inside the container. |
-| `Dockerfile` | `python:3.12-slim` + supercronic pinned by version and sha256. |
-| `fly.toml` | `hummingbird-sweeper`, one 256MB always-on worker. |
-| `.github/workflows/deploy.yml` | Tests on push to `main` and on `pull_request`; `flyctl deploy` on push to `main` only. |
+| `crontab` | Six staggered entries read by supercronic inside the container: `/app/sweep` (`*/15`) plus the five poller binaries below (#774) — see the file's own header for the staggering and CLAUDE.md's "no competing clocks" rule. |
+| `Dockerfile` | `python:3.12-slim` + supercronic pinned by version and sha256, plus a `rust:1.97.1-slim` builder stage (#774, on `runner/Dockerfile`'s own pattern) that compiles the five poller binaries `crontab` runs. |
+| `fly.toml` | `hummingbird-sweeper`, one 256MB always-on worker; `[env]` carries the non-secret config the five pollers need (#774). |
+| `.github/workflows/deploy.yml` | Tests on push to `main` and on `pull_request`; `flyctl deploy` on push to `main` only. Redeploys on a `server/**`, `rust-toolchain.toml` or `.github/workflows/**` change too (#774), so a poller edit actually ships. |
+| `server/{gmail-poll,calendar-poll,graph-poll,github-status}` | The five poller binaries this machine now runs (#774) — `hummingbird-gmail-poll`, `hummingbird-calendar-poll`, `graph-mail-poll`, `graph-calendar-poll`, `github-status-poll`. Each crate documents itself (ADR-0011 for the first four, ADR-0017 decision 2 for the fifth); this doc covers only their presence on this machine, not their own behaviour. |
 | `scripts/mint_refresh_token.py` | One-time local OAuth consent helper (Tasks + Gmail + Calendar scopes by default; `--scope` mints a dedicated narrower credential — its header says when that is the right call). |
 | `tests/test_sweep.py`, `tests/test_gmail.py` | `python3 -m unittest discover -s tests`. Cred-free. |
 
@@ -46,6 +47,19 @@ hand: `fly ssh console -C /app/sweep`. One run drains every adapter in turn;
 each adapter logs `sweep start adapter=…`, a line per list/item, and its own
 `sweep finish adapter=… ok=… created=… existed=… completed=… failed=…
 skipped=… quarantined=… duration=…`.
+
+**Since #774, this machine also runs five other one-shot binaries off the
+same `crontab`**, staggered off `/app/sweep` and off one another: the four
+evaluated-stream pollers (`hummingbird-gmail-poll`,
+`hummingbird-calendar-poll`, `graph-mail-poll`, `graph-calendar-poll`, every
+15 minutes) and `github-status-poll` (every 30). They share nothing with
+`sweep.py` beyond the clock and the container — no lock, no shared state —
+and each is exactly the same binary GitHub Actions used to run, just invoked
+by supercronic instead of `actions/checkout@v4` + `cargo run`. Their own
+crates document what each run does; this file's job is only "why they run
+here now" (#773's measurements: Actions `schedule:` delivered them roughly
+once every four hours against their declared cadence, and this machine is
+already an always-on clock that can just run them on time).
 
 ### The adapter seam
 
@@ -388,6 +402,22 @@ Set with `flyctl secrets set`; nothing on-device, nothing committed.
 `HB_API_TOKEN`, `HEALTHCHECK_URL`, `GMAIL_HEALTHCHECK_URL`,
 `AUTHORITY_HEALTHCHECK_URL`.
 
+**Seven more, since #774**, one per moved poller (plus the Graph pollers'
+shared signing key): `GMAIL_INGEST_TOKEN`, `CALENDAR_INGEST_TOKEN`,
+`M365_MAIL_INGEST_TOKEN`, `M365_CALENDAR_INGEST_TOKEN`,
+`GH_STATUS_INGEST_TOKEN` (each an `ingest`-scope token bound to that
+poller's own source, minted from the operator's terminal against
+`ADMIN_SECRET` — never Actions, per CLAUDE.md's credential blast-radius
+rule), `GRAPH_CLIENT_PRIVATE_KEY` (the Graph app registration's signing
+key — see `.github/workflows/graph-mail-poll.yml`'s header for why it sits
+on the `ADMIN_SECRET` side of that rule rather than the ingest-token side),
+and `GH_STATUS_PAT` (a fine-grained PAT, `contents: read` + `actions: read`
+on this repo only — `.github/workflows/github-status.yml`'s header explains
+why this machine needs one where the Actions run never did). `crontab`
+maps each ingest token onto the singular `HB_INGEST_TOKEN` every poller
+binary reads, and `GH_STATUS_PAT` onto `GITHUB_TOKEN`, on the command line
+— see that file's own entries.
+
 `HB_API_BASE` is **not** a secret and is normally unset: it defaults to
 `https://hb.twinion.net` and exists only so a local run can be pointed at a
 `wrangler dev` authority, the same knob every other client in the repo has.
@@ -413,6 +443,16 @@ the sweeper never touches Calendar. The consequence is that **re-minting is a
 three-place operation**: 1Password, then `flyctl secrets set`, then
 `gh secret set`. Leave one behind and the lane reading it fails on a revoked
 grant, not on a missing secret, which is the harder failure to read.
+
+**#774 narrows that three-place rotation rather than widening it.** Both
+pollers now read `GOOGLE_REFRESH_TOKEN` (and its two siblings) from this
+machine's own Fly secret — the same one the sweeper already held — instead
+of also carrying an independent Actions-secret copy. Once the now-unused
+`GOOGLE_*` Actions secrets are deleted (this issue's own "Verification the
+agent cannot do" step 7), re-minting drops back to the two places every
+other Fly-only credential here already needs: 1Password, then
+`flyctl secrets set`. Until that deletion happens both copies are live and
+the three-place rotation above still applies.
 
 `HB_API_TOKEN` is a **`sweeper`-scope** token (ADR-0008/0009 `tokens` table),
 sent as `Authorization: Bearer …`. That scope reaches `POST /api/items` and
@@ -534,12 +574,15 @@ Then the Gmail steps below, which were deferred from #45 and never ran.
       nobody told.
    b. **`flyctl machine start <machine-id>` — by id, never bare.** There are
       two machines and the second is a standby. A bare `flyctl machine start`
-      can bring up both, which is two supercronics on one `*/15` cron racing
-      each other's acks; `/tmp/sweep.lock` is per-container and does not help.
-      That is the competing-clocks failure `CLAUDE.md` bans, by a route
-      [#8](https://github.com/JddAndrewLauren/hummingbird/issues/8) did not
-      anticipate. Confirm with `flyctl machine list` that the standby stayed
-      stopped.
+      can bring up both, which is two supercronics racing each other —
+      **six jobs each, since #774**, not the one `*/15` sweep this warning
+      was first written against: `/tmp/sweep.lock` is per-container and
+      protects `/app/sweep` alone, and the five poller binaries share no
+      lock at all, so a doubled machine means every one of the six racing
+      its own twin. That is the competing-clocks failure `CLAUDE.md` bans,
+      by a route [#8](https://github.com/JddAndrewLauren/hummingbird/issues/8)
+      did not anticipate. Confirm with `flyctl machine list` that the
+      standby stayed stopped.
 
    Note that `flyctl deploy` does **not** start a stopped machine — it updates
    it in place and leaves it stopped. The start above is always its own action.
@@ -641,12 +684,17 @@ differ from what the gates above expect, and the difference is the point:
 
 ## Changing things
 
-- **Cadence** — one line in `crontab`, deliberately the cheapest decision in
-  the system to reverse.
+- **Cadence** — one line per job in `crontab` (six since #774, one per
+  binary), still the cheapest decision in the system to reverse; each
+  poller's own `POLLED_EVERY_MS` must move with its line, and the drift-gate
+  test in that crate's `tests/contract.rs` will say so if it doesn't.
 - **supercronic version** — bump `SUPERCRONIC_VERSION` in the `Dockerfile` and
   replace `SUPERCRONIC_SHA256` with the real `shasum -a 256` of the downloaded
   release asset. The project publishes no checksum file; never invent the hash.
-- **Never add a `schedule:` trigger** to `.github/workflows/deploy.yml`.
+- **Never add a `schedule:` trigger** to `.github/workflows/deploy.yml`, nor
+  restore one to `gmail-poll.yml`, `calendar-poll.yml`, `graph-mail-poll.yml`,
+  `graph-calendar-poll.yml` or `github-status.yml` (#774 dropped theirs
+  deliberately; `workflow_dispatch:` on each still allows a manual run).
   Scheduling on Actions was overturned in #8 (pooled minutes, whole-minute
   billing, the $0 spending cap, 60-day auto-disable). supercronic owns cadence.
   Qualified 2026-08-10 (#120): three of those four clauses were about a

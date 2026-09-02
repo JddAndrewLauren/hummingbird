@@ -83,9 +83,39 @@ fn the_source_agrees_with_the_pane() {
     assert_eq!(hummingbird_domain::GITHUB_HUMMINGBIRD_V1, "github-hummingbird/v1");
 }
 
-/// `.github/workflows/github-status.yml`'s cron must agree with this — the
+/// `crontab`'s entry for `github-status-poll` must agree with this — the
 /// declared cadence `Freshness` reads for the poller's own pane staleness.
+/// **#774 moved this poller off `.github/workflows/github-status.yml`'s
+/// Actions `schedule:` onto the sweeper's own `crontab`**, so this is
+/// checked against that file now, the same pattern `gmail-poll`'s own
+/// `tests/contract.rs` uses (itself following
+/// `server/uptime-probe/tests/contract.rs`'s reasoning: a bare
+/// `assert_eq!` restates the constant and would still pass the day someone
+/// changed the `crontab` entry and left this one alone).
+const CRONTAB: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../crontab"));
+
 #[test]
-fn polled_every_ms_is_half_an_hour() {
+fn polled_every_ms_is_half_an_hour_and_the_crontab_says_so_too() {
     assert_eq!(POLLED_EVERY_MS, 30 * 60 * 1000);
+
+    let line = CRONTAB
+        .lines()
+        .find(|l| l.contains("/app/bin/github-status-poll"))
+        .expect("crontab carries an entry for github-status-poll");
+    let minute_field = line.split_whitespace().next().expect("a minute field");
+    assert_eq!(
+        minute_field.split(',').count(),
+        2,
+        "github-status-poll's crontab entry no longer fires twice an hour — POLLED_EVERY_MS is \
+         now a lie"
+    );
+    assert!(
+        line.contains(r#"HB_INGEST_TOKEN="$GH_STATUS_INGEST_TOKEN""#),
+        "github-status-poll's crontab entry no longer maps GH_STATUS_INGEST_TOKEN onto HB_INGEST_TOKEN"
+    );
+    assert!(
+        line.contains(r#"GITHUB_TOKEN="$GH_STATUS_PAT""#),
+        "github-status-poll's crontab entry no longer maps GH_STATUS_PAT onto GITHUB_TOKEN — \
+         without it this binary has no way to authenticate to the GitHub API outside Actions"
+    );
 }

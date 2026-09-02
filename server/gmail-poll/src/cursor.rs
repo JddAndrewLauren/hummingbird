@@ -24,9 +24,10 @@ pub const CURSOR_KEY: &str = "cursor";
 /// and the other names the feed, and nothing couples them.
 pub const CURSOR_SCHEMA: &str = "gmail-cursor/v1";
 
-/// How often this poller says it runs — must match
-/// `.github/workflows/gmail-poll.yml`'s cron, the same discipline
-/// `city-waste::body::POLLED_EVERY_MS` documents.
+/// How often this poller says it runs — must match `crontab`'s entry for
+/// `hummingbird-gmail-poll` (#774 moved this off `gmail-poll.yml`'s Actions
+/// `schedule:`), the same discipline `city-waste::body::POLLED_EVERY_MS`
+/// documents.
 pub const POLLED_EVERY_MS: i64 = 15 * 60 * 1000;
 
 /// Builds the `POST /api/snapshots` payload for a fresh `historyId`.

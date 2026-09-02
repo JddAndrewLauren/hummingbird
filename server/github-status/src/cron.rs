@@ -102,8 +102,10 @@ mod tests {
 
     #[test]
     fn every_fifteen_minutes_is_recognised() {
-        // gmail-poll.yml, calendar-poll.yml, graph-mail-poll.yml,
-        // graph-calendar-poll.yml, race-alert-poll.yml.
+        // race-alert-poll.yml. (gmail-poll.yml, calendar-poll.yml,
+        // graph-mail-poll.yml and graph-calendar-poll.yml also declared
+        // this cadence before #774 moved them off Actions `schedule:`
+        // entirely, onto the sweeper's own `crontab`.)
         assert_eq!(declared_cadence_ms("*/15 * * * *"), Some(15 * MINUTE_MS));
     }
 
