@@ -48,6 +48,13 @@ describe("derivePath", () => {
   it("is deterministic, so a re-click re-points at the note it had", () => {
     expect(derivePath("Knee rehab")).toBe(derivePath("Knee rehab"));
   });
+
+  it("proposes nothing for a title that strips to an empty name", () => {
+    // `???` passes the form (it is not blank) but leaves no basename, and
+    // `Hummingbird/.md` is a hidden note every such item would share.
+    expect(derivePath("???")).toBe(null);
+    expect(derivePath('  "" ')).toBe(null);
+  });
 });
 
 describe("isValidVaultPath", () => {

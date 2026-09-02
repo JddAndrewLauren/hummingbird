@@ -32,7 +32,7 @@ import {
 } from "../../screens/triage-form";
 import { useItemDraft } from "../../screens/useItemDraft";
 import { triageFailureFor } from "../../screens/write-failure";
-import { buildUri, derivePath } from "../../obsidian/vault-uri";
+import { buildUri, derivePath, isValidVaultPath } from "../../obsidian/vault-uri";
 import { microtaskAffordance } from "../../skills/microtask-affordance";
 import { IDLE, isRunning, stampLabel, type SkillRunState } from "../../skills/run-state";
 import type { MicrotaskRunRequest } from "../../shell/useMicrotaskWiring";
@@ -256,15 +256,30 @@ export function ItemPanel({
   // render can actually deliver on the label: "Start a note" writes the
   // derived path before opening, so a panel with no `onTriage` behind it
   // (demo mode) offers it only for an item that already carries one.
+  //
+  // `isValidVaultPath` gates the *stored* path too, not just the typed one.
+  // The triage form checks what the operator types, but `vault_path` is a
+  // plain column the authority only checks for non-blankness, so a path put
+  // there by `sweep.py`, a skill or the agent can hold a leading `/` or a
+  // `..` — shapes this module's header says this client refuses to send.
+  // Refusing to draw the button is how it refuses. (`derivePath` answers
+  // `null` for a title that strips to nothing; same treatment.)
   const notePath = item.vaultPath ?? derivePath(item.title);
   const notePointerIsNew = item.vaultPath === null;
-  const showNoteButton = vaultName !== null && (!notePointerIsNew || onTriage !== undefined);
+  const showNoteButton =
+    vaultName !== null &&
+    notePath !== null &&
+    isValidVaultPath(notePath) &&
+    (!notePointerIsNew || onTriage !== undefined);
   // Optimistic, and deliberately so (#771): there is no `x-success` round
   // trip and the web has no router to receive one. `obsidian://new?…&append`
   // opens the note when it is there and creates it when it is not, so
   // re-clicking is always safe — which is what makes the confirmation
   // unnecessary rather than merely omitted.
   const openNote = () => {
+    if (notePath === null) {
+      return;
+    }
     if (notePointerIsNew) {
       onTriage?.(item.id, null, { vaultPath: notePath });
     }

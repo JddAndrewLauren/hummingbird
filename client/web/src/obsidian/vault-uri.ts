@@ -64,16 +64,25 @@ export function obsidianVaultName(bindings: BindingDTO[] | null): string | null 
 }
 
 /** The path a "Start a note" gesture proposes for `title`:
- * `Hummingbird/<title with the forbidden characters stripped>.md`.
+ * `Hummingbird/<title with the forbidden characters stripped>.md`, or `null`
+ * when there is no path to propose.
  *
  * Deterministic and reversible — the same title always proposes the same
  * path, so a second click on an item whose path was cleared re-points it at
  * the note it had. It is only ever a *proposal*: the path is a stored value
  * the operator can edit afterwards, and nothing here ever renames a note to
- * follow a retitled item. */
-export function derivePath(title: string): string {
+ * follow a retitled item.
+ *
+ * **A title that strips to nothing has no proposal.** `???` is a title the
+ * form accepts (it is not blank), and stripping leaves an empty basename —
+ * `Hummingbird/.md`, a hidden file every such item would then share. The
+ * answer is `null` rather than an invented `Untitled`: a fallback name is
+ * one the operator never wrote, persisted by the very click that opens it,
+ * and it breaks the determinism above the moment two of them meet. The
+ * caller drops the affordance instead. */
+export function derivePath(title: string): string | null {
   const name = title.replace(FORBIDDEN, "").trim();
-  return `${FOLDER}/${name}.md`;
+  return name === "" ? null : `${FOLDER}/${name}.md`;
 }
 
 /** The one URI this feature ever fires: `obsidian://new`, which opens the

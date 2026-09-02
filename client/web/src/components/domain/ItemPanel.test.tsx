@@ -640,6 +640,7 @@ describe("the Obsidian note affordance", () => {
   function detail(options: {
     vaultName?: string | null;
     vaultPath?: string | null;
+    title?: string;
     onTriage?: ReturnType<typeof vi.fn>;
     withTriage?: boolean;
   }) {
@@ -649,7 +650,7 @@ describe("the Obsidian note affordance", () => {
         mode="detail"
         item={itemDTO({
           id: "item-1",
-          title: "Knee rehab",
+          title: options.title ?? "Knee rehab",
           vaultPath: options.vaultPath ?? null,
         })}
         projects={[]}
@@ -715,6 +716,29 @@ describe("the Obsidian note affordance", () => {
   it("still offers Open note without an onTriage", () => {
     detail({ vaultName: "JDD", vaultPath: "Reading/Knee.md", withTriage: false });
     expect(screen.getByRole("button", { name: "Open note" })).toBeTruthy();
+  });
+
+  /** The stored path gets the same shape rule as a typed one. `vault_path`
+   * is a plain column the authority only checks for non-blankness, so a
+   * writer that is not this form — `sweep.py`, a skill, the agent — can put
+   * a path there that this client refuses to send. It refuses by drawing no
+   * button. */
+  it("offers no Open note for a stored absolute path", () => {
+    detail({ vaultName: "JDD", vaultPath: "/Users/john/secrets.md" });
+    expect(noteButton()).toBeNull();
+  });
+
+  it("offers no Open note for a stored path that climbs out of the vault", () => {
+    detail({ vaultName: "JDD", vaultPath: "Hummingbird/../../outside.md" });
+    expect(noteButton()).toBeNull();
+  });
+
+  /** A title of nothing but stripped characters derives no name at all, and
+   * `Hummingbird/.md` is a hidden note every such item would share — so
+   * there is nothing to start. */
+  it("offers no Start a note for a title that strips to an empty name", () => {
+    detail({ vaultName: "JDD", title: "???" });
+    expect(noteButton()).toBeNull();
   });
 
   it("edits the path through the ordinary triage save, and an emptied field clears it", () => {
