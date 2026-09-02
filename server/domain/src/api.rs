@@ -53,6 +53,11 @@ pub struct CreateItem {
     pub source_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_url: Option<String>,
+    /// #771's vault-relative Obsidian path. Plain `Option`, like every other
+    /// nullable field here: a create names no prior value a `null` could be
+    /// clearing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vault_path: Option<String>,
     /// #10's delegation axis. Defaults to false — the human does it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<bool>,
@@ -142,9 +147,15 @@ pub struct ItemPatch {
     pub scheduled_date: Option<Option<String>>,
     #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<Option<i64>>,
-    /// `NOT NULL`, so single-`Option` and uncleared: an explicit `null` is a
-    /// 400, exactly like `done` and `enabled`. Clearing the axis is
-    /// `"agent": false`, which is what #10's finish step sends.
+    /// #771's vault-relative Obsidian path — and **the one nullable
+    /// `items` column outside the provenance trio that this patch can
+    /// touch**. `source`/`source_key`/`source_url` are deliberately absent
+    /// here because provenance belongs to whatever captured the item; a
+    /// vault path is an operator *choice*, set and re-set and cleared from
+    /// the item panel long after capture, so that exclusion does not reach
+    /// it. The asymmetry is deliberate, not an oversight.
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub vault_path: Option<Option<String>>,
     #[serde(default, deserialize_with = "non_null_agent", skip_serializing_if = "Option::is_none")]
     pub agent: Option<bool>,
 }

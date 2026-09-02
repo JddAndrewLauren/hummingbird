@@ -3,6 +3,7 @@ import { Card } from "../components/core/Card";
 import { Icon } from "../components/core/Icon";
 import { EmptyState } from "../components/feedback/EmptyState";
 import type { GrillTakeoverWiring } from "../shell/useGrillTakeoverWiring";
+import { obsidianVaultName } from "../obsidian/vault-uri";
 import type { TaskState } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
 import { GrillTakeover } from "./GrillTakeover";
@@ -165,6 +166,7 @@ export function TriageScreen({
                 onComplete={onComplete}
                 onGrillMe={grill ? handleGrillMe : undefined}
                 hasGrillDraft={task.grillDraftItemIds.includes(item.id)}
+                vaultName={obsidianVaultName(task.bindings)}
                 lastTriage={task.lastTriage}
                 onCreateProject={onCreateProject}
                 lastProjectWrite={task.lastProjectWrite}

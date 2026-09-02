@@ -31,6 +31,7 @@ function row(overrides: Partial<RecallRowDTO> = {}): RecallRowDTO {
     source: null,
     sourceKey: null,
     sourceUrl: null,
+    vaultPath: null,
     archivedAt: null,
     createdAt: 1_000,
     updatedAt: 1_000,

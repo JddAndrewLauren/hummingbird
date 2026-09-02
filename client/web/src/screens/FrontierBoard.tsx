@@ -28,6 +28,7 @@ import type {
   TaskActionName,
   TaskItemDTO,
 } from "../store/protocol";
+import { obsidianVaultName } from "../obsidian/vault-uri";
 import type { TaskState } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
 import { blockedReasonLabel } from "./blocked-reason";
@@ -437,6 +438,7 @@ export function FrontierBoard({
             lastTriage={task.lastTriage}
             onCreateProject={onCreateProject}
             lastProjectWrite={task.lastProjectWrite}
+            vaultName={obsidianVaultName(task.bindings)}
           />
         </SelectedItemSection>
       ) : selectedItem ? (
@@ -466,6 +468,7 @@ export function FrontierBoard({
             // `canGrill`, the one deciding function, same as Triage's.
             onGrillMe={grill ? handleGrillMe : undefined}
             hasGrillDraft={task.grillDraftItemIds.includes(selectedItem.id)}
+            vaultName={obsidianVaultName(task.bindings)}
             grillMeId={nowGrillMeButtonId(selectedItem.id)}
           />
         </SelectedItemSection>

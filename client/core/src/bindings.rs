@@ -2,9 +2,11 @@
 //! cross-device facts a pane needs before it can answer anything — which
 //! race series, which calendar holds the trips, which page the waste
 //! schedule is scraped from — and, since the homework pane's standing link,
-//! one fact that names no source at all ([`BindingKey::HomeworkLink`]): a
-//! value that must not live in a public repo, held here for the same
-//! sync-it-once reason rather than because a pane queries it.
+//! two facts that name no source at all ([`BindingKey::HomeworkLink`], a
+//! value that must not live in a public repo, and
+//! [`BindingKey::ObsidianVault`], the vault an item's `vault_path` is
+//! relative to): held here for the same sync-it-once reason rather than
+//! because a pane queries them.
 //!
 //! A binding is one `settings` row (ADR-0009's KV table), so it rides the
 //! ordinary delta pull and the full sweep like every other table, and is
@@ -80,6 +82,21 @@ pub enum BindingKey {
     /// hand-edit it — a shape only the pane's own parser gives further
     /// meaning to, on `BindingValue::Text`'s existing contract.
     ScpsQuest,
+    /// The name of the operator's Obsidian vault (#771) — the one
+    /// cross-device fact an item's `vault_path` is relative to.
+    ///
+    /// **A second key that names no source**, following
+    /// [`BindingKey::HomeworkLink`]'s precedent exactly: no pane queries
+    /// it, and unset does not leave anything `AnswerState::Unbound` — the
+    /// item panel simply draws no button, and nothing else changes.
+    ///
+    /// It is the vault's **name**, never the vault id: `obsidian.json`
+    /// registers a vault under a per-machine generated hex id, so the same
+    /// folder on two of the operator's machines carries two different ids
+    /// while the name is one fact. It is a binding rather than a literal
+    /// for the ordinary sync-it-once reason — set on one device, present on
+    /// the next.
+    ObsidianVault,
 }
 
 impl BindingKey {
@@ -92,6 +109,7 @@ impl BindingKey {
         BindingKey::CityWastePage,
         BindingKey::HomeworkLink,
         BindingKey::ScpsQuest,
+        BindingKey::ObsidianVault,
     ];
 
     /// The `settings.key` this binding is stored under — the wire spelling
@@ -103,6 +121,7 @@ impl BindingKey {
             BindingKey::CityWastePage => "city-waste-page",
             BindingKey::HomeworkLink => "homework-link",
             BindingKey::ScpsQuest => "scps-quest",
+            BindingKey::ObsidianVault => "obsidian-vault",
         }
     }
 
@@ -225,7 +244,8 @@ mod tests {
                 "trips-calendar",
                 "city-waste-page",
                 "homework-link",
-                "scps-quest"
+                "scps-quest",
+                "obsidian-vault"
             ]
         );
     }

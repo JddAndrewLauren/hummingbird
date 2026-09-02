@@ -281,6 +281,7 @@ fn item_from_create(create: &CreateItem, now_ms: i64) -> Item {
         source: create.source.clone(),
         source_key: create.source_key.clone(),
         source_url: create.source_url.clone(),
+        vault_path: create.vault_path.clone(),
         archived_at: None,
         agent: create.agent.unwrap_or(false),
         created_at: now_ms,
@@ -632,6 +633,11 @@ impl ItemAction {
 /// asked for — the same fidelity every other CAS write in this crate
 /// already holds.
 ///
+/// `vault_path` (#771) is the one nullable `items` column here that is NOT
+/// provenance and yet sits beside `source_url` in the row: the operator
+/// chooses which note an item points at, re-points it and clears it, so the
+/// exclusion below does not reach it. The asymmetry is deliberate.
+///
 /// What is deliberately absent: `source`/`source_key`/`source_url` (owned by
 /// whatever captured the item, never edited here), `stage` (that IS the
 /// destination), `archived_at` (cancelling is [`Core::act`]'s), `project_pos`
@@ -648,6 +654,7 @@ pub struct TriagePatch {
     pub project_id: Option<Option<String>>,
     pub deadline: Option<Option<String>>,
     pub scheduled_date: Option<Option<String>>,
+    pub vault_path: Option<Option<String>>,
 }
 
 /// [`Core::act`] failed before ever reaching the outbound queue, or while
@@ -2594,6 +2601,9 @@ where
             source: None,
             source_key: None,
             source_url: None,
+            // #771: a note is pointed at from the item panel, never at
+            // capture — there is nothing to name a note about yet.
+            vault_path: None,
             // No client affordance sets the delegation axis (#115): the
             // skill is its only writer today, so a capture is the human's.
             agent: None,
@@ -2890,6 +2900,12 @@ where
         if let Some(scheduled_date) = &patch.scheduled_date {
             optimistic.scheduled_date = scheduled_date.clone();
             patch_fields.insert("scheduled_date".to_string(), serde_json::json!(scheduled_date));
+        }
+        // #771, same three states: clearing the pointer is a real `null`,
+        // which is how "Start a note" can be undone.
+        if let Some(vault_path) = &patch.vault_path {
+            optimistic.vault_path = vault_path.clone();
+            patch_fields.insert("vault_path".to_string(), serde_json::json!(vault_path));
         }
         optimistic.updated_at = now_ms;
 
@@ -3786,6 +3802,7 @@ mod tests {
                 priority: Some(2),
                 deadline: Some(Some("2026-08-14".to_string())),
                 scheduled_date: Some(Some("2026-08-12".to_string())),
+                vault_path: Some(Some("Hummingbird/Buy milk.md".to_string())),
             },
             2_000,
             None,
@@ -4276,6 +4293,7 @@ mod tests {
             source: None,
             source_key: None,
             source_url: None,
+            vault_path: None,
             archived_at: None,
             agent: false,
             created_at: 1_000,
@@ -4375,6 +4393,7 @@ mod tests {
             source: None,
             source_key: None,
             source_url: None,
+            vault_path: None,
             archived_at: None,
             agent: false,
             created_at: 1_000,
@@ -5258,6 +5277,7 @@ mod tests {
             source: None,
             source_key: None,
             source_url: None,
+            vault_path: None,
             archived_at: None,
             agent: false,
             created_at: 1,
@@ -6596,7 +6616,14 @@ mod tests {
         let bindings = core.bindings();
         assert_eq!(
             bindings.iter().map(|b| b.key.as_str()).collect::<Vec<_>>(),
-            vec!["race-series", "trips-calendar", "city-waste-page", "homework-link", "scps-quest"],
+            vec![
+                "race-series",
+                "trips-calendar",
+                "city-waste-page",
+                "homework-link",
+                "scps-quest",
+                "obsidian-vault",
+            ],
         );
         assert_eq!(binding(&bindings, "race-series").value, BindingValue::Unset);
         assert_eq!(binding(&bindings, "city-waste-page").value, BindingValue::Unset);
@@ -6636,6 +6663,7 @@ mod tests {
                 "city-waste-page",
                 "homework-link",
                 "scps-quest",
+                "obsidian-vault",
                 "a-non-string-one",
                 "some-future-binding",
             ],

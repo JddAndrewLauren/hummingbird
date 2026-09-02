@@ -32,6 +32,7 @@ import {
 } from "../../screens/triage-form";
 import { useItemDraft } from "../../screens/useItemDraft";
 import { triageFailureFor } from "../../screens/write-failure";
+import { buildUri, derivePath, isValidVaultPath } from "../../obsidian/vault-uri";
 import { microtaskAffordance } from "../../skills/microtask-affordance";
 import { IDLE, isRunning, stampLabel, type SkillRunState } from "../../skills/run-state";
 import type { MicrotaskRunRequest } from "../../shell/useMicrotaskWiring";
@@ -162,6 +163,12 @@ export interface ItemPanelProps {
    * the centre-column takeover over this item, decided by `item-actions.ts`'s
    * `canGrill`. Both modes now. */
   onGrillMe?: (itemId: string) => void;
+  /** #771: the name of the operator's Obsidian vault, off the
+   * `obsidian-vault` binding (`obsidian/vault-uri.ts`'s `obsidianVaultName`).
+   * `null` — unset, unread, or no binding at all — draws no note affordance
+   * whatsoever, which is the whole of what "unset" means here: nothing
+   * announces a vault that isn't there. */
+  vaultName?: string | null;
   /** Whether this item already carries a Grill draft (#356) — the button's
    * label is `item-actions.ts`'s `grillButtonLabel(hasGrillDraft)`, never a
    * branch drawn here. `false` when there is no real draft to have read. */
@@ -205,6 +212,7 @@ export function ItemPanel({
   lastTriage = null,
   onGrillMe,
   hasGrillDraft = false,
+  vaultName = null,
   id,
   grillMeId,
   microtask,
@@ -243,6 +251,40 @@ export function ItemPanel({
     affordance.kind === "break"
       ? { itemId: item.id }
       : { itemId: item.id, replace: true, grain: Number(grain) };
+
+  // #771's note affordance. Drawn only when the vault is bound AND this
+  // render can actually deliver on the label: "Start a note" writes the
+  // derived path before opening, so a panel with no `onTriage` behind it
+  // (demo mode) offers it only for an item that already carries one.
+  //
+  // `isValidVaultPath` gates the *stored* path too, not just the typed one.
+  // The triage form checks what the operator types, but `vault_path` is a
+  // plain column the authority only checks for non-blankness, so a path put
+  // there by `sweep.py`, a skill or the agent can hold a leading `/` or a
+  // `..` — shapes this module's header says this client refuses to send.
+  // Refusing to draw the button is how it refuses. (`derivePath` answers
+  // `null` for a title that strips to nothing; same treatment.)
+  const notePath = item.vaultPath ?? derivePath(item.title);
+  const notePointerIsNew = item.vaultPath === null;
+  const showNoteButton =
+    vaultName !== null &&
+    notePath !== null &&
+    isValidVaultPath(notePath) &&
+    (!notePointerIsNew || onTriage !== undefined);
+  // Optimistic, and deliberately so (#771): there is no `x-success` round
+  // trip and the web has no router to receive one. `obsidian://new?…&append`
+  // opens the note when it is there and creates it when it is not, so
+  // re-clicking is always safe — which is what makes the confirmation
+  // unnecessary rather than merely omitted.
+  const openNote = () => {
+    if (notePath === null) {
+      return;
+    }
+    if (notePointerIsNew) {
+      onTriage?.(item.id, null, { vaultPath: notePath });
+    }
+    window.open(buildUri(vaultName ?? "", notePath), "_blank", "noopener,noreferrer");
+  };
 
   const showFields = mode === "triage" || editing;
   // Detail mode only. On Triage the row renders this itself, *outside* its
@@ -409,6 +451,19 @@ export function ItemPanel({
           error={problems.scheduledDate}
           onChange={(event) => set("scheduledDate", event.target.value)}
         />
+        {/* #771. Spans the whole grid rather than taking one 160px track: a
+            vault path is a sentence-length string, and the other fields in
+            this grid are pickers and short words. Emptying it clears the
+            pointer, exactly as emptying any other seeded field here does. */}
+        <Input
+          label="Vault path"
+          size="sm"
+          style={{ gridColumn: "1 / -1" }}
+          value={draft.vaultPath}
+          error={problems.vaultPath}
+          placeholder="Hummingbird/Knee rehab.md"
+          onChange={(event) => set("vaultPath", event.target.value)}
+        />
       </div>
     </div>
   );
@@ -567,19 +622,43 @@ export function ItemPanel({
 
       {/* #359: Grill reaches Now. Its own row, not folded into the act row
           above — a Grill is not an `ItemAction` (`item-actions.ts`'s own
-          doc), and the two rows are gated by independent conditions. */}
-      {onGrillMe && canGrill(item.stage) ? (
+          doc), and the two rows are gated by independent conditions.
+
+          #771's note button shares this row for the same reason: it moves
+          the item through nothing either, and both are things you can do
+          *about* an item rather than to it. Read mode only — while the
+          fields are open the Vault path input above is the affordance, and
+          a button that navigates away mid-edit would strand the typing. */}
+      {!showFields && ((onGrillMe && canGrill(item.stage)) || showNoteButton) ? (
         <div style={{ display: "flex", gap: "var(--space-4)", flexWrap: "wrap" }}>
-          <Button
-            id={grillMeId}
-            size="sm"
-            variant="secondary"
-            iconLeft="sparkles"
-            disabled={item.pending}
-            onClick={() => onGrillMe(item.id)}
-          >
-            {grillButtonLabel(hasGrillDraft)}
-          </Button>
+          {onGrillMe && canGrill(item.stage) ? (
+            <Button
+              id={grillMeId}
+              size="sm"
+              variant="secondary"
+              iconLeft="sparkles"
+              disabled={item.pending}
+              onClick={() => onGrillMe(item.id)}
+            >
+              {grillButtonLabel(hasGrillDraft)}
+            </Button>
+          ) : null}
+          {showNoteButton ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              // The same "this leaves the app" glyph `AlertCard`'s "Open
+              // source" carries, and for the same reason.
+              iconRight="arrow-up-right"
+              // Only the first click writes, so only the first click is
+              // blocked by an unconfirmed mutation. Reopening a note the item
+              // already points at is pure navigation.
+              disabled={notePointerIsNew && item.pending}
+              onClick={openNote}
+            >
+              {notePointerIsNew ? "Start a note" : "Open note"}
+            </Button>
+          ) : null}
         </div>
       ) : null}
 

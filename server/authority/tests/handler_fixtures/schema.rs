@@ -10,7 +10,8 @@
 //! version-leading index on every synced table (#289) — then 11→12, the
 //! first growth that is a pure `DROP`: the five bare version indexes #289
 //! left standing become prefix-subsumed once their `_version_id` compound
-//! sibling exists (#757).
+//! sibling exists (#757) — and then 12→13, back to additive:
+//! `items.vault_path` (#771).
 
 use hummingbird_authority::{init_schema, SqlValue, SCHEMA_VERSION};
 
@@ -1434,6 +1435,90 @@ fn the_bare_version_index_drop_is_idempotent() {
     init_schema(&migrated, 0).expect("first growth succeeds");
     init_schema(&migrated, 0).expect("second init is a no-op, not a missing-index error");
     assert_eq!(schema_version(&migrated), SCHEMA_VERSION);
+}
+
+/// A genuine v12 store: [`v11_store`] with 11→12's own `DROP`s applied,
+/// exactly how a real v12 store came to be. `items` still lacks
+/// `vault_path`, which is what the 12→13 growth below has to find.
+fn v12_store() -> RusqliteSql {
+    let sql = v11_store();
+    for index in DROPPED_BARE_VERSION_INDEXES {
+        sql.exec(&format!("DROP INDEX IF EXISTS {index}"), &[])
+            .expect("11→12's own DROP applies");
+    }
+    sql.exec("UPDATE meta SET schema_version = 12 WHERE id = 1", &[])
+        .expect("v12 meta row seeds");
+    sql
+}
+
+/// The 12→13 growth path (#771): `items.vault_path`, the sixth
+/// [`add_missing_columns`] arm — back to the 3→4 / 4→5 / 8→9 / 9→10 shape,
+/// one nullable column on an existing table, not a rebuild and not another
+/// `DROP`.
+///
+/// The byte-identity assertion is the load-bearing one, and it is what
+/// decides how `CREATE_ITEMS` had to be *written*: `items` carries no
+/// table-level constraint, so `ALTER TABLE … ADD COLUMN` splices
+/// immediately before the closing paren — after `agent`, on that same
+/// spliced line — and the fresh store's DDL has to be spelled that way or
+/// the two diverge. Verified against a real migrated store here, not
+/// reasoned out.
+#[test]
+fn init_schema_grows_a_schema_12_database_additively() {
+    let migrated = v12_store();
+    assert_eq!(schema_version(&migrated), 12, "starts genuinely at v12");
+    assert!(
+        !column_names(&migrated, "items").contains(&"vault_path".to_string()),
+        "the v12 fixture must not already carry items.vault_path",
+    );
+    // A row written before the growth, to prove the ALTER never touches
+    // anything pre-existing.
+    migrated
+        .exec(
+            "INSERT INTO items (id, title, stage, created_at, updated_at, version) \
+             VALUES ('i', 'Empty the compost', 'ready', 1000, 1000, 1)",
+            &[],
+        )
+        .unwrap();
+
+    init_schema(&migrated, 0).expect("growth init succeeds");
+
+    assert_eq!(schema_version(&migrated), SCHEMA_VERSION, "schema_version moved forward");
+    assert!(
+        column_names(&migrated, "items").contains(&"vault_path".to_string()),
+        "migrated store missing `items.vault_path`",
+    );
+    let rows = migrated.exec("SELECT id, vault_path FROM items", &[]).unwrap();
+    assert_eq!(rows.len(), 1, "the pre-growth row survives");
+    assert!(
+        matches!(rows[0].get("vault_path"), Some(SqlValue::Null) | None),
+        "an item minted before #771 points at no note",
+    );
+
+    let fresh = RusqliteSql::new();
+    assert_eq!(
+        schema_ddl(&migrated),
+        schema_ddl(&fresh),
+        "a migrated v12 store and a fresh store end up with byte-identical DDL — which is \
+         why CREATE_ITEMS is written with `, agent …, vault_path TEXT)` spliced before the \
+         closing paren, verified against a real migrated store's sqlite_master rather than \
+         reasoned out",
+    );
+}
+
+#[test]
+fn the_items_vault_path_migration_is_idempotent() {
+    let migrated = v12_store();
+    init_schema(&migrated, 0).expect("first growth succeeds");
+    init_schema(&migrated, 0).expect("second init is a no-op, not a duplicate-column error");
+    assert_eq!(
+        column_names(&migrated, "items")
+            .iter()
+            .filter(|name| *name == "vault_path")
+            .count(),
+        1,
+        "exactly one vault_path column",
+    );
 }
 
 fn index_names(sql: &dyn Sql) -> Vec<String> {

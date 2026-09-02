@@ -120,7 +120,17 @@ use crate::sql::{Sql, SqlError, SqlValue};
 /// it. Removing an entry from [`CREATE_INDEXES`] alone would have left a
 /// v11 store's copy standing forever, silently, because the array is only
 /// ever additive.
-pub const SCHEMA_VERSION: i64 = 12;
+///
+/// 13 adds `items.vault_path` (#771): the one vault-relative Obsidian path
+/// an item points at. Back to the 3→4 / 4→5 / 8→9 / 9→10 shape — one
+/// nullable column on an existing table — so [`add_missing_columns`] gains
+/// a sixth arm rather than a rebuild or a drop. `items` carries no
+/// table-level constraint, so `ALTER TABLE … ADD COLUMN` splices
+/// immediately before the closing paren, *after* `agent`, which is why
+/// [`CREATE_ITEMS`] is written with `, agent …, vault_path TEXT)` on that
+/// one spliced line — verified against a real migrated store's
+/// `sqlite_master`, not reasoned out.
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// meta: the workspace version counter (one row), bumped by every write.
 /// Every mutated row stamps its `version` from this counter; the delta pull
@@ -185,8 +195,8 @@ CREATE TABLE IF NOT EXISTS project_links (
 /// [`SCHEMA_VERSION`]. FKs are documentation here regardless: enforcement
 /// is off by default in SQLite, and handlers validate referents explicitly.
 ///
-/// **The trailing `, agent …)` on its own line is load-bearing, not a
-/// typo**, and — the part worth reading twice — it is a *different* shape
+/// **The trailing `, agent …, vault_path TEXT)` on its own line is
+/// load-bearing, not a typo**, and — the part worth reading twice — it is a *different* shape
 /// from [`CREATE_ALERTS`]'s inline one even though both encode the same
 /// rule. Both must spell the table exactly as `ALTER TABLE … ADD COLUMN`
 /// splices it, because the growth tests assert a migrated store and a fresh
@@ -196,7 +206,9 @@ CREATE TABLE IF NOT EXISTS project_links (
 /// there is no table constraint at all. `alerts` ends in
 /// `UNIQUE(source, source_key)`, so its column lands snug against
 /// `version`'s line; `items` has no table constraint, so `agent` lands
-/// after the newline, immediately before the `)`. Copying `alerts`'
+/// after the newline, immediately before the `)` — and `vault_path`
+/// (12→13, #771) lands after `agent` on that same spliced line, for the
+/// same reason. Copying `alerts`'
 /// formatting here was the first attempt and
 /// `init_schema_grows_a_schema_2_database_additively` failed on that one
 /// newline.
@@ -223,7 +235,7 @@ CREATE TABLE IF NOT EXISTS items (
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL,
   version     INTEGER NOT NULL
-, agent INTEGER NOT NULL DEFAULT 0)";
+, agent INTEGER NOT NULL DEFAULT 0, vault_path TEXT)";
 
 pub const CREATE_STEPS: &str = "\
 CREATE TABLE IF NOT EXISTS steps (
@@ -581,9 +593,10 @@ fn archive_unaddressable_items(sql: &dyn Sql, now_ms: i64) -> Result<(), SqlErro
 
 /// Every column added to an already-existing table since the schema was
 /// first written — `alerts.subject_key` (3→4, ADR-0015), `items.agent`
-/// (4→5, #115), `projects`' pair (8→9, #625) and `rules.deleted_at`
-/// (9→10). The arms are independent and each reads its own column's
-/// presence, so a store at any starting version reaches the same shape.
+/// (4→5, #115), `projects`' pair (8→9, #625), `rules.deleted_at`
+/// (9→10) and `items.vault_path` (12→13, #771). The arms are independent
+/// and each reads its own column's presence, so a store at any starting
+/// version reaches the same shape.
 ///
 /// Runs **after** the create loop, which is what makes one rule cover every
 /// starting shape: by this point `alerts` certainly exists, either because
@@ -612,6 +625,9 @@ fn add_missing_columns(sql: &dyn Sql) -> Result<(), SqlError> {
     }
     if !column_exists(sql, "rules", "deleted_at")? {
         sql.exec("ALTER TABLE rules ADD COLUMN deleted_at INTEGER", &[])?;
+    }
+    if !column_exists(sql, "items", "vault_path")? {
+        sql.exec("ALTER TABLE items ADD COLUMN vault_path TEXT", &[])?;
     }
     Ok(())
 }

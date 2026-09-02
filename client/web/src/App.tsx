@@ -31,6 +31,7 @@ import { coreStatusLabel } from "./shell/status-label";
 import { syncStatusLabel } from "./shell/sync-status";
 import { useCalendarEventsWiring } from "./shell/useCalendarEventsWiring";
 import { tripsCalendarId } from "./calendar/selection";
+import { obsidianVaultName } from "./obsidian/vault-uri";
 import { useCalendarWiring } from "./shell/useCalendarWiring";
 import { useCaptureWiring } from "./shell/useCaptureWiring";
 import { useFrontierWiring } from "./shell/useFrontierWiring";
@@ -798,6 +799,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         projects={task.projects ?? []}
         onTriage={handleTriage}
         lastTriage={task.lastTriage}
+        vaultName={obsidianVaultName(task.bindings)}
         nowMs={syncNowMs}
       />
     </div>

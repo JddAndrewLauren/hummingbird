@@ -49,6 +49,14 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
             return Ok(error(400, "validation", "deadline must be YYYY-MM-DD or YYYY-MM-DDTHH:MM"));
         }
     }
+    // Non-empty after trim, and nothing more — the same one rule
+    // `project_links.rs` applies to its own `url`. The shape of a vault path
+    // (no leading `/`, no `..` segment, the `.md` that is not required) is
+    // client-side vendor knowledge, in `client/web/src/obsidian/vault-uri.ts`;
+    // the authority stores an opaque operator-chosen string.
+    if create.vault_path.as_deref().is_some_and(|path| path.trim().is_empty()) {
+        return Ok(error(400, "validation", "vault_path must be non-empty"));
+    }
 
     let version = read_meta_version(sql)? + 1;
     let seq = sql
@@ -76,6 +84,7 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
         source: create.source,
         source_key: create.source_key,
         source_url: create.source_url,
+        vault_path: create.vault_path,
         archived_at: None,
         agent: create.agent.unwrap_or(false),
         created_at: now_ms,
@@ -85,8 +94,8 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
     sql.exec(
         "INSERT INTO items (id, seq, title, description, stage, size, energy, context, \
          priority, project_id, project_pos, deadline, scheduled_date, source, source_key, \
-         source_url, archived_at, agent, created_at, updated_at, version) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         source_url, vault_path, archived_at, agent, created_at, updated_at, version) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &item_params(&item),
     )?;
     write_meta_version(sql, version)?;
@@ -112,6 +121,13 @@ pub fn patch(
     if let Some(Some(project_id)) = &patch.project_id {
         if !super::projects::project_exists(sql, project_id)? {
             return Ok(error(400, "validation", "unknown project_id"));
+        }
+    }
+    if let Some(Some(vault_path)) = &patch.vault_path {
+        // Clearing is `"vault_path": null`, never `""` — same as `url` on a
+        // project link patch.
+        if vault_path.trim().is_empty() {
+            return Ok(error(400, "validation", "vault_path must be non-empty"));
         }
     }
     if let Some(Some(deadline)) = &patch.deadline {
@@ -196,6 +212,11 @@ pub fn patch(
     if let Some(archived_at) = patch.archived_at {
         if archived_at != current.archived_at {
             sets.set("archived_at", SqlValue::from_opt_i64(archived_at));
+        }
+    }
+    if let Some(vault_path) = &patch.vault_path {
+        if *vault_path != current.vault_path {
+            sets.set("vault_path", SqlValue::from_opt_text(vault_path.as_deref()));
         }
     }
     if let Some(agent) = patch.agent {
@@ -320,6 +341,7 @@ fn item_params(item: &Item) -> Vec<SqlValue> {
         SqlValue::from_opt_text(item.source.as_deref()),
         SqlValue::from_opt_text(item.source_key.as_deref()),
         SqlValue::from_opt_text(item.source_url.as_deref()),
+        SqlValue::from_opt_text(item.vault_path.as_deref()),
         SqlValue::from_opt_i64(item.archived_at),
         SqlValue::Integer(i64::from(item.agent)),
         SqlValue::Integer(item.created_at),
@@ -348,6 +370,7 @@ pub(crate) fn item_from_row(row: &Row) -> Result<Item, SqlError> {
         source: r.opt_text("source"),
         source_key: r.opt_text("source_key"),
         source_url: r.opt_text("source_url"),
+        vault_path: r.opt_text("vault_path"),
         archived_at: r.opt_int("archived_at"),
         agent: r.bool_int("agent")?,
         created_at: r.int("created_at")?,
