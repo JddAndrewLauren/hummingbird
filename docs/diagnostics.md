@@ -84,10 +84,14 @@ repeatedly, because reading them wrong flips a diagnosis:
   `null` owner as "the core was free" is the exact misdiagnosis this
   paragraph exists to prevent.
 - **`operation.finished{success}` means "committed locally and durably
-  queued for send," never "reached the authority."** See **Known gaps**
-  below — `operation_id` does not cross the outbound-queue boundary, so this
-  event and the eventual `http.*` span for the same logical write share no
-  id.
+  queued for send," never "reached the authority."** Since #739 the two
+  spans *are* joinable in principle — `operation_id` crosses the
+  outbound-queue boundary on the `QueueEntry` and is stamped onto that
+  write's `http.started`/`http.finished`. But the production wiring that
+  would emit an `http.*` for a queued write to join against is each host's
+  own tracked follow-up — read **Known gaps** item 2 for exactly what #739
+  did and did not change before relying on the join. Either way this event
+  never means the write landed.
 
 ## Query the authority's side (Cloudflare)
 
@@ -360,10 +364,10 @@ run directly, result `ok`):
 
 with no `http.started` anywhere in the same journal — a real local commit
 that this proof never sent anywhere, which is exactly what "no later sync"
-looks like in an export. (This is also where the #739 gap in "Known gaps"
-above bites hardest: even a real send afterward would share no id with this
-operation, so the join a human would want to draw here does not exist yet
-in the data.)
+looks like in an export. (Since #739, a real send afterward *would* share
+this operation's id — the join key now exists — but `TaskHostCore::run`
+still drives the unobserved `Core::run`, so no host emits the `http.*` half
+in production yet regardless; see "Known gaps" item 2.)
 
 ### Row 7 — local commit, no UI-visible change: not induced
 
@@ -403,14 +407,29 @@ gap where `worker.started` should be.
    (`client/web/src/shell/diagnostics-download.ts`) — the side `protocol.ts`'s
    own cross-host snake_case rule already said should move. Per-event
    records were never divergent.
-2. **`operation_id` does not cross the outbound-queue boundary — #739.**
-   An `operation.*` span and its eventual `http.*` span for the same
-   logical write share no id and different `cycle_id`s, so they are not
-   programmatically joinable — only ordering (`operation.local_commit`
-   before any later `http.started`) is provable, not identity. Acceptance
-   criterion 7 in both #708 and #710 ("`operation.local_commit` before any
-   `http.started` in the same operation") is therefore met by construction
-   and by ordering, not by an id join.
+2. **Closed — #739.** `operation_id` now crosses the outbound-queue
+   boundary: `sync::queue::QueueEntry` carries the originating operation's
+   id (`#[serde(default)]`, no schema-version bump — the same
+   `rebase_fields` precedent), `drain` threads it through the write adapter
+   into `MutationRequest`, and `InstrumentedMutationTransport` stamps it
+   onto that write's `http.started`/`http.finished`. An `operation.*` span
+   and the `http.*` span for the same logical write are now joinable by
+   `operation_id` alone, across the cycle boundary, with no timestamp
+   needed — proven, including a demonstrated failure on reordering, by
+   `hummingbird_core::sync::cycle::tests::observed::operation_local_commit_precedes_http_started_for_the_same_operation_across_the_cycle_boundary`.
+   An entry enqueued by a path with no operation of its own still carries a
+   null `operation_id`, never a synthesized one. Because a queued entry's
+   id now **outlives the session that minted it**, each host's minted ids
+   have to be unique across a restart, not just within one session: the web
+   seam prefixes its per-`SharedWorker` ordinal with the session id
+   (`TaskCoreCell::mint_operation_id`, whose own doc carries the collision
+   this closed), and `ffi-mobile`'s `mint_mutation_seed` reaches the same
+   property with a random suffix. What #739 did **not**
+   change: neither host's own `run` drives `Core::run_observed` yet (item 7
+   below, and `TaskHostCore::run`'s own doc) — so in production, on either
+   host, no `http.*` is actually emitted for a queued write to join against
+   today. The join key exists end to end; the production wiring that would
+   let a reader exercise it is each host's own tracked follow-up.
 3. **`core.busy`/`core.wait_started`/`core.acquired`'s `owner` can be
    `null` while the core is genuinely held.** See "Read a
    `DiagnosticEventV1` row" above — this is the single most misreadable
@@ -432,18 +451,36 @@ gap where `worker.started` should be.
    the next sync or the next export. Also: `Core::run_observed` is not
    wired on Android, so Android's journal has no `Source::Core`
    `sync.*`/`http.*` rows at all — only the web PWA does.
-8. **Redaction's forbidden-field list is hand-copied per host — #741.**
-   `FORBIDDEN_FIELD_NAMES` is `#[cfg(test)]`-private in
-   `server/domain/src/diagnostics.rs`, so nothing enforces the Kotlin/
-   TypeScript scanners (wherever they exist) stay in sync with it by
-   anything but review. A `DiagnosticEvent` variant addition is only half
-   compiler-checked the same way: the `canonical` match forces a match arm,
-   but nothing forces a fixture-array entry, and a missing one compiles and
-   passes clean while silently skipping the redaction test.
-9. **#742** collects three smaller leftovers from this batch: `cargo fmt`
-   is not a usable gate under `client/`, a masked dead disjunct in
-   `evictOverBudget`, and the visual gate's accessible-name pins matching by
-   substring.
+8. **Closed — #741.** `FORBIDDEN_FIELD_NAMES` in
+   `server/domain/src/diagnostics.rs` is `pub`, not `#[cfg(test)]`-private,
+   so it is reachable outside a test build. `hummingbird-ffi-mobile`'s own
+   redaction test now imports it directly rather than hand-copying it;
+   Kotlin and TypeScript, unable to link a Rust const, each read the list
+   off `diagnostics.rs`'s own source text at test time and assert exact
+   correspondence against it (`DiagnosticsRecorderTest.kt`'s `the forbidden
+   field list matches the Rust source exactly`,
+   `diagnostics-redaction.test.ts`'s `matches the owner enum's list
+   exactly`) — an addition or removal on either side fails the matching
+   test, naming the difference, rather than a hand copy silently going
+   stale or a source-text floor leaving slack. The second half — a
+   `DiagnosticEvent` variant addition being only half compiler-checked, the
+   `canonical` match forcing an arm but nothing forcing a fixture-array
+   entry — is also closed: `every_declared_variant_has_a_fixture_entry`
+   reads every variant's wire name off the enum's own declaration and
+   checks it was actually serialized in `one_of_every_event_variant`,
+   naming whichever variant is missing.
+9. **Two of #742's three smaller leftovers from this batch are closed; one
+   is not.** Closed — #742: the masked dead disjunct in `evictOverBudget`
+   (`client/web/src/worker/diagnostics-store.ts`) is gone — the function
+   early-returns when the starting total is already within budget, so the
+   loop-top budget check could never be the reason the cursor walk stopped;
+   deleting it leaves the post-delete check as the sole halting condition
+   (plus an exhausted cursor), pinned by a test that stops the walk midway
+   through the store. Also closed — #742: the visual gate's accessible-name
+   pins no longer match by substring; the four diagnostics assertions in
+   `client/web/visual/surfaces.spec.ts` now pass `exact: true`, the form
+   already used elsewhere in that file. **Still open:** `cargo fmt` is not a
+   usable gate under `client/`.
 10. **A connection failure and a client-side timeout can log identically.**
     `classify_transport_error` (`client/core/src/diagnostics/failure.rs`)
     falls back to matching words like `"timeout"`/`"connect"` in
@@ -520,6 +557,9 @@ PRs' review threads (#733–#738) for the alternatives-considered record an
 ADR would otherwise carry. Writing an ADR now would either restate that
 header (drifting the moment one of them is next amended) or under-describe
 it. If a future change to this lane makes a decision that has no such
-home — e.g. changing who owns `operation_id` across the queue boundary
-(#739) in a way that trades off two real alternatives — that change is the
-one that should open an ADR, not this doc.
+home — e.g. wiring `Core::run_observed` into a host's own `run` in a way
+that trades off two real alternatives — that change is the one that should
+open an ADR, not this doc. (#739 itself needed none: giving
+`sync::queue::QueueEntry` an `operation_id` followed an existing precedent —
+`rebase_fields`'s own `#[serde(default)]`, no schema-version bump — rather
+than choosing between real alternatives.)

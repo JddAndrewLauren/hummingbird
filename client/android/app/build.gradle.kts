@@ -268,6 +268,12 @@ tasks.withType<Test>().configureEach {
         .withPropertyName("breakpointsTs")
     inputs.file(File(repoRoot, "client/web/src/screens/frontier-lanes.ts"))
         .withPropertyName("frontierLanesTs")
+    // Same freshness fix for DiagnosticsRecorderTest's forbidden-field drift
+    // gate (#741): diagnostics.rs sits outside this Gradle project too, so a
+    // change to FORBIDDEN_FIELD_NAMES would otherwise leave the gate
+    // UP-TO-DATE.
+    inputs.file(File(repoRoot, "server/domain/src/diagnostics.rs"))
+        .withPropertyName("domainDiagnosticsRs")
 }
 
 // ---------------------------------------------------------------------------

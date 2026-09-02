@@ -1320,14 +1320,35 @@ impl TaskCoreCell {
         }
     }
 
-    /// Mints a fresh, host-local id for correlating one call's `core.*`
-    /// and (for capture/triage) `operation.*` events — independent of the
-    /// caller's own mutation `seed` (a different concept: `seed` mints a
+    /// Mints a fresh id for correlating one call's `core.*` and (for
+    /// capture/triage) `operation.*` events — independent of the caller's
+    /// own mutation `seed` (a different concept: `seed` mints a
     /// deterministic *item* id sent to the server, ADR-0007; this
-    /// correlates *diagnostic events about one call*, purely local, and
-    /// never crosses the wire).
+    /// correlates *diagnostic events about one call*, and never crosses
+    /// the wire to the authority).
+    ///
+    /// **Scoped to the session id, not just the counter (#739 review).**
+    /// Since #739 an operation id is persisted onto the `QueueEntry` it
+    /// requested (`hummingbird_core::sync::queue::QueueEntry::operation_id`)
+    /// and so *outlives the session that minted it*: an entry queued
+    /// offline is drained by whichever later session finds it. A
+    /// `TaskCoreCell` is built once per `SharedWorker` (ADR-0010), so
+    /// `next_operation_seq` restarts at 0 on every worker restart — a bare
+    /// `op-0` would then name both the surviving entry and the new
+    /// session's first capture. `session_id` cannot break that tie the way
+    /// it does elsewhere, because the survivor's `http.started`/
+    /// `http.finished` are emitted by the *draining* session and carry its
+    /// id, identical to the fresh operation's. Prefixing here is what
+    /// makes the id restart-unique, while keeping the ordinal that makes
+    /// within-session ordering readable. `ffi-mobile`'s
+    /// `mint_mutation_seed` reaches the same property with a random
+    /// suffix.
     pub fn mint_operation_id(&self) -> String {
-        format!("op-{}", self.next_operation_seq.fetch_add(1, Ordering::Relaxed))
+        format!(
+            "{}-op-{}",
+            self.session.session_id(),
+            self.next_operation_seq.fetch_add(1, Ordering::Relaxed)
+        )
     }
 
     /// Drains every buffered event since the last drain — the wasm
@@ -2611,7 +2632,7 @@ impl TaskHostCore {
             deadline: fields.deadline,
             scheduled_date: fields.scheduled_date,
         };
-        match self.core.capture(seed, title, stage, now_ms, options).await {
+        match self.core.capture(seed, title, stage, now_ms, options, Some(operation_id)).await {
             Ok(id) => {
                 diagnostics.emit_operation_local_commit(now_ms, operation_id);
                 diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Success);
@@ -2762,7 +2783,7 @@ impl TaskHostCore {
             deadline: edits.deadline,
             scheduled_date: edits.scheduled_date,
         };
-        match self.core.triage(seed, item_id, promote_to_ready, patch, now_ms).await {
+        match self.core.triage(seed, item_id, promote_to_ready, patch, now_ms, Some(operation_id)).await {
             Ok(()) => {
                 diagnostics.emit_operation_local_commit(now_ms, operation_id);
                 diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Success);
@@ -3076,9 +3097,60 @@ mod core_checkout_tests {
     }
 
     async fn fresh_cell(dir: &tempfile::TempDir, name: &str) -> TaskCoreCell {
+        fresh_cell_in_session(dir, name, "test-session").await
+    }
+
+    /// [`fresh_cell`] with the session id named, for the tests that turn on
+    /// a *restart* — a second `TaskCoreCell` over the same namespace is
+    /// exactly what a `SharedWorker` restart builds (ADR-0010).
+    async fn fresh_cell_in_session(dir: &tempfile::TempDir, name: &str, session_id: &str) -> TaskCoreCell {
         let namespace = dir.path().join(name);
         let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
-        TaskCoreCell::new(host, "test-session".to_string())
+        TaskCoreCell::new(host, session_id.to_string())
+    }
+
+    /// #739 review: an `operation_id` is persisted onto the `QueueEntry` it
+    /// requested, so it outlives its session — an entry queued offline is
+    /// drained by whichever later session finds it. `next_operation_seq`
+    /// restarts at 0 on every worker restart, so a bare `op-<n>` collided:
+    /// the surviving entry and the new session's first capture both
+    /// answered to `op-0`, and `session_id` could not break the tie because
+    /// the survivor's `http.*` events are emitted by the *draining*
+    /// session. Minting across a restart must not repeat an id.
+    #[tokio::test]
+    async fn a_restarted_host_never_remints_an_operation_id_its_queue_may_still_carry() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let before = fresh_cell_in_session(&dir, "ns-restart", "session-before").await;
+        let queued = before.mint_operation_id();
+        drop(before);
+
+        // The restart: same namespace (so the durable queue, and any entry
+        // still carrying `queued`, is the same), fresh session.
+        let after = fresh_cell_in_session(&dir, "ns-restart", "session-after").await;
+        let minted = after.mint_operation_id();
+
+        assert_ne!(
+            queued, minted,
+            "a restarted host reminted an operation id an undrained queue entry may still carry"
+        );
+    }
+
+    /// The prefix must not cost the within-session ordering the ordinal is
+    /// there to give: two ids from one session still differ, and still
+    /// carry that session's own id.
+    #[tokio::test]
+    async fn operation_ids_stay_ordered_and_session_scoped_within_one_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let cell = fresh_cell_in_session(&dir, "ns-order", "session-x").await;
+
+        let first = cell.mint_operation_id();
+        let second = cell.mint_operation_id();
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("session-x-"), "unexpected id {first:?}");
+        assert!(first.ends_with("-op-0"), "unexpected id {first:?}");
+        assert!(second.ends_with("-op-1"), "unexpected id {second:?}");
     }
 
     /// Acceptance: "Every acquisition of the single `TaskHostCore` emits
@@ -3286,32 +3358,33 @@ mod core_checkout_tests {
 
     /// Acceptance: "A successful capture records `operation.local_commit`
     /// **before** any `http.started` in the same operation." Stated
-    /// honestly (#708 review round 1, finding 5's "also fix" list): this
-    /// assertion **cannot fail against the current architecture**.
-    /// `ffi-web` never emits `http.started` at all — [`Core::capture`]
-    /// only enqueues durably, and the HTTP round trip a queued mutation
-    /// eventually takes happens later, inside an unrelated sync cycle,
-    /// under that cycle's own `cycle_id`/`request_id`, with no
-    /// `operation_id` threaded through the queue to connect the two. So
-    /// this test's "no `http.started` in the same operation" half is true
-    /// by construction, not because the ordering was raced and won — the
-    /// three-event *order* below is the only half a regression could
-    /// actually break. Closing that gap for real (an `operation_id`
-    /// carried on the queued `MutationIntent` through to its eventual
-    /// send) is issue #739, not something this test can stand in for.
+    /// honestly (#708 review round 1, finding 5's "also fix" list, closed
+    /// for real by #739): this test's "no `http.started` in the same
+    /// operation" half is still true by construction here, but for a
+    /// narrower and now-plainly-scoped reason than before. #739 landed the
+    /// join key itself — [`Core::capture`] now stamps the enqueued entry's
+    /// `operation_id`, and `drain`'s eventual `http.started`/`http.finished`
+    /// carry it through (proven at the core level, spanning a real cycle
+    /// boundary, by
+    /// `sync::cycle::tests::observed::operation_local_commit_precedes_http_started_for_the_same_operation_across_the_cycle_boundary`,
+    /// including a demonstrated failure on reordering). What #739 did
+    /// **not** change is that [`TaskHostCore::run`] still drives the
+    /// unobserved `Core::run`, not `Core::run_observed` — see that method's
+    /// own doc for why (no working `sleep_ms` for the slow/stalled
+    /// watchdog on this host yet) — so `ffi-web` still never actually emits
+    /// an `http.started` from this production surface, whatever operation
+    /// id it would carry. Wiring `run_observed` into this host is that
+    /// method's own tracked follow-up, not #739's.
     ///
-    /// **What a reader inherits from that gap, stated for #712's
-    /// interpretation table.** No `operation_id` crosses the outbound-queue
-    /// boundary, so in an export an `operation.*` span for a capture and the
-    /// `http.*` span that eventually sends it are **not joinable** — there
-    /// is no id in common and their `cycle_id`s differ (the operation has
-    /// none; the send belongs to whichever later cycle drained it). An
-    /// `operation.finished{success}` therefore means "committed locally and
-    /// durably queued", **never** "reached the authority", and an
-    /// interpretation table must not present the two as one end-to-end
-    /// latency or infer a send from an operation's outcome. Until #739 lands,
-    /// the only honest join is by wall-clock proximity, which is a human
-    /// judgement and not a correlation the data supports.
+    /// **What a reader inherits, updated for #712's interpretation table.**
+    /// The join key now exists end to end (a queued write's `http.*` span
+    /// carries the same `operation_id` its `operation.local_commit` did),
+    /// but on the web host specifically an `operation.finished{success}`
+    /// still means "committed locally and durably queued", **never**
+    /// "reached the authority", because no cycle here is observed yet to
+    /// produce the `http.*` half at all. Once `run_observed` lands on this
+    /// host, the two spans become joinable by `operation_id` alone with no
+    /// further change needed here.
     #[tokio::test]
     async fn a_successful_capture_emits_local_commit_before_finished_and_no_http_started() {
         let dir = tempfile::tempdir().unwrap();
@@ -5081,6 +5154,7 @@ mod tests {
                     path: "/api/items".to_string(),
                     body: serde_json::json!({"title": "buy milk"}),
                 },
+                operation_id: None,
             },
             reason: DeadLetterReason::Permanent("validation".to_string()),
             at_ms: 5_000,
@@ -5115,6 +5189,7 @@ mod tests {
                     patch_fields: serde_json::json!({"title": "buy oat milk"}),
                     rebase_fields: None,
                 },
+                operation_id: None,
             },
             reason: DeadLetterReason::Conflict {
                 fields: vec!["title".to_string()],
@@ -5161,6 +5236,7 @@ mod tests {
                     patch_fields: serde_json::json!({}),
                     rebase_fields: None,
                 },
+                operation_id: None,
             },
             reason: DeadLetterReason::Conflict {
                 fields: vec!["context".to_string()],

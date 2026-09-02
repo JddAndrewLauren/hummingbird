@@ -4225,7 +4225,7 @@ impl MobileTaskHost {
         let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Capture).await;
         let result = inner
             .core
-            .capture(&seed, draft.title, stage, now_ms, options)
+            .capture(&seed, draft.title, stage, now_ms, options, Some(&operation_id))
             .await
             .map_err(|error| MobileCaptureError::CaptureFailed {
                 detail: error.to_string(),
@@ -4582,7 +4582,7 @@ impl MobileTaskHost {
         let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Triage).await;
         inner
             .core
-            .triage(&seed, &item_id, false, patch, now_ms)
+            .triage(&seed, &item_id, false, patch, now_ms, None)
             .await
             .map_err(|error| match error {
                 hummingbird_core::ActError::ItemNotFound => MobileEditError::ItemNotFound,
@@ -4628,7 +4628,7 @@ impl MobileTaskHost {
         let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Triage).await;
         inner
             .core
-            .triage(&seed, &item_id, promote_to_ready, patch, now_ms)
+            .triage(&seed, &item_id, promote_to_ready, patch, now_ms, None)
             .await
             .map_err(|error| match error {
                 hummingbird_core::ActError::ItemNotFound => MobileEditError::ItemNotFound,
@@ -4663,7 +4663,7 @@ impl MobileTaskHost {
         let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Triage).await;
         inner
             .core
-            .triage(&seed, &item_id, false, patch, now_ms)
+            .triage(&seed, &item_id, false, patch, now_ms, None)
             .await
             .map_err(|error| match error {
                 hummingbird_core::ActError::ItemNotFound => MobileEditError::ItemNotFound,
@@ -4772,6 +4772,7 @@ impl MobileTaskHost {
                     method: HttpMethod::Post,
                     path: "/api/push_targets".to_string(),
                     body,
+                    operation_id: None,
                 },
             )
             .await
@@ -6700,11 +6701,25 @@ mod tests {
     /// **What the two halves of this test actually prove, stated plainly.**
     /// The sequence assertion is a real, failable pin: reordering
     /// `emit_operation_local_commit` against the durable write breaks it.
-    /// The `http.started` half is **vacuous by construction** — `capture`
-    /// only enqueues, so this path never issues HTTP and the buffer holds
-    /// no `http.started` for any assertion to catch. It is kept as a
-    /// regression tripwire for the day capture *does* reach the network,
-    /// not as evidence of anything today.
+    /// The `http.started` half is **still vacuous by construction here** —
+    /// `capture` only enqueues, so this path never issues HTTP and the
+    /// buffer holds no `http.started` for any assertion to catch. That is
+    /// not the structural gap #739 closed, though: #739 gave the queued
+    /// entry itself an `operation_id` (`hummingbird_core::Core::capture`
+    /// now stamps it, and `drain`'s eventual `http.started`/`http.finished`
+    /// carry it through — proven at the core level, spanning a real cycle
+    /// boundary, by
+    /// `hummingbird_core::sync::cycle::tests::observed::operation_local_commit_precedes_http_started_for_the_same_operation_across_the_cycle_boundary`).
+    /// What is still missing on **this** host is that
+    /// [`MobileTaskHost::run`] drives the unobserved `Core::run`, not
+    /// `Core::run_observed` — same reason `ffi-web`'s own `run` doesn't
+    /// either (no watchdog clock wired up here) — so no `http.started` is
+    /// emitted by this production surface at all, whatever operation id it
+    /// would carry once one is. Wiring `run_observed` into this host is a
+    /// separate, already-tracked follow-up, not #739's; until it lands this
+    /// assertion is kept as a regression tripwire for the day capture
+    /// *does* reach the network, not as evidence the join is exercised
+    /// today.
     #[tokio::test]
     async fn a_successful_capture_orders_operation_local_commit_before_any_http_started() {
         use hummingbird_core::diagnostics::{DiagnosticEvent, DiagnosticEventV1};
@@ -7980,6 +7995,7 @@ mod tests {
                         ..Default::default()
                     },
                     2_000,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -7994,6 +8010,7 @@ mod tests {
                         ..Default::default()
                     },
                     2_000,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -8150,7 +8167,7 @@ mod tests {
             let mut inner = host.inner.lock().await;
             inner
                 .core
-                .triage("seed", &id, true, hummingbird_core::TriagePatch::default(), 2_000)
+                .triage("seed", &id, true, hummingbird_core::TriagePatch::default(), 2_000, None)
                 .await
                 .unwrap();
         }
@@ -9701,6 +9718,7 @@ mod settings_tests {
                     patch_fields,
                     rebase_fields: None,
                 },
+                operation_id: None,
             },
             reason: DeadLetterReason::Permanent("rejected".to_string()),
             at_ms: 5_000,

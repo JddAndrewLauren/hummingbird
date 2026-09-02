@@ -16,9 +16,11 @@
 // passed their pure-module unit tests, and did nothing at runtime.
 // `pnpm typecheck` cannot see that something has no caller. Mounting it can.
 //
-// Keep the surface small: render, screen, fireEvent, and the DTO builders
-// below. Anything richer (user-event, jest-dom matchers) is a new dependency
-// and should be argued for, not drifted into.
+// Keep the surface small: render, screen, fireEvent, renderHook, and the DTO
+// builders below. Anything richer (user-event, jest-dom matchers) is a new
+// dependency and should be argued for, not drifted into. `renderHook` is
+// covered too — a hook test imports it from here for the same cleanup
+// reason as `render` (#754).
 
 import { cleanup } from "@testing-library/react";
 import { afterEach } from "vitest";
@@ -36,7 +38,7 @@ import type {
 } from "../store/protocol";
 import type { TaskState } from "../store/store";
 
-export { render, screen, fireEvent, within, act } from "@testing-library/react";
+export { render, screen, fireEvent, within, act, renderHook } from "@testing-library/react";
 
 afterEach(() => {
   cleanup();

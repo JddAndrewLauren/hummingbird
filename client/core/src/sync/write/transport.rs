@@ -39,6 +39,13 @@ pub struct MutationRequest {
     pub method: HttpMethod,
     pub path: String,
     pub body: String,
+    /// The id of the operation that requested this write (#739), if any —
+    /// carried from the queued [`super::super::queue::QueueEntry`] that
+    /// produced this request so the instrumented transport can stamp its
+    /// `http.started`/`http.finished` with the same id
+    /// `operation.local_commit` carried, joining the two across the
+    /// outbound-queue boundary.
+    pub operation_id: Option<String>,
 }
 
 /// A completed round trip, whatever its status. Unlike the read transport,

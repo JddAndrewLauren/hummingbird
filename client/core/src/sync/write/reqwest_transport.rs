@@ -139,6 +139,7 @@ mod tests {
             method: HttpMethod::Post,
             path: "/api/items".to_string(),
             body: "{}".to_string(),
+            operation_id: None,
         }
     }
 

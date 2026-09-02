@@ -165,6 +165,36 @@ describe("createDiagnosticsStore", () => {
       expect(seqs).not.toContain(1);
     });
 
+    // The eviction loop's post-delete budget check is the ONLY thing that
+    // can stop it before the cursor runs out — a loop-top duplicate of that
+    // same check was unreachable-as-true (deleted as part of #742) because
+    // `evictOverBudget` early-returns whenever the starting total is
+    // already within budget, so the first cursor callback always starts
+    // over budget, and every subsequent callback runs only when the
+    // post-delete check just decided NOT to stop. This test pins the
+    // surviving guard's own job: stopping midway through the store,
+    // evicting more than one record but fewer than all of them, and
+    // leaving the later (newer) records untouched. Five ~3 MiB events
+    // cross the 10 MiB cap after two are dropped — a third would also
+    // clear the cap, but the surviving guard must stop the instant the
+    // SECOND delete satisfies it, never walking on to a third.
+    it("stops evicting partway through the store, leaving the later records intact", async () => {
+      const store = newStore();
+      const pad = "x".repeat(3 * 1024 * 1024);
+      const events = [1, 2, 3, 4, 5].map((seq) => event({ seq, request_id: pad }));
+
+      await store.append(events, 1_000);
+
+      const result = await store.exportAll();
+      expect(result.events.map((e) => e.seq)).toEqual([3, 4, 5]);
+      expect(result.droppedCount).toBe(2);
+      const totalBytes = result.events.reduce(
+        (sum, e) => sum + new TextEncoder().encode(JSON.stringify(e)).length,
+        0,
+      );
+      expect(totalBytes).toBeLessThanOrEqual(DIAGNOSTICS_MAX_BYTES);
+    });
+
     it("never lets the journal exceed the 10 MiB bound", async () => {
       const store = newStore();
       const pad = "x".repeat(3.5 * 1024 * 1024);

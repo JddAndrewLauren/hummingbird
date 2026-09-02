@@ -95,6 +95,16 @@ impl<'a> DiagnosticSession<'a> {
         }
     }
 
+    /// This session's id — the same value [`Self::emit`] stamps on every
+    /// event. Exposed because a host that mints its own `operation_id`s
+    /// needs to scope them to the session (`client/ffi-web`'s
+    /// `TaskCoreCell::mint_operation_id`): an operation id now outlives the
+    /// session that minted it, so a host-local counter alone repeats after
+    /// a restart.
+    pub fn session_id(&self) -> &'a str {
+        self.session_id
+    }
+
     fn next_seq(&self) -> u64 {
         self.seq.fetch_add(1, Ordering::Relaxed)
     }
@@ -227,7 +237,7 @@ impl<'a> DiagnosticsContext<'a> {
             .saturating_sub(self.session.origin_monotonic_ms)
     }
 
-    fn emit(&self, request_id: Option<&str>, event: DiagnosticEvent) {
+    fn emit(&self, request_id: Option<&str>, operation_id: Option<&str>, event: DiagnosticEvent) {
         self.sink.record(DiagnosticEventV1 {
             schema_version: DIAGNOSTIC_EVENT_SCHEMA_VERSION,
             seq: self.session.next_seq(),
@@ -236,31 +246,44 @@ impl<'a> DiagnosticsContext<'a> {
             session_id: self.session.session_id.to_string(),
             source: Source::Core,
             cycle_id: Some(self.cycle_id.to_string()),
-            operation_id: None,
+            operation_id: operation_id.map(str::to_string),
             request_id: request_id.map(str::to_string),
             event,
         });
     }
 
     pub fn emit_sync_started(&self, force_full_sweep: bool) {
-        self.emit(None, DiagnosticEvent::SyncStarted { force_full_sweep });
+        self.emit(None, None, DiagnosticEvent::SyncStarted { force_full_sweep });
     }
 
     pub fn emit_sync_phase_started(&self, phase: SyncPhase) {
-        self.emit(None, DiagnosticEvent::SyncPhaseStarted { phase });
+        self.emit(None, None, DiagnosticEvent::SyncPhaseStarted { phase });
     }
 
     pub fn emit_sync_phase_finished(&self, phase: SyncPhase) {
-        self.emit(None, DiagnosticEvent::SyncPhaseFinished { phase });
+        self.emit(None, None, DiagnosticEvent::SyncPhaseFinished { phase });
     }
 
     pub fn emit_sync_finished(&self, outcome: SyncOutcome) {
-        self.emit(None, DiagnosticEvent::SyncFinished { outcome });
+        self.emit(None, None, DiagnosticEvent::SyncFinished { outcome });
     }
 
-    fn emit_http_started(&self, request_id: &str, method: DiagnosticHttpMethod, route: &str) {
+    /// `operation_id` (#739) is the id of the operation that requested the
+    /// write this `http.started` belongs to — `None` for a read (no
+    /// operation ever originates a pull) or for a queued write enqueued by
+    /// a path with no operation of its own. Carried straight from
+    /// [`super::super::sync::write::transport::MutationRequest::operation_id`]
+    /// by [`InstrumentedMutationTransport::send`], never minted here.
+    fn emit_http_started(
+        &self,
+        request_id: &str,
+        method: DiagnosticHttpMethod,
+        route: &str,
+        operation_id: Option<&str>,
+    ) {
         self.emit(
             Some(request_id),
+            operation_id,
             DiagnosticEvent::HttpStarted {
                 method,
                 route: route.to_string(),
@@ -275,9 +298,11 @@ impl<'a> DiagnosticsContext<'a> {
         route: &str,
         status: Option<u16>,
         failure: Option<super::FailureClass>,
+        operation_id: Option<&str>,
     ) {
         self.emit(
             Some(request_id),
+            operation_id,
             DiagnosticEvent::HttpFinished {
                 method,
                 route: route.to_string(),
@@ -288,11 +313,11 @@ impl<'a> DiagnosticsContext<'a> {
     }
 
     fn emit_operation_slow(&self, request_id: &str) {
-        self.emit(Some(request_id), DiagnosticEvent::OperationSlow);
+        self.emit(Some(request_id), None, DiagnosticEvent::OperationSlow);
     }
 
     fn emit_operation_stalled(&self, request_id: &str) {
-        self.emit(Some(request_id), DiagnosticEvent::OperationStalled);
+        self.emit(Some(request_id), None, DiagnosticEvent::OperationStalled);
     }
 
     /// Races `op` against the 5s/30s thresholds, emitting `operation.slow`
@@ -350,7 +375,9 @@ impl<'a, R: ChangesTransport> ChangesTransport for InstrumentedChangesTransport<
         const ROUTE: &str = "/api/changes";
         let method = DiagnosticHttpMethod::Get;
         let request_id = self.diagnostics.next_request_id();
-        self.diagnostics.emit_http_started(&request_id, method, ROUTE);
+        // No operation ever originates a pull (#739): a read has no
+        // operation id to carry.
+        self.diagnostics.emit_http_started(&request_id, method, ROUTE, None);
         let headers = self.diagnostics.correlation_headers(&request_id);
         let result = self
             .diagnostics
@@ -367,7 +394,7 @@ impl<'a, R: ChangesTransport> ChangesTransport for InstrumentedChangesTransport<
         const ROUTE: &str = "/api/sweep";
         let method = DiagnosticHttpMethod::Get;
         let request_id = self.diagnostics.next_request_id();
-        self.diagnostics.emit_http_started(&request_id, method, ROUTE);
+        self.diagnostics.emit_http_started(&request_id, method, ROUTE, None);
         let headers = self.diagnostics.correlation_headers(&request_id);
         let result = self
             .diagnostics
@@ -387,13 +414,16 @@ impl<'a, R: ChangesTransport> InstrumentedChangesTransport<'a, R> {
         result: &Result<String, TransportError>,
     ) {
         match result {
-            Ok(_) => self.diagnostics.emit_http_finished(request_id, method, route, None, None),
+            Ok(_) => self
+                .diagnostics
+                .emit_http_finished(request_id, method, route, None, None, None),
             Err(error) => self.diagnostics.emit_http_finished(
                 request_id,
                 method,
                 route,
                 error.status,
                 Some(classify_transport_error(error)),
+                None,
             ),
         }
     }
@@ -425,23 +455,34 @@ impl<'a, W: MutationTransport> MutationTransport for InstrumentedMutationTranspo
         };
         let route = route_template(&request.path);
         let request_id = self.diagnostics.next_request_id();
-        self.diagnostics.emit_http_started(&request_id, method, &route);
+        // #739: the id of the operation that enqueued this write, carried
+        // straight from the queued entry through `MutationRequest` — cloned
+        // here because `request` itself is moved into `send_with_headers`
+        // below.
+        let operation_id = request.operation_id.clone();
+        self.diagnostics
+            .emit_http_started(&request_id, method, &route, operation_id.as_deref());
         let headers = self.diagnostics.correlation_headers(&request_id);
         let result = self
             .diagnostics
             .watch_slow_stalled(&request_id, self.inner.send_with_headers(access_token, request, &headers))
             .await;
         match &result {
-            Ok(response) => {
-                self.diagnostics
-                    .emit_http_finished(&request_id, method, &route, Some(response.status), None)
-            }
+            Ok(response) => self.diagnostics.emit_http_finished(
+                &request_id,
+                method,
+                &route,
+                Some(response.status),
+                None,
+                operation_id.as_deref(),
+            ),
             Err(error) => self.diagnostics.emit_http_finished(
                 &request_id,
                 method,
                 &route,
                 error.status,
                 Some(classify_transport_error(error)),
+                operation_id.as_deref(),
             ),
         }
         result
@@ -584,8 +625,15 @@ mod tests {
         let session = DiagnosticSession::new("s-1", 0);
         let diagnostics = DiagnosticsContext::new(&sink, &clock, &session, "cycle-9", "core", "test", 1_000);
 
-        diagnostics.emit_http_started("cycle-9-0", DiagnosticHttpMethod::Get, "/api/sweep");
-        diagnostics.emit_http_finished("cycle-9-0", DiagnosticHttpMethod::Get, "/api/sweep", Some(200), None);
+        diagnostics.emit_http_started("cycle-9-0", DiagnosticHttpMethod::Get, "/api/sweep", None);
+        diagnostics.emit_http_finished(
+            "cycle-9-0",
+            DiagnosticHttpMethod::Get,
+            "/api/sweep",
+            Some(200),
+            None,
+            None,
+        );
 
         let events = sink.events();
         assert_eq!(events.len(), 2);

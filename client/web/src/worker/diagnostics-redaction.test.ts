@@ -31,6 +31,15 @@ import { createDiagnosticsStore } from "./diagnostics-store";
 // fails the "the list actually has entries" assertion below rather than
 // silently scanning against an empty array.
 //
+// **Exact correspondence, not a floor (#741).** This used to assert
+// `forbidden.length >= 15` against a real list of 17 — two entries of
+// slack, so removing two entries from the Rust list (a real redaction
+// hole) would not have failed here. `EXPECTED_FORBIDDEN_FIELD_NAMES` below
+// is a full copy of the current 17-entry list; the assertion is a deep
+// equality against it, so *either* direction of drift — Rust grows an
+// entry this file doesn't expect, or loses one this file still expects —
+// fails loudly, naming the difference.
+//
 // The list lives in `hummingbird-domain`, not `hummingbird-core`: #711 moved
 // the whole `DiagnosticEventV1` envelope (and this const with it) into
 // `server/domain/src/diagnostics.rs` so the authority's request boundary —
@@ -50,17 +59,43 @@ function readForbiddenFieldNamesFromDomainSource(): string[] {
   return [...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
 }
 
+// The domain owner's current 17-entry list, copied here once so the test
+// below can assert exact correspondence rather than a floor. #741's own
+// out-of-scope note applies: this file does not add or remove entries — a
+// future PR that legitimately grows or shrinks `FORBIDDEN_FIELD_NAMES`
+// updates this array in the same change, and the mismatch this test would
+// otherwise report is exactly the drift signal the criterion asks for.
+const EXPECTED_FORBIDDEN_FIELD_NAMES = [
+  "authorization",
+  "access_token",
+  "api_key",
+  "token",
+  "credential",
+  "password",
+  "body",
+  "request_body",
+  "response_body",
+  "title",
+  "description",
+  "url",
+  "ip",
+  "ip_address",
+  "exception",
+  "stack_trace",
+  "message",
+];
+
 describe("a real exported journal never carries a forbidden field or value", () => {
   const forbidden = readForbiddenFieldNamesFromDomainSource();
 
-  it("actually found the owner enum's list — guards the reader itself, not a vacuous empty scan", () => {
+  it("matches the owner enum's list exactly — not a floor with slack (#741)", () => {
     // If `diagnostics.rs`'s const is ever renamed or reshaped past what the regex
-    // above can parse, this fails LOUDLY here rather than letting the test
-    // below pass by scanning against nothing.
-    expect(forbidden.length).toBeGreaterThanOrEqual(15);
-    expect(forbidden).toContain("token");
-    expect(forbidden).toContain("title");
-    expect(forbidden).toContain("description");
+    // above can parse, this fails LOUDLY here (an empty array against a
+    // 17-entry expectation) rather than letting the test below pass by
+    // scanning against nothing. An addition or removal in Rust with no
+    // matching edit here also fails here, naming the mismatch — the gap
+    // the old `>= 15` floor left open.
+    expect(forbidden).toEqual(EXPECTED_FORBIDDEN_FIELD_NAMES);
   });
 
   it("scans a full export — every worker-layer family plus a simulated Core drain — against the owner enum's own forbidden list, plus the mirror", async () => {

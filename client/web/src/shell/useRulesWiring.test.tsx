@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
-import { renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { CoreStatus } from "../store/store";
 import type { RuleDTO } from "../store/protocol";
+import { renderHook } from "../test/component";
 import type { WorkerLike } from "../store/worker-client";
 import { useRulesWiring } from "./useRulesWiring";
 
