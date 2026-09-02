@@ -1,7 +1,7 @@
 import { Card } from "../../components/core/Card";
 import { PaneGap } from "../questions/PaneGap";
 import type { QuestionInputs } from "../questions/contract";
-import { pollerGapReason, pollerView } from "./poller";
+import { ageWords, cadenceWords, pollerGapReason, pollerView } from "./poller";
 
 // The poller pane's own expanded rendering — `UptimePaneExpanded`'s shape,
 // carried over: a headline first, the raw freshness below it. There is no
@@ -63,13 +63,11 @@ export function PollerPaneBody({
           flexWrap: "wrap",
         }}
       >
-        <span className="hb-meta">
-          {ageMs === null ? "age unknown" : `as of ${Math.floor(ageMs / 60_000)}m ago`}
-        </span>
+        <span className="hb-meta">{ageMs === null ? "age unknown" : `as of ${ageWords(ageMs)}`}</span>
         <span className="hb-meta">
           {declaredCadenceMs === null
             ? "cadence unreadable"
-            : `declared cadence ${Math.round(declaredCadenceMs / 60_000)}m`}
+            : `declared cadence ${cadenceWords(declaredCadenceMs)}`}
         </span>
       </div>
     </div>

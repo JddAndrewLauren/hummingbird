@@ -439,7 +439,7 @@ private fun PollerPaneExpanded(
         FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(
                 when (val freshness = facts.freshness) {
-                    is MobilePaneFreshness.Age -> "as of ${freshness.ageMs / 60_000}m ago"
+                    is MobilePaneFreshness.Age -> "as of ${ageWords(freshness.ageMs)}"
                     MobilePaneFreshness.Unknown -> "age unknown"
                 },
                 style = MaterialTheme.typography.labelSmall,
@@ -448,7 +448,7 @@ private fun PollerPaneExpanded(
             Text(
                 when (val freshness = facts.freshness) {
                     is MobilePaneFreshness.Age ->
-                        freshness.declaredCadenceMs?.let { "declared cadence ${it / 60_000}m" }
+                        freshness.declaredCadenceMs?.let { "declared cadence ${cadenceWords(it)}" }
                             ?: "cadence unreadable"
                     MobilePaneFreshness.Unknown -> "cadence unreadable"
                 },

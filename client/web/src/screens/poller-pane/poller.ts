@@ -90,16 +90,32 @@ export function pollerGapReason(source: string, inputs: QuestionInputs): string 
   return resolved.kind === "gap" ? gapReason(resolved.gap) : UNRESOLVABLE;
 }
 
-function ageWords(ageMs: number): string {
-  const hours = Math.floor(ageMs / 3_600_000);
+function durationWords(ms: number): string {
+  const hours = Math.floor(ms / 3_600_000);
   if (hours < 1) {
-    const minutes = Math.floor(ageMs / 60_000);
-    return minutes < 1 ? "under a minute ago" : `${minutes}m ago`;
+    const minutes = Math.floor(ms / 60_000);
+    return minutes < 1 ? "under a minute" : `${minutes}m`;
   }
   if (hours < 48) {
-    return `${hours}h ago`;
+    return `${hours}h`;
   }
-  return `${Math.floor(hours / 24)}d ago`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+/** The elapsed time since a row's `fetchedAtMs`, promoted through
+ * minutes/hours/days the same way every sibling pane's stale caveat does —
+ * shared by the collapsed headline and the expanded card so the two never
+ * disagree (#775 review round 1). */
+export function ageWords(ageMs: number): string {
+  return `${durationWords(ageMs)} ago`;
+}
+
+/** The declared cadence, in the same units [`ageWords`] promotes the age
+ * through — read by the expanded card so it never disagrees with the
+ * collapsed tile it belongs to (siblings' "stale — as of Nh ago" carries the
+ * same rule; #775 review round 1). */
+export function cadenceWords(cadenceMs: number): string {
+  return durationWords(cadenceMs);
 }
 
 /** The collapsed row's whole sentence, naming the source. */

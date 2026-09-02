@@ -112,6 +112,17 @@ internal fun ageWords(ageMs: Long): String {
     return "${hours / 24}d ago"
 }
 
+/** A declared cadence, promoted through the same hours/days [ageWords]
+ * uses, minus the "ago" — read by the poller pane's expanded card so it
+ * never disagrees with [ageWords] or with its own collapsed tile (#775
+ * review round 1). */
+internal fun cadenceWords(cadenceMs: Long): String {
+    val hours = cadenceMs / 3_600_000
+    if (hours < 1) return "under an hour"
+    if (hours < 48) return "${hours}h"
+    return "${hours / 24}d"
+}
+
 private fun heardAgo(freshness: MobilePaneFreshness): String = when (freshness) {
     is MobilePaneFreshness.Age -> ageWords(freshness.ageMs)
     MobilePaneFreshness.Unknown -> "an unknown time ago"

@@ -2060,7 +2060,10 @@ fn to_backtest_item(item: &Item, occurred_at_utc: String) -> rules::BacktestItem
 // (né `status_pane_inputs`, #536) now wires every field a sunk pane reads:
 // the status four's three sources, plus waste's and race's
 // `context_snapshots` sources, the bindings table (waste/race/vacation) and
-// the actionable-items list (weekend's merge). **#564/#621 filled the last
+// the actionable-items list (weekend's merge). **#775 grew the source loop
+// again**: `poller::poller_sources()` now names nine sources, not five, and
+// the loop below reads every one of them whether or not a sunk pane also
+// claims it. **#564/#621 filled the last
 // field**: the calendar arm now carries this device's own `calendar_reads`
 // and `calendar_connected` off the lane below, so weekend and vacation
 // answer for real once a calendar is connected and fall back to their
@@ -3534,11 +3537,22 @@ fn mobile_pane_inputs(
     // `poller::poller_sources`' nine — this loop reads every source any
     // sunk pane needs in one pass rather than one hand-written line per
     // question (`poller.rs`'s own "not a hand-maintained list" reasoning,
-    // applied at this seam too).
+    // applied at this seam too). That coincidence is asserted below rather
+    // than assumed: `poller_sources()` filters retired entries, so a future
+    // retirement (`v1` -> `v2`, the shape `sources.rs` already has one of)
+    // would otherwise silently drop a sunk pane's own source out of this
+    // loop with no test failing and no compile error.
+    let sources = poller::poller_sources();
     let mut pane_reads = HashMap::new();
-    for source in poller::poller_sources() {
+    for source in &sources {
         pane_reads.insert(source.to_string(), to_pane_read_facts(&core.pane_read(source, now_ms)));
     }
+    debug_assert!(
+        [kimi::SOURCE, github::SOURCE, uptime::SOURCE, waste::SOURCE, race::SOURCE]
+            .iter()
+            .all(|sunk| sources.contains(sunk)),
+        "a sunk pane's own SOURCE dropped out of poller::poller_sources()",
+    );
     let bindings: Vec<BindingFact> = core.bindings().iter().map(to_binding_fact).collect();
     let items: Vec<PaneItemFacts> = pane_item_facts(
         &core.frontier(),
@@ -5111,9 +5125,9 @@ impl MobileTaskHost {
     /// Phase one of the pane lane's zone bridge (#536, ADR-0025): every
     /// `(zone, civil-date)` fact `surface`'s sunk questions need, given
     /// this device's own state. Empty for [`MobileSurface::Status`] today —
-    /// none of the status four is civil-date reasoning (`panes::mod`'s own
-    /// test) — kept generic over `surface` so #537's Now questions reach
-    /// it unchanged.
+    /// none of the status five (kimi/github/uptime/reachability/poller) is
+    /// civil-date reasoning (`panes::mod`'s own test) — kept generic over
+    /// `surface` so #537's Now questions reach it unchanged.
     pub async fn pane_zone_queries(&self, surface: MobileSurface, now_ms: i64) -> Vec<MobileZoneQuery> {
         let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await;
         // Phase one reads no calendar arm — it runs before any zone is
@@ -5193,9 +5207,9 @@ impl MobileTaskHost {
     /// [`Self::rank_panes`].
     pub async fn status_alarm(&self, now_ms: i64, sync: MobileSyncFacts) -> Option<MobilePaneBand> {
         let inner = self.inner.lock().await;
-        // No calendar arm, and so no calendar lock taken: the status four
-        // are kimi/github/uptime/reachability, none of which reads the
-        // calendar at all — every question that does is on `Surface::Now`.
+        // No calendar arm, and so no calendar lock taken: the status five
+        // are kimi/github/uptime/reachability/poller, none of which reads
+        // the calendar at all — every question that does is on `Surface::Now`.
         let inputs = mobile_pane_inputs(&inner.core, now_ms, sync, CalendarArm::default());
         panes::status_alarm(&inputs).map(map_band)
     }

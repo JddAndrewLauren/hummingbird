@@ -85,7 +85,7 @@ describe("PollerPaneExpanded, mounted inside StatusScreen", () => {
     const toggle = screen.getByRole("button", { name: new RegExp(`${KIMI} · overdue`) });
     expect(toggle).toBeTruthy();
     openTile(new RegExp(`${KIMI} · overdue`));
-    expect(screen.getByText("declared cadence 360m")).toBeTruthy();
+    expect(screen.getByText("declared cadence 6h")).toBeTruthy();
   });
 
   /** A source declaring no cadence must never render as healthy, on

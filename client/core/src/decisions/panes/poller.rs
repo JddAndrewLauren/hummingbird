@@ -77,7 +77,7 @@
 //!
 //! # The threshold is not GitHub's
 //!
-//! [`OVERDUE_MULTIPLIER`]/[`MIN_OVERDUE_AFTER_MS`] mirror `github.rs`'s own
+//! [`OVERDUE_MULTIPLIER`]/[`FLOOR_MS`] mirror `github.rs`'s own
 //! shape (a multiple of the declared cadence, floored) but **not** its
 //! numbers. `github.rs`'s 3h floor exists to absorb GitHub Actions' own
 //! queueing delay on a shared runner — measured on this repo's `*/15`

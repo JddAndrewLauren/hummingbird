@@ -64,8 +64,8 @@ fn surface_alarm(panes: &[RankedPaneRecord]) -> Option<Band> {
 /// The Status surface's alarm, from this device's state alone — the one
 /// door a shell needs, since a nav bar holds no ranked panes of its own.
 ///
-/// **No zone facts, and that is not an omission.** None of the status four
-/// (kimi/github/uptime/reachability) is civil-date reasoning, so
+/// **No zone facts, and that is not an omission.** None of the status five
+/// (kimi/github/uptime/reachability/poller) is civil-date reasoning, so
 /// [`super::zone_queries`] answers empty for [`Surface::Status`] and there
 /// is nothing for a host to resolve — asserted below rather than assumed,
 /// so a fifth status question that *did* need a zone would fail a test here
