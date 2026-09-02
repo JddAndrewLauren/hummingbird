@@ -49,8 +49,8 @@ sealed interface StatusState {
 // bridge's first phase is not called here at all — [zone_queries] answers
 // empty for [MobileSurface.STATUS] today (none of the status five —
 // kimi/github/uptime/reachability/poller — is civil-date reasoning), so
-// this screen crosses an empty zone-facts list
-// straight through; #537's Now screen is what exercises the resolve leg.
+// this screen crosses an empty zone-facts list straight through; #537's
+// Now screen is what exercises the resolve leg.
 class StatusViewModel(
     private val rankPanesFn: suspend (nowMs: Long) -> List<MobileRankedPane>,
     /** The open chip's device-local store (`PanePrefs`, surface-keyed to

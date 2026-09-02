@@ -128,7 +128,7 @@ class StatusChipRowTest {
                 resolved = MobileWorkflowResolved.Gap(MobileWorkflowGap.NotFetched),
             )
         MobileStandingQuestion.POLLER ->
-            MobilePaneFacts.Poller(resolved = MobilePollerResolved.Gap(MobilePollerGap.NotFetched))
+            MobilePaneFacts.Poller(resolved = MobilePollerResolved.Gap(MobilePollerGap.NOT_FETCHED))
         MobileStandingQuestion.HOMEWORK,
         MobileStandingQuestion.SCPS,
         MobileStandingQuestion.WASTE,

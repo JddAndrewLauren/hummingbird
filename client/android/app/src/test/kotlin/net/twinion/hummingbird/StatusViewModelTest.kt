@@ -84,7 +84,7 @@ class StatusViewModelTest {
             MobilePaneFacts.Uptime(resolved = MobileProbeResolved.Gap(gap = MobileProbeGap.NotFetched))
         MobileStandingQuestion.REACHABILITY -> MobilePaneFacts.Reachability(facts = null)
         MobileStandingQuestion.POLLER ->
-            MobilePaneFacts.Poller(resolved = MobilePollerResolved.Gap(gap = MobilePollerGap.NotFetched))
+            MobilePaneFacts.Poller(resolved = MobilePollerResolved.Gap(gap = MobilePollerGap.NOT_FETCHED))
     }
 
     @Test
