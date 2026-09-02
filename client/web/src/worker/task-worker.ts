@@ -317,6 +317,7 @@ interface RawItem {
   source: string | null;
   source_key: string | null;
   source_url: string | null;
+  vault_path: string | null;
   archived_at: number | null;
   created_at: number;
   updated_at: number;
@@ -717,6 +718,7 @@ function mapItem(raw: RawItem): TaskItemDTO {
     source: raw.source,
     sourceKey: raw.source_key,
     sourceUrl: raw.source_url,
+    vaultPath: raw.vault_path,
     archivedAt: raw.archived_at,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,

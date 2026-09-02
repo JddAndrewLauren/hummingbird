@@ -152,6 +152,13 @@ pub struct TriageEdits {
     /// `Some(None)` clears it, `Some(Some(date))` sets it.
     #[serde(default, deserialize_with = "touched")]
     pub scheduled_date: Option<Option<String>>,
+    /// #771's vault-relative Obsidian path. Three-state like every other
+    /// nullable field here: absent leaves the pointer alone, `null` clears
+    /// it, a value re-points it. **Unlike `source_url`, which this struct
+    /// deliberately omits** — provenance belongs to whatever captured the
+    /// item, but which note an item points at is an operator choice.
+    #[serde(default, deserialize_with = "touched")]
+    pub vault_path: Option<Option<String>>,
 }
 
 /// Every field the capture box may set on a brand-new item, as the JS side
@@ -2772,6 +2779,16 @@ impl TaskHostCore {
                 return fail_op(reject("scheduled date must be YYYY-MM-DD".to_string()));
             }
         }
+        if let Some(Some(vault_path)) = &edits.vault_path {
+            // The authority answers 400 on a blank one; clearing the
+            // pointer is a `null`, never an empty string. The *shape* of a
+            // path (no leading `/`, no `..`) is decided in
+            // `client/web/src/obsidian/vault-uri.ts`, where the rest of the
+            // Obsidian vendor knowledge lives.
+            if vault_path.trim().is_empty() {
+                return fail_op(reject("vault path must be non-empty".to_string()));
+            }
+        }
         let patch = TriagePatch {
             title: edits.title,
             description: edits.description,
@@ -2782,6 +2799,7 @@ impl TaskHostCore {
             project_id: edits.project_id,
             deadline: edits.deadline,
             scheduled_date: edits.scheduled_date,
+            vault_path: edits.vault_path,
         };
         match self.core.triage(seed, item_id, promote_to_ready, patch, now_ms, Some(operation_id)).await {
             Ok(()) => {
@@ -5316,6 +5334,7 @@ mod tests {
             source: None,
             source_key: None,
             source_url: None,
+            vault_path: None,
             archived_at: None,
             agent: false,
             created_at: 1,

@@ -495,6 +495,7 @@ function syntheticItem(id: string, stage: TaskItemDTO["stage"]): TaskItemDTO {
     source: "web/v1",
     sourceKey: null,
     sourceUrl: null,
+    vaultPath: null,
     archivedAt: null,
     createdAt: 1_755_000_000_000,
     updatedAt: 1_755_000_000_000,

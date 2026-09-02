@@ -44,6 +44,16 @@ const BINDING_COPY: Record<string, BindingCopy> = {
   },
   // Written by the OpenClaw agent (ADR-0032 part 4), not typed here in the
   // ordinary case — the editor still lets the operator hand-correct it.
+  // #771: like `homework-link`, this names something a surface *draws*
+  // rather than something a pane reads — and unlike every other key here it
+  // answers no standing question at all, so its row lands in the leftovers
+  // group (`groupBindingsByQuestion`'s `other`). Copy still belongs here:
+  // the group it lands in is not a reason to show the operator a raw
+  // kebab-case key.
+  "obsidian-vault": {
+    label: "Obsidian vault",
+    help: "The vault name an item's vault path is relative to. Unset, no item offers a note button.",
+  },
   "scps-quest": {
     label: "SCPS Photo Quest",
     help: "This month's Photo Quest phrase, as \"YYYY-MM phrase\" — normally set by the agent from forwarded club email.",
@@ -207,10 +217,14 @@ export interface QuestionBindingGroup {
  * belonged to none of them. */
 export interface GroupedBindings {
   groups: QuestionBindingGroup[];
-  /** Live rows no question claims — in practice the keys this build cannot
-   * write (`BindingDTO.known === false`), which `Core::bindings` returns on
-   * purpose so the editor shows what is really in the table. Dropping them
-   * here would be the regression `bindings.rs` warns about. */
+  /** Live rows no question claims. Two kinds, and both are editable here:
+   * keys this build cannot *write* (`BindingDTO.known === false`), which
+   * `Core::bindings` returns on purpose so the editor shows what is really
+   * in the table; and — since #771's `obsidian-vault` — keys this build
+   * knows perfectly well but which answer no standing question, because a
+   * binding is a cross-device fact and not every such fact belongs to a
+   * pane. Dropping either would be the regression `bindings.rs` warns
+   * about. */
   other: BindingDTO[];
 }
 

@@ -1337,6 +1337,12 @@ pub struct ItemDetailRecord {
     pub deadline: Option<String>,
     pub scheduled_date: Option<String>,
     pub source_url: Option<String>,
+    /// #771's vault-relative Obsidian path, carried so the record round-trips
+    /// the whole item. **Nothing on Android draws it**: a gap stays silent,
+    /// the same idiom the nav alarm follows — the column syncs, the phone
+    /// renders nothing, and no affordance claims a capability the platform
+    /// does not have.
+    pub vault_path: Option<String>,
     pub updated_at: i64,
     /// CAS target for the edit, exactly as [`AlertRecord::version`] is for
     /// the ack.
@@ -1387,6 +1393,7 @@ fn to_item_detail_record(
         deadline: item.deadline.clone(),
         scheduled_date: item.scheduled_date.clone(),
         source_url: item.source_url.clone(),
+        vault_path: item.vault_path.clone(),
         updated_at: item.updated_at,
         version: item.version,
         steps: detail
@@ -1522,6 +1529,11 @@ fn to_triage_patch(edit: &ItemEdit) -> Result<hummingbird_core::TriagePatch, Str
         project_id: edit.project_id.to_text(),
         deadline: edit.deadline.to_text(),
         scheduled_date: edit.scheduled_date.to_text(),
+        // #771: the phone renders no vault-path affordance — Obsidian's
+        // custom scheme is a desktop gesture — so this seam never touches
+        // the column. `None` is "leave it alone", which is what keeps a
+        // path set on the web from being cleared by an edit made here.
+        vault_path: None,
     })
 }
 
@@ -7404,6 +7416,7 @@ mod tests {
             deadline: None,
             scheduled_date: None,
             source_url: None,
+            vault_path: None,
             updated_at: 0,
             version: 1,
             steps: vec![],
@@ -7657,6 +7670,7 @@ mod tests {
             source: None,
             source_key: None,
             source_url: None,
+            vault_path: None,
             archived_at: None,
             agent: false,
             created_at: 0,
@@ -8723,6 +8737,7 @@ mod tests {
             source: None,
             source_key: None,
             source_url: Some("https://example.test/x".into()),
+            vault_path: None,
             archived_at: None,
             agent: false,
             created_at: 1,
@@ -10289,6 +10304,7 @@ mod settings_tests {
             source: None,
             source_key: None,
             source_url: None,
+            vault_path: None,
             archived_at: None,
             agent: false,
             created_at: 0,

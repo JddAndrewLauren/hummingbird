@@ -473,6 +473,9 @@ internal fun itemDetail(
     deadline = "2026-08-20",
     scheduledDate = null,
     sourceUrl = null,
+    // #771: carried so the record round-trips the whole item; nothing on
+    // Android draws it.
+    vaultPath = null,
     updatedAt = 1_000,
     version = 3,
     steps = emptyList(),

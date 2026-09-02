@@ -753,10 +753,13 @@ export function SettingsScreen({
                   }
                 />
               ))}
-              {/* Rows in the table that no question claims — in practice the
-                  keys this build cannot write. `Core::bindings` returns them
-                  on purpose (`bindings.rs`), so dropping them here would
-                  hide what is really stored. */}
+              {/* Rows in the table that no question claims: keys this build
+                  cannot write, and — since #771's `obsidian-vault` — keys it
+                  can, which answer no standing question because they are not
+                  pane inputs at all. `Core::bindings` returns both on purpose
+                  (`bindings.rs`), so dropping them here would hide what is
+                  really stored, and in the second case would leave a binding
+                  the app reads with nowhere to set it. */}
               {groupedBindings.other.length === 0 ? null : (
                 <QuestionGroup
                   heading="Other settings rows"

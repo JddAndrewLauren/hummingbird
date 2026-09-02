@@ -21,6 +21,7 @@
 import type { ProjectDTO, TaskItemDTO, TriageEdits } from "../store/protocol";
 import type { TaskProjectResult } from "../store/store";
 import { captureMetaProblems } from "../decisions/seam";
+import { isValidVaultPath } from "../obsidian/vault-uri";
 
 /** One triage-inbox item's editable draft. Every field is a string because
  * that is what an `<input>`/`<select>` controls — including `priority`, whose
@@ -36,6 +37,10 @@ export interface TriageDraft {
   priority: string;
   deadline: string;
   scheduledDate: string;
+  /** #771: the item's vault-relative Obsidian path. `""` against an item
+   * that holds one is a clear, exactly like every other nullable field
+   * here. */
+  vaultPath: string;
 }
 
 /** A draft for an item with nothing set — the shape's resting value, used by a
@@ -51,6 +56,7 @@ export const EMPTY_TRIAGE_DRAFT: TriageDraft = {
   priority: "0",
   deadline: "",
   scheduledDate: "",
+  vaultPath: "",
 };
 
 /** Seeds a draft from the item's own current values. `null` becomes `""` — the
@@ -68,6 +74,7 @@ export function draftFromItem(item: TaskItemDTO): TriageDraft {
     priority: String(item.priority),
     deadline: item.deadline ?? "",
     scheduledDate: item.scheduledDate ?? "",
+    vaultPath: item.vaultPath ?? "",
   };
 }
 
@@ -115,6 +122,13 @@ export function triageDraftProblems(draft: TriageDraft): TriageDraftProblems {
   }
   if (!PRIORITY_VALUES.has(draft.priority)) {
     problems.priority = "Pick a priority";
+  }
+  // Only a path someone actually typed is checked: `""` is the clear, and a
+  // clear is always sendable. The rule itself is `vault-uri.ts`'s, so the
+  // shape of a path is decided in the one place that also knows how to build
+  // the URI from it.
+  if (draft.vaultPath.trim().length > 0 && !isValidVaultPath(draft.vaultPath)) {
+    problems.vaultPath = "A vault path is relative to the vault — no leading / and no ..";
   }
   return problems;
 }
@@ -237,6 +251,11 @@ export function buildTriageEdits(
   const scheduledDate = draft.scheduledDate.trim();
   if (scheduledDate !== (item.scheduledDate ?? "")) {
     edits.scheduledDate = scheduledDate.length > 0 ? scheduledDate : null;
+  }
+
+  const vaultPath = draft.vaultPath.trim();
+  if (vaultPath !== (item.vaultPath ?? "")) {
+    edits.vaultPath = vaultPath.length > 0 ? vaultPath : null;
   }
 
   return edits;

@@ -107,6 +107,17 @@ the taxonomy when a consumer and a demonstrated desire exist. The "capture
 calendar" exception (creating an event *as* the gesture) and calendar write-out
 are deferred until the desire is demonstrated.
 
+*Amended 2026-09-02 (#771): an item may now carry one vault-relative path
+into the Obsidian vault, and the web panel turns it into a click that opens
+or creates that note. **The exclusion above stands unchanged.** It excludes
+the vault as a **source** — nothing is polled, parsed, ingested or mirrored,
+and no note ever becomes an item or a context snapshot. What #771 adds is a
+one-way pointer *out* of the app: hummingbird stores a string it never reads
+the far side of, and a person follows it. That is the opposite direction
+from ingestion, so it does not petition the vault back in through the
+taxonomy and does not make the vault an inbox. The real notes lane is #192's
+question, not this one's.*
+
 ## Rejected alternatives
 
 - **Materializing calendar events as issues** — recurring, edited records have

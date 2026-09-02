@@ -633,3 +633,129 @@ describe("ItemPanel — promotion's copy-at-mint wiring", () => {
     expect(onTriage).toHaveBeenCalledWith("item-9", "ready", {});
   });
 });
+
+/** #771: the note affordance. Every branch turns on two facts — whether a
+ * vault is bound, and whether the item already points at a note. */
+describe("the Obsidian note affordance", () => {
+  function detail(options: {
+    vaultName?: string | null;
+    vaultPath?: string | null;
+    title?: string;
+    onTriage?: ReturnType<typeof vi.fn>;
+    withTriage?: boolean;
+  }) {
+    const onTriage = options.onTriage ?? vi.fn();
+    render(
+      <ItemPanel
+        mode="detail"
+        item={itemDTO({
+          id: "item-1",
+          title: options.title ?? "Knee rehab",
+          vaultPath: options.vaultPath ?? null,
+        })}
+        projects={[]}
+        steps={[]}
+        vaultName={options.vaultName ?? null}
+        onTriage={options.withTriage === false ? undefined : onTriage}
+      />,
+    );
+    return onTriage;
+  }
+
+  function noteButton() {
+    return screen.queryByRole("button", { name: /note/i });
+  }
+
+  it("draws nothing at all when no vault is bound", () => {
+    detail({ vaultName: null, vaultPath: "Hummingbird/Knee rehab.md" });
+    expect(noteButton()).toBeNull();
+  });
+
+  it("offers Start a note for an item pointing at nothing, and writes the derived path first", () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const onTriage = detail({ vaultName: "JDD" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Start a note" }));
+
+    expect(onTriage).toHaveBeenCalledWith("item-1", null, {
+      vaultPath: "Hummingbird/Knee rehab.md",
+    });
+    expect(open).toHaveBeenCalledWith(
+      "obsidian://new?vault=JDD&file=Hummingbird%2FKnee%20rehab.md&append",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    open.mockRestore();
+  });
+
+  it("offers Open note for an item that already points at one, and writes nothing", () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const onTriage = detail({ vaultName: "JDD", vaultPath: "Reading/Knee.md" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Open note" }));
+
+    expect(onTriage).not.toHaveBeenCalled();
+    expect(open).toHaveBeenCalledWith(
+      "obsidian://new?vault=JDD&file=Reading%2FKnee.md&append",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    open.mockRestore();
+  });
+
+  /** A panel with no worker behind it (demo mode) cannot persist the path it
+   * would derive, so it never offers to — a button labelled "Start a note"
+   * that silently records nothing is worse than no button. */
+  it("offers no Start a note without an onTriage to record the path", () => {
+    detail({ vaultName: "JDD", withTriage: false });
+    expect(noteButton()).toBeNull();
+  });
+
+  /** …but reopening a note the item already records writes nothing, so that
+   * one is still offered. */
+  it("still offers Open note without an onTriage", () => {
+    detail({ vaultName: "JDD", vaultPath: "Reading/Knee.md", withTriage: false });
+    expect(screen.getByRole("button", { name: "Open note" })).toBeTruthy();
+  });
+
+  /** The stored path gets the same shape rule as a typed one. `vault_path`
+   * is a plain column the authority only checks for non-blankness, so a
+   * writer that is not this form — `sweep.py`, a skill, the agent — can put
+   * a path there that this client refuses to send. It refuses by drawing no
+   * button. */
+  it("offers no Open note for a stored absolute path", () => {
+    detail({ vaultName: "JDD", vaultPath: "/Users/john/secrets.md" });
+    expect(noteButton()).toBeNull();
+  });
+
+  it("offers no Open note for a stored path that climbs out of the vault", () => {
+    detail({ vaultName: "JDD", vaultPath: "Hummingbird/../../outside.md" });
+    expect(noteButton()).toBeNull();
+  });
+
+  /** A title of nothing but stripped characters derives no name at all, and
+   * `Hummingbird/.md` is a hidden note every such item would share — so
+   * there is nothing to start. */
+  it("offers no Start a note for a title that strips to an empty name", () => {
+    detail({ vaultName: "JDD", title: "???" });
+    expect(noteButton()).toBeNull();
+  });
+
+  it("edits the path through the ordinary triage save, and an emptied field clears it", () => {
+    const onTriage = vi.fn();
+    render(
+      <ItemPanel
+        mode="triage"
+        item={itemDTO({ id: "item-2", vaultPath: "Hummingbird/Old.md" })}
+        projects={[]}
+        steps={[]}
+        onTriage={onTriage}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Vault path"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Promote to ready" }));
+
+    expect(onTriage).toHaveBeenCalledWith("item-2", "ready", { vaultPath: null });
+  });
+});

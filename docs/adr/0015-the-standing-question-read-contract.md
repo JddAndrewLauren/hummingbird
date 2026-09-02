@@ -591,6 +591,31 @@ fixture, `handler_fixtures/settings.rs`), `trips-calendar`,
 `city-waste-page`. Unversioned deliberately, so a `city-waste/v1 → /v2`
 source bump does not orphan a binding in a table that has no DELETE.
 
+*Amended 2026-09-02 (#771): the binding vocabulary gained a key read by a
+**surface** rather than by a pane.* `obsidian-vault`
+(`bindings::BindingKey::ObsidianVault`) holds the name of the operator's
+Obsidian vault, and its one reader is the item panel — the affordance that
+turns an item's `vault_path` (ADR-0009's own #771 amendment) into a click.
+It follows `homework-link`'s precedent above in naming no source: nothing
+is polled for it, no answer is derived from it, and unset is simply no
+button rather than a setup prompt. It goes one step further than that
+precedent in a way worth stating plainly, because it is the first: **it
+answers no standing question at all.** `homework-link` at least belongs to
+the homework pane; this belongs to no pane. The consequence is concrete —
+since #714 Settings groups binding rows under the question each answers,
+so this row lands in that screen's leftovers group, which already existed
+for keys this build cannot write and is already editable. The core's own
+`decisions::questions` test was widened from "every key is claimed by
+exactly one question" to "no key is claimed by two, and these named keys
+are claimed by none", with the named list as the gate. A binding is a
+cross-device fact; it was never promised that every such fact would be a
+pane input.
+
+It is the vault's **name**, never its id: `obsidian.json` registers a vault
+under a per-machine generated hex id, so the same folder on two of the
+operator's machines carries two different ones, while the name is one fact —
+which is exactly what a binding is for.
+
 ## What this obliges
 
 - **`server/`** — the `alerts.subject_key` column, `SCHEMA_VERSION` 4, the

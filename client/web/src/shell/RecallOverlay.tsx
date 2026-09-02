@@ -66,6 +66,9 @@ export interface RecallOverlayProps {
    * what an expanded live result renders as a failure, exactly as `ItemPanel`
    * already does for Now and Triage. */
   lastTriage?: TaskTriageResult | null;
+  /** #771's bound Obsidian vault name, forwarded to `ItemPanel` — which
+   * carries the whole of what it means. */
+  vaultName?: string | null;
   /** `useSyncWiring`'s re-sampled clock (`App.tsx`'s `syncNowMs`) — the same
    * "now" `DoneScreen.tsx`, `TriageRow.tsx` and `LedgerScreen.tsx`'s own
    * `relativeAge` calls read, never `Date.now()` taken fresh here: a
@@ -94,6 +97,7 @@ function RecallRow({
   projects,
   onTriage,
   lastTriage,
+  vaultName,
   nowMs,
 }: {
   row: RecallRowDTO;
@@ -102,6 +106,7 @@ function RecallRow({
   projects: ProjectDTO[];
   onTriage?: (itemId: string, destination: "ready" | null, edits: TriageEdits) => void;
   lastTriage?: TaskTriageResult | null;
+  vaultName?: string | null;
   nowMs: number;
 }) {
   return (
@@ -192,6 +197,7 @@ function RecallRow({
             projects={projects}
             onTriage={row.group === "live" ? onTriage : undefined}
             lastTriage={lastTriage}
+            vaultName={vaultName}
             // This overlay has no steps wiring of its own — nothing here
             // ever called `requestSteps` for a result row — so the block
             // that would otherwise assert "No Steps yet." is not rendered
@@ -246,6 +252,7 @@ export function RecallOverlay({
   projects,
   onTriage,
   lastTriage,
+  vaultName = null,
   nowMs,
 }: RecallOverlayProps) {
   const restoreTo = useRef<Element | null>(null);
@@ -391,6 +398,7 @@ export function RecallOverlay({
                   projects={projects}
                   onTriage={onTriage}
                   lastTriage={lastTriage}
+                  vaultName={vaultName}
                   nowMs={nowMs}
                 />
               ))}

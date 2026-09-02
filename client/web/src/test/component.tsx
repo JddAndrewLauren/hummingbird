@@ -66,6 +66,7 @@ export function itemDTO(overrides: Partial<TaskItemDTO> = {}): TaskItemDTO {
     source: null,
     sourceKey: null,
     sourceUrl: null,
+    vaultPath: null,
     archivedAt: null,
     createdAt: 1_000,
     updatedAt: 1_000,
