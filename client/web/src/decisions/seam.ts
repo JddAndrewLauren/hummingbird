@@ -199,6 +199,12 @@ export interface DecisionsModule {
   reachability_facts_json(inputsJson: string): string;
   reachability_answer_json(inputsJson: string): string;
   reachability_constants_json(): string;
+  // #775: the poller-health question.
+  poller_subjects_json(inputsJson: string): string;
+  poller_band_json(freshnessJson: string): string;
+  poller_facts_json(source: string, inputsJson: string): string;
+  poller_answer_json(source: string, inputsJson: string): string;
+  poller_constants_json(): string;
   parse_race_body_json(snapshotJson: string): string;
   race_series_from_binding_json(text: string): string;
   race_setup_json(inputsJson: string): string;
@@ -1865,6 +1871,47 @@ export interface ReachabilityConstants {
 
 export function reachabilityConstantsFromCore(): ReachabilityConstants {
   return JSON.parse(required().reachability_constants_json()) as ReachabilityConstants;
+}
+
+// -- poller (#775) ----------------------------------------------------------
+
+/** This question's subjects — `poller.rs`'s `poller_subjects`: every source
+ * it watches, always, whether or not this device has read a row for it yet. */
+export function pollerSubjectsFromCore(inputs: PaneInputsSource): string[] {
+  return JSON.parse(required().poller_subjects_json(paneInputsPayload(inputs))) as string[];
+}
+
+/** One source's band, from its freshest row's freshness alone —
+ * `poller.rs`'s `poller_band`. */
+export function pollerBandFromCore(freshness: FreshnessDTO): PaneBand {
+  return JSON.parse(required().poller_band_json(JSON.stringify(freshness))) as PaneBand;
+}
+
+export interface PollerFacts {
+  freshness: FreshnessDTO;
+  band: PaneBand;
+}
+
+export type PollerGap = { gap: "notFetched" };
+
+export type PollerResolved = ({ kind: "facts" } & PollerFacts) | { kind: "gap"; gap: PollerGap };
+
+export function pollerFactsFromCore(source: string, inputs: PaneInputsSource): PollerResolved {
+  return JSON.parse(required().poller_facts_json(source, paneInputsPayload(inputs))) as PollerResolved;
+}
+
+export function pollerAnswerFromCore(source: string, inputs: PaneInputsSource): PaneAnswerCore {
+  return JSON.parse(required().poller_answer_json(source, paneInputsPayload(inputs))) as PaneAnswerCore;
+}
+
+export interface PollerConstants {
+  sources: string[];
+  overdueMultiplier: number;
+  floorMs: number;
+}
+
+export function pollerConstantsFromCore(): PollerConstants {
+  return JSON.parse(required().poller_constants_json()) as PollerConstants;
 }
 
 // -- race (#119) -----------------------------------------------------------

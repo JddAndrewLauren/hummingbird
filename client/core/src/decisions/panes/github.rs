@@ -35,6 +35,22 @@
 //! …) are renderings and stay in TS; only the *kind* sinks. Likewise
 //! `githubCollapsedHeadline`/`githubGlyph`/`ageWords` are not ported — they
 //! are per-client rendering built from these decided facts.
+//!
+//! **Narrowed by #775.** Before that issue this pane doubled as the
+//! board's only signal that *any* poller was still alive: every "is
+//! something not writing" question ran through here, because this was the
+//! only pane reading a poller's own freshness at all. That job now belongs
+//! to [`super::poller`], which answers it for every registered
+//! snapshot-writing source — this one included — straight off
+//! [`super::inputs::FreshnessFact::declared_cadence_ms`], never by parsing
+//! a workflow's run history. What is left here is what the name always
+//! literally said: whether each of this repo's own *remaining* scheduled
+//! GitHub Actions workflows (`.github/workflows/*.yml`'s `schedule:`
+//! entries — narrower since #774/#776 moved five of them onto the
+//! sweeper's own supercronic and off this repo's `schedule:` triggers
+//! entirely) last ran and succeeded on its own declared cadence. #773
+//! records where this lane goes next — open PRs and issues across named
+//! repos — and it is not toward poller health a second time.
 
 use serde::{Deserialize, Serialize};
 
@@ -51,17 +67,23 @@ pub const SOURCE: &str = "github-hummingbird/v1";
 /// collide with a genuine key.
 pub const NEVER_POLLED_SUBJECT: &str = "pending";
 
-/// ~6h against `github-status.yml`'s own half-hourly cadence — this pane's
-/// whole purpose is catching a dead cron quickly, so it cannot wait as long
-/// as `waste.rs`'s 26h.
+/// ~6h against `github-status.yml`'s own half-hourly cadence — tighter than
+/// `waste.rs`'s 26h, because [`github_band`] judges overdue-ness *as of the
+/// observation*: the staleness of that observation is the only thing left
+/// saying "this reading is too old to trust."
 ///
 /// **This was 30h while the poller ran daily.** Since the poller moved to
 /// `*/30` (see `server/github-status/src/body.rs::POLLED_EVERY_MS`), a 30h
-/// tolerance would let the *poller's own* death go unreported for more than
-/// a day — and this threshold now carries more weight than it used to,
-/// because [`github_band`] judges overdue-ness *as of the observation*: the
-/// staleness of that observation is the only thing left saying "this
-/// reading is too old to trust."
+/// tolerance would let a stale row here keep reporting a workflow's old run
+/// history long after it stopped being current.
+///
+/// **Not (since #775) this build's only defence against the poller itself
+/// going dark.** That used to be this threshold's whole point — it is now
+/// [`super::poller`]'s, watching this same source's freshness directly
+/// rather than inferring it from a workflow row going stale. This constant
+/// stays because the two questions are still separate facts even once
+/// `poller` exists: a poller can be freshly writing while one particular
+/// workflow's *own* last-observed run history is old enough not to trust.
 pub const STALE_AFTER_MS: i64 = 6 * 60 * 60 * 1000;
 
 /// A scheduled run is judged overdue once its last success is this many

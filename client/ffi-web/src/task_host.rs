@@ -5741,14 +5741,14 @@ mod question_switch_tests {
     }
 
     #[tokio::test]
-    async fn a_fresh_host_reports_all_ten_questions_on() {
+    async fn a_fresh_host_reports_all_eleven_questions_on() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-switch-fresh");
         let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
 
         let response = host.question_switches();
         assert_eq!(response.kind, "ok");
-        assert_eq!(response.switches.len(), 10);
+        assert_eq!(response.switches.len(), 11);
         assert!(response.switches.iter().all(|switch| switch.enabled && !switch.pending));
     }
 

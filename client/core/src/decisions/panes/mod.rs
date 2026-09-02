@@ -1,5 +1,5 @@
 //! The standing-question panes' decision half (#533/M4, ADR-0025) — the
-//! pane shell contract, the cross-pane sort, the zone bridge, and all ten
+//! pane shell contract, the cross-pane sort, the zone bridge, and all eleven
 //! real panes.
 //!
 //! # Why this family exists
@@ -49,6 +49,7 @@ pub mod github;
 pub mod homework;
 pub mod inputs;
 pub mod kimi;
+pub mod poller;
 pub mod race;
 pub mod reachability;
 pub mod scps;
@@ -78,8 +79,11 @@ pub use zone::{ZoneFact, ZoneFacts, ZoneQuery};
 /// web reads the same list to know which questions it may stop answering
 /// itself. #693 added a tenth — [`scps`], the second question keyed on the
 /// calendar arm with no per-question calendar binding (`weekend`'s own
-/// shape, restated in `scps.rs`'s module header).
-pub const SUNK: [(StandingQuestion, Surface); 10] = [
+/// shape, restated in `scps.rs`'s module header). #775 added an
+/// eleventh — [`poller`], the first question whose subjects are *sources
+/// themselves* rather than keys within one fixed source (that module's own
+/// header).
+pub const SUNK: [(StandingQuestion, Surface); 11] = [
     (StandingQuestion::Homework, Surface::Now),
     (StandingQuestion::Scps, Surface::Now),
     (StandingQuestion::Waste, Surface::Now),
@@ -90,6 +94,7 @@ pub const SUNK: [(StandingQuestion, Surface); 10] = [
     (StandingQuestion::Github, Surface::Status),
     (StandingQuestion::Uptime, Surface::Status),
     (StandingQuestion::Reachability, Surface::Status),
+    (StandingQuestion::Poller, Surface::Status),
 ];
 
 /// Every `(zone, civil-date)` fact `surface`'s sunk questions need, given
@@ -202,6 +207,13 @@ pub fn rank_panes(
             StandingQuestion::Reachability => {
                 vec![(reachability::SUBJECT_KEY.to_string(), reachability::reachability_answer(inputs))]
             }
+            StandingQuestion::Poller => poller::poller_subjects(inputs)
+                .into_iter()
+                .map(|subject| {
+                    let answer = poller::poller_answer(&subject, inputs);
+                    (subject, answer)
+                })
+                .collect(),
         };
         for (subject_key, answer) in answered {
             panes.push(RankedPaneRecord {
@@ -405,7 +417,9 @@ mod tests {
     fn a_question_switched_off_on_the_other_surface_changes_nothing_here() {
         let mut inputs = PaneInputs { disabled_questions: vec!["kimi".to_string()], ..PaneInputs::default() };
         let status = rank_panes(Surface::Status, &inputs, &ZoneFacts::default());
-        assert_eq!(status.len(), 3);
+        // github/uptime/reachability contribute one pane each, and poller
+        // contributes one per watched source (`poller::poller_sources`).
+        assert_eq!(status.len(), 3 + poller::poller_sources().len());
         assert!(!status.iter().any(|pane| pane.question == "kimi"));
 
         // Now is untouched by a Status question's switch.
@@ -423,7 +437,12 @@ mod tests {
             disabled_questions: vec!["fantasy".to_string(), "".to_string()],
             ..PaneInputs::default()
         };
-        assert_eq!(rank_panes(Surface::Status, &inputs, &ZoneFacts::default()).len(), 4);
+        // kimi/github/uptime/reachability contribute one pane each, and
+        // poller contributes one per watched source.
+        assert_eq!(
+            rank_panes(Surface::Status, &inputs, &ZoneFacts::default()).len(),
+            4 + poller::poller_sources().len(),
+        );
     }
 
     #[test]
@@ -444,15 +463,29 @@ mod tests {
     }
 
     #[test]
-    fn the_status_four_rank_from_defaults_with_no_binding_at_all() {
-        // None of kimi/github/uptime/reachability has a per-device binding
-        // (ADR-0017 decisions 2/5/6 and #316), so a completely empty
-        // `PaneInputs` still ranks all four, each a never-polled sentinel.
+    fn the_status_five_rank_from_defaults_with_no_binding_at_all() {
+        // None of kimi/github/uptime/reachability/poller has a per-device
+        // binding (ADR-0017 decisions 2/5/6, #316, and poller's own module
+        // header), so a completely empty `PaneInputs` still ranks all five
+        // — poller as one pane per watched source, each a never-polled gap.
         let inputs = PaneInputs::default();
         let ranked = rank_panes(Surface::Status, &inputs, &ZoneFacts::default());
-        assert_eq!(ranked.len(), 4);
+        let poller_sources = poller::poller_sources();
+        assert_eq!(ranked.len(), 4 + poller_sources.len());
         assert!(ranked.iter().all(|pane| pane.answer.answer_state == AnswerState::BoundButUnacquired));
-        let questions: Vec<&str> = ranked.iter().map(|pane| pane.question.as_str()).collect();
+        let questions: Vec<&str> =
+            ranked.iter().map(|pane| pane.question.as_str()).filter(|q| *q != "poller").collect();
         assert_eq!(questions, vec!["kimi", "github", "uptime", "reachability"]);
+        let poller_subjects: Vec<&str> = ranked
+            .iter()
+            .filter(|pane| pane.question == "poller")
+            .map(|pane| pane.subject_key.as_str())
+            .collect();
+        // Every poller pane here ties on answer state, band and within-band,
+        // so `order_panes`' last resort — subject key, alphabetically —
+        // decides the order rather than the registry's declaration order.
+        let mut sorted_sources = poller_sources.clone();
+        sorted_sources.sort_unstable();
+        assert_eq!(poller_subjects, sorted_sources);
     }
 }

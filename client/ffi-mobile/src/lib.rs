@@ -97,7 +97,7 @@ use hummingbird_core::decisions::panes::inputs::{
 use hummingbird_core::freshness::Freshness;
 use hummingbird_core::decisions::panes::zone::{ZoneFact, ZoneFacts, ZoneQuery};
 use hummingbird_core::decisions::panes::{
-    github, homework, kimi, race, reachability, scps, uptime, vacation, waste, weekend,
+    github, homework, kimi, poller, race, reachability, scps, uptime, vacation, waste, weekend,
 };
 use hummingbird_core::pane::PaneEnvelope;
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
@@ -2060,7 +2060,10 @@ fn to_backtest_item(item: &Item, occurred_at_utc: String) -> rules::BacktestItem
 // (né `status_pane_inputs`, #536) now wires every field a sunk pane reads:
 // the status four's three sources, plus waste's and race's
 // `context_snapshots` sources, the bindings table (waste/race/vacation) and
-// the actionable-items list (weekend's merge). **#564/#621 filled the last
+// the actionable-items list (weekend's merge). **#775 grew the source loop
+// again**: `poller::poller_sources()` now names nine sources, not five, and
+// the loop below reads every one of them whether or not a sunk pane also
+// claims it. **#564/#621 filled the last
 // field**: the calendar arm now carries this device's own `calendar_reads`
 // and `calendar_connected` off the lane below, so weekend and vacation
 // answer for real once a calendar is connected and fall back to their
@@ -2108,6 +2111,7 @@ pub enum MobileStandingQuestion {
     Github,
     Uptime,
     Reachability,
+    Poller,
 }
 
 /// Exhaustive over [`StandingQuestion`] with no wildcard arm — the whole
@@ -2124,6 +2128,7 @@ fn map_standing_question(question: StandingQuestion) -> MobileStandingQuestion {
         StandingQuestion::Github => MobileStandingQuestion::Github,
         StandingQuestion::Uptime => MobileStandingQuestion::Uptime,
         StandingQuestion::Reachability => MobileStandingQuestion::Reachability,
+        StandingQuestion::Poller => MobileStandingQuestion::Poller,
     }
 }
 
@@ -2141,6 +2146,7 @@ fn unmap_standing_question(question: MobileStandingQuestion) -> StandingQuestion
         MobileStandingQuestion::Github => StandingQuestion::Github,
         MobileStandingQuestion::Uptime => StandingQuestion::Uptime,
         MobileStandingQuestion::Reachability => StandingQuestion::Reachability,
+        MobileStandingQuestion::Poller => StandingQuestion::Poller,
     }
 }
 
@@ -3104,6 +3110,44 @@ fn map_probe_resolved(resolved: uptime::ProbeResolved) -> MobileProbeResolved {
     }
 }
 
+/// [`poller::PollerGap`], mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobilePollerGap {
+    NotFetched,
+}
+
+fn map_poller_gap(gap: poller::PollerGap) -> MobilePollerGap {
+    match gap {
+        poller::PollerGap::NotFetched => MobilePollerGap::NotFetched,
+    }
+}
+
+/// [`poller::PollerFacts`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobilePollerFacts {
+    pub freshness: MobilePaneFreshness,
+    pub band: MobilePaneBand,
+}
+
+/// [`poller::PollerResolved`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobilePollerResolved {
+    Facts { facts: MobilePollerFacts },
+    Gap { gap: MobilePollerGap },
+}
+
+fn map_poller_resolved(resolved: poller::PollerResolved) -> MobilePollerResolved {
+    match resolved {
+        poller::PollerResolved::Facts(facts) => MobilePollerResolved::Facts {
+            facts: MobilePollerFacts {
+                freshness: map_pane_freshness(facts.freshness),
+                band: map_band(facts.band),
+            },
+        },
+        poller::PollerResolved::Gap { gap } => MobilePollerResolved::Gap { gap: map_poller_gap(gap) },
+    }
+}
+
 /// [`reachability::ReachabilityFacts`], mirrored.
 #[derive(Debug, Clone, Copy, PartialEq, uniffi::Record)]
 pub struct MobileReachabilityFacts {
@@ -3222,6 +3266,10 @@ pub enum MobilePaneFacts {
     Github { resolved: MobileWorkflowResolved },
     Uptime { resolved: MobileProbeResolved },
     Reachability { facts: Option<MobileReachabilityFacts> },
+    /// One `MobilePaneFacts::Poller` per source `poller::poller_sources`
+    /// watches — `subjectKey` on the enclosing [`MobileRankedPane`] carries
+    /// which source this is, exactly `Github`/`Uptime`'s own shape.
+    Poller { resolved: MobilePollerResolved },
 }
 
 /// One `(zone, civil-date)` fact the core named — [`ZoneQuery`], mirrored
@@ -3485,12 +3533,26 @@ fn mobile_pane_inputs(
     sync: MobileSyncFacts,
     calendar: CalendarArm,
 ) -> PaneInputs {
+    // kimi/github/uptime/waste/race's own `SOURCE` constants are each one of
+    // `poller::poller_sources`' nine — this loop reads every source any
+    // sunk pane needs in one pass rather than one hand-written line per
+    // question (`poller.rs`'s own "not a hand-maintained list" reasoning,
+    // applied at this seam too). That coincidence is asserted below rather
+    // than assumed: `poller_sources()` filters retired entries, so a future
+    // retirement (`v1` -> `v2`, the shape `sources.rs` already has one of)
+    // would otherwise silently drop a sunk pane's own source out of this
+    // loop with no test failing and no compile error.
+    let sources = poller::poller_sources();
     let mut pane_reads = HashMap::new();
-    pane_reads.insert(kimi::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(kimi::SOURCE, now_ms)));
-    pane_reads.insert(github::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(github::SOURCE, now_ms)));
-    pane_reads.insert(uptime::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(uptime::SOURCE, now_ms)));
-    pane_reads.insert(waste::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(waste::SOURCE, now_ms)));
-    pane_reads.insert(race::SOURCE.to_string(), to_pane_read_facts(&core.pane_read(race::SOURCE, now_ms)));
+    for source in &sources {
+        pane_reads.insert(source.to_string(), to_pane_read_facts(&core.pane_read(source, now_ms)));
+    }
+    debug_assert!(
+        [kimi::SOURCE, github::SOURCE, uptime::SOURCE, waste::SOURCE, race::SOURCE]
+            .iter()
+            .all(|sunk| sources.contains(sunk)),
+        "a sunk pane's own SOURCE dropped out of poller::poller_sources()",
+    );
     let bindings: Vec<BindingFact> = core.bindings().iter().map(to_binding_fact).collect();
     let items: Vec<PaneItemFacts> = pane_item_facts(
         &core.frontier(),
@@ -3582,6 +3644,9 @@ fn mobile_pane_facts_of(
         StandingQuestion::Reachability => MobilePaneFacts::Reachability {
             facts: reachability::reachability_facts(inputs).map(map_reachability_facts),
         },
+        StandingQuestion::Poller => {
+            MobilePaneFacts::Poller { resolved: map_poller_resolved(poller::poller_facts(subject_key, inputs)) }
+        }
     }
 }
 
@@ -5060,9 +5125,9 @@ impl MobileTaskHost {
     /// Phase one of the pane lane's zone bridge (#536, ADR-0025): every
     /// `(zone, civil-date)` fact `surface`'s sunk questions need, given
     /// this device's own state. Empty for [`MobileSurface::Status`] today —
-    /// none of the status four is civil-date reasoning (`panes::mod`'s own
-    /// test) — kept generic over `surface` so #537's Now questions reach
-    /// it unchanged.
+    /// none of the status five (kimi/github/uptime/reachability/poller) is
+    /// civil-date reasoning (`panes::mod`'s own test) — kept generic over
+    /// `surface` so #537's Now questions reach it unchanged.
     pub async fn pane_zone_queries(&self, surface: MobileSurface, now_ms: i64) -> Vec<MobileZoneQuery> {
         let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await;
         // Phase one reads no calendar arm — it runs before any zone is
@@ -5142,9 +5207,9 @@ impl MobileTaskHost {
     /// [`Self::rank_panes`].
     pub async fn status_alarm(&self, now_ms: i64, sync: MobileSyncFacts) -> Option<MobilePaneBand> {
         let inner = self.inner.lock().await;
-        // No calendar arm, and so no calendar lock taken: the status four
-        // are kimi/github/uptime/reachability, none of which reads the
-        // calendar at all — every question that does is on `Surface::Now`.
+        // No calendar arm, and so no calendar lock taken: the status five
+        // are kimi/github/uptime/reachability/poller, none of which reads
+        // the calendar at all — every question that does is on `Surface::Now`.
         let inputs = mobile_pane_inputs(&inner.core, now_ms, sync, CalendarArm::default());
         panes::status_alarm(&inputs).map(map_band)
     }
@@ -9882,6 +9947,7 @@ mod settings_tests {
                 MobileStandingQuestion::Github,
                 MobileStandingQuestion::Uptime,
                 MobileStandingQuestion::Reachability,
+                MobileStandingQuestion::Poller,
             ]
         );
         // A question with no binding is present with an empty list, never
@@ -9901,7 +9967,7 @@ mod settings_tests {
         let host = pane_host("switches-fresh").await;
         let switches = host.question_switches().await;
 
-        assert_eq!(switches.len(), 10);
+        assert_eq!(switches.len(), 11);
         // Same order as the roster, so #716 can zip the two lists.
         let questions: Vec<MobileStandingQuestion> =
             switches.iter().map(|switch| switch.question).collect();
@@ -10008,12 +10074,18 @@ mod settings_tests {
     }
 
     #[tokio::test]
-    async fn a_fresh_device_ranks_the_status_four_as_never_polled_sentinels() {
+    async fn a_fresh_device_ranks_the_status_five_as_never_polled_sentinels() {
         let host = pane_host("panes-status-fresh").await;
         let ranked = host.rank_panes(MobileSurface::Status, 1_000, Vec::new(), MobileSyncFacts::default()).await;
-        assert_eq!(ranked.len(), 4);
+        // kimi/github/uptime/reachability contribute one pane each; poller
+        // contributes one per source it watches, always ranked.
+        assert_eq!(ranked.len(), 4 + poller::poller_sources().len());
         assert!(ranked.iter().all(|pane| pane.answer.answer_state == MobilePaneAnswerState::BoundButUnacquired));
-        let questions: Vec<MobileStandingQuestion> = ranked.iter().map(|pane| pane.standing_question).collect();
+        let questions: Vec<MobileStandingQuestion> = ranked
+            .iter()
+            .map(|pane| pane.standing_question)
+            .filter(|q| *q != MobileStandingQuestion::Poller)
+            .collect();
         assert_eq!(
             questions,
             vec![
@@ -10023,6 +10095,7 @@ mod settings_tests {
                 MobileStandingQuestion::Reachability,
             ],
         );
+        assert!(ranked.iter().any(|pane| pane.standing_question == MobileStandingQuestion::Poller));
     }
 
     #[tokio::test]
@@ -10985,6 +11058,7 @@ mod settings_tests {
                     MobileStandingQuestion::Reachability => {
                         matches!(pane.facts, MobilePaneFacts::Reachability { .. })
                     }
+                    MobileStandingQuestion::Poller => matches!(pane.facts, MobilePaneFacts::Poller { .. }),
                 };
                 assert!(matches, "{:?} carried a foreign facts arm: {:?}", pane.standing_question, pane.facts);
             }

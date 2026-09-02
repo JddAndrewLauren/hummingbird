@@ -370,7 +370,7 @@ class NowScreenStructuralTest {
             ?.get(1)
             ?: error("could not locate nowPaneLabel's when block in NowScreen.kt")
         assertFalse("nowPaneLabel must not carry an else arm", block.contains("else ->"))
-        for (variant in listOf("HOMEWORK", "WASTE", "WEEKEND", "VACATION", "RACE", "KIMI", "GITHUB", "UPTIME", "REACHABILITY")) {
+        for (variant in listOf("HOMEWORK", "WASTE", "WEEKEND", "VACATION", "RACE", "KIMI", "GITHUB", "UPTIME", "REACHABILITY", "POLLER")) {
             assertTrue(
                 "nowPaneLabel is missing the $variant arm",
                 block.contains("MobileStandingQuestion.$variant"),
