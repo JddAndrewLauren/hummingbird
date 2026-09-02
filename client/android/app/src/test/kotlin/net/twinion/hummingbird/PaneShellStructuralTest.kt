@@ -56,6 +56,7 @@ class PaneShellStructuralTest {
             "MobilePaneFacts.Github",
             "MobilePaneFacts.Uptime",
             "MobilePaneFacts.Reachability",
+            "MobilePaneFacts.Poller",
         )) {
             assertTrue(
                 "paneHeadline/paneGlyphs must answer for $arm",

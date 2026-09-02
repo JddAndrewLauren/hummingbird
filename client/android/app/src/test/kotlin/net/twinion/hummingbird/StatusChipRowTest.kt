@@ -24,6 +24,8 @@ import uniffi.hummingbird_ffi_mobile.MobilePaneAnswer
 import uniffi.hummingbird_ffi_mobile.MobilePaneAnswerState
 import uniffi.hummingbird_ffi_mobile.MobilePaneBand
 import uniffi.hummingbird_ffi_mobile.MobilePaneFacts
+import uniffi.hummingbird_ffi_mobile.MobilePollerGap
+import uniffi.hummingbird_ffi_mobile.MobilePollerResolved
 import uniffi.hummingbird_ffi_mobile.MobileProbeGap
 import uniffi.hummingbird_ffi_mobile.MobileProbeResolved
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
@@ -125,6 +127,8 @@ class StatusChipRowTest {
             MobilePaneFacts.Github(
                 resolved = MobileWorkflowResolved.Gap(MobileWorkflowGap.NotFetched),
             )
+        MobileStandingQuestion.POLLER ->
+            MobilePaneFacts.Poller(resolved = MobilePollerResolved.Gap(MobilePollerGap.NotFetched))
         MobileStandingQuestion.HOMEWORK,
         MobileStandingQuestion.SCPS,
         MobileStandingQuestion.WASTE,

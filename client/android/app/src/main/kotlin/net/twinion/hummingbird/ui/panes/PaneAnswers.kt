@@ -18,6 +18,7 @@ import uniffi.hummingbird_ffi_mobile.MobileRaceResolved
 import uniffi.hummingbird_ffi_mobile.MobileRaceSetup
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 import uniffi.hummingbird_ffi_mobile.MobileKimiResolved
+import uniffi.hummingbird_ffi_mobile.MobilePollerResolved
 import uniffi.hummingbird_ffi_mobile.MobileScpsEvent
 import uniffi.hummingbird_ffi_mobile.MobileScpsKind
 import uniffi.hummingbird_ffi_mobile.MobileScpsResolved
@@ -70,6 +71,7 @@ internal fun paneHeadline(pane: MobileRankedPane, nowMs: Long): String = when (v
     is MobilePaneFacts.Reachability -> reachabilityHeadline(facts.facts?.let {
         ReachabilityWords(it.ageMs, it.stale, it.latestAttemptLanded)
     })
+    is MobilePaneFacts.Poller -> pollerHeadline(pane, facts.resolved)
 }
 
 /** The collapsed row's marks for one ranked pane — unbounded here; the
@@ -85,6 +87,7 @@ internal fun paneGlyphs(pane: MobileRankedPane, nowMs: Long): List<PaneGlyph> = 
     is MobilePaneFacts.Github -> githubGlyphs(pane, facts.resolved, nowMs)
     is MobilePaneFacts.Uptime -> uptimeGlyphs(pane, facts.resolved)
     is MobilePaneFacts.Reachability -> reachabilityGlyphs(facts.facts?.stale)
+    is MobilePaneFacts.Poller -> pollerGlyphs(pane, facts.resolved)
 }
 
 // ---------------------------------------------------------------- shared
@@ -677,6 +680,55 @@ private fun uptimeGlyphs(pane: MobileRankedPane, resolved: MobileProbeResolved):
                 MobilePaneBand.DISTANT -> listOf(PaneGlyph.Icon(R.drawable.ic_circle_check, "$id as expected"))
                 MobilePaneBand.DORMANT -> listOf(PaneGlyph.Icon(R.drawable.ic_circle_check, "$id as expected"))
             }
+        }
+    }
+}
+
+// ----------------------------------------------------------------- poller
+
+/** `pollerCollapsedHeadline`/`pollerAnswer` in `poller.ts`, ported.
+ *
+ * **The gap arm names the source**, unlike `uptimeHeadline`'s bare "No
+ * answer yet": every one of `poller.rs`'s watched sources is a subject from
+ * the start, so several gap panes are on screen at once on a fresh device,
+ * and a bare sentence on all of them would give TalkBack several panes with
+ * the identical announcement. */
+private fun pollerHeadline(pane: MobileRankedPane, resolved: MobilePollerResolved): String {
+    val source = pane.subjectKey
+    if (!answered(pane)) return "$source · No answer yet"
+    return when (resolved) {
+        is MobilePollerResolved.Gap -> "$source · No answer yet"
+        is MobilePollerResolved.Facts -> {
+            val facts = resolved.facts
+            when (val freshness = facts.freshness) {
+                MobilePaneFreshness.Unknown -> "$source · age unknown"
+                is MobilePaneFreshness.Age -> {
+                    val heard = ageWords(freshness.ageMs)
+                    when (facts.band) {
+                        MobilePaneBand.IMMINENT -> "$source · overdue, last row $heard"
+                        MobilePaneBand.DISTANT -> "$source · cadence unreadable, last row $heard"
+                        MobilePaneBand.LIVE,
+                        MobilePaneBand.NEAR,
+                        MobilePaneBand.DORMANT -> "$source · healthy, last row $heard"
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun pollerGlyphs(pane: MobileRankedPane, resolved: MobilePollerResolved): List<PaneGlyph> {
+    val source = pane.subjectKey
+    if (!answered(pane)) return listOf(PaneGlyph.Icon(R.drawable.ic_cloud_fog, "$source no answer yet"))
+    return when (resolved) {
+        is MobilePollerResolved.Gap -> listOf(PaneGlyph.Icon(R.drawable.ic_cloud_fog, "$source no answer yet"))
+        is MobilePollerResolved.Facts -> when (resolved.facts.band) {
+            MobilePaneBand.IMMINENT -> listOf(PaneGlyph.Icon(R.drawable.ic_siren, "$source overdue"))
+            MobilePaneBand.DISTANT ->
+                listOf(PaneGlyph.Icon(R.drawable.ic_help_circle, "$source cadence unreadable"))
+            MobilePaneBand.LIVE,
+            MobilePaneBand.NEAR,
+            MobilePaneBand.DORMANT -> listOf(PaneGlyph.Icon(R.drawable.ic_circle_check, "$source healthy"))
         }
     }
 }

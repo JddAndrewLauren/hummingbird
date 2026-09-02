@@ -32,6 +32,7 @@ import {
   resolveBackendSelectionFromCore,
   paneBandOrderFromCore,
   paneQuestionOrderFromCore,
+  pollerConstantsFromCore,
   scpsConstantsFromCore,
   SIZES,
   sizeOptionsFromCore,
@@ -81,6 +82,11 @@ import {
   STALE_AFTER_MS as UPTIME_STALE_AFTER_MS,
 } from "../screens/uptime-pane/uptime";
 import { REACHABILITY_GRACE_MS, SUBJECT_KEY as REACHABILITY_SUBJECT_KEY } from "../screens/reachability-pane/reachability";
+import {
+  FLOOR_MS as POLLER_FLOOR_MS,
+  OVERDUE_MULTIPLIER as POLLER_OVERDUE_MULTIPLIER,
+  SOURCES as POLLER_SOURCES,
+} from "../screens/poller-pane/poller";
 import {
   BINDING_KEY as RACE_BINDING_KEY,
   SETUP_SUBJECT,
@@ -357,6 +363,14 @@ describe("the seam's literal pane vocabulary, pinned against the core", () => {
     const constants = reachabilityConstantsFromCore();
     expect(REACHABILITY_SUBJECT_KEY).toBe(constants.subjectKey);
     expect(REACHABILITY_GRACE_MS).toBe(constants.graceMs);
+  });
+
+  // #775: the poller pane's literal source list and threshold.
+  it("the poller pane's constants match the core's", () => {
+    const constants = pollerConstantsFromCore();
+    expect([...POLLER_SOURCES]).toEqual(constants.sources);
+    expect(POLLER_OVERDUE_MULTIPLIER).toBe(constants.overdueMultiplier);
+    expect(POLLER_FLOOR_MS).toBe(constants.floorMs);
   });
 
   it("the race pane's constants match the core's", () => {

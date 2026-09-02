@@ -5,6 +5,7 @@ import { Card } from "../../components/core/Card";
 import { Icon } from "../../components/core/Icon";
 import { GithubPaneBody } from "../github-pane/GithubPaneExpanded";
 import { KimiPaneBody } from "../kimi-pane/KimiPaneExpanded";
+import { PollerPaneBody } from "../poller-pane/PollerPaneExpanded";
 import type { QuestionInputs, RankedPane } from "../questions/contract";
 import { QUESTION_ORDER } from "../questions/contract";
 import { rankPanes } from "../questions/registry";
@@ -108,6 +109,14 @@ function PaneBody({
       );
     case "reachability":
       return <ReachabilityPaneBody inputs={inputs} headline={false} />;
+    case "poller":
+      return (
+        <PollerPaneBody
+          subjectKey={pane.subjectKey}
+          inputs={inputs}
+          headline={false}
+        />
+      );
     default:
       return null;
   }

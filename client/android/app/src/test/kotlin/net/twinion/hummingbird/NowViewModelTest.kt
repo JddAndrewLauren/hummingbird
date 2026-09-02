@@ -15,6 +15,8 @@ import uniffi.hummingbird_ffi_mobile.MobileKimiResolved
 import uniffi.hummingbird_ffi_mobile.MobileHomeworkFacts
 import uniffi.hummingbird_ffi_mobile.MobileHomeworkResolved
 import uniffi.hummingbird_ffi_mobile.MobilePaneFacts
+import uniffi.hummingbird_ffi_mobile.MobilePollerGap
+import uniffi.hummingbird_ffi_mobile.MobilePollerResolved
 import uniffi.hummingbird_ffi_mobile.MobileProbeGap
 import uniffi.hummingbird_ffi_mobile.MobileProbeResolved
 import uniffi.hummingbird_ffi_mobile.MobileRaceGap
@@ -122,6 +124,8 @@ class NowViewModelTest {
         MobileStandingQuestion.UPTIME ->
             MobilePaneFacts.Uptime(resolved = MobileProbeResolved.Gap(gap = MobileProbeGap.NotFetched))
         MobileStandingQuestion.REACHABILITY -> MobilePaneFacts.Reachability(facts = null)
+        MobileStandingQuestion.POLLER ->
+            MobilePaneFacts.Poller(resolved = MobilePollerResolved.Gap(gap = MobilePollerGap.NotFetched))
     }
 
     private fun viewModel(

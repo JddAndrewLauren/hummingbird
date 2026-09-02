@@ -115,7 +115,8 @@ internal fun NowPaneExpanded(
         is MobilePaneFacts.Kimi,
         is MobilePaneFacts.Github,
         is MobilePaneFacts.Uptime,
-        is MobilePaneFacts.Reachability ->
+        is MobilePaneFacts.Reachability,
+        is MobilePaneFacts.Poller ->
             error("a Status-surface question reached the Now expanded slot: ${pane.standingQuestion}")
     }
 }
