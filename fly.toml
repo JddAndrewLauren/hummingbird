@@ -34,4 +34,8 @@ primary_region = "sjc"
 
 [[vm]]
   size = "shared-cpu-1x"
+  # Considered bumping to 512mb for #774's six jobs; kept at 256mb because
+  # every job is a short-lived, one-shot Rust binary (bounded resync, then
+  # exit) and `crontab`'s staggering means no two ever overlap — the
+  # machine never holds more than one poller's working set at a time.
   memory = "256mb"

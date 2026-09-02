@@ -53,8 +53,16 @@
 //!
 //! With reach bounded that way the credential sits on the
 //! `CITY_WASTE_INGEST_TOKEN` side of CLAUDE.md's blast-radius line, not the
-//! `ADMIN_SECRET`/`FCM_SERVICE_ACCOUNT` side, and the crate's own placement
-//! — Actions secrets, on #135/#136's out-of-process precedent — stands.
+//! `ADMIN_SECRET`/`FCM_SERVICE_ACCOUNT` side. **The classification is
+//! unchanged but the placement is not**: #774 moved both binaries off
+//! GitHub Actions `schedule:` onto `hummingbird-sweeper`'s own supercronic
+//! clock, so `GRAPH_CLIENT_PRIVATE_KEY` is now a **Fly secret** on that
+//! machine (`flyctl secrets set`, from the operator's terminal — never
+//! Actions) rather than an Actions secret, and the four identifiers above
+//! are `fly.toml` `[env]` literals instead of `vars.*`. Rotation is now a
+//! two-place operation (1Password → `flyctl secrets set`), the same shape
+//! `docs/sweeper.md` already records for the `GOOGLE_*` three, once the
+//! Actions copy of the key is deleted per #774's own checklist.
 //! **The policy is the load-bearing half and nothing in this repo can
 //! verify it**: if the app registration is ever re-created, or the policy
 //! removed, the same key silently becomes a tenant-wide read again. The
