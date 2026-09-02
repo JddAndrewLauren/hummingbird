@@ -1,3 +1,21 @@
-# supercronic reads this inside the container. One line, deliberately: the
-# cadence is the cheapest decision in the system to reverse.
+# supercronic reads this inside the container. Six jobs share this one
+# clock now (#774): the sweeper's own drain plus the five evaluated-stream/
+# status pollers this issue moved off GitHub Actions `schedule:` — which
+# delivered them roughly once every four hours (#773's measurements) —
+# onto the always-on clock `hummingbird-sweeper` already runs. Adding an
+# entry here extends the clock supercronic already owns; it does not start
+# a second one (CLAUDE.md's "No competing clocks" rule; #773 makes the
+# argument in full).
+#
+# Each poller's cadence matches its own `POLLED_EVERY_MS` (or, for
+# `github-status-poll`, `body::POLLED_EVERY_MS`): the four stream pollers
+# every 15 minutes, `github-status-poll` every 30. The minute offsets are
+# staggered off `/app/sweep` and off one another, deliberately — the
+# machine is `shared-cpu-1x`/256mb, and six jobs landing on the same tick is
+# an avoidable spike rather than a necessary one.
 */15 * * * * /app/sweep
+2,17,32,47 * * * * HB_INGEST_TOKEN="$GMAIL_INGEST_TOKEN" /app/bin/hummingbird-gmail-poll
+5,20,35,50 * * * * HB_INGEST_TOKEN="$CALENDAR_INGEST_TOKEN" /app/bin/hummingbird-calendar-poll
+8,23,38,53 * * * * HB_INGEST_TOKEN="$M365_MAIL_INGEST_TOKEN" /app/bin/graph-mail-poll
+11,26,41,56 * * * * HB_INGEST_TOKEN="$M365_CALENDAR_INGEST_TOKEN" /app/bin/graph-calendar-poll
+14,44 * * * * HB_INGEST_TOKEN="$GH_STATUS_INGEST_TOKEN" GITHUB_TOKEN="$GH_STATUS_PAT" /app/bin/github-status-poll

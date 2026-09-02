@@ -23,8 +23,9 @@
 use serde::Serialize;
 
 /// How often this poller says it runs, for `Freshness`'s declared cadence.
-/// **Must match `.github/workflows/github-status.yml`'s cron.** Every half
-/// hour — the manifest scan and the run-history fetch are both cheap, and a
+/// **Must match `crontab`'s entry for `github-status-poll`** (#774 moved
+/// this off `github-status.yml`'s Actions `schedule:`). Every half hour —
+/// the manifest scan and the run-history fetch are both cheap, and a
 /// poller cannot resolve anything finer than its own interval.
 ///
 /// **This was daily, argued from the wrong end of the range**: "no reason

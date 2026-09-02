@@ -101,7 +101,8 @@ pub use auth::{
 };
 pub use calendar_cursor::{
     cursor_envelope as calendar_cursor_envelope, parse_cursor as parse_calendar_cursor,
-    CursorError as CalendarCursorError, CURSOR_KEY as CALENDAR_CURSOR_KEY, SOURCE as CALENDAR_SOURCE,
+    CursorError as CalendarCursorError, CURSOR_KEY as CALENDAR_CURSOR_KEY,
+    POLLED_EVERY_MS as CALENDAR_POLLED_EVERY_MS, SOURCE as CALENDAR_SOURCE,
 };
 pub use calendar_event::calendar_item_to_candidate;
 pub use calendar_item::{parse_calendar_item, CalendarItem, CalendarItemError, ParsedCalendarItem};
@@ -110,7 +111,7 @@ pub use delta::{parse_delta_page, DeltaError, DeltaPage};
 pub use evaluate::{evaluate_events, Candidate, Match};
 pub use mail_cursor::{
     cursor_envelope as mail_cursor_envelope, parse_cursor as parse_mail_cursor, CursorError as MailCursorError,
-    CURSOR_KEY as MAIL_CURSOR_KEY, SOURCE as MAIL_SOURCE,
+    CURSOR_KEY as MAIL_CURSOR_KEY, POLLED_EVERY_MS as MAIL_POLLED_EVERY_MS, SOURCE as MAIL_SOURCE,
 };
 pub use mail_event::mail_message_to_candidate;
 pub use mail_message::{parse_mail_message, MailMessage, MailMessageError, ParsedMailMessage};

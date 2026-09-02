@@ -8,6 +8,30 @@ primary_region = "sjc"
 
 [build]
 
+[env]
+  # Shared by all five pollers #774 moved onto this machine — none of them
+  # default it (unlike `sweep.py`'s optional `HB_API_BASE`), so it is
+  # required here for every one of them to start at all.
+  HB_BASE_URL = "https://hb.twinion.net"
+  # The M365 Graph pollers' non-secret identifiers — everything
+  # `GRAPH_CLIENT_PRIVATE_KEY` (a Fly secret, set from the operator's
+  # terminal) needs alongside it to build a signed client-credentials
+  # assertion. Copied verbatim from this repo's own Actions repository
+  # variables (`gh variable list`), which `graph-mail-poll.yml`/
+  # `graph-calendar-poll.yml` already read as `vars.*` rather than
+  # `secrets.*` — the same non-secret classification, restated here for a
+  # machine that has no Actions context to read them from. See that file's
+  # header for why the thumbprint in particular is not sensitive (it
+  # identifies a public key).
+  GRAPH_MAILBOX_UPN = "johnd@andrewlauren.com"
+  GRAPH_TENANT_ID = "d585f919-fb4d-4ff4-966a-2e873e3c29d2"
+  GRAPH_CLIENT_ID = "61ea758d-a8a6-49ff-805f-9711a839ad58"
+  GRAPH_CERT_THUMBPRINT_B64URL = "d78QaGgx-hX_77p0bu7oq-j7-4U"
+  # `github-status-poll` reads these two instead of the `github.repository`
+  # Actions context and a fresh checkout it no longer runs inside.
+  GITHUB_REPOSITORY = "JddAndrewLauren/hummingbird"
+  GITHUB_WORKFLOWS_DIR = "/app/workflows"
+
 [[vm]]
   size = "shared-cpu-1x"
   memory = "256mb"

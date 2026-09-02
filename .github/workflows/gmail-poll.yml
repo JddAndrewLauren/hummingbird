@@ -3,36 +3,20 @@
 # set, and upserts an alert for a match — never anything else. Non-matches
 # never touch storage.
 #
-# **A second Actions `schedule:`, and worth stating why that does not widen
-# the repo's own rule.** `city-waste.yml`'s header records the standing ban
-# (issue #8) and the one already-carved exception: hummingbird is public, so
-# the billing clauses (pooled minutes, whole-minute rounding, the $0 cap)
-# never applied here, and what survives is GitHub's 60-day auto-disable (this
-# `workflow_dispatch` covers a missed run or the first run after a token is
-# minted) plus "no second clock competing with a live one" (supercronic's
-# 15-minute sweeper tick, the DO's own `alarm()`). This lane has no such
-# competitor: ADR-0011 assigns Gmail's cadence to nothing else, and nothing
-# else polls Gmail. It is the poller establishing the scaffolding #136/#137
-# follow, and each of those adds its own workflow on the same reasoning.
-#
-# **Live since 2026-08-15 (#486).** The lane was dormant 2026-08-14→15: its
-# first 82 runs all failed on `HB_INGEST_TOKEN is not set`, because neither
-# `GMAIL_INGEST_TOKEN` nor the three `GOOGLE_*` secrets below had ever been
-# minted, and the `schedule:` was commented out so that red stopped masking
-# real failures in the Actions tab. #486 provisioned the credentials, a
-# `workflow_dispatch` run went green end-to-end (cursor snapshot verified),
-# and the `schedule:` below is that same block restored — the one owner of
-# this cadence, per the argument above.
+# **Moved off Actions `schedule:` at #774, onto the sweeper's supercronic
+# clock.** This lane ran on Actions `schedule:` (every 15 minutes) from
+# 2026-08-15 (#486) delivering at roughly once every four hours in practice
+# — GitHub batches and delays `schedule:` runs under load, and does not
+# guarantee the interval requested — measured and argued in #773.
+# `hummingbird-sweeper` is already an always-on container with a live
+# `*/15` supercronic clock and already holds the three `GOOGLE_*` secrets
+# this poller reads, so #774 built this binary into that image and gave it
+# a staggered entry in `crontab` instead: the true `*/15` this workflow's
+# comment always claimed, finally delivered. `workflow_dispatch` stays, for
+# a manual run against a fresh checkout.
 name: gmail-poll
 
 on:
-  # Every 15 minutes — `hummingbird_gmail_poll::cursor::POLLED_EVERY_MS`
-  # must match this interval; it is what the notification lane's own latency
-  # bound (and any future pane reading this poller's cadence) reads. Change
-  # one and you must change the other (re-checked at the #486 restore:
-  # both are 15 minutes).
-  schedule:
-    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 # One poller at a time. Two overlapping runs would race on the same
