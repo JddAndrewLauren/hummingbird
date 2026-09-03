@@ -5,6 +5,7 @@ import {
   EMPTY_CAPTURE_META,
   captureMetaProblems,
   resolveCaptureFields,
+  todayDeadline,
   type CaptureMeta,
 } from "./capture-meta";
 
@@ -147,5 +148,19 @@ describe("the capture sliders' stops", () => {
   it("keeps both sliders at two stops or more", () => {
     expect(CAPTURE_SIZE_NAMES.length).toBeGreaterThanOrEqual(2);
     expect(CAPTURE_ENERGY_NAMES.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("todayDeadline", () => {
+  it("renders the local calendar date in the wire's whole-day form", () => {
+    expect(todayDeadline(new Date(2026, 8, 3, 14, 30).getTime())).toBe("2026-09-03");
+  });
+
+  it("reads the local day, not the UTC one, either side of midnight", () => {
+    // 23:30 local on the 3rd stays the 3rd whatever UTC calls it; 00:30 on
+    // the 4th is the 4th. Built with the local-time constructor, so the
+    // expectation holds in every zone the suite runs in.
+    expect(todayDeadline(new Date(2026, 8, 3, 23, 30).getTime())).toBe("2026-09-03");
+    expect(todayDeadline(new Date(2026, 8, 4, 0, 30).getTime())).toBe("2026-09-04");
   });
 });

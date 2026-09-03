@@ -125,21 +125,25 @@ describe("CapturePopover — the overlay", () => {
 });
 
 describe("CapturePopover — the capture box", () => {
-  it("refuses an empty or whitespace-only draft on both destinations", () => {
+  it("refuses an empty or whitespace-only draft on all three buttons", () => {
     renderPopover();
     const add = screen.getByRole("button", { name: "Triage" });
     const mint = screen.getByRole("button", { name: "Mint action" });
+    const today = screen.getByRole("button", { name: "Mint for today" });
 
     expect(add.hasAttribute("disabled")).toBe(true);
     expect(mint.hasAttribute("disabled")).toBe(true);
+    expect(today.hasAttribute("disabled")).toBe(true);
 
     fireEvent.change(field(), { target: { value: "   " } });
     expect(add.hasAttribute("disabled")).toBe(true);
     expect(mint.hasAttribute("disabled")).toBe(true);
+    expect(today.hasAttribute("disabled")).toBe(true);
 
     fireEvent.change(field(), { target: { value: "Call the plumber" } });
     expect(add.hasAttribute("disabled")).toBe(false);
     expect(mint.hasAttribute("disabled")).toBe(false);
+    expect(today.hasAttribute("disabled")).toBe(false);
   });
 
   it("sends the raw draft to Triage", () => {
@@ -158,6 +162,43 @@ describe("CapturePopover — the capture box", () => {
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(onSubmit).toHaveBeenCalledWith("Order the worktop", "ready", NO_FIELDS);
+  });
+
+  it("mints for today: straight into Ready with a date-only deadline", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(2026, 8, 3, 14, 30));
+      const { onSubmit } = renderPopover();
+      fireEvent.change(field(), { target: { value: "Pay the water bill" } });
+      fireEvent.click(screen.getByRole("button", { name: "Mint for today" }));
+
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(onSubmit).toHaveBeenCalledWith("Pay the water bill", "ready", {
+        ...NO_FIELDS,
+        deadline: "2026-09-03",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("mints for today over a deadline picked under More details", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(2026, 8, 3, 14, 30));
+      const { onSubmit } = renderPopover();
+      fireEvent.change(field(), { target: { value: "Pay the water bill" } });
+      fireEvent.click(screen.getByRole("button", { name: "More details" }));
+      fireEvent.change(screen.getByLabelText("Deadline"), { target: { value: "2026-10-20" } });
+      fireEvent.click(screen.getByRole("button", { name: "Mint for today" }));
+
+      expect(onSubmit).toHaveBeenCalledWith("Pay the water bill", "ready", {
+        ...NO_FIELDS,
+        deadline: "2026-09-03",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("submits to Triage on Enter, never to Ready", () => {
