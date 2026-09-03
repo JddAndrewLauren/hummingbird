@@ -159,6 +159,15 @@ pub struct TriageEdits {
     /// item, but which note an item points at is an operator choice.
     #[serde(default, deserialize_with = "touched")]
     pub vault_path: Option<Option<String>>,
+    /// #782's Link, three-state each for `vault_path`'s reason. A name
+    /// beside no URL is refused at [`TaskHostCore::triage`], judged over
+    /// the edit alone: a name sent with an absent URL is trusted to sit
+    /// beside a stored one (the authority makes the final call over the
+    /// current row); a name sent with a cleared URL is refused here.
+    #[serde(default, deserialize_with = "touched")]
+    pub link_url: Option<Option<String>>,
+    #[serde(default, deserialize_with = "touched")]
+    pub link_label: Option<Option<String>>,
 }
 
 /// Every field the capture box may set on a brand-new item, as the JS side
@@ -204,6 +213,13 @@ pub struct CaptureFields {
     /// date is the do-date a human chose, which has no minute.
     #[serde(default)]
     pub scheduled_date: Option<String>,
+    /// #782's Link, settable at capture because the capture box carries the
+    /// field (and a share target, one day, would carry the URL in). A
+    /// `link_label` without a `link_url` is refused before the seam.
+    #[serde(default)]
+    pub link_url: Option<String>,
+    #[serde(default)]
+    pub link_label: Option<String>,
 }
 
 /// Distinguishes "key absent" from "key present, value null" for a
@@ -2629,6 +2645,18 @@ impl TaskHostCore {
                 return fail("scheduled date must be YYYY-MM-DD".to_string());
             }
         }
+        if fields.link_url.as_deref().is_some_and(|url| url.trim().is_empty()) {
+            diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Failure);
+            return fail("link URL must be non-empty".to_string());
+        }
+        if fields.link_label.as_deref().is_some_and(|label| label.trim().is_empty()) {
+            diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Failure);
+            return fail("link name must be non-empty".to_string());
+        }
+        if fields.link_label.is_some() && fields.link_url.is_none() {
+            diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Failure);
+            return fail("a link name needs a URL".to_string());
+        }
         let options = CaptureOptions {
             size,
             energy,
@@ -2638,6 +2666,8 @@ impl TaskHostCore {
             project_id: fields.project_id,
             deadline: fields.deadline,
             scheduled_date: fields.scheduled_date,
+            link_url: fields.link_url,
+            link_label: fields.link_label,
         };
         match self.core.capture(seed, title, stage, now_ms, options, Some(operation_id)).await {
             Ok(id) => {
@@ -2789,6 +2819,23 @@ impl TaskHostCore {
                 return fail_op(reject("vault path must be non-empty".to_string()));
             }
         }
+        if let Some(Some(link_url)) = &edits.link_url {
+            if link_url.trim().is_empty() {
+                return fail_op(reject("link URL must be non-empty".to_string()));
+            }
+        }
+        if let Some(Some(link_label)) = &edits.link_label {
+            if link_label.trim().is_empty() {
+                return fail_op(reject("link name must be non-empty".to_string()));
+            }
+        }
+        if matches!(edits.link_label, Some(Some(_))) && matches!(edits.link_url, Some(None)) {
+            return fail_op(reject("a link name needs a URL".to_string()));
+        }
+        // #782: clearing the URL clears the name with it — the authority's
+        // one-row-state rule, sent explicitly so the queued patch says what
+        // the row will hold.
+        let link_label = if matches!(edits.link_url, Some(None)) { Some(None) } else { edits.link_label };
         let patch = TriagePatch {
             title: edits.title,
             description: edits.description,
@@ -2800,6 +2847,8 @@ impl TaskHostCore {
             deadline: edits.deadline,
             scheduled_date: edits.scheduled_date,
             vault_path: edits.vault_path,
+            link_url: edits.link_url,
+            link_label,
         };
         match self.core.triage(seed, item_id, promote_to_ready, patch, now_ms, Some(operation_id)).await {
             Ok(()) => {
@@ -3844,6 +3893,11 @@ mod triage_tests {
         assert_eq!(edits.context, None, "an absent key leaves the field alone");
         assert_eq!(edits.title, None);
         assert_eq!(edits.priority, None);
+        assert_eq!(edits.link_url, None, "#782's pair reads the same three states");
+        let edits: TriageEdits =
+            serde_json::from_str(r#"{"linkUrl":"https://example.test/","linkLabel":null}"#).unwrap();
+        assert_eq!(edits.link_url, Some(Some("https://example.test/".to_string())));
+        assert_eq!(edits.link_label, Some(None));
 
         assert!(
             serde_json::from_str::<TriageEdits>(r#"{"project_id":"p1"}"#).is_err(),
@@ -3879,6 +3933,11 @@ mod triage_tests {
         assert_eq!(fields.deadline, None, "a null is simply not set");
         assert_eq!(fields.priority, Some(3));
         assert_eq!(fields.context, None, "an absent key is not set either");
+        assert_eq!(fields.link_url, None);
+        let fields: CaptureFields =
+            serde_json::from_str(r#"{"linkUrl":"https://example.test/","linkLabel":"Ex"}"#).unwrap();
+        assert_eq!(fields.link_url, Some("https://example.test/".to_string()));
+        assert_eq!(fields.link_label, Some("Ex".to_string()));
 
         assert_eq!(
             serde_json::from_str::<CaptureFields>("{}").unwrap(),
@@ -3928,6 +3987,15 @@ mod triage_tests {
                 scheduled_date: Some("2026-08-12T09:30".to_string()),
                 ..CaptureFields::default()
             },
+            // #782: a link name beside no URL, and a blank half.
+            CaptureFields {
+                link_label: Some("Ex".to_string()),
+                ..CaptureFields::default()
+            },
+            CaptureFields {
+                link_url: Some("  ".to_string()),
+                ..CaptureFields::default()
+            },
         ];
         for fields in cases {
             let response = host
@@ -3963,6 +4031,8 @@ mod triage_tests {
                     priority: Some(2),
                     deadline: Some("2026-09-01T09:30".to_string()),
                     scheduled_date: Some("2026-08-30".to_string()),
+                    link_url: Some("https://example.test/milk".to_string()),
+                    link_label: Some("Milk".to_string()),
                 },
                 1_000,
             )
@@ -3978,6 +4048,8 @@ mod triage_tests {
         assert_eq!(item.priority, 2);
         assert_eq!(item.deadline.as_deref(), Some("2026-09-01T09:30"));
         assert_eq!(item.scheduled_date.as_deref(), Some("2026-08-30"));
+        assert_eq!(item.link_url.as_deref(), Some("https://example.test/milk"));
+        assert_eq!(item.link_label.as_deref(), Some("Milk"));
     }
 
     /// Every value rule the authority answers 400 on is checked before
@@ -4022,6 +4094,15 @@ mod triage_tests {
                     ..Default::default()
                 },
             ),
+            (
+                "a link name beside a cleared URL",
+                TriageEdits {
+                    link_url: Some(None),
+                    link_label: Some(Some("Ex".to_string())),
+                    ..Default::default()
+                },
+            ),
+            ("a blank link URL", TriageEdits { link_url: Some(Some(" ".to_string())), ..Default::default() }),
         ];
 
         for (what, edits) in rejected {
@@ -5335,6 +5416,8 @@ mod tests {
             source_key: None,
             source_url: None,
             vault_path: None,
+            link_url: None,
+            link_label: None,
             archived_at: None,
             agent: false,
             created_at: 1,

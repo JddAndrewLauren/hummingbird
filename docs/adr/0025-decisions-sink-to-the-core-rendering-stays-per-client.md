@@ -624,3 +624,12 @@ was taken with its eyes open.
 own items is a decision to take again on its own merits, exactly as
 CONTEXT.md says of a second `@homework`-shaped context. The test above is
 unchanged for every other pane: if no decision reads it, it stays home.
+
+## The share-payload mapping sinks before its second caller exists (#782)
+
+*Amended 2026-09-03 (#782).*
+
+| Module | Verdict |
+|---|---|
+| `decisions::share` — `parse_share_payload`, `first_http_url`, `url_host`, `link_display_label` | **sunk on arrival**, with one caller (Android's `ACTION_SEND` alias) and no web share target yet. The tie-breaker is satisfied prospectively: a PWA `share_target` is a known later slice, and the alternative was a Kotlin URL regex in `CaptureActivity` that the `ui/forms` structural tests exist to forbid. What crossed is a mapping (which *field* each piece of a share starts in) and a display rule (name → host → URL); what did not cross is the seeding itself — `CaptureViewModel.seedFromShare` is a form action, and `Core::capture` still receives the human's title verbatim (ADR-0022) |
+| `capture.rs`'s `parse_seam` | untouched. The share mapping seeds a *draft* the human edits; it is not a capture parser, and lives in its own module so that #42's guard stays a named no-op |

@@ -58,6 +58,13 @@ pub struct CreateItem {
     /// clearing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vault_path: Option<String>,
+    /// #782's Link: one URL and its optional name. Plain `Option`s for the
+    /// same reason as `vault_path`; a `link_label` without a `link_url` is
+    /// a 400.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_label: Option<String>,
     /// #10's delegation axis. Defaults to false — the human does it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<bool>,
@@ -147,15 +154,24 @@ pub struct ItemPatch {
     pub scheduled_date: Option<Option<String>>,
     #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<Option<i64>>,
-    /// #771's vault-relative Obsidian path — and **the one nullable
-    /// `items` column outside the provenance trio that this patch can
-    /// touch**. `source`/`source_key`/`source_url` are deliberately absent
-    /// here because provenance belongs to whatever captured the item; a
-    /// vault path is an operator *choice*, set and re-set and cleared from
-    /// the item panel long after capture, so that exclusion does not reach
-    /// it. The asymmetry is deliberate, not an oversight.
+    /// #771's vault-relative Obsidian path — the first of **the three
+    /// nullable `items` columns outside the provenance trio that this patch
+    /// can touch** (the other two are #782's Link pair below).
+    /// `source`/`source_key`/`source_url` are deliberately absent here
+    /// because provenance belongs to whatever captured the item; a vault
+    /// path is an operator *choice*, set and re-set and cleared from the
+    /// item panel long after capture, so that exclusion does not reach it.
+    /// The asymmetry is deliberate, not an oversight.
     #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
     pub vault_path: Option<Option<String>>,
+    /// #782's Link, for `vault_path`'s reason: operator-chosen, so
+    /// patchable. Three-state each. A `link_label` without a `link_url`
+    /// (computed over the patch applied to the current row) is a 400, and
+    /// clearing `link_url` also clears `link_label` — one row state.
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub link_url: Option<Option<String>>,
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub link_label: Option<Option<String>>,
     #[serde(default, deserialize_with = "non_null_agent", skip_serializing_if = "Option::is_none")]
     pub agent: Option<bool>,
 }

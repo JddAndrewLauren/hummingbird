@@ -195,6 +195,37 @@ pub fn join_deadline(date: &str, time: Option<String>) -> String {
     urgency::join_deadline(date, time.as_deref())
 }
 
+/// [`hummingbird_core::decisions::share::ShareDraft`], mirrored as a
+/// `uniffi::Record` — what an `ACTION_SEND` share seeds the capture form
+/// with (#782). `description` and `link_url` cross as `""`-when-unset, the
+/// form's own resting shape, exactly as [`CaptureDraft`] carries them back.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ShareDraftRecord {
+    pub title: String,
+    pub description: String,
+    pub link_url: String,
+}
+
+/// [`hummingbird_core::decisions::share::parse_share_payload`] — the
+/// share-payload mapping, crossed so `CaptureActivity` does no URL parsing
+/// of its own (ADR-0025; `ManifestAliasTest` pins that it never does).
+#[uniffi::export]
+pub fn parse_share_payload(subject: &str, text: &str) -> ShareDraftRecord {
+    let draft = hummingbird_core::decisions::share::parse_share_payload(subject, text);
+    ShareDraftRecord {
+        title: draft.title,
+        description: draft.description.unwrap_or_default(),
+        link_url: draft.link_url.unwrap_or_default(),
+    }
+}
+
+/// [`hummingbird_core::decisions::share::link_display_label`] — what a Link
+/// is called on the item panel: its name, else its host, else the URL.
+#[uniffi::export]
+pub fn link_display_label(url: &str, label: Option<String>) -> String {
+    hummingbird_core::decisions::share::link_display_label(url, label.as_deref())
+}
+
 /// [`hummingbird_core::decisions::vocabulary::VocabOption`], mirrored as a
 /// `uniffi::Record` — one `<select>`-equivalent option's wire value and
 /// display label, crossed to Kotlin so no size/energy word is ever a
@@ -305,6 +336,11 @@ pub struct CaptureDraft {
     pub priority: String,
     pub deadline: String,
     pub scheduled_date: String,
+    /// #782's Link, both halves `""` when unset. A name beside no URL is
+    /// refused at [`MobileTaskHost::capture`], before the core — the same
+    /// rule the authority answers 400 with.
+    pub link_url: String,
+    pub link_label: String,
 }
 
 /// Resolves one optional vocabulary field: `""` is "not set", anything else
@@ -1341,8 +1377,14 @@ pub struct ItemDetailRecord {
     /// the whole item. **Nothing on Android draws it**: a gap stays silent,
     /// the same idiom the nav alarm follows — the column syncs, the phone
     /// renders nothing, and no affordance claims a capability the platform
-    /// does not have.
+    /// does not have. That is a statement about the vault path alone; the
+    /// Link pair below is drawn and edited on the phone (#782).
     pub vault_path: Option<String>,
+    /// #782's Link: the one URL an item points at and its optional name.
+    /// Drawn wherever the item is opened, by
+    /// [`link_display_label`]; edited through [`ItemEdit`].
+    pub link_url: Option<String>,
+    pub link_label: Option<String>,
     pub updated_at: i64,
     /// CAS target for the edit, exactly as [`AlertRecord::version`] is for
     /// the ack.
@@ -1394,6 +1436,8 @@ fn to_item_detail_record(
         scheduled_date: item.scheduled_date.clone(),
         source_url: item.source_url.clone(),
         vault_path: item.vault_path.clone(),
+        link_url: item.link_url.clone(),
+        link_label: item.link_label.clone(),
         updated_at: item.updated_at,
         version: item.version,
         steps: detail
@@ -1510,6 +1554,11 @@ pub struct ItemEdit {
     pub project_id: FieldPatch,
     pub deadline: FieldPatch,
     pub scheduled_date: FieldPatch,
+    /// #782's Link. Clearing `link_url` clears `link_label` with it at
+    /// [`to_triage_patch`] — one row state, the authority's own rule,
+    /// applied here so the optimistic row never shows a stranded name.
+    pub link_url: FieldPatch,
+    pub link_label: FieldPatch,
 }
 
 /// [`ItemEdit`] → [`hummingbird_core::TriagePatch`], the one conversion
@@ -1534,6 +1583,11 @@ fn to_triage_patch(edit: &ItemEdit) -> Result<hummingbird_core::TriagePatch, Str
         // the column. `None` is "leave it alone", which is what keeps a
         // path set on the web from being cleared by an edit made here.
         vault_path: None,
+        link_url: edit.link_url.to_text(),
+        link_label: match edit.link_url {
+            FieldPatch::Clear => Some(None),
+            _ => edit.link_label.to_text(),
+        },
     })
 }
 
@@ -4209,6 +4263,11 @@ impl MobileTaskHost {
             .map_err(|detail| MobileCaptureError::CaptureFailed { detail })?;
         let energy = parse_optional_vocabulary(&draft.energy, Energy::parse)
             .map_err(|detail| MobileCaptureError::CaptureFailed { detail })?;
+        if !draft.link_label.is_empty() && draft.link_url.is_empty() {
+            return Err(MobileCaptureError::CaptureFailed {
+                detail: "a link name needs a URL".to_string(),
+            });
+        }
         let options = CaptureOptions {
             size,
             energy,
@@ -4218,6 +4277,8 @@ impl MobileTaskHost {
             project_id: some_if_present(&draft.project_id),
             deadline: some_if_present(&draft.deadline),
             scheduled_date: some_if_present(&draft.scheduled_date),
+            link_url: some_if_present(&draft.link_url),
+            link_label: some_if_present(&draft.link_label),
         };
 
         let seed = mint_mutation_seed("capture", now_ms);
@@ -6680,6 +6741,8 @@ mod tests {
             priority: String::new(),
             deadline: String::new(),
             scheduled_date: String::new(),
+            link_url: String::new(),
+            link_label: String::new(),
         }
     }
 
@@ -7352,6 +7415,8 @@ mod tests {
             scheduled_date: None,
             source_url: None,
             vault_path: None,
+            link_url: None,
+            link_label: None,
             updated_at: 0,
             version: 1,
             steps: vec![],
@@ -7479,6 +7544,8 @@ mod tests {
             priority: "2".to_string(),
             deadline: "2026-09-01".to_string(),
             scheduled_date: "2026-08-30".to_string(),
+            link_url: "https://example.test/passport".to_string(),
+            link_label: "Renewal form".to_string(),
         };
         let id = host.capture(draft, 1_000).await.unwrap();
 
@@ -7493,6 +7560,54 @@ mod tests {
         assert_eq!(item.priority, 2);
         assert_eq!(item.deadline, Some("2026-09-01".to_string()));
         assert_eq!(item.scheduled_date, Some("2026-08-30".to_string()));
+        assert_eq!(item.link_url, Some("https://example.test/passport".to_string()));
+        assert_eq!(item.link_label, Some("Renewal form".to_string()));
+    }
+
+    /// #782: a link name beside no URL is refused here, before the core,
+    /// exactly as an unrecognised size is — the authority would answer 400
+    /// and the mutation would dead-letter with nothing on screen to say so.
+    #[tokio::test]
+    async fn a_link_name_without_a_url_is_refused_before_the_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m3-capture-link-name-alone");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        let draft = CaptureDraft {
+            destination: CaptureDestination::Ready,
+            link_label: "Renewal form".to_string(),
+            ..title_only_draft("renew the passport")
+        };
+        let err = host.capture(draft, 1_000).await.unwrap_err();
+        assert!(matches!(err, MobileCaptureError::CaptureFailed { .. }), "{err}");
+        let inner = host.inner.lock().await;
+        assert_eq!(inner.core.queue_depth(), 0, "nothing was ever queued");
+    }
+
+    /// The two share doors are thin: one mapping each, pinned here so the
+    /// `""`-when-unset shape they hand Kotlin is a tested fact.
+    #[test]
+    fn the_share_doors_cross_the_core_mapping_with_empty_for_unset() {
+        let draft = parse_share_payload("", "https://www.youtube.com/watch?v=abc");
+        assert_eq!(
+            draft,
+            ShareDraftRecord {
+                title: "youtube.com".to_string(),
+                description: String::new(),
+                link_url: "https://www.youtube.com/watch?v=abc".to_string(),
+            }
+        );
+        assert_eq!(link_display_label("https://www.youtube.com/watch?v=abc", None), "youtube.com");
+        assert_eq!(
+            link_display_label("https://www.youtube.com/watch?v=abc", Some("Rehab".to_string())),
+            "Rehab",
+        );
     }
 
     /// `destination: Triage` never reaches [`Core::frontier`] (Triage is
@@ -7606,6 +7721,8 @@ mod tests {
             source_key: None,
             source_url: None,
             vault_path: None,
+            link_url: None,
+            link_label: None,
             archived_at: None,
             agent: false,
             created_at: 0,
@@ -8364,6 +8481,8 @@ mod tests {
             project_id: FieldPatch::Untouched,
             deadline: FieldPatch::Untouched,
             scheduled_date: FieldPatch::Untouched,
+            link_url: FieldPatch::Untouched,
+            link_label: FieldPatch::Untouched,
         }
     }
 
@@ -8673,6 +8792,8 @@ mod tests {
             source_key: None,
             source_url: Some("https://example.test/x".into()),
             vault_path: None,
+            link_url: None,
+            link_label: None,
             archived_at: None,
             agent: false,
             created_at: 1,
@@ -8809,6 +8930,8 @@ mod tests {
             project_id: FieldPatch::Untouched,
             deadline: FieldPatch::Untouched,
             scheduled_date: FieldPatch::Untouched,
+            link_url: FieldPatch::Untouched,
+            link_label: FieldPatch::Untouched,
         }
     }
 
@@ -9622,6 +9745,8 @@ mod skills_tests {
                     priority: String::new(),
                     deadline: String::new(),
                     scheduled_date: String::new(),
+                    link_url: String::new(),
+                    link_label: String::new(),
                 },
                 1_000,
             )
@@ -9688,6 +9813,8 @@ mod skills_tests {
                     priority: String::new(),
                     deadline: String::new(),
                     scheduled_date: String::new(),
+                    link_url: String::new(),
+                    link_label: String::new(),
                 },
                 1_000,
             )
@@ -10176,6 +10303,8 @@ mod settings_tests {
             priority: String::new(),
             deadline: String::new(),
             scheduled_date: String::new(),
+            link_url: String::new(),
+            link_label: String::new(),
         }
     }
 
@@ -10192,6 +10321,8 @@ mod settings_tests {
             project_id: FieldPatch::Untouched,
             deadline: FieldPatch::Untouched,
             scheduled_date: FieldPatch::Untouched,
+            link_url: FieldPatch::Untouched,
+            link_label: FieldPatch::Untouched,
         }
     }
 
@@ -10232,6 +10363,8 @@ mod settings_tests {
             source_key: None,
             source_url: None,
             vault_path: None,
+            link_url: None,
+            link_label: None,
             archived_at: None,
             agent: false,
             created_at: 0,
@@ -11106,6 +11239,8 @@ mod diagnostic_ffi_tests {
             priority: String::new(),
             deadline: String::new(),
             scheduled_date: String::new(),
+            link_url: String::new(),
+            link_label: String::new(),
         };
         host.capture(draft, 1_000).await.unwrap();
         let core_lock_seqs: Vec<u64> = host
@@ -11173,6 +11308,8 @@ mod diagnostic_ffi_tests {
             priority: String::new(),
             deadline: String::new(),
             scheduled_date: String::new(),
+            link_url: String::new(),
+            link_label: String::new(),
         };
         host.capture(draft, 1_000).await.unwrap();
 

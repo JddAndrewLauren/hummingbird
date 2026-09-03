@@ -477,6 +477,122 @@ fn a_blank_vault_path_is_rejected_on_both_doors() {
     }
 }
 
+/// #782: the Link pair is created, re-pointed, named and cleared like
+/// `vault_path` — the second and third nullable `items` columns outside the
+/// provenance trio a patch may touch.
+#[test]
+fn link_is_created_repointed_named_and_cleared() {
+    let sql = RusqliteSql::new();
+    let resp = post(
+        &sql,
+        r#"{"id": "a-1", "title": "hello", "link_url": "https://www.youtube.com/watch?v=abc"}"#,
+        1000,
+    );
+    assert_eq!(resp.status, 201, "{}", resp.body);
+    assert_eq!(item(&resp).link_url.as_deref(), Some("https://www.youtube.com/watch?v=abc"));
+    assert_eq!(item(&resp).link_label, None, "the name stays empty until chosen");
+
+    // A name sent alone is fine once a URL is stored.
+    let resp = patch(&sql, "a-1", r#"{"expected_version": 1, "link_label": "Knee rehab"}"#, 2000);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    assert_eq!(item(&resp).link_label.as_deref(), Some("Knee rehab"));
+    assert_eq!(item(&resp).link_url.as_deref(), Some("https://www.youtube.com/watch?v=abc"));
+
+    let resp = patch(
+        &sql,
+        "a-1",
+        r#"{"expected_version": 2, "link_url": "https://example.test/rehab"}"#,
+        3000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    assert_eq!(item(&resp).link_url.as_deref(), Some("https://example.test/rehab"));
+    assert_eq!(item(&resp).link_label.as_deref(), Some("Knee rehab"), "re-pointing keeps the name");
+
+    let resp = patch(&sql, "a-1", r#"{"expected_version": 3, "link_label": null}"#, 4000);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    assert_eq!(item(&resp).link_label, None, "the name clears on its own");
+    assert_eq!(item(&resp).link_url.as_deref(), Some("https://example.test/rehab"));
+
+    let resp = patch(&sql, "a-1", r#"{"expected_version": 4, "link_url": null}"#, 5000);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    assert_eq!(item(&resp).link_url, None, "explicit null clears the link");
+}
+
+/// Clearing the URL clears the name with it: the two columns are one row
+/// state, and a stranded name is never stored.
+#[test]
+fn clearing_the_link_url_clears_its_name() {
+    let sql = RusqliteSql::new();
+    let resp = post(
+        &sql,
+        r#"{"id": "a-1", "title": "hello", "link_url": "https://example.test/", "link_label": "Ex"}"#,
+        1000,
+    );
+    assert_eq!(resp.status, 201, "{}", resp.body);
+    assert_eq!(item(&resp).link_label.as_deref(), Some("Ex"));
+
+    let resp = patch(&sql, "a-1", r#"{"expected_version": 1, "link_url": null}"#, 2000);
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    assert_eq!(item(&resp).link_url, None);
+    assert_eq!(item(&resp).link_label, None, "the name goes with the URL");
+}
+
+/// A name without a URL is a 400 on both doors — on the patch door, judged
+/// over the patch applied to the current row, so a name beside a URL being
+/// cleared in the same patch is refused too.
+#[test]
+fn a_link_name_without_a_url_is_rejected_on_both_doors() {
+    let sql = RusqliteSql::new();
+    assert_eq!(
+        post(&sql, r#"{"id": "a", "title": "t", "link_label": "Ex"}"#, 0).status,
+        400,
+        "create: name without URL",
+    );
+    post(&sql, r#"{"id": "a-1", "title": "hello"}"#, 1000);
+    assert_eq!(
+        patch(&sql, "a-1", r#"{"expected_version": 1, "link_label": "Ex"}"#, 2000).status,
+        400,
+        "patch: name onto a row with no URL",
+    );
+    let resp = patch(
+        &sql,
+        "a-1",
+        r#"{"expected_version": 1, "link_url": "https://example.test/", "link_label": "Ex"}"#,
+        2000,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    assert_eq!(
+        patch(&sql, "a-1", r#"{"expected_version": 2, "link_url": null, "link_label": "Ex"}"#, 3000)
+            .status,
+        400,
+        "patch: name kept while the URL is cleared",
+    );
+}
+
+/// Non-empty after trim on each half, the rule `vault_path` carries.
+/// Clearing is `null`, never `""`.
+#[test]
+fn a_blank_link_half_is_rejected_on_both_doors() {
+    let sql = RusqliteSql::new();
+    for body in [
+        r#"{"id": "a", "title": "t", "link_url": ""}"#,
+        r#"{"id": "a", "title": "t", "link_url": "   "}"#,
+        r#"{"id": "a", "title": "t", "link_url": "https://example.test/", "link_label": ""}"#,
+        r#"{"id": "a", "title": "t", "link_url": "https://example.test/", "link_label": "  "}"#,
+    ] {
+        assert_eq!(post(&sql, body, 0).status, 400, "{body}");
+    }
+    post(&sql, r#"{"id": "a-1", "title": "hello", "link_url": "https://example.test/"}"#, 1000);
+    for body in [
+        r#"{"expected_version": 1, "link_url": ""}"#,
+        r#"{"expected_version": 1, "link_url": "  "}"#,
+        r#"{"expected_version": 1, "link_label": ""}"#,
+        r#"{"expected_version": 1, "link_label": "  "}"#,
+    ] {
+        assert_eq!(patch(&sql, "a-1", body, 2000).status, 400, "{body}");
+    }
+}
+
 #[test]
 fn patch_can_attach_and_detach_a_real_project() {
     let sql = RusqliteSql::new();

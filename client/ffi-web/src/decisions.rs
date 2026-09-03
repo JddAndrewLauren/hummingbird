@@ -98,6 +98,28 @@ pub fn capture_meta_problems(deadline: &str, scheduled_date: &str) -> String {
 /// (`store/worker-client.ts`) is a plain `number` — the wire's `priority`
 /// column is `0..=4`, nowhere near `i32`'s range, so narrowing here loses
 /// nothing and keeps the boundary type the caller already expects.
+/// [`hummingbird_core::decisions::share::parse_share_payload`] (#782), the
+/// share-payload mapping, as JSON `{title, description, linkUrl}` with
+/// `null` for an absent half. No web share target reads it yet; the door
+/// exists so that when one does, the mapping is the phone's, not a copy.
+#[wasm_bindgen]
+pub fn parse_share_payload(subject: &str, text: &str) -> String {
+    let draft = hummingbird_core::decisions::share::parse_share_payload(subject, text);
+    serde_json::json!({
+        "title": draft.title,
+        "description": draft.description,
+        "linkUrl": draft.link_url,
+    })
+    .to_string()
+}
+
+/// [`hummingbird_core::decisions::share::link_display_label`] — what a Link
+/// is called on the item panel: its name, else its host, else the URL.
+#[wasm_bindgen]
+pub fn link_display_label(url: &str, label: Option<String>) -> String {
+    hummingbird_core::decisions::share::link_display_label(url, label.as_deref())
+}
+
 #[wasm_bindgen]
 pub fn priority_from_select(raw: &str) -> Option<i32> {
     capture::priority_from_select(raw).map(|value| value as i32)
@@ -2056,6 +2078,20 @@ pub fn question_roster_json() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The share door's JSON keys are `seam.ts`'s contract (#782): camelCase
+    /// on this wire, `null` for an absent half, and the mapping itself the
+    /// core's verbatim.
+    #[test]
+    fn the_share_door_serializes_with_the_keys_seam_ts_parses() {
+        let json: serde_json::Value =
+            serde_json::from_str(&parse_share_payload("", "https://www.youtube.com/watch?v=abc")).unwrap();
+        assert_eq!(json["title"], serde_json::json!("youtube.com"));
+        assert_eq!(json["description"], serde_json::Value::Null);
+        assert_eq!(json["linkUrl"], serde_json::json!("https://www.youtube.com/watch?v=abc"));
+        assert_eq!(link_display_label("https://www.youtube.com/x", None), "youtube.com");
+        assert_eq!(link_display_label("https://www.youtube.com/x", Some("Rehab".into())), "Rehab");
+    }
 
     /// The exposure is a pass-through and nothing more — the rule itself is
     /// tested in `hummingbird_core::decisions::capture`. This pins that the

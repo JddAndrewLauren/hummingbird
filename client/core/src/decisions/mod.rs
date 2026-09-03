@@ -30,6 +30,7 @@ pub mod queue;
 pub mod roster;
 pub mod rules;
 pub mod settings;
+pub mod share;
 pub mod skills;
 pub mod urgency;
 pub mod vocabulary;
