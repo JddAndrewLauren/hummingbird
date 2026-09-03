@@ -226,6 +226,13 @@ pub fn link_display_label(url: &str, label: Option<String>) -> String {
     hummingbird_core::decisions::share::link_display_label(url, label.as_deref())
 }
 
+/// [`hummingbird_core::decisions::share::is_followable_link`] — whether the
+/// item panel draws the Link row at all, and hands its tap to `ACTION_VIEW`.
+#[uniffi::export]
+pub fn link_is_followable(url: &str) -> bool {
+    hummingbird_core::decisions::share::is_followable_link(url)
+}
+
 /// [`hummingbird_core::decisions::vocabulary::VocabOption`], mirrored as a
 /// `uniffi::Record` — one `<select>`-equivalent option's wire value and
 /// display label, crossed to Kotlin so no size/energy word is ever a
@@ -7604,6 +7611,8 @@ mod tests {
             }
         );
         assert_eq!(link_display_label("https://www.youtube.com/watch?v=abc", None), "youtube.com");
+        assert!(link_is_followable("https://www.youtube.com/watch?v=abc"));
+        assert!(!link_is_followable("javascript:alert(1)"));
         assert_eq!(
             link_display_label("https://www.youtube.com/watch?v=abc", Some("Rehab".to_string())),
             "Rehab",

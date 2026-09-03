@@ -79,6 +79,7 @@ import uniffi.hummingbird_ffi_mobile.MobileSkillRunState
 import uniffi.hummingbird_ffi_mobile.itemCanGrill
 import uniffi.hummingbird_ffi_mobile.itemGrillButtonLabel
 import uniffi.hummingbird_ffi_mobile.linkDisplayLabel
+import uniffi.hummingbird_ffi_mobile.linkIsFollowable
 import uniffi.hummingbird_ffi_mobile.skillRunStampLabel
 
 // One item, in full — the panel every one of its four hosts renders:
@@ -754,14 +755,16 @@ private fun DetailBody(
     // The row is the tap that follows it — `ACTION_VIEW`, the
     // `NowPanesExpanded.kt` idiom, never an in-app WebView — and the
     // trailing control is the edit affordance, opening the shared
-    // `LinkField` under it. Drawn only for an `http(s)` URL: the core's
-    // `linkDisplayLabel` answers the URL itself for anything else, and a
-    // tap on that would hand the system a scheme it might resolve to
-    // something the operator never meant.
+    // `LinkField` under it. Drawn only for an `http(s)` URL — the core's
+    // `linkIsFollowable`, the same rule the web's anchor reads — because a
+    // tap on anything else would hand the system a scheme it might resolve
+    // to something the operator never meant; a stored value that is not
+    // followable is edited from the disclosure's `LINK` row like an absent
+    // one.
     //
     // Keyed on the item in the registry key, like every other saveable
     // here (this file's header).
-    val linkUrl = record.linkUrl
+    val linkUrl = record.linkUrl?.takeIf { linkIsFollowable(it) }
     var editingLink by rememberSaveable(
         itemId,
         key = "link-open-$itemId",
@@ -1285,9 +1288,9 @@ private fun DetailSection(
  * edit affordance. Two gestures share the row, which is safe for the reason
  * the header's already is: an `IconButton` consumes its own tap.
  *
- * Only ever drawn for an `http(s)` URL — the caller checks the label the
- * core answered, and `url_host`'s refusal to name a host for anything else
- * is what keeps a `javascript:` or `intent:` string out of `ACTION_VIEW`. */
+ * Only ever drawn for an `http(s)` URL — the caller asks the core
+ * (`linkIsFollowable`), which is what keeps a `javascript:` or `intent:`
+ * string out of `ACTION_VIEW`; the row itself has no opinion. */
 @Composable
 private fun LinkRow(
     url: String,
@@ -1296,24 +1299,15 @@ private fun LinkRow(
     onEdit: (() -> Unit)?,
 ) {
     val context = LocalContext.current
-    // `linkDisplayLabel` answers the raw URL for anything that is not
-    // http(s) — the one signal this surface has, and the one it needs.
-    val followable = label != url
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .then(
-                if (followable) {
-                    Modifier.clickable {
-                        context.startActivity(
-                            Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                        )
-                    }
-                } else {
-                    Modifier
-                },
-            )
+            .clickable {
+                context.startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
             .heightIn(min = 44.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1331,14 +1325,12 @@ private fun LinkRow(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        if (followable) {
-            Icon(
-                painterResource(R.drawable.ic_arrow_up_right),
-                contentDescription = "Opens in the browser",
-                modifier = Modifier.size(13.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        Icon(
+            painterResource(R.drawable.ic_arrow_up_right),
+            contentDescription = "Opens in the browser",
+            modifier = Modifier.size(13.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         if (onEdit != null) {
             // The ellipsis, not a pencil: the pane draws no pencil
             // (operator decision 2026-08-20), and the tapped thing here is

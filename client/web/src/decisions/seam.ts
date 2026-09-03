@@ -73,6 +73,7 @@ export interface DecisionsModule {
   // #782: the share-payload mapping and the Link's display name.
   parse_share_payload(subject: string, text: string): string;
   link_display_label(url: string, label: string | undefined): string;
+  link_is_followable(url: string): boolean;
   size_options_json(): string;
   energy_options_json(): string;
   contexts_json(): string;
@@ -412,6 +413,14 @@ export function parseSharePayload(subject: string, text: string): ShareDraft {
  * the URL itself. */
 export function linkDisplayLabel(url: string, label: string | null): string {
   return required().link_display_label(url, label ?? undefined);
+}
+
+/** `hummingbird_core::decisions::share::is_followable_link` — whether the
+ * item panel draws the Link row at all: an `http(s)` URL with a host, and
+ * nothing else. Decided once so the web's anchor and Android's
+ * `ACTION_VIEW` cannot disagree about what is safe to follow. */
+export function linkIsFollowable(url: string): boolean {
+  return required().link_is_followable(url);
 }
 
 export interface VocabOption {

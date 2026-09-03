@@ -33,7 +33,7 @@ import {
 import { useItemDraft } from "../../screens/useItemDraft";
 import { triageFailureFor } from "../../screens/write-failure";
 import { buildUri, derivePath, isValidVaultPath } from "../../obsidian/vault-uri";
-import { linkDisplayLabel } from "../../decisions/seam";
+import { linkDisplayLabel, linkIsFollowable } from "../../decisions/seam";
 import { microtaskAffordance } from "../../skills/microtask-affordance";
 import { IDLE, isRunning, stampLabel, type SkillRunState } from "../../skills/run-state";
 import type { MicrotaskRunRequest } from "../../shell/useMicrotaskWiring";
@@ -499,10 +499,12 @@ export function ItemPanel({
 
   // #782: the Link is always visible wherever the item is opened — tap
   // follows it, the affordance beside it opens the fields. Drawn only for
-  // an `http(s)` URL: the column is plain text the authority checks for
-  // non-blankness alone, and an anchor to any other scheme is a click this
-  // panel would not vouch for (the same refusal `showNoteButton` makes).
-  const showLink = item.linkUrl !== null && /^https?:\/\//.test(item.linkUrl);
+  // an `http(s)` URL — `linkIsFollowable`, the core's rule, shared with
+  // Android's `ACTION_VIEW` — because the column is plain text the
+  // authority checks for non-blankness alone, and an anchor to any other
+  // scheme is a click this panel would not vouch for (the same refusal
+  // `showNoteButton` makes).
+  const showLink = item.linkUrl !== null && linkIsFollowable(item.linkUrl);
   const linkRow =
     !showFields && showLink && item.linkUrl !== null ? (
       <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)", flexWrap: "wrap" }}>

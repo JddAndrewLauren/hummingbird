@@ -777,6 +777,10 @@ class ItemDetailPanelStructuralTest {
         )
         assertFalse("never an in-app WebView", panelSrc.contains("WebView"))
         assertTrue(
+            "whether a stored URL may be followed is the core's answer, not a Kotlin scheme check",
+            body.contains("linkIsFollowable(") && !panelSrc.contains("startsWith(\"http"),
+        )
+        assertTrue(
             "the edit affordance opens the shared field under the row",
             body.contains("if (editingLink) {") && body.contains("LinkField("),
         )

@@ -424,8 +424,8 @@ fn patch_accepts_a_valid_deadline_and_can_clear_it() {
     assert_eq!(item(&resp).deadline, None, "explicit null clears");
 }
 
-/// #771: `vault_path` is the one nullable `items` column outside the
-/// provenance trio a patch may touch — set at create, re-set, and cleared
+/// #771: `vault_path` is the first nullable `items` column outside the
+/// provenance trio a patch may touch (#782's Link pair are the other two) — set at create, re-set, and cleared
 /// with an explicit `null`, unlike `source_url` which `ItemPatch` does not
 /// carry at all.
 #[test]

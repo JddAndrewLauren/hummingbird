@@ -120,6 +120,13 @@ pub fn link_display_label(url: &str, label: Option<String>) -> String {
     hummingbird_core::decisions::share::link_display_label(url, label.as_deref())
 }
 
+/// [`hummingbird_core::decisions::share::is_followable_link`] — whether the
+/// item panel draws the Link row at all.
+#[wasm_bindgen]
+pub fn link_is_followable(url: &str) -> bool {
+    hummingbird_core::decisions::share::is_followable_link(url)
+}
+
 #[wasm_bindgen]
 pub fn priority_from_select(raw: &str) -> Option<i32> {
     capture::priority_from_select(raw).map(|value| value as i32)
@@ -2091,6 +2098,8 @@ mod tests {
         assert_eq!(json["linkUrl"], serde_json::json!("https://www.youtube.com/watch?v=abc"));
         assert_eq!(link_display_label("https://www.youtube.com/x", None), "youtube.com");
         assert_eq!(link_display_label("https://www.youtube.com/x", Some("Rehab".into())), "Rehab");
+        assert!(link_is_followable("https://www.youtube.com/x"));
+        assert!(!link_is_followable("javascript:alert(1)"));
     }
 
     /// The exposure is a pass-through and nothing more — the rule itself is

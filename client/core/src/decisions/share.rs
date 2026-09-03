@@ -122,6 +122,16 @@ pub fn url_host(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
+/// Whether a stored Link is one a client may draw as a tap that leaves the
+/// app: an `http(s)://` URL with a host, and nothing else. The column is
+/// plain text the authority checks for non-blankness alone, so a
+/// `javascript:` or `intent:` string can reach it from any writer; drawing
+/// nothing is how a client refuses. Decided here so the web's anchor and
+/// Android's `ACTION_VIEW` cannot disagree about what is safe to follow.
+pub fn is_followable_link(url: &str) -> bool {
+    url_host(url).is_some()
+}
+
 /// What a Link is called wherever it is drawn: its name when one was
 /// given, else its host, else the URL itself. The name is what changes
 /// least, and the host is usually enough.
@@ -223,6 +233,15 @@ mod tests {
         let draft = parse_share_payload("https://example.test/page", "");
         assert_eq!(draft.title, "example.test");
         assert_eq!(draft.link_url.as_deref(), Some("https://example.test/page"));
+    }
+
+    #[test]
+    fn only_an_http_url_with_a_host_is_followable() {
+        assert!(is_followable_link("https://example.test/x"));
+        assert!(is_followable_link("http://example.test"));
+        for url in ["javascript:alert(1)", "intent://x#Intent;end", "mailto:x@y", "https:///x", ""] {
+            assert!(!is_followable_link(url), "{url}");
+        }
     }
 
     #[test]
