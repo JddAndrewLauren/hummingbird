@@ -1743,3 +1743,57 @@ row came up 46dp, and the two gestures on that row stay independent —
 tapping the chevron leaves the axes editor alone, tapping the line leaves
 the disclosure alone, and the chevron does not move when the editor opens
 beneath it.
+
+## The share target (#782)
+
+Sharing `text/plain` from another app — a page from Chrome, a video from
+YouTube, a paragraph from anywhere — lands on the capture screen,
+prefilled. Nothing is minted unattended: the human sees the seeded draft,
+edits it, and submits it to Triage or Ready exactly as a typed capture
+(ADR-0022 — the human is the parser).
+
+- **The door is an alias, not a filter on the activity.** `.ShareTarget` in
+  the manifest is a second `activity-alias` over `.CaptureActivity`,
+  carrying the capture icon and the label `hummingbird` (the operator wants
+  the app's name in the sheet), with a `SEND` + `DEFAULT` + `text/plain`
+  filter and nothing else — no `SEND_MULTIPLE`, no images or files. The
+  `.CaptureLauncher` alias is untouched and `CaptureActivity` itself still
+  carries no filter of its own: one entry per *door*, and each door names
+  its own icon, label and filter. `ManifestAliasTest` pins all of it, and
+  selects each alias by name — `singleOrNull()` over the aliases was the
+  trap the second one sprang.
+- **What seeds the draft is the core's mapping, not Kotlin's.** On an
+  `ACTION_SEND` intent, `CaptureActivity.onCreate` reads `EXTRA_SUBJECT`
+  and `EXTRA_TEXT` and hands them to the screen; one `LaunchedEffect`
+  calls `viewModel.seedFromShare(parseSharePayload(subject, text))`, the
+  uniffi door onto `hummingbird_core::decisions::share`. The first
+  `http(s)` URL in the text becomes the Link and leaves the text; the
+  title is the subject, else the first remaining line, else the URL's
+  host — never a raw URL. `ManifestAliasTest` pins that
+  `CaptureActivity.kt` contains `parseSharePayload(` and no `Regex(` or
+  `indexOf("http` (ADR-0025: no Kotlin copy of a decision).
+- **Seeding is idempotent.** `seedFromShare` is guarded so a rotation
+  never re-seeds over the human's edits.
+- **A share carrying a URL opens the link disclosure expanded and
+  filled**, so what is about to be saved is on screen. `LinkField`
+  (`ui/forms/`) is the chain-icon row below the collapsed details bar on
+  every capture form — the activity, the FAB sheet, and Triage's promote
+  form; a name without a URL blocks submit. The same field edits the Link
+  from the item panel, where the link row itself is always visible outside
+  the disclosure and a tap opens it with `ACTION_VIEW`.
+- **Submit finishes back into the sharing app.** The post-submit `finish()`
+  is unchanged, so a share returns to wherever it came from.
+
+The probe, after `./gradlew installDebug`:
+
+```
+adb shell am start -a android.intent.action.SEND -t text/plain \
+  --es android.intent.extra.TEXT "Watch this later https://www.youtube.com/watch?v=abc" \
+  --es android.intent.extra.SUBJECT "Knee rehab video" \
+  -n net.twinion.hummingbird/.ShareTarget
+```
+
+Expected: the capture screen opens titled `Knee rehab video`, the link
+disclosure open holding the URL and no name, `Watch this later` as the
+description; Triage submit finishes back to the shell. The same probe
+without the subject titles the item `youtube.com`.

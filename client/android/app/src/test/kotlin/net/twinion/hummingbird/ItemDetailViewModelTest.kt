@@ -432,6 +432,77 @@ class ItemDetailViewModelTest {
         assertFalse(model.promote("i-1", 2_000))
     }
 
+    // #782: the item's one Link, drawn and edited on the phone.
+
+    @Test
+    fun `the draft is seeded with the record's link`() = runBlocking {
+        val model = vm(fetch = { id, _ -> itemDetail(id, linkUrl = "https://example.test/x", linkLabel = "Ex") })
+        model.load("i-1", 1_000)
+        assertEquals("https://example.test/x", model.draft.value?.linkUrl)
+        assertEquals("Ex", model.draft.value?.linkLabel)
+
+        val bare = vm()
+        bare.load("i-1", 1_000)
+        assertEquals("", bare.draft.value?.linkUrl)
+        assertEquals("", bare.draft.value?.linkLabel)
+    }
+
+    @Test
+    fun `setting a link sends both halves, and clearing the URL clears it`() = runBlocking {
+        var sent: ItemEdit? = null
+        val model = vm(edit = { _, edit, _ -> sent = edit })
+        model.load("i-1", 1_000)
+        model.updateDraft(model.draft.value!!.copy(linkUrl = "https://example.test/x", linkLabel = "Ex"))
+
+        model.save("i-1", 2_000)
+
+        assertEquals(FieldPatch.Set("https://example.test/x"), sent?.linkUrl)
+        assertEquals(FieldPatch.Set("Ex"), sent?.linkLabel)
+
+        val linked = vm(
+            fetch = { id, _ -> itemDetail(id, linkUrl = "https://example.test/x", linkLabel = "Ex") },
+            edit = { _, edit, _ -> sent = edit },
+        )
+        linked.load("i-1", 1_000)
+        linked.updateDraft(linked.draft.value!!.copy(linkUrl = "", linkLabel = ""))
+
+        linked.save("i-1", 2_000)
+
+        assertEquals(FieldPatch.Clear, sent?.linkUrl)
+        assertEquals(FieldPatch.Clear, sent?.linkLabel)
+    }
+
+    @Test
+    fun `an untouched link rides as untouched`() = runBlocking {
+        var sent: ItemEdit? = null
+        val model = vm(
+            fetch = { id, _ -> itemDetail(id, linkUrl = "https://example.test/x", linkLabel = "Ex") },
+            edit = { _, edit, _ -> sent = edit },
+        )
+        model.load("i-1", 1_000)
+        model.updateDraft(model.draft.value!!.copy(title = "renamed"))
+
+        model.save("i-1", 2_000)
+
+        assertEquals(FieldPatch.Untouched, sent?.linkUrl)
+        assertEquals(FieldPatch.Untouched, sent?.linkLabel)
+    }
+
+    /** A link name beside no URL is the authority's 400, refused here for
+     * the same reason a malformed date is. */
+    @Test
+    fun `a link name without a URL refuses the save`() = runBlocking {
+        var sent: ItemEdit? = null
+        val model = vm(edit = { _, edit, _ -> sent = edit })
+        model.load("i-1", 1_000)
+        model.updateDraft(model.draft.value!!.copy(linkLabel = "Ex"))
+
+        assertFalse(model.canSave)
+        assertFalse(model.save("i-1", 2_000))
+        assertNull("nothing may reach the queue", sent)
+        assertTrue(model.statusLine.value?.contains("a link name needs a URL") == true)
+    }
+
     /** Nothing is trimmed on the caller's behalf (#110's "raw string
      * reaches the mutation unmodified"), and what counts as empty is the
      * injected rule's answer, never Kotlin's. */
@@ -457,6 +528,8 @@ internal fun itemDetail(
     isArchived: Boolean = false,
     canMarkDone: Boolean = true,
     title: String = "item $id",
+    linkUrl: String? = null,
+    linkLabel: String? = null,
 ) = ItemDetailRecord(
     id = id,
     seq = 42,
@@ -476,6 +549,9 @@ internal fun itemDetail(
     // #771: carried so the record round-trips the whole item; nothing on
     // Android draws it.
     vaultPath = null,
+    // #782: the one Link, drawn and edited on the phone.
+    linkUrl = linkUrl,
+    linkLabel = linkLabel,
     updatedAt = 1_000,
     version = 3,
     steps = emptyList(),

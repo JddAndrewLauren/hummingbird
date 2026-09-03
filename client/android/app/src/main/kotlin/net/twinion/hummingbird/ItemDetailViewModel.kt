@@ -55,6 +55,9 @@ data class ItemDraft(
     val size: String,
     val energy: String,
     val priority: String,
+    /** #782's Link, `""` when unset — the pane draws and edits it. */
+    val linkUrl: String = "",
+    val linkLabel: String = "",
 ) {
     companion object {
         fun of(record: ItemDetailRecord) = ItemDraft(
@@ -66,6 +69,8 @@ data class ItemDraft(
             size = record.size.orEmpty(),
             energy = record.energy.orEmpty(),
             priority = record.priority.toString(),
+            linkUrl = record.linkUrl.orEmpty(),
+            linkLabel = record.linkLabel.orEmpty(),
         )
     }
 
@@ -108,6 +113,11 @@ data class ItemDraft(
         projectId = FieldPatch.Untouched,
         deadline = patch(deadline, from.deadline, hasContent),
         scheduledDate = patch(scheduledDate, from.scheduledDate, hasContent),
+        // #782: the seam clears the name with the URL — one row state — so
+        // a cleared URL beside an untouched name is a whole clear, not a
+        // stranded name.
+        linkUrl = patch(linkUrl, from.linkUrl, hasContent),
+        linkLabel = patch(linkLabel, from.linkLabel, hasContent),
     )
 
     private fun patch(
@@ -223,6 +233,9 @@ class ItemDetailViewModel(
         get() {
             val draft = _draft.value ?: return false
             if (!hasContentFn(draft.title)) return false
+            // #782: a link name beside no URL is the authority's 400,
+            // refused here for the same reason a malformed date is.
+            if (hasContentFn(draft.linkLabel) && !hasContentFn(draft.linkUrl)) return false
             val problems = metaProblemsFn(draft.deadline, draft.scheduledDate)
             return problems.deadline == null && problems.scheduledDate == null
         }
@@ -345,7 +358,7 @@ class ItemDetailViewModel(
         }
         if (!canSave) {
             _statusLine.value = "$refusal — an item needs a title, " +
-                "and a date must be the shape shown."
+                "a date must be the shape shown, and a link name needs a URL."
             return false
         }
         try {

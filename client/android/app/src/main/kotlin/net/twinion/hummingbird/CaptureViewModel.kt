@@ -15,6 +15,7 @@ import net.twinion.hummingbird.speech.DictationFailure
 import uniffi.hummingbird_ffi_mobile.CaptureFormMeta
 import uniffi.hummingbird_ffi_mobile.MetaProblems
 import uniffi.hummingbird_ffi_mobile.MobileProject
+import uniffi.hummingbird_ffi_mobile.ShareDraftRecord
 import uniffi.hummingbird_ffi_mobile.canSubmitCapture
 import uniffi.hummingbird_ffi_mobile.captureFormMeta
 import uniffi.hummingbird_ffi_mobile.captureMetaProblems
@@ -37,6 +38,15 @@ data class CaptureFormState(
     val priority: String = "",
     val deadline: String = "",
     val scheduledDate: String = "",
+    /** #782's Link, both halves `""` when unset. */
+    val linkUrl: String = "",
+    val linkLabel: String = "",
+    /** Whether the link disclosure should open — form state rather than
+     * composition state so a share that seeds a URL (see
+     * [CaptureViewModel.seedFromShare]) can open it from here; `LinkField`
+     * reads it as its `initiallyOpen`. Not a wire field: [toDraft] never
+     * sends it. */
+    val linkOpen: Boolean = false,
 ) {
     /** The draft as the seam wants it, for [destination]. The destination
      * is not held here: both capture surfaces offer it as a pair of submit
@@ -54,6 +64,8 @@ data class CaptureFormState(
         priority = priority,
         deadline = deadline,
         scheduledDate = scheduledDate,
+        linkUrl = linkUrl,
+        linkLabel = linkLabel,
     )
 }
 
@@ -156,7 +168,40 @@ class CaptureViewModel(
      * discipline [ItemDetailViewModel.canSave] already applies to an edit. */
     fun canSubmitDraft(): Boolean {
         val problems = metaProblems
-        return canSubmit() && problems.deadline == null && problems.scheduledDate == null
+        val draft = _draft.value
+        // #782: a link name beside no URL is refused here, before the seam
+        // refuses it again and long before the authority would 400 it into
+        // the dead-letter journal.
+        val strandedLinkName = draft.linkLabel.isNotEmpty() && draft.linkUrl.isEmpty()
+        return canSubmit() && problems.deadline == null && problems.scheduledDate == null &&
+            !strandedLinkName
+    }
+
+    /** Whether [seedFromShare] has already run for this ViewModel's life.
+     * The share seeds once: `CaptureActivity` calls it from a
+     * `LaunchedEffect(Unit)`, which re-fires on an Activity recreation
+     * (#634's finding), and a second seed would overwrite whatever the
+     * reader edited after the first. The flag lives here rather than in
+     * the composition because this ViewModel is what survives the
+     * recreation. */
+    private var seededFromShare = false
+
+    /** Seeds the draft from an `ACTION_SEND` share (#782), once. The
+     * mapping — which piece of the payload starts in which field — is the
+     * core's (`hummingbird_core::decisions::share`, crossed as
+     * `parseSharePayload`), and this only lands its answer: the title,
+     * the description, and the URL, with the link disclosure opened so the
+     * reader sees what is about to be saved. Nothing is minted here
+     * (ADR-0022 — the human is still the parser and still presses submit). */
+    fun seedFromShare(share: ShareDraftRecord) {
+        if (seededFromShare) return
+        seededFromShare = true
+        _draft.value = _draft.value.copy(
+            title = share.title,
+            description = share.description,
+            linkUrl = share.linkUrl,
+            linkOpen = share.linkUrl.isNotEmpty(),
+        )
     }
 
     fun updateDraft(draft: CaptureFormState) {

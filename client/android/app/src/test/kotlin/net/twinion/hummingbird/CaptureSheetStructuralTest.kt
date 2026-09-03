@@ -102,6 +102,8 @@ class CaptureSheetStructuralTest {
             "PriorityRow(",
             "DeadlineField(",
             "CaptureDateField(",
+            // #782: the Link sits below the disclosure, on both surfaces.
+            "LinkField(",
         )) {
             assertTrue(
                 "the disclosure must render the shared $field",

@@ -1,5 +1,7 @@
 package net.twinion.hummingbird
 
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -62,6 +64,7 @@ import net.twinion.hummingbird.ui.forms.CaptureDateField
 import net.twinion.hummingbird.ui.forms.ContextField
 import net.twinion.hummingbird.ui.forms.DeadlineField
 import net.twinion.hummingbird.ui.forms.LevelSlider
+import net.twinion.hummingbird.ui.forms.LinkField
 import net.twinion.hummingbird.ui.forms.PriorityRow
 import net.twinion.hummingbird.ui.levelColor
 import net.twinion.hummingbird.ui.levelPosition
@@ -75,6 +78,7 @@ import uniffi.hummingbird_ffi_mobile.MobileMicrotaskAffordance
 import uniffi.hummingbird_ffi_mobile.MobileSkillRunState
 import uniffi.hummingbird_ffi_mobile.itemCanGrill
 import uniffi.hummingbird_ffi_mobile.itemGrillButtonLabel
+import uniffi.hummingbird_ffi_mobile.linkDisplayLabel
 import uniffi.hummingbird_ffi_mobile.skillRunStampLabel
 
 // One item, in full — the panel every one of its four hosts renders:
@@ -744,6 +748,50 @@ private fun DetailBody(
         )
     }
 
+    // The item's one Link (#782), and it stands OUTSIDE the disclosure
+    // whenever there is one: "easy to follow the link, still possible to
+    // edit it" was the decision, and a link behind a chevron is neither.
+    // The row is the tap that follows it — `ACTION_VIEW`, the
+    // `NowPanesExpanded.kt` idiom, never an in-app WebView — and the
+    // trailing control is the edit affordance, opening the shared
+    // `LinkField` under it. Drawn only for an `http(s)` URL: the core's
+    // `linkDisplayLabel` answers the URL itself for anything else, and a
+    // tap on that would hand the system a scheme it might resolve to
+    // something the operator never meant.
+    //
+    // Keyed on the item in the registry key, like every other saveable
+    // here (this file's header).
+    val linkUrl = record.linkUrl
+    var editingLink by rememberSaveable(
+        itemId,
+        key = "link-open-$itemId",
+    ) { mutableStateOf(false) }
+    if (linkUrl != null && record.isEditable) {
+        LinkRow(
+            url = linkUrl,
+            label = linkDisplayLabel(linkUrl, record.linkLabel),
+            editing = editingLink,
+            onEdit = { editingLink = !editingLink },
+        )
+        if (editingLink) {
+            LinkField(
+                url = draft.linkUrl,
+                label = draft.linkLabel,
+                onUrlChange = { onDraftChange(draft.copy(linkUrl = it)) },
+                onLabelChange = { onDraftChange(draft.copy(linkLabel = it)) },
+                initiallyOpen = true,
+            )
+        }
+    } else if (linkUrl != null) {
+        // History: readable, followable, not editable.
+        LinkRow(
+            url = linkUrl,
+            label = linkDisplayLabel(linkUrl, record.linkLabel),
+            editing = false,
+            onEdit = null,
+        )
+    }
+
     if (detailsOpen) {
         // 4dp between the three, not the panel's own gap: they are one block
         // of reference material rather than three peers of the act row.
@@ -828,6 +876,29 @@ private fun DetailBody(
                     error = problems?.scheduledDate,
                     onValueChange = { onDraftChange(draft.copy(scheduledDate = it)) },
                 )
+            }
+
+            // Without a link the `LINK` ghost sits here with the other
+            // reference rows, and opens the same shared field; with one,
+            // the row above the disclosure is the affordance and this
+            // section is not drawn — one place per state, never two.
+            if (record.linkUrl == null) {
+                DetailSection(
+                    itemId = itemId,
+                    label = "LINK",
+                    isSet = record.linkUrl != null,
+                    mode = mode,
+                    editable = record.isEditable,
+                    condensed = { GhostValue("LINK") },
+                ) {
+                    LinkField(
+                        url = draft.linkUrl,
+                        label = draft.linkLabel,
+                        onUrlChange = { onDraftChange(draft.copy(linkUrl = it)) },
+                        onLabelChange = { onDraftChange(draft.copy(linkLabel = it)) },
+                        initiallyOpen = true,
+                    )
+                }
             }
         }
     }
@@ -1204,6 +1275,82 @@ private fun DetailSection(
             trailing?.invoke()
         }
         if (open) editor()
+    }
+}
+
+/** The item's Link as a row (#782): the chain glyph, the core's display
+ * label — the name, else the host — and the outward-arrow mark both clients
+ * put on a tap that leaves the app. The whole row follows the link through
+ * `ACTION_VIEW`; the trailing control, when the item is editable, is the
+ * edit affordance. Two gestures share the row, which is safe for the reason
+ * the header's already is: an `IconButton` consumes its own tap.
+ *
+ * Only ever drawn for an `http(s)` URL — the caller checks the label the
+ * core answered, and `url_host`'s refusal to name a host for anything else
+ * is what keeps a `javascript:` or `intent:` string out of `ACTION_VIEW`. */
+@Composable
+private fun LinkRow(
+    url: String,
+    label: String,
+    editing: Boolean,
+    onEdit: (() -> Unit)?,
+) {
+    val context = LocalContext.current
+    // `linkDisplayLabel` answers the raw URL for anything that is not
+    // http(s) — the one signal this surface has, and the one it needs.
+    val followable = label != url
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (followable) {
+                    Modifier.clickable {
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    }
+                } else {
+                    Modifier
+                },
+            )
+            .heightIn(min = 44.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            painterResource(R.drawable.ic_link),
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        if (followable) {
+            Icon(
+                painterResource(R.drawable.ic_arrow_up_right),
+                contentDescription = "Opens in the browser",
+                modifier = Modifier.size(13.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (onEdit != null) {
+            // The ellipsis, not a pencil: the pane draws no pencil
+            // (operator decision 2026-08-20), and the tapped thing here is
+            // already spoken for by the link itself.
+            IconButton(onClick = onEdit) {
+                Icon(
+                    painterResource(R.drawable.ic_ellipsis),
+                    contentDescription = if (editing) "Done editing link" else "Edit link",
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
     }
 }
 

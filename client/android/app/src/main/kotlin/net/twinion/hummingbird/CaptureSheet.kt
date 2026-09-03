@@ -54,6 +54,7 @@ import net.twinion.hummingbird.ui.forms.CaptureDateField
 import net.twinion.hummingbird.ui.forms.ContextField
 import net.twinion.hummingbird.ui.forms.DeadlineField
 import net.twinion.hummingbird.ui.forms.LevelSlider
+import net.twinion.hummingbird.ui.forms.LinkField
 import net.twinion.hummingbird.ui.forms.PriorityRow
 import net.twinion.hummingbird.ui.forms.ProjectField
 import net.twinion.hummingbird.ui.theme.Sky600
@@ -363,6 +364,15 @@ fun CaptureSheet(
                     }
                 }
             }
+            // The item's one Link (#782) — `CaptureActivity`'s same field
+            // in the same place, below the disclosure and outside it.
+            LinkField(
+                url = draft.linkUrl,
+                label = draft.linkLabel,
+                onUrlChange = { viewModel.updateDraft(draft.copy(linkUrl = it)) },
+                onLabelChange = { viewModel.updateDraft(draft.copy(linkLabel = it)) },
+                initiallyOpen = draft.linkOpen,
+            )
 
             // `canSubmitDraft()`, not `canSubmit(draft.title)`: the two
             // free-text dates are editable on this surface now, so the
