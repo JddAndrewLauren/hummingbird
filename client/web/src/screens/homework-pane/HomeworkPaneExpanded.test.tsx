@@ -45,6 +45,8 @@ function item(overrides: Partial<TaskItemDTO> & { id: string }): TaskItemDTO {
     sourceKey: null,
     sourceUrl: null,
     vaultPath: null,
+    linkUrl: null,
+    linkLabel: null,
     archivedAt: null,
     createdAt: 0,
     updatedAt: 0,

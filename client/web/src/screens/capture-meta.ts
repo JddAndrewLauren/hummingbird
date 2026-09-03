@@ -17,7 +17,7 @@ import type { CaptureFields } from "../store/worker-client";
 import {
   captureMetaProblems as captureMetaProblemsFromSeam,
   priorityFromSelect,
-  type CaptureMetaProblems,
+  type CaptureMetaProblems as SeamMetaProblems,
 } from "../decisions/seam";
 
 /** The capture box's local field state (`screens/CaptureBox.tsx`).
@@ -37,6 +37,9 @@ export interface CaptureMeta {
   priority: string;
   deadline: string;
   scheduledDate: string;
+  /** #782: the Link field's two inputs, `""` = not set. */
+  linkUrl: string;
+  linkLabel: string;
 }
 
 export const EMPTY_CAPTURE_META: CaptureMeta = {
@@ -48,6 +51,8 @@ export const EMPTY_CAPTURE_META: CaptureMeta = {
   priority: "0",
   deadline: "",
   scheduledDate: "",
+  linkUrl: "",
+  linkLabel: "",
 };
 
 /** `Slider` index -> `hummingbird_domain::Size`'s own wire name, in the
@@ -98,6 +103,8 @@ export function resolveCaptureFields(meta: CaptureMeta): CaptureFields {
     priority: priorityFromSelect(meta.priority),
     deadline: meta.deadline === "" ? null : meta.deadline,
     scheduledDate: meta.scheduledDate === "" ? null : meta.scheduledDate,
+    linkUrl: meta.linkUrl.trim() === "" ? null : meta.linkUrl.trim(),
+    linkLabel: meta.linkLabel.trim() === "" ? null : meta.linkLabel.trim(),
   };
 }
 
@@ -125,8 +132,21 @@ export function todayDeadline(nowMs: number): string {
  * Only the free-text dates can be wrong: every other field is a `Select`
  * whose options are the vocabulary, and the title is
  * `capture-validation.ts`'s. */
-export type { CaptureMetaProblems };
+export type CaptureMetaProblems = SeamMetaProblems & { linkLabel?: string };
+
+/** #782's one Link rule, stated once for both forms: a name is only
+ * meaningful beside a URL. A form-adapter check rather than a sunk one —
+ * the seam (`ffi-web`'s `capture`/`triage`) and the authority both refuse
+ * the same shape, so this only moves the message onto the field. */
+export const LINK_LABEL_NEEDS_URL = "A link name needs a URL";
+
+export function linkProblem(linkUrl: string, linkLabel: string): string | undefined {
+  return linkLabel.trim().length > 0 && linkUrl.trim().length === 0 ? LINK_LABEL_NEEDS_URL : undefined;
+}
 
 export function captureMetaProblems(meta: CaptureMeta): CaptureMetaProblems {
-  return captureMetaProblemsFromSeam(meta.deadline, meta.scheduledDate);
+  const problems: CaptureMetaProblems = captureMetaProblemsFromSeam(meta.deadline, meta.scheduledDate);
+  const link = linkProblem(meta.linkUrl, meta.linkLabel);
+  if (link !== undefined) problems.linkLabel = link;
+  return problems;
 }

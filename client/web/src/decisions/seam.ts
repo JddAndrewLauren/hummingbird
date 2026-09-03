@@ -70,6 +70,9 @@ export interface DecisionsModule {
   join_deadline(date: string, time: string | undefined): string;
   capture_meta_problems(deadline: string, scheduledDate: string): string;
   priority_from_select(raw: string): number | undefined;
+  // #782: the share-payload mapping and the Link's display name.
+  parse_share_payload(subject: string, text: string): string;
+  link_display_label(url: string, label: string | undefined): string;
   size_options_json(): string;
   energy_options_json(): string;
   contexts_json(): string;
@@ -386,6 +389,29 @@ export function captureMetaProblems(deadline: string, scheduledDate: string): Ca
  * capture box's `"0"` -> "not sent" priority rule. */
 export function priorityFromSelect(raw: string): number | null {
   return required().priority_from_select(raw) ?? null;
+}
+
+/** `hummingbird_core::decisions::share::ShareDraft` (#782): what a
+ * `text/plain` share seeds the capture form with. */
+export interface ShareDraft {
+  title: string;
+  description: string | null;
+  linkUrl: string | null;
+}
+
+/** `hummingbird_core::decisions::share::parse_share_payload` — the
+ * share-payload mapping Android's share target uses (#782). No web share
+ * target reads it yet; it is exported so that when one does, the mapping is
+ * the phone's rather than a copy. */
+export function parseSharePayload(subject: string, text: string): ShareDraft {
+  return JSON.parse(required().parse_share_payload(subject, text)) as ShareDraft;
+}
+
+/** `hummingbird_core::decisions::share::link_display_label` — what an
+ * item's Link is called wherever it is drawn: its name, else its host, else
+ * the URL itself. */
+export function linkDisplayLabel(url: string, label: string | null): string {
+  return required().link_display_label(url, label ?? undefined);
 }
 
 export interface VocabOption {

@@ -27,6 +27,13 @@ import { defineConfig } from "@playwright/test";
 // where that stops being the whole story: below `PHONE_MAX_WIDTH_PX`
 // (`src/shell/breakpoints.ts`) the app does use a media query, and the rail
 // is a bottom bar. See `docs/SURFACES.md` for the surface-by-surface matrix.
+// The dev server's port. `HB_VISUAL_PORT` exists because `reuseExistingServer`
+// below will happily photograph whatever is already listening: with several
+// worktrees of this repo on one machine, a gate run on the default port can
+// capture ANOTHER checkout's build and report it as this one's. Set it to a
+// port nobody else uses and the gate starts, and photographs, its own server.
+const port = Number(process.env.HB_VISUAL_PORT ?? 5173);
+
 export default defineConfig({
   testDir: "./visual",
   outputDir: "./visual/.output",
@@ -34,7 +41,7 @@ export default defineConfig({
   fullyParallel: true,
   reporter: [["list"]],
   use: {
-    baseURL: "http://localhost:5173",
+    baseURL: `http://localhost:${port}`,
     // A capture of a half-finished paint is a false finding, and this app's
     // fonts are self-hosted (the production CSP allows no Google Fonts), so
     // waiting on the network alone is not enough.
@@ -73,8 +80,8 @@ export default defineConfig({
   ],
   webServer: {
     // `pnpm dev` builds the wasm core first, which the SharedWorker needs.
-    command: "pnpm dev",
-    url: "http://localhost:5173",
+    command: `pnpm dev --port ${port} --strictPort`,
+    url: `http://localhost:${port}`,
     reuseExistingServer: true,
     timeout: 180_000,
   },

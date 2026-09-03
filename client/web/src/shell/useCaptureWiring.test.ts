@@ -27,6 +27,8 @@ const EMPTY_CAPTURE_FIELDS = {
   priority: null,
   deadline: null,
   scheduledDate: null,
+  linkUrl: null,
+  linkLabel: null,
 };
 
 describe("submitCaptureRequest", () => {
@@ -90,6 +92,8 @@ describe("submitCaptureRequest", () => {
         priority: 3,
         deadline: "2026-09-01",
         scheduledDate: "2026-08-30",
+        linkUrl: null,
+        linkLabel: null,
       },
       nowMs: 5_000,
     });

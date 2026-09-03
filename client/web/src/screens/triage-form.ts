@@ -21,6 +21,7 @@
 import type { ProjectDTO, TaskItemDTO, TriageEdits } from "../store/protocol";
 import type { TaskProjectResult } from "../store/store";
 import { captureMetaProblems } from "../decisions/seam";
+import { linkProblem } from "./capture-meta";
 import { isValidVaultPath } from "../obsidian/vault-uri";
 
 /** One triage-inbox item's editable draft. Every field is a string because
@@ -41,6 +42,10 @@ export interface TriageDraft {
    * that holds one is a clear, exactly like every other nullable field
    * here. */
   vaultPath: string;
+  /** #782: the item's one Link. `""` on `linkUrl` against an item that
+   * holds one is a clear, and it takes the name with it. */
+  linkUrl: string;
+  linkLabel: string;
 }
 
 /** A draft for an item with nothing set — the shape's resting value, used by a
@@ -57,6 +62,8 @@ export const EMPTY_TRIAGE_DRAFT: TriageDraft = {
   deadline: "",
   scheduledDate: "",
   vaultPath: "",
+  linkUrl: "",
+  linkLabel: "",
 };
 
 /** Seeds a draft from the item's own current values. `null` becomes `""` — the
@@ -75,6 +82,8 @@ export function draftFromItem(item: TaskItemDTO): TriageDraft {
     deadline: item.deadline ?? "",
     scheduledDate: item.scheduledDate ?? "",
     vaultPath: item.vaultPath ?? "",
+    linkUrl: item.linkUrl ?? "",
+    linkLabel: item.linkLabel ?? "",
   };
 }
 
@@ -129,6 +138,11 @@ export function triageDraftProblems(draft: TriageDraft): TriageDraftProblems {
   // the URI from it.
   if (draft.vaultPath.trim().length > 0 && !isValidVaultPath(draft.vaultPath)) {
     problems.vaultPath = "A vault path is relative to the vault — no leading / and no ..";
+  }
+  // #782: the same rule the capture box applies, from the same function.
+  const link = linkProblem(draft.linkUrl, draft.linkLabel);
+  if (link !== undefined) {
+    problems.linkLabel = link;
   }
   return problems;
 }
@@ -256,6 +270,22 @@ export function buildTriageEdits(
   const vaultPath = draft.vaultPath.trim();
   if (vaultPath !== (item.vaultPath ?? "")) {
     edits.vaultPath = vaultPath.length > 0 ? vaultPath : null;
+  }
+
+  // #782: one row state. Clearing the URL sends both `null`s explicitly, so
+  // the queued patch says what the row will hold rather than leaning on the
+  // authority to strand nothing; a name change alone travels alone.
+  const linkUrl = draft.linkUrl.trim();
+  const linkLabel = draft.linkLabel.trim();
+  if (linkUrl !== (item.linkUrl ?? "")) {
+    edits.linkUrl = linkUrl.length > 0 ? linkUrl : null;
+  }
+  if (linkUrl.length === 0) {
+    if (item.linkUrl !== null) {
+      edits.linkLabel = null;
+    }
+  } else if (linkLabel !== (item.linkLabel ?? "")) {
+    edits.linkLabel = linkLabel.length > 0 ? linkLabel : null;
   }
 
   return edits;

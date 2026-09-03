@@ -26,7 +26,17 @@ describe("resolveCaptureFields", () => {
       priority: null,
       deadline: null,
       scheduledDate: null,
+      linkUrl: null,
+      linkLabel: null,
     });
+  });
+
+  // #782: trimmed, and dropped when empty — like the description.
+  it("resolves the Link pair, trimming each half and dropping an empty one", () => {
+    const fields = resolveCaptureFields(meta({ linkUrl: " https://example.test/x ", linkLabel: " Ex " }));
+    expect(fields.linkUrl).toBe("https://example.test/x");
+    expect(fields.linkLabel).toBe("Ex");
+    expect(resolveCaptureFields(meta({ linkLabel: "   " })).linkLabel).toBeNull();
   });
 
   it("resolves the typed fields, trimming a description and dropping an empty one", () => {
@@ -86,6 +96,8 @@ describe("resolveCaptureFields", () => {
       priority: null,
       deadline: null,
       scheduledDate: null,
+      linkUrl: null,
+      linkLabel: null,
     });
   });
 
@@ -117,6 +129,14 @@ describe("resolveCaptureFields", () => {
 describe("captureMetaProblems", () => {
   it("finds nothing wrong with the resting state — every field is optional", () => {
     expect(captureMetaProblems(EMPTY_CAPTURE_META)).toEqual({});
+  });
+
+  // #782: a name is only meaningful beside a URL — the one thing the Link
+  // pair can get wrong on this form, stated on the name field.
+  it("names a link name typed beside no URL, and nothing otherwise", () => {
+    expect(captureMetaProblems(meta({ linkLabel: "Ex" })).linkLabel).toBe("A link name needs a URL");
+    expect(captureMetaProblems(meta({ linkUrl: "https://example.test/x", linkLabel: "Ex" }))).toEqual({});
+    expect(captureMetaProblems(meta({ linkUrl: "https://example.test/x" }))).toEqual({});
   });
 
   it("accepts both deadline shapes and a whole-day scheduled date", () => {
