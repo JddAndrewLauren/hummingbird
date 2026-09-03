@@ -15,18 +15,31 @@
 //! **This is the part of the brief that "cannot forget to declare itself"**
 //! (#314's own phrasing): the poller reads *this repo's own committed
 //! workflow files* rather than a second, hand-maintained list of "which
-//! workflows are scheduled" — a ninth `schedule:` workflow (eight exist
-//! today: `calendar-poll.yml`, `city-waste.yml`, `github-status.yml`,
-//! `gmail-poll.yml`, `kimi-balance.yml`, `race-alert-poll.yml`,
+//! workflows are scheduled" — a sixth `schedule:` workflow (five exist
+//! today: `city-waste.yml`, `kimi-balance.yml`, `race-alert-poll.yml`,
 //! `race-schedule-poll.yml`, `uptime-probe.yml`) shows up here the moment
-//! its file lands, with no second edit anywhere in this crate. The two
-//! graph lanes are absent because they are absent from the repo's live
-//! schedules: #487 commented their `schedule:` blocks out until #486's
-//! Phase B provisions their credentials, and the restore PR that brings
-//! each block back must re-add its row below — the coverage test will
-//! insist, but only when something runs the `server/` tests, which a
-//! workflows-only restore PR does not (path-filtered CI); do it in the
-//! same PR, not on trust.
+//! its file lands, with no second edit anywhere in this crate.
+//!
+//! **#774 moved five other pollers — `calendar-poll.yml`, `github-status.yml`
+//! (this crate's own workflow), `gmail-poll.yml`, `graph-mail-poll.yml` and
+//! `graph-calendar-poll.yml` — off Actions `schedule:` entirely, onto the
+//! sweeper's supercronic clock.** Each kept its `workflow_dispatch:`
+//! trigger (a manual run still works) but dropped `schedule:`, so they read
+//! as unscheduled here now, on purpose —
+//! `the_five_moved_pollers_no_longer_carry_a_schedule_trigger` below pins
+//! that reading, the mirror image of the coverage test's usual job.
+//!
+//! **Baked into the image, "shows up here the moment its file lands"
+//! degrades to "shows up here at the next deploy."** This poller itself now
+//! runs from `/app/workflows`, a snapshot `Dockerfile` `COPY`s in at build
+//! time — not a fresh `actions/checkout@v4` on every run, the way it read
+//! this directory before #774. A workflow file changed on `main` is
+//! invisible to a running container until `deploy.yml`'s next `flyctl
+//! deploy` (which #774 also taught to redeploy on a `server/**`,
+//! `rust-toolchain.toml` or `.github/workflows/**` change, for exactly this
+//! reason). Still true, and still the point of the mechanism: no second,
+//! hand-maintained list anywhere in this crate — only the *staleness
+//! window* changed, from zero to "until next deploy."
 
 /// One workflow this build found a `schedule:` trigger on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,12 +156,15 @@ mod tests {
     // stops recognising fails a build-time test here rather than silently
     // dropping out of the pane.
     //
-    // **Every scheduled workflow is embedded** — ten today — not a sample
+    // **Every scheduled workflow is embedded** — five today — not a sample
     // of them: a guard that covered four would have said nothing about the
     // rest, which is exactly the drop-out this guard exists to catch.
     // `EVERY_SCHEDULED_WORKFLOW` below is the list, and
     // `every_committed_scheduled_workflow_is_still_read_as_scheduled` walks
-    // it.
+    // it. `CALENDAR_POLL`, `GITHUB_STATUS`, `GMAIL_POLL`, `GRAPH_MAIL_POLL`
+    // and `GRAPH_CALENDAR_POLL` stay included below even though #774
+    // dropped them from that list — they feed the negative guard just past
+    // it instead.
     const CALENDAR_POLL: &str = include_str!("../../../.github/workflows/calendar-poll.yml");
     const CITY_WASTE: &str = include_str!("../../../.github/workflows/city-waste.yml");
     const GITHUB_STATUS: &str = include_str!("../../../.github/workflows/github-status.yml");
@@ -166,16 +182,11 @@ mod tests {
 
     /// `(file name, contents, expected top-level `name:`, expected crons)`
     /// for every `schedule:`-carrying workflow committed in this repo.
-    /// Adding an eleventh scheduled workflow without adding it here fails
+    /// Adding a sixth scheduled workflow without adding it here fails
     /// `the_embedded_list_covers_every_scheduled_workflow_in_the_repo`
     /// (see the module header on doing that in the same PR).
     const EVERY_SCHEDULED_WORKFLOW: &[(&str, &str, &str, &[&str])] = &[
-        ("calendar-poll.yml", CALENDAR_POLL, "calendar-poll", &["*/15 * * * *"]),
         ("city-waste.yml", CITY_WASTE, "city-waste", &["40 13 * * *"]),
-        ("github-status.yml", GITHUB_STATUS, "github-status", &["*/30 * * * *"]),
-        ("gmail-poll.yml", GMAIL_POLL, "gmail-poll", &["*/15 * * * *"]),
-        ("graph-calendar-poll.yml", GRAPH_CALENDAR_POLL, "graph-calendar-poll", &["*/15 * * * *"]),
-        ("graph-mail-poll.yml", GRAPH_MAIL_POLL, "graph-mail-poll", &["*/15 * * * *"]),
         ("kimi-balance.yml", KIMI_BALANCE, "kimi-balance", &["0 */6 * * *"]),
         ("race-alert-poll.yml", RACE_ALERT_POLL, "race-alert-poll", &["*/15 * * * *"]),
         ("race-schedule-poll.yml", RACE_SCHEDULE_POLL, "race-schedule-poll", &["0 */6 * * *"]),
@@ -261,12 +272,13 @@ mod tests {
         }
     }
 
-    /// The header's own count, pinned: ten today — both graph lanes
-    /// rejoined in #486 Phase B, mail first and calendar here. No poller
-    /// lane is dormant now.
+    /// The header's own count, pinned: five today — #774 moved
+    /// `calendar-poll.yml`, `github-status.yml`, `gmail-poll.yml`,
+    /// `graph-mail-poll.yml` and `graph-calendar-poll.yml` off Actions
+    /// `schedule:` entirely, onto the sweeper's supercronic clock.
     #[test]
-    fn the_repo_carries_ten_scheduled_workflows_today() {
-        assert_eq!(EVERY_SCHEDULED_WORKFLOW.len(), 10);
+    fn the_repo_carries_five_scheduled_workflows_today() {
+        assert_eq!(EVERY_SCHEDULED_WORKFLOW.len(), 5);
     }
 
     #[test]
@@ -285,11 +297,21 @@ mod tests {
         assert_eq!(workflow.cron_expressions, vec!["0 */6 * * *"]);
     }
 
+    /// #774 moved these five pollers' cadence onto the sweeper's
+    /// supercronic clock and dropped their Actions `schedule:` trigger,
+    /// keeping `workflow_dispatch:` only — this pins that they now read as
+    /// unscheduled, the mirror image of
+    /// `every_committed_scheduled_workflow_is_still_read_as_scheduled`
+    /// above. A well-meaning revert that restores `schedule:` on one of
+    /// these without also dropping its `crontab` entry would otherwise
+    /// double the cadence silently; this fails loud here instead.
     #[test]
-    fn gmail_poll_is_read_as_a_fifteen_minute_scheduled_workflow() {
-        let workflow = parse_workflow("gmail-poll.yml", GMAIL_POLL).expect("gmail-poll is scheduled");
-        assert_eq!(workflow.display_name, "gmail-poll");
-        assert_eq!(workflow.cron_expressions, vec!["*/15 * * * *"]);
+    fn the_five_moved_pollers_no_longer_carry_a_schedule_trigger() {
+        assert_eq!(parse_workflow("gmail-poll.yml", GMAIL_POLL), None);
+        assert_eq!(parse_workflow("calendar-poll.yml", CALENDAR_POLL), None);
+        assert_eq!(parse_workflow("graph-mail-poll.yml", GRAPH_MAIL_POLL), None);
+        assert_eq!(parse_workflow("graph-calendar-poll.yml", GRAPH_CALENDAR_POLL), None);
+        assert_eq!(parse_workflow("github-status.yml", GITHUB_STATUS), None);
     }
 
     #[test]

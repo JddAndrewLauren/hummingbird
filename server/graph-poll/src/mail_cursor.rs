@@ -10,9 +10,10 @@ use hummingbird_domain::{SnapshotEnvelope, M365_MAIL_V1};
 /// snapshot (`sources.rs`'s "a source may of course be both").
 pub const SOURCE: &str = M365_MAIL_V1;
 
-/// How often this poller says it runs — must match
-/// `.github/workflows/graph-mail-poll.yml`'s cron, the same discipline the
-/// other two pollers' `POLLED_EVERY_MS` document.
+/// How often this poller says it runs — must match `crontab`'s entry for
+/// `graph-mail-poll` (#774 moved this off `graph-mail-poll.yml`'s Actions
+/// `schedule:`), the same discipline the other two pollers' `POLLED_EVERY_MS`
+/// document.
 pub const POLLED_EVERY_MS: i64 = 15 * 60 * 1000;
 
 /// The one `context_snapshots.key` this binary owns.

@@ -24,7 +24,9 @@ on:
       - "fly.toml"
       - "scripts/**"
       - "tests/**"
-      - ".github/workflows/deploy.yml"
+      - "server/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/**"
   pull_request:
     paths:
       - "sweep.py"
@@ -34,7 +36,9 @@ on:
       - "fly.toml"
       - "scripts/**"
       - "tests/**"
-      - ".github/workflows/deploy.yml"
+      - "server/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/**"
 
 jobs:
   test:

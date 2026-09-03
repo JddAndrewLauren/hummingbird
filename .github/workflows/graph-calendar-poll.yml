@@ -5,16 +5,12 @@
 # There is no `busy_now` snapshot here — that gauge belongs to #136's
 # Google Calendar leg only.
 #
-# A fifth Actions `schedule:`, on the other four pollers' own reasoning:
-# no competing clock (ADR-0011 assigns this cadence to nothing else, and
-# nothing else polls M365 calendar).
-#
-# **Live since 2026-08-15 (#486 Phase B).** It was dormant from 2026-08-14:
-# all 74 runs it had ever had failed on `HB_INGEST_TOKEN is not set`, because
-# `M365_CALENDAR_INGEST_TOKEN`, the `GRAPH_*` vars and
-# `GRAPH_CLIENT_PRIVATE_KEY` were never provisioned. All of them now are, and
-# this lane ran green on both paths — first-run bounded resync and cursor
-# resume — before the `schedule:` was restored.
+# **Moved off Actions `schedule:` at #774, onto the sweeper's supercronic
+# clock** — `gmail-poll.yml`'s header carries the full argument (measured
+# in #773), and `graph-mail-poll.yml`'s header carries the credential
+# consequence for this app registration specifically (`GRAPH_*` moved to
+# Fly `[env]`/secrets alongside it). `workflow_dispatch` stays, for a
+# manual run against a fresh checkout.
 #
 # **The Graph posture question is settled**, the same way and by the same
 # credential as `graph-mail-poll`: an Exchange Application Access Policy scopes
@@ -24,11 +20,6 @@
 name: graph-calendar-poll
 
 on:
-  # Every 15 minutes. `calendar_cursor::POLLED_EVERY_MS` was re-checked
-  # against this cron when the block was restored (#486 Phase B): both are
-  # 15 minutes.
-  schedule:
-    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 concurrency:

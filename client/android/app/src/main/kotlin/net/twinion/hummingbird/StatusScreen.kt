@@ -88,6 +88,7 @@ private fun paneLabel(pane: MobileRankedPane): String = when (pane.standingQuest
     MobileStandingQuestion.GITHUB -> "GitHub workflow — ${pane.subjectKey}"
     MobileStandingQuestion.UPTIME -> "Uptime — ${pane.subjectKey}"
     MobileStandingQuestion.REACHABILITY -> "Device reachability"
+    MobileStandingQuestion.POLLER -> "Poller freshness — ${pane.subjectKey}"
     MobileStandingQuestion.HOMEWORK,
     MobileStandingQuestion.SCPS,
     MobileStandingQuestion.WASTE,

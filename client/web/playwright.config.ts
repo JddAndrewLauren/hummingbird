@@ -27,6 +27,21 @@ import { defineConfig } from "@playwright/test";
 // where that stops being the whole story: below `PHONE_MAX_WIDTH_PX`
 // (`src/shell/breakpoints.ts`) the app does use a media query, and the rail
 // is a bottom bar. See `docs/SURFACES.md` for the surface-by-surface matrix.
+//
+// `HB_VISUAL_PORT` (default 5173) is the port both the browser and the dev
+// server use. It exists because this repo is routinely checked out into
+// several worktrees at once, each able to run its own `pnpm dev`, and
+// `reuseExistingServer` will happily attach to whichever one already holds
+// the port: a gate run in one tree then photographs another tree's build and
+// reports green — or red — about code that is not the code under test, with
+// nothing in the output to say so. Giving a worktree its own port is what
+// makes a run provably about that worktree. The value has to reach BOTH
+// `baseURL` and the server this config starts; an override that moved only
+// one would aim the browser at a server other than the one it launched,
+// which is worse than no override at all.
+const port = process.env.HB_VISUAL_PORT || "5173";
+const baseURL = `http://localhost:${port}`;
+
 export default defineConfig({
   testDir: "./visual",
   outputDir: "./visual/.output",
@@ -34,7 +49,7 @@ export default defineConfig({
   fullyParallel: true,
   reporter: [["list"]],
   use: {
-    baseURL: "http://localhost:5173",
+    baseURL,
     // A capture of a half-finished paint is a false finding, and this app's
     // fonts are self-hosted (the production CSP allows no Google Fonts), so
     // waiting on the network alone is not enough.
@@ -73,8 +88,10 @@ export default defineConfig({
   ],
   webServer: {
     // `pnpm dev` builds the wasm core first, which the SharedWorker needs.
-    command: "pnpm dev",
-    url: "http://localhost:5173",
+    // pnpm appends these args to the end of the script, so `--port` lands on
+    // `vite`, not on the wasm build that precedes it.
+    command: `pnpm dev --port ${port}`,
+    url: baseURL,
     reuseExistingServer: true,
     timeout: 180_000,
   },

@@ -25,21 +25,30 @@
 //! **Out of process, not in the Durable Object's alarm.** `server/worker`
 //! has no test harness of any kind, so anything expressed there is untested
 //! by construction — `city-waste`'s own header states this, and it
-//! generalises to every poller here. A GitHub Actions cron drives it
-//! (`.github/workflows/github-status.yml`).
+//! generalises to every poller here. **Moved off Actions `schedule:` at
+//! #774**, onto the sweeper's own `crontab`; `.github/workflows/
+//! github-status.yml` keeps a `workflow_dispatch:` trigger for a manual run
+//! against a fresh checkout, but no longer drives the standing cadence.
 //!
-//! **Needs no credential of its own to read this repo's run history** — the
-//! automatic per-run `GITHUB_TOKEN` with `permissions: actions: read`
-//! covers same-repo run history; only `HB_INGEST_TOKEN` (this poller's own
-//! `ingest`-scope credential for `POST /api/snapshots`) is a secret at all.
+//! **Needs no credential of its own to read this repo's run history when
+//! run through that workflow** — the automatic per-run `GITHUB_TOKEN` with
+//! `permissions: actions: read` covers same-repo run history there. **The
+//! standing run on `hummingbird-sweeper` has no such automatic token**, so
+//! it authenticates with `GH_STATUS_PAT` instead (a fine-grained PAT, Fly
+//! secret, mapped onto `GITHUB_TOKEN` by `crontab`) — `HB_INGEST_TOKEN`
+//! (this poller's own `ingest`-scope credential for `POST /api/snapshots`)
+//! is the only secret either path shares.
 //!
-//! **This workflow is itself subject to the same 60-day auto-disable it
-//! watches for, and it cannot detect its own death** — a dead
-//! `github-status.yml` writes nothing, and nothing here can make it write
-//! something about itself. What detects that is the pane's own staleness:
-//! once `github-status.yml` itself stops running, every row it owns simply
-//! stops moving, and `Freshness` bands the whole pane stale within ~6h,
-//! exactly the tell `city-waste`'s own pane already relies on for itself.
+//! **This poller cannot detect its own death** — a dead run writes nothing,
+//! and nothing here can make it write something about itself. What detects
+//! that is the pane's own staleness: once it stops running, every row it
+//! owns simply stops moving, and `Freshness` bands the whole pane stale
+//! within ~6h, exactly the tell `city-waste`'s own pane already relies on
+//! for itself. Before #774 that death could only be GitHub's 60-day
+//! auto-disable of an inactive repo's `schedule:` triggers; running on
+//! `hummingbird-sweeper` instead trades that specific failure mode for
+//! whatever can take the Fly machine itself down, which the pane's
+//! staleness read is blind to the cause of either way.
 //!
 //! # The split inside it
 //!

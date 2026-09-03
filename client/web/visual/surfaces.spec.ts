@@ -403,19 +403,23 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     await expect(page.getByText("41 ever · derived, not recorded")).toBeVisible();
   },
   status: async (page) => {
-    // Ten poller-backed panes — `docs/SURFACES.md`'s own count, made
+    // Nineteen poller-backed panes — `docs/SURFACES.md`'s own count, made
     // executable: one `kimi-balance/v1` gauge, five `github-hummingbird/v1`
-    // workflow rows, three `uptime/v1` service rows, plus one quiet,
-    // device-local `reachability` answer. `StatusBoard` gives every pane one
-    // tile and no other per-pane hook — no `role="region"`, no test id — so
+    // workflow rows, three `uptime/v1` service rows, one quiet, device-local
+    // `reachability` answer, and nine `poller` panes (#775) — one per source
+    // `poller.rs`'s `poller_sources` watches, always ranked whether or not
+    // this seed has polled it. `StatusBoard` gives every pane one tile and
+    // no other per-pane hook — no `role="region"`, no test id — so
     // `data-tile-tone`, which both tile arms carry, is what counts them.
-    await expect(page.getByRole("main").locator("[data-tile-tone]")).toHaveCount(10);
-    // **Nine toggles, not ten.** An answered reachability pane has nothing
-    // beneath its headline to disclose, so its tile is drawn without a
-    // toggle rather than with one that opens onto an empty card; the seed
-    // answers that pane, so exactly one tile is missing its `aria-expanded`.
-    // A tenth appearing here means the empty expansion came back.
-    await expect(page.getByRole("main").locator("[aria-expanded]")).toHaveCount(9);
+    await expect(page.getByRole("main").locator("[data-tile-tone]")).toHaveCount(19);
+    // **Eighteen toggles, not nineteen.** An answered reachability pane has
+    // nothing beneath its headline to disclose, so its tile is drawn without
+    // a toggle rather than with one that opens onto an empty card; the seed
+    // answers that pane, so exactly one tile — of the nineteen — is missing
+    // its `aria-expanded`. Every poller tile, gap or answered, always has
+    // one (`poller-pane/poller.ts`'s own header). A nineteenth appearing
+    // here means the empty expansion came back.
+    await expect(page.getByRole("main").locator("[aria-expanded]")).toHaveCount(18);
     // Both grids are labelled and counted, so a group that silently lost its
     // panes cannot pass as a board that simply has fewer tiles.
     await expect(page.getByText(/^infra · \d+ subjects?$/)).toBeVisible();
@@ -443,17 +447,17 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     // (`SettingsScreen` gates that branch on the live core status, not on
     // anything the fixture controls), which is a real async worker boot
     // rather than fixture latency — hence the longer timeout.
-    await expect(questionHeadings(page)).toHaveCount(10, { timeout: 15_000 });
+    await expect(questionHeadings(page)).toHaveCount(11, { timeout: 15_000 });
 
     // #715: every row is shut by default, so the board's Settings capture
-    // opens all ten — which is the frame this pass photographed before the
-    // rows became disclosures, and the only way to photograph the binding
-    // fields at all. Opened by position, never by name.
+    // opens all eleven — which is the frame this pass photographed before
+    // the rows became disclosures, and the only way to photograph the
+    // binding fields at all. Opened by position, never by name.
     const rows = questionRows(page);
-    for (let index = 0; index < 10; index += 1) {
+    for (let index = 0; index < 11; index += 1) {
       await rows.nth(index).click();
     }
-    await expect(page.locator("#standing-questions").getByRole("switch")).toHaveCount(10);
+    await expect(page.locator("#standing-questions").getByRole("switch")).toHaveCount(11);
     // `boundTripsBinding`'s key — the one binding row #452 added that
     // neither world had before, and now the proof that opening a row really
     // reveals what it holds.
@@ -937,10 +941,10 @@ for (const theme of THEMES) {
       // worth photographing — and it is the frame the `?demo` world above
       // cannot reach, since that world hand-authors bindings.
       await show(page, "Settings", testInfo.project.name);
-      await expect(questionHeadings(page)).toHaveCount(10, { timeout: 15_000 });
+      await expect(questionHeadings(page)).toHaveCount(11, { timeout: 15_000 });
       // #715: every row starts shut, so this frame is also the collapsed
-      // roster — ten questions, no toggles, no fields.
-      await expect(questionRows(page)).toHaveCount(10);
+      // roster — eleven questions, no toggles, no fields.
+      await expect(questionRows(page)).toHaveCount(11);
       await expect(page.locator("#standing-questions").getByRole("switch")).toHaveCount(0);
       // #707: the same proof as the board-world capture above, over the
       // REAL core rather than the fixture — a device that has bound

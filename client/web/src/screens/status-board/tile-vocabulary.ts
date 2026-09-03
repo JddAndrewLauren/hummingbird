@@ -52,6 +52,11 @@ const QUESTION_TILES: Partial<Record<StandingQuestion, TileVocabulary>> = {
   // `git-branch`, not `github`: Lucide dropped its brand marks, and
   // `Icon.tsx` records that substitution.
   github: { group: "capture & context sources", icon: "git-branch" },
+  // A meta-question over every other source's own freshness — `infra`
+  // beside kimi/uptime/reachability. `radio`, not `activity` (the fallback
+  // this table's own drift pin refuses to let a registered question keep):
+  // this pane's whole subject is whether a source is still broadcasting.
+  poller: { group: "infra", icon: "radio" },
 };
 
 /** Per-subject glyphs, keyed by `paneKey` so a subject name can never be
@@ -62,10 +67,6 @@ const SUBJECT_ICONS: Record<string, IconName> = {
   [paneKey("uptime", "authority")]: "server",
   [paneKey("uptime", "web")]: "globe",
   [paneKey("uptime", "runner")]: "cpu",
-  [paneKey("github", "gmail-poll.yml")]: "mail",
-  [paneKey("github", "graph-mail-poll.yml")]: "mails",
-  [paneKey("github", "calendar-poll.yml")]: "calendar",
-  [paneKey("github", "graph-calendar-poll.yml")]: "calendar",
   [paneKey("github", "city-waste-poll.yml")]: "trash-2",
   [paneKey("github", "race-alert-poll.yml")]: "flag",
 };

@@ -44,12 +44,13 @@
 //!
 //! `settings` has no DELETE, so respelling a key later orphans every row
 //! written under the old one — permanently, and invisibly, since the
-//! orphan reads as "absent" and the question comes back on. The ten
+//! orphan reads as "absent" and the question comes back on. The eleven
 //! spellings in [`question_switch_key`] are therefore written out as
 //! literals rather than derived with `format!` from
 //! [`StandingQuestion::as_str`]: a rename of a *question's* wire word (the
 //! kind #714 already made once, to a label) must not silently re-key rows
-//! the operator has already written. `the_ten_keys_are_frozen` is the pin.
+//! the operator has already written. `the_eleven_keys_are_frozen` is the
+//! pin.
 
 use std::collections::BTreeSet;
 
@@ -77,6 +78,7 @@ pub fn question_switch_key(question: StandingQuestion) -> &'static str {
         StandingQuestion::Github => "question-enabled-github",
         StandingQuestion::Uptime => "question-enabled-uptime",
         StandingQuestion::Reachability => "question-enabled-reachability",
+        StandingQuestion::Poller => "question-enabled-poller",
     }
 }
 
@@ -152,7 +154,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_ten_keys_are_frozen() {
+    fn the_eleven_keys_are_frozen() {
         // Written out rather than derived, and pinned rather than trusted:
         // `settings` has no DELETE, so a respelling orphans every row an
         // operator has already written and silently turns the question back
@@ -171,6 +173,7 @@ mod tests {
                 "question-enabled-github",
                 "question-enabled-uptime",
                 "question-enabled-reachability",
+                "question-enabled-poller",
             ]
         );
     }

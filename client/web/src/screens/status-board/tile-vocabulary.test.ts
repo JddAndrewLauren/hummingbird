@@ -67,7 +67,7 @@ describe("the Status board's tile vocabulary", () => {
   });
 
   it("gives a workflow the glyph of the source it polls", () => {
-    expect(tileIcon(pane("github", "gmail-poll.yml"))).toBe("mail");
+    expect(tileIcon(pane("github", "race-alert-poll.yml"))).toBe("flag");
     expect(tileIcon(pane("github", "city-waste-poll.yml"))).toBe("trash-2");
   });
 
