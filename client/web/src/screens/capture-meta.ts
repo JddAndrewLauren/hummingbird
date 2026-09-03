@@ -101,6 +101,19 @@ export function resolveCaptureFields(meta: CaptureMeta): CaptureFields {
   };
 }
 
+/** The deadline the capture box's "Mint for today" square stamps: this
+ * device's own calendar date, in the wire's whole-day form (`YYYY-MM-DD`,
+ * never a time — see `DeadlineField.tsx` on why a day is the resting
+ * shape). Local, not UTC: the deadline grammar is a civil date, and
+ * `computeUrgency` reads it against the local wall clock (`seam.ts`'s
+ * `localWallClock`), so a UTC date would be a day off for part of every
+ * evening west of Greenwich. Takes `nowMs` so a test needs no faked clock. */
+export function todayDeadline(nowMs: number): string {
+  const d = new Date(nowMs);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 /** Whatever is wrong with the typed fields, keyed by field — the capture
  * box's counterpart to `triage-form.ts`'s `triageDraftProblems`, with the
  * same messages, because both now call the same
