@@ -18,6 +18,12 @@ fn firings_per_hour(binary: &str) -> usize {
         .lines()
         .find(|l| l.contains(binary))
         .unwrap_or_else(|| panic!("crontab carries no entry for {binary}"));
+    // The whole file, not just the first match: a *second* entry for the same
+    // binary would double the real cadence while this gate stayed green, and
+    // a second clock for one job is the banned failure (CLAUDE.md's "No
+    // competing clocks"; issue #8).
+    let entries = CRONTAB.lines().filter(|l| l.contains(binary)).count();
+    assert_eq!(entries, 1, "crontab declares more than one entry for {binary}; POLLED_EVERY_MS names one cadence");
     let minute_field = line.split_whitespace().next().expect("a minute field");
     minute_field.split(',').count()
 }

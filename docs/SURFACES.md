@@ -58,7 +58,7 @@ already photographs.
 | **Shell** | `shell/Header.tsx` (title, sync pill, Search, Refresh, **the standing-questions toggle** — supplied only on Now, on the same "the affordance appears where it would work" rule as the other two — and New), `shell/NavRail.tsx` (desktop) / `shell/NavBar.tsx` (phone — four screens plus a More sheet, partitioned by `shell/nav-bar.ts`; `App.tsx` mounts exactly one, since two navigation landmarks break the spec's strict-mode `getByRole("navigation")`), `shell/ShellMeta.tsx` (the core-state and build-version lines, in the rail's footer and at the foot of the More sheet — on a phone that sheet and Settings are the only two places the build version is reachable), `shell/CapturePopover.tsx` (the capture box, over any screen), `shell/RecallOverlay.tsx` (**Recall** — #478/#479/#480/#481 — the search overlay, over any screen, reachable from four triggers: the header's Search button, the `/` hotkey, the rail's magnifier and the phone More sheet's entry), `shell/UpdateBanner.tsx` (the "new version — reload" strip, under the header), `screens/layout.tsx`, `shell/responsive.css` |
 | **Components** | `components/{core,forms,domain,feedback}/` — the 20-component library. Counted as *components a screen calls*: the eight size/energy glyph primitives in `core/custom-glyphs.tsx` (#446, ADR-0024) are not among them, since they exist only to fill `Icon`'s `ICON_MAP` and no caller names one directly. The twentieth is `forms/Combobox.tsx`, the open-vocabulary counterpart to `Select` — a `<select>`'s values *are* its vocabulary, so the one field whose vocabulary the schema leaves open (`items.context`) could not be one; it wraps `Input` and, since #641 made capture's Context sticky and the native `<datalist>`'s unsuppressable substring filter hid the rest of the vocabulary behind it, **a listbox of our own** — the popup is therefore a real visual state (see the matrix's capture-popover rows), where the native one was browser chrome no screenshot could see. `screens/field-vocabulary.ts` carries the vocabulary decision and the component's own header carries the listbox one. |
 | **Toolset** | Playwright (`client/web/playwright.config.ts`, `client/web/visual/`) |
-| **Command** | `cd client/web && pnpm visual` |
+| **Command** | `cd client/web && pnpm visual` — prefix `HB_VISUAL_PORT=<port>` when another worktree may already be serving 5173 (see below) |
 | **Captures** | `client/web/visual/.captures/` (gitignored) |
 
 ### Matrix
@@ -489,6 +489,16 @@ matrix compounds it, and screenshot jobs buy flake before they buy signal
 here. Promote it the first time a visual regression actually lands on main.
 
 Requires a one-time `pnpm exec playwright install chromium` per machine.
+
+### One port per worktree
+
+`HB_VISUAL_PORT` moves the whole run — the dev server this gate starts *and*
+the browser it points at — off 5173: `HB_VISUAL_PORT=5183 pnpm visual`. Unset,
+it is 5173 and every existing invocation is unchanged. Use it whenever a
+second worktree of this repo might be serving that port, because
+`reuseExistingServer` attaches to whatever answers there and a run can
+otherwise photograph a build that is not the one under test.
+`client/web/playwright.config.ts`'s header carries the argument.
 
 ### Brand-token bindings
 

@@ -153,6 +153,12 @@ and for a second one: `server/worker` has no test harness, so anything
 expressed there is untested by construction — keep every decidable thing in a
 natively-tested lib and leave only `fetch`/`crypto.subtle` in the shim.
 
+**The Kotlin is gated by CI alone.** No mandated local command compiles
+`client/android/` — a green local suite, an independent fresh-test re-run
+included, says nothing about whether Android builds; `android.yml`'s `build`
+job is the only evidence. `client/android/README.md`'s CI paragraph has the
+trap that earned the rule.
+
 **The design system.** The UI brand is the "Hummingbird Design System" project
 on claude.ai/design, mirrored at `.claude/skills/hummingbird-design/`. **All
 frontend/UI work must use it: invoke `/hummingbird-design` before styling

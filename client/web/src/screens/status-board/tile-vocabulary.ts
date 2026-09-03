@@ -67,10 +67,6 @@ const SUBJECT_ICONS: Record<string, IconName> = {
   [paneKey("uptime", "authority")]: "server",
   [paneKey("uptime", "web")]: "globe",
   [paneKey("uptime", "runner")]: "cpu",
-  [paneKey("github", "gmail-poll.yml")]: "mail",
-  [paneKey("github", "graph-mail-poll.yml")]: "mails",
-  [paneKey("github", "calendar-poll.yml")]: "calendar",
-  [paneKey("github", "graph-calendar-poll.yml")]: "calendar",
   [paneKey("github", "city-waste-poll.yml")]: "trash-2",
   [paneKey("github", "race-alert-poll.yml")]: "flag",
 };

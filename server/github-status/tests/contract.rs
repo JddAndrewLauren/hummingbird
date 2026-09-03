@@ -102,6 +102,15 @@ fn polled_every_ms_is_half_an_hour_and_the_crontab_says_so_too() {
         .lines()
         .find(|l| l.contains("/app/bin/github-status-poll"))
         .expect("crontab carries an entry for github-status-poll");
+    // The whole file, not just the first match: a *second* entry for the same
+    // binary would double the real cadence while this gate stayed green, and
+    // a second clock for one job is the banned failure (CLAUDE.md's "No
+    // competing clocks"; issue #8).
+    let entries = CRONTAB.lines().filter(|l| l.contains("/app/bin/github-status-poll")).count();
+    assert_eq!(
+        entries, 1,
+        "crontab declares more than one entry for github-status-poll; POLLED_EVERY_MS names one cadence"
+    );
     let minute_field = line.split_whitespace().next().expect("a minute field");
     assert_eq!(
         minute_field.split(',').count(),
