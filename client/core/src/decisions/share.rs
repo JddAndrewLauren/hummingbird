@@ -134,9 +134,25 @@ pub fn url_host(url: &str) -> Option<String> {
         .unwrap_or(after_scheme.len());
     let authority = &after_scheme[..authority_end];
     let host_port = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
-    let host = host_port.rsplit_once(':').map_or(host_port, |(host, port)| {
-        if port.chars().all(|c| c.is_ascii_digit()) { host } else { host_port }
-    });
+    // An IPv6 literal is bracketed and full of colons: the host is the
+    // brackets and everything inside them, and only a `:port` after the
+    // closing bracket is dropped.
+    let host = if host_port.starts_with('[') {
+        let close = host_port.find(']')?;
+        let port = &host_port[close + 1..];
+        let port_ok = port.is_empty()
+            || port
+                .strip_prefix(':')
+                .is_some_and(|digits| digits.chars().all(|c| c.is_ascii_digit()));
+        if !port_ok {
+            return None;
+        }
+        &host_port[..=close]
+    } else {
+        host_port.rsplit_once(':').map_or(host_port, |(host, port)| {
+            if port.chars().all(|c| c.is_ascii_digit()) { host } else { host_port }
+        })
+    };
     let host = host.strip_prefix("www.").unwrap_or(host);
     (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
@@ -252,6 +268,12 @@ mod tests {
         assert_eq!(url_host("https://www.YouTube.com/watch?v=abc").as_deref(), Some("youtube.com"));
         assert_eq!(url_host("http://user:pw@example.test:8080/x").as_deref(), Some("example.test"));
         assert_eq!(url_host("https://example.test").as_deref(), Some("example.test"));
+        assert_eq!(
+            url_host("http://[::1]:8080/x").as_deref(),
+            Some("[::1]"),
+            "an IPv6 literal keeps its brackets and drops only the port after them",
+        );
+        assert_eq!(url_host("https://[2001:db8::1]/").as_deref(), Some("[2001:db8::1]"));
         assert_eq!(url_host("ftp://example.test/x"), None, "not http(s)");
         assert_eq!(url_host("https:///x"), None, "no host");
         assert_eq!(url_host("not a url"), None);

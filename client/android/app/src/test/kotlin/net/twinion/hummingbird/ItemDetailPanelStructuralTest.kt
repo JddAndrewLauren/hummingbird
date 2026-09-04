@@ -5,6 +5,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import uniffi.hummingbird_ffi_mobile.linkDisplayLabel
+import uniffi.hummingbird_ffi_mobile.linkIsFollowable
 
 // The unified item-detail pane's own gates — the pins that used to live in
 // `TriageScreenStructuralTest` against a second editor implementation, now
@@ -806,6 +808,18 @@ class ItemDetailPanelStructuralTest {
             "and never a pencil for it either",
             panelSrc.contains("ic_pencil"),
         )
+    }
+
+    /** The one behavioural companion to the pin above, crossing the real
+     * uniffi seam the way `ZoneBridgeTest` does: the row is gated on
+     * `linkIsFollowable`, and that door refuses a non-http stored link. The
+     * label is asked separately — it still answers the name for the same
+     * URL — so the refusal can only be the door's, never the label's. */
+    @Test
+    fun `a non-http stored link is refused by the door, not by the label`() {
+        assertFalse(linkIsFollowable("javascript:alert(1)"))
+        assertTrue(linkIsFollowable("https://example.test/"))
+        assertEquals("Nope", linkDisplayLabel("javascript:alert(1)", "Nope"))
     }
 
     /** Recall's rule (#478) at both locks: no editor and no submit for an
