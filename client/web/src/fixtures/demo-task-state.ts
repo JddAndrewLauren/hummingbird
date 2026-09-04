@@ -200,6 +200,11 @@ interface Seed {
   source?: string;
   /** Departure 4 (see the header): the project this item belongs to. */
   projectId?: string;
+  /** #782: an `http(s)` URL the item panel draws as its always-visible link
+   * row, with the host as its text (no label). Exactly one seed carries one
+   * — the item `projects-dossier-slot-open-*` opens — so the row is
+   * photographed rather than only unit-tested. */
+  linkUrl?: string;
 }
 
 /** `YYYY-MM-DDTHH:MM`, naive local — the only deadline spelling ADR-0009/0013
@@ -235,6 +240,8 @@ function item(seed: Seed, index: number, loadedAt: number): TaskItemDTO {
     sourceKey: seed.source ? `${seed.id}-key` : null,
     sourceUrl: null,
     vaultPath: null,
+    linkUrl: seed.linkUrl ?? null,
+    linkLabel: null,
     archivedAt: null,
     createdAt,
     updatedAt: createdAt,
@@ -301,6 +308,7 @@ const FRONTIER_SEEDS: Seed[] = [
     context: "@home",
     size: "quick",
     energy: "low",
+    linkUrl: "https://www.youtube.com/watch?v=replace-a-tap-washer",
   },
   {
     id: "b-f2",
@@ -661,6 +669,8 @@ function archivedLedgerRow(seed: ArchivedSeed, index: number, loadedAt: number):
     sourceKey: null,
     sourceUrl: null,
     vaultPath: null,
+    linkUrl: null,
+    linkLabel: null,
     archivedAt,
     createdAt: archivedAt - 5 * DAY,
     updatedAt: archivedAt,

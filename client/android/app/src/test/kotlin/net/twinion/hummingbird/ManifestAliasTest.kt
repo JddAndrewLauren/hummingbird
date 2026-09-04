@@ -13,7 +13,10 @@ private const val ANDROID_NS = "http://schemas.android.com/apk/res/android"
 // that the second launcher icon exists in the shape the 2026-08-14 grilling
 // settled — an activity-alias targeting CaptureActivity, its own icon and
 // label, and a MAIN/LAUNCHER intent-filter — plus the permission and
-// shortcut wiring the same screen needs. Parses the real manifest, the same
+// shortcut wiring the same screen needs. Since #782 a second alias, the
+// share-sheet door, sits beside it, so every alias is selected by NAME:
+// `singleOrNull()` over the aliases was the trap that broke the moment the
+// second one existed. Parses the real manifest, the same
 // "the file is the authority, not a hand-copied expectation" discipline
 // `ColorTokenDriftTest` already uses for its own no-emulator gate.
 class ManifestAliasTest {
@@ -35,11 +38,15 @@ class ManifestAliasTest {
             .mapNotNull { childNodes.item(it) as? Element }
             .filter { it.tagName == tag }
 
+    private fun alias(name: String): Element =
+        manifest().children("application").single()
+            .children("activity-alias")
+            .singleOrNull { it.attr("name") == name }
+            ?: error("no activity-alias named $name under <application>")
+
     @Test
     fun `the second launcher icon is an activity-alias targeting CaptureActivity`() {
-        val application = manifest().children("application").single()
-        val alias = application.children("activity-alias").singleOrNull()
-            ?: error("no activity-alias found under <application>")
+        val alias = alias(".CaptureLauncher")
 
         assertEquals(".CaptureActivity", alias.attr("targetActivity"))
         assertEquals("true", alias.attr("exported"))
@@ -58,6 +65,63 @@ class ManifestAliasTest {
         assertTrue("no LAUNCHER category", categories.contains("android.intent.category.LAUNCHER"))
     }
 
+    /** #782's share-sheet door: the app's own name and the capture icon
+     * over the same CaptureActivity, filtering a `text/plain` SEND and
+     * nothing wider. Exactly these three lines, because each widening is
+     * a decision the issue took the other way — images, files and
+     * SEND_MULTIPLE are out of scope. */
+    @Test
+    fun `the share target is a second alias over CaptureActivity, text-plain SEND only`() {
+        val alias = alias(".ShareTarget")
+
+        assertEquals(".CaptureActivity", alias.attr("targetActivity"))
+        assertEquals("true", alias.attr("exported"))
+        assertEquals("@mipmap/ic_launcher_capture", alias.attr("icon"))
+        assertEquals("@string/share_target_label", alias.attr("label"))
+
+        val filter = alias.children("intent-filter").singleOrNull()
+            ?: error("the share target must carry exactly one intent-filter")
+        assertEquals(
+            listOf("android.intent.action.SEND"),
+            filter.children("action").mapNotNull { it.attr("name") },
+        )
+        assertEquals(
+            listOf("android.intent.category.DEFAULT"),
+            filter.children("category").mapNotNull { it.attr("name") },
+        )
+        assertEquals(
+            listOf("text/plain"),
+            filter.children("data").mapNotNull { it.attr("mimeType") },
+        )
+
+        // The label's value, since the sheet shows it: the product name,
+        // lowercase everywhere.
+        val root = System.getProperty("hummingbird.repoRoot")!!
+        val strings = File(root, "client/android/app/src/main/res/values/strings.xml").readText()
+        assertTrue(
+            "share_target_label must be the lowercase product name",
+            strings.contains("<string name=\"share_target_label\">hummingbird</string>"),
+        )
+    }
+
+    /** The share seeds through the core's mapping (`parseSharePayload`,
+     * ADR-0025) and nothing of Kotlin's own: no regex, no scanning the
+     * text for `http`. */
+    @Test
+    fun `the share payload is parsed by the seam, never by Kotlin`() {
+        val root = System.getProperty("hummingbird.repoRoot")!!
+        val src = File(
+            root,
+            "client/android/app/src/main/kotlin/net/twinion/hummingbird/CaptureActivity.kt",
+        ).readText()
+        assertTrue("CaptureActivity must seed through parseSharePayload(", src.contains("parseSharePayload("))
+        assertTrue("and read the SEND action", src.contains("Intent.ACTION_SEND"))
+        assertTrue(
+            "CaptureActivity must not parse the payload itself",
+            !src.contains("Regex(") && !src.contains("indexOf(\"http"),
+        )
+    }
+
     @Test
     fun `CaptureActivity is declared exactly once and never carries its own LAUNCHER filter`() {
         val application = manifest().children("application").single()
@@ -67,14 +131,11 @@ class ManifestAliasTest {
         assertEquals("CaptureActivity must be declared exactly once", 1, captureActivities.size)
         val captureActivity = captureActivities.single()
 
-        // Only the alias may carry a LAUNCHER intent-filter — one entry
-        // point per icon.
-        val categories = captureActivity.children("intent-filter")
-            .flatMap { it.children("category") }
-            .mapNotNull { it.attr("name") }
+        // Only an alias may carry an intent-filter — one entry point per
+        // door, each alias naming itself.
         assertTrue(
-            "CaptureActivity itself must not declare a LAUNCHER category",
-            "android.intent.category.LAUNCHER" !in categories,
+            "CaptureActivity itself must carry no intent-filter at all",
+            captureActivity.children("intent-filter").isEmpty(),
         )
     }
 

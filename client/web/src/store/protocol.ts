@@ -232,10 +232,11 @@ export interface GrillDraftTurnDTO {
  * `destination`), `archivedAt` (cancelling is an act), `projectPos` (a Route's
  * ordering) and every server-stamped field.
  *
- * `vaultPath` (#771) sits beside `sourceUrl` in the `items` row and is
- * present here anyway, deliberately: which note an item points at is an
- * operator *choice*, set and re-pointed and cleared from the item panel long
- * after capture, so the provenance exclusion above does not reach it. The
+ * `vaultPath` (#771) and the Link pair `linkUrl`/`linkLabel` (#782) sit
+ * beside `sourceUrl` in the `items` row and are present here anyway,
+ * deliberately: which note and which link an item points at are operator
+ * *choices*, set and re-pointed and cleared from the item panel long after
+ * capture, so the provenance exclusion above does not reach them. The
  * asymmetry is not an oversight. */
 export interface TriageEdits {
   title?: string;
@@ -257,6 +258,11 @@ export interface TriageEdits {
    * trim is the whole of what the authority checks; the path's shape is
    * `obsidian/vault-uri.ts`'s `isValidVaultPath`. */
   vaultPath?: string | null;
+  /** #782: the item's one Link — a URL and its optional name. `null` on
+   * `linkUrl` clears both (one row state, the authority's rule); a
+   * `linkLabel` beside a cleared or absent URL is refused at the seam. */
+  linkUrl?: string | null;
+  linkLabel?: string | null;
 }
 
 /** Every field the capture box may set on a brand-new item, exactly as the
@@ -281,6 +287,9 @@ export interface CaptureFieldsWire {
   deadline: string | null;
   /** A whole civil day, `YYYY-MM-DD` — a do-date has no minute. */
   scheduledDate: string | null;
+  /** #782's Link. A `linkLabel` without a `linkUrl` is refused at the seam. */
+  linkUrl: string | null;
+  linkLabel: string | null;
 }
 
 /** One `steps` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
@@ -330,6 +339,12 @@ export interface TaskItemDTO {
    * vault it is relative to is the `obsidian-vault` binding, never stored
    * here. */
   vaultPath: string | null;
+  /** #782: the one Link this item points at — an operator-chosen URL and
+   * its optional name (`decisions/seam.ts`'s `linkDisplayLabel` names it
+   * on screen). Distinct from `sourceUrl`, which is where the item came
+   * from and is never edited. */
+  linkUrl: string | null;
+  linkLabel: string | null;
   archivedAt: number | null;
   createdAt: number;
   updatedAt: number;

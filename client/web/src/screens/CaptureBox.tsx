@@ -504,6 +504,10 @@ export function CaptureBox({
   // the screen, and a form that reopens to seven fields taxes the next
   // capture for a decision the last one happened to make.
   const [detailsOpen, setDetailsOpen] = useState(false);
+  // #782: the Link field, its own disclosure below the details one — a
+  // chain glyph on its own row, shut until selected, then `URL` + `Link
+  // name`. Shut again after each capture, with `detailsOpen`.
+  const [linkOpen, setLinkOpen] = useState(false);
 
   // Defence in depth rather than a live message: both date fields are native
   // pickers, which cannot hold a date that does not exist, so this finds
@@ -540,6 +544,7 @@ export function CaptureBox({
       setDraft("");
       setMeta({ ...EMPTY_CAPTURE_META, context: meta.context });
       setDetailsOpen(false);
+      setLinkOpen(false);
       // The dictation failure goes with the draft it happened to. Left
       // standing, a "Nothing was heard." would sit under a freshly emptied box
       // describing a session two captures ago — the same stale-report failure
@@ -632,6 +637,7 @@ export function CaptureBox({
       // rest goes. Two sites because demo has no result to wait for.
       setMeta({ ...EMPTY_CAPTURE_META, context: meta.context });
       setDetailsOpen(false);
+      setLinkOpen(false);
       focusField();
       return;
     }
@@ -922,6 +928,46 @@ export function CaptureBox({
               onChange={(event) => setMeta({ ...meta, scheduledDate: event.target.value })}
             />
           </div>
+        </div>
+      ) : null}
+      {/* #782: the Link disclosure, below the details one and independent of
+          it. `label` is the accessible name and the tooltip, as on the
+          details toggle; the glyph is the design system's `link`. */}
+      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+        <IconButton
+          icon="link"
+          label="Link"
+          aria-expanded={linkOpen}
+          active={linkOpen || meta.linkUrl.length > 0}
+          onClick={() => setLinkOpen(!linkOpen)}
+        />
+      </div>
+      {linkOpen ? (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(min(200px, 100%), 1fr))",
+            gap: "var(--space-5)",
+            alignItems: "start",
+          }}
+        >
+          <Input
+            label="URL"
+            size="sm"
+            type="url"
+            inputMode="url"
+            value={meta.linkUrl}
+            placeholder="https://"
+            onChange={(event) => setMeta({ ...meta, linkUrl: event.target.value })}
+          />
+          <Input
+            label="Link name"
+            size="sm"
+            value={meta.linkLabel}
+            error={metaProblems.linkLabel}
+            placeholder="Shown as the host when empty"
+            onChange={(event) => setMeta({ ...meta, linkLabel: event.target.value })}
+          />
         </div>
       ) : null}
       {setupRequired && setupPhase.phase !== "closed" ? (

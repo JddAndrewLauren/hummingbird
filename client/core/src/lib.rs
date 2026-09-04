@@ -253,6 +253,12 @@ pub struct CaptureOptions {
     pub project_id: Option<String>,
     pub deadline: Option<String>,
     pub scheduled_date: Option<String>,
+    /// #782's Link, the one URL an item points at and its optional name —
+    /// unlike `vault_path`, settable at capture, because a share arrives
+    /// carrying one (`decisions::share`). A name without a URL is refused
+    /// at the seams before it reaches here.
+    pub link_url: Option<String>,
+    pub link_label: Option<String>,
 }
 
 /// Builds the optimistic [`Item`] a reader sees for a still-queued create,
@@ -282,6 +288,8 @@ fn item_from_create(create: &CreateItem, now_ms: i64) -> Item {
         source_key: create.source_key.clone(),
         source_url: create.source_url.clone(),
         vault_path: create.vault_path.clone(),
+        link_url: create.link_url.clone(),
+        link_label: create.link_label.clone(),
         archived_at: None,
         agent: create.agent.unwrap_or(false),
         created_at: now_ms,
@@ -633,10 +641,14 @@ impl ItemAction {
 /// asked for — the same fidelity every other CAS write in this crate
 /// already holds.
 ///
-/// `vault_path` (#771) is the one nullable `items` column here that is NOT
-/// provenance and yet sits beside `source_url` in the row: the operator
-/// chooses which note an item points at, re-points it and clears it, so the
-/// exclusion below does not reach it. The asymmetry is deliberate.
+/// `vault_path` (#771) and the Link pair `link_url`/`link_label` (#782) are
+/// the nullable `items` columns here that are NOT provenance and yet sit
+/// beside `source_url` in the row: the operator chooses which note and
+/// which link an item points at, re-points them and clears them, so the
+/// exclusion below does not reach them. The asymmetry is deliberate. The
+/// Link's own rule — a name needs a URL, and clearing the URL clears the
+/// name — is the authority's and the seams'; this patch carries whatever
+/// three states it is handed.
 ///
 /// What is deliberately absent: `source`/`source_key`/`source_url` (owned by
 /// whatever captured the item, never edited here), `stage` (that IS the
@@ -655,6 +667,8 @@ pub struct TriagePatch {
     pub deadline: Option<Option<String>>,
     pub scheduled_date: Option<Option<String>>,
     pub vault_path: Option<Option<String>>,
+    pub link_url: Option<Option<String>>,
+    pub link_label: Option<Option<String>>,
 }
 
 /// [`Core::act`] failed before ever reaching the outbound queue, or while
@@ -2604,6 +2618,8 @@ where
             // #771: a note is pointed at from the item panel, never at
             // capture — there is nothing to name a note about yet.
             vault_path: None,
+            link_url: options.link_url,
+            link_label: options.link_label,
             // No client affordance sets the delegation axis (#115): the
             // skill is its only writer today, so a capture is the human's.
             agent: None,
@@ -2906,6 +2922,21 @@ where
         if let Some(vault_path) = &patch.vault_path {
             optimistic.vault_path = vault_path.clone();
             patch_fields.insert("vault_path".to_string(), serde_json::json!(vault_path));
+        }
+        // #782, the same three states on each half. The optimistic row
+        // mirrors the authority's one-row-state rule: a cleared URL takes
+        // its name with it, so the overlay never shows a stranded name the
+        // server will not store.
+        if let Some(link_url) = &patch.link_url {
+            optimistic.link_url = link_url.clone();
+            patch_fields.insert("link_url".to_string(), serde_json::json!(link_url));
+            if link_url.is_none() {
+                optimistic.link_label = None;
+            }
+        }
+        if let Some(link_label) = &patch.link_label {
+            optimistic.link_label = link_label.clone();
+            patch_fields.insert("link_label".to_string(), serde_json::json!(link_label));
         }
         optimistic.updated_at = now_ms;
 
@@ -3491,6 +3522,8 @@ mod tests {
                 project_id: Some("proj-1".to_string()),
                 deadline: Some("2026-09-01".to_string()),
                 scheduled_date: Some("2026-08-30".to_string()),
+                link_url: Some("https://example.test/milk".to_string()),
+                link_label: Some("Milk".to_string()),
             },
             None,
         )
@@ -3506,6 +3539,8 @@ mod tests {
         assert_eq!(frontier[0].project_id.as_deref(), Some("proj-1"));
         assert_eq!(frontier[0].deadline.as_deref(), Some("2026-09-01"));
         assert_eq!(frontier[0].scheduled_date.as_deref(), Some("2026-08-30"));
+        assert_eq!(frontier[0].link_url.as_deref(), Some("https://example.test/milk"));
+        assert_eq!(frontier[0].link_label.as_deref(), Some("Milk"));
     }
 
     /// The same selections in the *wire body*, not merely in the overlay: an
@@ -3528,6 +3563,8 @@ mod tests {
                 project_id: Some("proj-1".to_string()),
                 deadline: Some("2026-09-01T09:30".to_string()),
                 scheduled_date: Some("2026-08-30".to_string()),
+                link_url: Some("https://example.test/milk".to_string()),
+                link_label: None,
             },
             None,
         )
@@ -3546,11 +3583,13 @@ mod tests {
         assert_eq!(body["project_id"], serde_json::json!("proj-1"));
         assert_eq!(body["deadline"], serde_json::json!("2026-09-01T09:30"));
         assert_eq!(body["scheduled_date"], serde_json::json!("2026-08-30"));
+        assert_eq!(body["link_url"], serde_json::json!("https://example.test/milk"));
         // An unset field is *omitted*, never sent as null: the server's own
         // default is the resting state, and a null would be this client
         // asserting one.
         assert!(body.get("energy").is_none());
         assert!(body.get("context").is_none());
+        assert!(body.get("link_label").is_none());
     }
 
     /// #208's other half: leaving every field at its resting state
@@ -3803,6 +3842,8 @@ mod tests {
                 deadline: Some(Some("2026-08-14".to_string())),
                 scheduled_date: Some(Some("2026-08-12".to_string())),
                 vault_path: Some(Some("Hummingbird/Buy milk.md".to_string())),
+                link_url: Some(Some("https://example.test/milk".to_string())),
+                link_label: Some(Some("Milk".to_string())),
             },
             2_000,
             None,
@@ -4294,6 +4335,8 @@ mod tests {
             source_key: None,
             source_url: None,
             vault_path: None,
+            link_url: None,
+            link_label: None,
             archived_at: None,
             agent: false,
             created_at: 1_000,
@@ -4394,6 +4437,8 @@ mod tests {
             source_key: None,
             source_url: None,
             vault_path: None,
+            link_url: None,
+            link_label: None,
             archived_at: None,
             agent: false,
             created_at: 1_000,
@@ -5278,6 +5323,8 @@ mod tests {
             source_key: None,
             source_url: None,
             vault_path: None,
+            link_url: None,
+            link_label: None,
             archived_at: None,
             agent: false,
             created_at: 1,

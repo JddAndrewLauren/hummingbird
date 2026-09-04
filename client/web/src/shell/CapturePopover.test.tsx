@@ -63,6 +63,8 @@ const NO_FIELDS = {
   priority: null,
   deadline: null,
   scheduledDate: null,
+  linkUrl: null,
+  linkLabel: null,
 };
 
 describe("CapturePopover — the overlay", () => {
@@ -298,6 +300,8 @@ describe("CapturePopover — the full field set behind More details", () => {
       priority: 2,
       deadline: "2026-09-01",
       scheduledDate: "2026-08-30",
+      linkUrl: null,
+      linkLabel: null,
     });
   });
 

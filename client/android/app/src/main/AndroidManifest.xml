@@ -57,10 +57,13 @@
         </activity>
 
         <!-- CaptureActivity: capture's whole surface (M1-5/#503). Reached
-             directly via the CaptureLauncher alias below, the static
-             shortcut above, or MainActivity in a later screen — never
-             its own LAUNCHER intent-filter, which lives on the alias so
-             there is exactly one entry point per icon. -->
+             through the two aliases below — the CaptureLauncher icon and
+             the ShareTarget share-sheet entry (#782) — and the static
+             shortcut above; never through an intent-filter of its own.
+             Every filter lives on an alias, so there is exactly one entry
+             per *door*: the launcher icon is one, the share sheet is
+             another, and each names itself (icon, label) independently
+             over the same Activity, one process and one core. -->
         <activity
             android:name=".CaptureActivity"
             android:exported="true"
@@ -70,7 +73,9 @@
         <!-- The second launcher icon (#128's own scope, resolved by the
              2026-08-14 grilling): a distinct icon and label over the same
              CaptureActivity, so the OS shows two app entries that share one
-             process and one core. -->
+             process and one core. Untouched by #782, which adds a sibling
+             rather than widening this one — a share filter here would put
+             the "Capture" label in the share sheet. -->
         <activity-alias
             android:name=".CaptureLauncher"
             android:targetActivity=".CaptureActivity"
@@ -80,6 +85,27 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- The share-sheet door (#782): the same CaptureActivity, under the
+             app's own name and the capture icon, for a `text/plain` SEND
+             and nothing wider — images, files and SEND_MULTIPLE are out of
+             scope, so they are not filtered. Exported by necessity: the
+             sharing app is the caller. What arrives is a subject and a
+             text, seeded into the capture form through the core's own
+             mapping (`parseSharePayload`); the form is attended, never
+             minted unseen (ADR-0022). -->
+        <activity-alias
+            android:name=".ShareTarget"
+            android:targetActivity=".CaptureActivity"
+            android:label="@string/share_target_label"
+            android:icon="@mipmap/ic_launcher_capture"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
             </intent-filter>
         </activity-alias>
 

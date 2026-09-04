@@ -219,6 +219,8 @@ mod tests {
             source_key: None,
             source_url: None,
             vault_path: None,
+            link_url: None,
+            link_label: None,
             archived_at: None,
             agent: false,
             created_at: 1_000,

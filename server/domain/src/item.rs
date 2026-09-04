@@ -158,6 +158,25 @@ pub struct Item {
     /// bump.
     #[serde(default)]
     pub vault_path: Option<String>,
+    /// The one **Link** an item points at (#782): an operator-chosen URL and
+    /// an optional name for it. The third nullable `items` column that is
+    /// neither provenance nor a path — distinct from `source_url` (where the
+    /// item *came from*, system-written and immutable) and from
+    /// `vault_path` (a path into one vault, never a URL). The operator
+    /// chooses it, so like `vault_path` and unlike `source_url` it is
+    /// editable and clearable. At most one per item: a *list* of links is
+    /// what a project's `project_links` is for (ADR-0030 decision 4).
+    ///
+    /// `link_label` is the name shown for it; absent, a client draws the
+    /// URL's host instead. A name without a URL is a 400 on both write
+    /// doors, and clearing the URL clears the name — one row state, not two.
+    ///
+    /// `#[serde(default)]` on both for `vault_path`'s reason: a mirror
+    /// snapshot persisted before these columns existed must still parse.
+    #[serde(default)]
+    pub link_url: Option<String>,
+    #[serde(default)]
+    pub link_label: Option<String>,
     /// ms epoch; `None` = live. Rows are never deleted, only flagged.
     pub archived_at: Option<i64>,
     /// #10's fourth axis, *who does this*: `true` = an agent could do this
@@ -246,6 +265,8 @@ mod tests {
             source_key: None,
             source_url: None,
             vault_path: None,
+            link_url: None,
+            link_label: None,
             archived_at: None,
             agent: false,
             created_at: 1,
@@ -273,5 +294,23 @@ mod tests {
         }"#;
         let item: Item = serde_json::from_str(pre_agent).unwrap();
         assert!(!item.agent);
+    }
+
+    /// #782's pair carries `#[serde(default)]` for the same reason: a
+    /// snapshot from before the Link existed points at nothing.
+    #[test]
+    fn an_item_written_before_the_link_columns_still_parses_with_no_link() {
+        let pre_link = r#"{
+            "id": "a-1", "seq": 1, "title": "hello", "description": null,
+            "stage": "triage", "size": null, "energy": null, "context": null,
+            "priority": 0, "project_id": null, "project_pos": null,
+            "deadline": null, "scheduled_date": null,
+            "source": null, "source_key": null, "source_url": null,
+            "vault_path": null, "archived_at": null, "agent": false,
+            "created_at": 1, "updated_at": 2, "version": 3
+        }"#;
+        let item: Item = serde_json::from_str(pre_link).unwrap();
+        assert_eq!(item.link_url, None);
+        assert_eq!(item.link_label, None);
     }
 }

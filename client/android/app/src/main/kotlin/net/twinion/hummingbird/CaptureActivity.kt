@@ -1,6 +1,7 @@
 package net.twinion.hummingbird
 
 import android.Manifest
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -57,11 +58,13 @@ import net.twinion.hummingbird.ui.forms.CaptureDateField
 import net.twinion.hummingbird.ui.forms.ContextField
 import net.twinion.hummingbird.ui.forms.DeadlineField
 import net.twinion.hummingbird.ui.forms.LevelSlider
+import net.twinion.hummingbird.ui.forms.LinkField
 import net.twinion.hummingbird.ui.forms.PriorityRow
 import net.twinion.hummingbird.ui.forms.ProjectField
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 import net.twinion.hummingbird.ui.theme.Sky600
 import uniffi.hummingbird_ffi_mobile.CaptureDestination
+import uniffi.hummingbird_ffi_mobile.parseSharePayload
 
 // M1-5's capture surface (#128/#503), the second launcher icon's
 // destination: field focused with the IME up on launch with zero taps,
@@ -86,6 +89,14 @@ import uniffi.hummingbird_ffi_mobile.CaptureDestination
 // render comes from `viewModel.formMeta`
 // (`uniffi.hummingbird_ffi_mobile.captureFormMeta`), never a literal typed
 // into this file (ADR-0025's ban on a hand-copied vocabulary).
+//
+// #782 made this the share target as well: the `.ShareTarget` alias in the
+// manifest routes a `text/plain` `ACTION_SEND` here, and the subject and
+// text ride into `CaptureScreen`, where `parseSharePayload` — the core's
+// mapping, crossed on the seam — seeds the draft once. Zero URL parsing in
+// Kotlin (`ManifestAliasTest` pins that). Attended, never unattended: the
+// share lands on this same form, prefilled, and the reader still presses
+// submit; `finish()` after it returns to the sharing app.
 class CaptureActivity : ComponentActivity() {
 
     // The recognizer plumbing lives in `speech/Dictation.kt` since #611 —
@@ -97,11 +108,22 @@ class CaptureActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val host = DictationHost(this).also { dictation = it }
+        // A share's payload, or nothing: the launcher and shortcut doors
+        // arrive with no action of interest and seed nothing.
+        val share = if (intent?.action == Intent.ACTION_SEND) {
+            SharePayload(
+                subject = intent.getStringExtra(Intent.EXTRA_SUBJECT).orEmpty(),
+                text = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty(),
+            )
+        } else {
+            null
+        }
         setContent {
             HummingbirdTheme {
                 CaptureScreen(
                     startListening = host::startListening,
                     onFinished = ::finish,
+                    share = share,
                 )
             }
         }
@@ -114,10 +136,15 @@ class CaptureActivity : ComponentActivity() {
     }
 }
 
+/** What an `ACTION_SEND` share handed this Activity, verbatim — the two
+ * extras and nothing derived from them. */
+private data class SharePayload(val subject: String, val text: String)
+
 @Composable
 private fun CaptureScreen(
     startListening: ((String) -> Unit, (DictationFailure) -> Unit) -> Unit,
     onFinished: () -> Unit,
+    share: SharePayload? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -133,6 +160,12 @@ private fun CaptureScreen(
     // (`CaptureBox.tsx`'s `detailsOpen`) — a form that opens to seven
     // fields taxes the common case, which is one line and Enter.
     var detailsOpen by rememberSaveable { mutableStateOf(false) }
+    // A share that brought a URL in opens the disclosure the Link now lives
+    // in, so the reader sees what is about to be saved (#782). An effect,
+    // not an initial value: the seed lands after first composition.
+    LaunchedEffect(draft.linkOpen) {
+        if (draft.linkOpen) detailsOpen = true
+    }
     val metaProblems = viewModel.metaProblems
 
     val micPermission = rememberLauncherForActivityResult(
@@ -159,6 +192,16 @@ private fun CaptureScreen(
     // (`client/web/src/screens/CaptureBox.tsx:830-839`) already renders.
     LaunchedEffect(Unit) {
         viewModel.loadProjects()
+    }
+
+    // The share's seed (#782), through the core's own mapping and nothing
+    // of this file's. `LaunchedEffect(Unit)` re-fires on an Activity
+    // recreation, which is why `seedFromShare` is idempotent rather than
+    // this effect being keyed — the ViewModel is what survives.
+    LaunchedEffect(Unit) {
+        if (share != null) {
+            viewModel.seedFromShare(parseSharePayload(share.subject, share.text))
+        }
     }
 
     fun submit(destination: CaptureDestination) {
@@ -340,6 +383,20 @@ private fun CaptureScreen(
                                 modifier = Modifier.weight(1f),
                             )
                         }
+                        // The item's one Link (#782), the disclosure's last
+                        // row (operator decision 2026-09-04: on its own row
+                        // below the disclosure it cost the shut form a line
+                        // of height and pushed the two buttons down). A chain
+                        // glyph, shut until tapped — or already open and
+                        // filled when a share brought a URL in, which also
+                        // opens this disclosure (the `LaunchedEffect` above).
+                        LinkField(
+                            url = draft.linkUrl,
+                            label = draft.linkLabel,
+                            onUrlChange = { viewModel.updateDraft(draft.copy(linkUrl = it)) },
+                            onLabelChange = { viewModel.updateDraft(draft.copy(linkLabel = it)) },
+                            initiallyOpen = draft.linkOpen,
+                        )
                     }
                 }
             }

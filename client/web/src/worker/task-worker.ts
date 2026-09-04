@@ -318,6 +318,8 @@ interface RawItem {
   source_key: string | null;
   source_url: string | null;
   vault_path: string | null;
+  link_url: string | null;
+  link_label: string | null;
   archived_at: number | null;
   created_at: number;
   updated_at: number;
@@ -719,6 +721,8 @@ function mapItem(raw: RawItem): TaskItemDTO {
     sourceKey: raw.source_key,
     sourceUrl: raw.source_url,
     vaultPath: raw.vault_path,
+    linkUrl: raw.link_url,
+    linkLabel: raw.link_label,
     archivedAt: raw.archived_at,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,

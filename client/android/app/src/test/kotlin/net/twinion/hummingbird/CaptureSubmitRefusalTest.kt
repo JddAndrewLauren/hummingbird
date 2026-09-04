@@ -68,6 +68,10 @@ class CaptureSubmitRefusalTest {
             factory.contains("metaProblemsFn = ::captureMetaProblems"),
         )
         assertTrue(
+            "CaptureViewModel.create must pass ::linkLabelProblem as linkProblemFn",
+            factory.contains("linkProblemFn = ::linkLabelProblem"),
+        )
+        assertTrue(
             "CaptureViewModel.create must pass ::captureFormMeta as formMetaFn",
             factory.contains("formMetaFn = ::captureFormMeta"),
         )
@@ -105,6 +109,10 @@ class CaptureSubmitRefusalTest {
         assertTrue(
             "the production factory must pass ::captureMetaProblems",
             factory.contains("metaProblemsFn = ::captureMetaProblems"),
+        )
+        assertTrue(
+            "the production factory must pass ::linkLabelProblem",
+            factory.contains("linkProblemFn = ::linkLabelProblem"),
         )
     }
 

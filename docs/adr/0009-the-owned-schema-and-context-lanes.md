@@ -213,8 +213,8 @@ CREATE INDEX idx_items_project ON items(project_id);
 
 *This DDL is the schema as accepted, not the current schema: later ADRs add
 to it and their DDL stays with them — see the amendment pointers in the
-Status header (and the `items.agent` and `items.vault_path` amendments at
-the foot of this file). `server/authority/src/schema.rs` is what actually
+Status header (and the `items.agent`, `items.vault_path` and
+`items.link_url`/`items.link_label` amendments at the foot of this file). `server/authority/src/schema.rs` is what actually
 runs.*
 
 ### What dissolved from the S1 model, deliberately
@@ -495,3 +495,47 @@ TEXT` splices before the closing paren, after `agent`, on that same line —
 `, agent INTEGER NOT NULL DEFAULT 0, vault_path TEXT)`. Verified against a
 real migrated store's `sqlite_master`, not reasoned out
 (`init_schema_grows_a_schema_12_database_additively`).
+
+## Amendment (2026-09-03, #782): `items.link_url` / `items.link_label`, the Link
+
+```sql
+link_url    TEXT   -- the one URL the operator attached to this item
+link_label  TEXT   -- its optional name; shown as the URL's host when absent
+```
+
+`SCHEMA_VERSION` 13 → 14, the seventh and eighth `add_missing_columns`
+arms. Both nullable, so the growth is additive on both the constraint and
+the data: every item minted before this points at no link.
+
+**Why two columns and not a table.** The cardinality is one per item —
+exactly `vault_path`'s, and for the same reason: an item *points*, a
+project *collects*. A list of URLs already has a home in `project_links`
+(ADR-0030 decision 4), and a per-item table would be that table again with
+a different foreign key and a `position` nobody orders. The Link is the
+third kind of pointer an item carries and the glossary (CONTEXT.md,
+**Link**) keeps the three apart: `source_url` is provenance, `vault_path`
+is a path, this is a choice.
+
+**Why it is patchable.** `vault_path`'s argument, unchanged: `ItemPatch`
+excludes the provenance trio because provenance belongs to whatever
+captured the item, and a Link is an operator choice made and remade from
+the item panel. Both columns carry the full three-state
+`Option<Option<String>>`. Unlike `vault_path`, a Link is also settable at
+**create**, because a share arrives carrying one.
+
+**A name needs a URL, and the two are one row state.** A `link_label`
+without a `link_url` is a 400 on both doors. On the patch door the rule is
+judged over the patch *applied to the current row* — a name sent alone is
+fine when a URL is already stored — and clearing `link_url` clears
+`link_label` with it, so a stranded name is never stored. The authority
+stores an opaque string beyond non-blankness; whether a URL is `http(s)`
+is a drawing decision (`decisions::share::link_display_label`), made once
+in the core.
+
+**The migration's trap is `vault_path`'s, two columns further along.**
+`items` has no table constraint, so both `ALTER TABLE … ADD COLUMN`s splice
+before the closing paren, after `vault_path`, in the order they run —
+`, agent INTEGER NOT NULL DEFAULT 0, vault_path TEXT, link_url TEXT,
+link_label TEXT)`. Verified against a real migrated store's
+`sqlite_master`, not reasoned out
+(`init_schema_grows_a_schema_13_database_additively`).

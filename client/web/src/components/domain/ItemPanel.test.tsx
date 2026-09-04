@@ -6,7 +6,7 @@
 // failure mode `src/test/component.tsx`'s header exists for.
 
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, itemDTO, projectDTO, render, screen, stepDTO } from "../../test/component";
+import { cleanup, fireEvent, itemDTO, projectDTO, render, screen, stepDTO } from "../../test/component";
 import { IDLE, reduceRun, type SkillEvent, type SkillRunState } from "../../skills/run-state";
 import type { TaskItemDTO } from "../../store/protocol";
 import { ItemPanel } from "./ItemPanel";
@@ -757,5 +757,93 @@ describe("the Obsidian note affordance", () => {
     fireEvent.click(screen.getByRole("button", { name: "Promote to ready" }));
 
     expect(onTriage).toHaveBeenCalledWith("item-2", "ready", { vaultPath: null });
+  });
+});
+
+/** #782: the Link row. Always visible in read mode wherever the item is
+ * opened, follows the link on click, and the affordance beside it opens the
+ * fields. */
+describe("the Link row", () => {
+  function detail(options: {
+    linkUrl?: string | null;
+    linkLabel?: string | null;
+    withTriage?: boolean;
+  }) {
+    const onTriage = vi.fn();
+    render(
+      <ItemPanel
+        mode="detail"
+        item={itemDTO({
+          id: "item-1",
+          linkUrl: options.linkUrl ?? null,
+          linkLabel: options.linkLabel ?? null,
+        })}
+        projects={[]}
+        steps={[]}
+        onTriage={options.withTriage === false ? undefined : onTriage}
+      />,
+    );
+    return onTriage;
+  }
+
+  it("draws an anchor named by the label, opening in a new tab", () => {
+    detail({ linkUrl: "https://www.youtube.com/watch?v=abc", linkLabel: "Rehab" });
+    const anchor = screen.getByRole("link", { name: "Rehab" });
+    expect(anchor.getAttribute("href")).toBe("https://www.youtube.com/watch?v=abc");
+    expect(anchor.getAttribute("target")).toBe("_blank");
+    expect(anchor.getAttribute("rel")).toBe("noopener noreferrer");
+  });
+
+  it("names an unnamed link by its host", () => {
+    detail({ linkUrl: "https://www.youtube.com/watch?v=abc" });
+    expect(screen.getByRole("link", { name: "youtube.com" })).toBeTruthy();
+  });
+
+  it("draws nothing for an item with no link, and nothing for a non-http one", () => {
+    detail({});
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit link" })).toBeNull();
+    cleanup();
+    detail({ linkUrl: "javascript:alert(1)", linkLabel: "Nope" });
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  it("Edit link opens the fields, and offers no such button without an onTriage", () => {
+    detail({ linkUrl: "https://example.test/x" });
+    fireEvent.click(screen.getByRole("button", { name: "Edit link" }));
+    expect(screen.getByLabelText("URL")).toBeTruthy();
+    expect(screen.getByLabelText("Link name")).toBeTruthy();
+    expect(screen.queryByRole("link")).toBeNull();
+    cleanup();
+    detail({ linkUrl: "https://example.test/x", withTriage: false });
+    expect(screen.getByRole("link", { name: "example.test" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit link" })).toBeNull();
+  });
+
+  it("clearing the URL through the triage save sends both halves as null", () => {
+    const onTriage = vi.fn();
+    render(
+      <ItemPanel
+        mode="triage"
+        item={itemDTO({ id: "item-2", linkUrl: "https://example.test/x", linkLabel: "Ex" })}
+        projects={[]}
+        steps={[]}
+        onTriage={onTriage}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("URL"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Promote to ready" }));
+    expect(onTriage).toHaveBeenCalledWith("item-2", "ready", { linkUrl: null, linkLabel: null });
+  });
+
+  it("refuses a name typed beside no URL", () => {
+    const onTriage = vi.fn();
+    render(
+      <ItemPanel mode="triage" item={itemDTO({ id: "item-3" })} projects={[]} steps={[]} onTriage={onTriage} />,
+    );
+    fireEvent.change(screen.getByLabelText("Link name"), { target: { value: "Ex" } });
+    fireEvent.click(screen.getByRole("button", { name: "Promote to ready" }));
+    expect(onTriage).not.toHaveBeenCalled();
+    expect(screen.getByText("A link name needs a URL")).toBeTruthy();
   });
 });

@@ -33,6 +33,7 @@ import {
 import { useItemDraft } from "../../screens/useItemDraft";
 import { triageFailureFor } from "../../screens/write-failure";
 import { buildUri, derivePath, isValidVaultPath } from "../../obsidian/vault-uri";
+import { linkDisplayLabel, linkIsFollowable } from "../../decisions/seam";
 import { microtaskAffordance } from "../../skills/microtask-affordance";
 import { IDLE, isRunning, stampLabel, type SkillRunState } from "../../skills/run-state";
 import type { MicrotaskRunRequest } from "../../shell/useMicrotaskWiring";
@@ -464,9 +465,72 @@ export function ItemPanel({
           placeholder="Hummingbird/Knee rehab.md"
           onChange={(event) => set("vaultPath", event.target.value)}
         />
+        {/* #782: the Link pair. Emptying the URL clears the name with it
+            (`buildTriageEdits`), and a name typed beside an empty URL is the
+            one problem this pair can have. */}
+        <Input
+          label="URL"
+          size="sm"
+          type="url"
+          inputMode="url"
+          value={draft.linkUrl}
+          placeholder="https://"
+          onChange={(event) => {
+            set("linkUrl", event.target.value);
+            // Emptying the URL is a clear, and a clear takes the name with
+            // it — here in the form, not only in the patch, so the name
+            // left behind cannot read as "a name beside no URL".
+            if (event.target.value.trim().length === 0) {
+              set("linkLabel", "");
+            }
+          }}
+        />
+        <Input
+          label="Link name"
+          size="sm"
+          value={draft.linkLabel}
+          error={problems.linkLabel}
+          placeholder="Shown as the host when empty"
+          onChange={(event) => set("linkLabel", event.target.value)}
+        />
       </div>
     </div>
   );
+
+  // #782: the Link is always visible wherever the item is opened — tap
+  // follows it, the affordance beside it opens the fields. Drawn only for
+  // an `http(s)` URL — `linkIsFollowable`, the core's rule, shared with
+  // Android's `ACTION_VIEW` — because the column is plain text the
+  // authority checks for non-blankness alone, and an anchor to any other
+  // scheme is a click this panel would not vouch for (the same refusal
+  // `showNoteButton` makes).
+  const showLink = item.linkUrl !== null && linkIsFollowable(item.linkUrl);
+  const linkRow =
+    !showFields && showLink && item.linkUrl !== null ? (
+      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)", flexWrap: "wrap" }}>
+        <a
+          href={item.linkUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "var(--space-2)",
+            font: "var(--type-body-sm)",
+            color: "var(--accent)",
+            minHeight: "var(--row-height, 44px)",
+          }}
+        >
+          <Icon name="link" size={16} />
+          {linkDisplayLabel(item.linkUrl, item.linkLabel)}
+        </a>
+        {onTriage ? (
+          <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>
+            Edit link
+          </Button>
+        ) : null}
+      </div>
+    ) : null;
 
   if (mode === "triage") {
     return (
@@ -545,6 +609,8 @@ export function ItemPanel({
           {onClose ? <IconButton icon="x" label="Close item detail" onClick={onClose} /> : null}
         </div>
       </div>
+
+      {linkRow}
 
       {showFields ? (
         <>

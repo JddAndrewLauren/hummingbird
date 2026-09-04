@@ -53,6 +53,8 @@ export interface CaptureFields {
   priority?: number | null;
   deadline?: string | null;
   scheduledDate?: string | null;
+  linkUrl?: string | null;
+  linkLabel?: string | null;
 }
 
 // The narrow slice of the DOM `MessagePort` interface a view needs — narrow
@@ -748,6 +750,8 @@ export function captureTask(
       priority: fields.priority ?? null,
       deadline: fields.deadline ?? null,
       scheduledDate: fields.scheduledDate ?? null,
+      linkUrl: fields.linkUrl ?? null,
+      linkLabel: fields.linkLabel ?? null,
     },
     nowMs,
   });
