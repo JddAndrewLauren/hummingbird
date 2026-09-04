@@ -50,6 +50,9 @@ class ItemDetailViewModelTest {
                     .takeIf { scheduledDate.isNotEmpty() && !scheduledDate.startsWith("2026-") },
             )
         },
+        linkProblemFn = { url, label ->
+            "A link name needs a URL".takeIf { label.isNotEmpty() && url.isEmpty() }
+        },
         formMetaFn = {
             CaptureFormMeta(
                 sizes = emptyList(),

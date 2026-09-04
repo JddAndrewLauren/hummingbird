@@ -19,6 +19,7 @@ import uniffi.hummingbird_ffi_mobile.ShareDraftRecord
 import uniffi.hummingbird_ffi_mobile.canSubmitCapture
 import uniffi.hummingbird_ffi_mobile.captureFormMeta
 import uniffi.hummingbird_ffi_mobile.captureMetaProblems
+import uniffi.hummingbird_ffi_mobile.linkLabelProblem
 
 /** The capture box's whole draft (#529), one Kotlin value shadowing
  * [CaptureDraft] field-for-field — every optional field a plain `String`,
@@ -103,6 +104,10 @@ data class CaptureFormState(
 class CaptureViewModel(
     private val canSubmitFn: (String) -> Boolean,
     private val metaProblemsFn: (deadline: String, scheduledDate: String) -> MetaProblems,
+    /** #782's one Link rule (a name needs a URL), the core's
+     * `link_label_problem` — injected like [metaProblemsFn], for the same
+     * reason: the JVM tests cannot load the native library. */
+    private val linkProblemFn: (url: String, label: String) -> String?,
     private val formMetaFn: () -> CaptureFormMeta,
     /** The Project picker's read (review finding on #529's own PR: an
      * opaque free-text project id was an authority-side dead-letter hazard
@@ -169,12 +174,12 @@ class CaptureViewModel(
     fun canSubmitDraft(): Boolean {
         val problems = metaProblems
         val draft = _draft.value
-        // #782: a link name beside no URL is refused here, before the seam
-        // refuses it again and long before the authority would 400 it into
-        // the dead-letter journal.
-        val strandedLinkName = draft.linkLabel.isNotEmpty() && draft.linkUrl.isEmpty()
+        // #782: a link name beside no URL is refused here — the core's own
+        // answer, never a Kotlin comparison of the two strings — before the
+        // seam refuses it again and long before the authority would 400 it
+        // into the dead-letter journal.
         return canSubmit() && problems.deadline == null && problems.scheduledDate == null &&
-            !strandedLinkName
+            linkProblemFn(draft.linkUrl, draft.linkLabel) == null
     }
 
     /** Whether [seedFromShare] has already run for this ViewModel's life.
@@ -280,6 +285,7 @@ class CaptureViewModel(
             CaptureViewModel(
                 canSubmitFn = ::canSubmitCapture,
                 metaProblemsFn = ::captureMetaProblems,
+                linkProblemFn = ::linkLabelProblem,
                 formMetaFn = ::captureFormMeta,
                 projectsFn = { CoreHolder.get(context.applicationContext).projects() },
                 captureFn = { draft, nowMs ->

@@ -2653,9 +2653,12 @@ impl TaskHostCore {
             diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Failure);
             return fail("link name must be non-empty".to_string());
         }
-        if fields.link_label.is_some() && fields.link_url.is_none() {
+        if let Some(problem) = hummingbird_core::decisions::share::link_label_problem(
+            fields.link_url.as_deref().unwrap_or(""),
+            fields.link_label.as_deref().unwrap_or(""),
+        ) {
             diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Failure);
-            return fail("a link name needs a URL".to_string());
+            return fail(problem);
         }
         let options = CaptureOptions {
             size,

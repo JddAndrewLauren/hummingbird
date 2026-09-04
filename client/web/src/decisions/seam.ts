@@ -74,6 +74,7 @@ export interface DecisionsModule {
   parse_share_payload(subject: string, text: string): string;
   link_display_label(url: string, label: string | undefined): string;
   link_is_followable(url: string): boolean;
+  link_label_problem(url: string, label: string): string | undefined;
   size_options_json(): string;
   energy_options_json(): string;
   contexts_json(): string;
@@ -421,6 +422,14 @@ export function linkDisplayLabel(url: string, label: string | null): string {
  * `ACTION_VIEW` cannot disagree about what is safe to follow. */
 export function linkIsFollowable(url: string): boolean {
   return required().link_is_followable(url);
+}
+
+/** `hummingbird_core::decisions::share::link_label_problem` — the one rule
+ * about the pair, a name needs a URL, as the message to show on the name
+ * field or `undefined` when nothing is wrong. Read by the capture box and
+ * the triage/item-panel drafts alike, so neither hand-copies the rule. */
+export function linkLabelProblem(url: string, label: string): string | undefined {
+  return required().link_label_problem(url, label);
 }
 
 export interface VocabOption {

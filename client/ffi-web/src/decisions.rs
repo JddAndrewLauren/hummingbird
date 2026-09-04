@@ -127,6 +127,14 @@ pub fn link_is_followable(url: &str) -> bool {
     hummingbird_core::decisions::share::is_followable_link(url)
 }
 
+/// [`hummingbird_core::decisions::share::link_label_problem`] — the one
+/// rule about the pair (a name needs a URL), read by the capture box and
+/// the item panel's edit mode so the message on the field is the core's.
+#[wasm_bindgen]
+pub fn link_label_problem(url: &str, label: &str) -> Option<String> {
+    hummingbird_core::decisions::share::link_label_problem(url, label)
+}
+
 #[wasm_bindgen]
 pub fn priority_from_select(raw: &str) -> Option<i32> {
     capture::priority_from_select(raw).map(|value| value as i32)
@@ -2100,6 +2108,8 @@ mod tests {
         assert_eq!(link_display_label("https://www.youtube.com/x", Some("Rehab".into())), "Rehab");
         assert!(link_is_followable("https://www.youtube.com/x"));
         assert!(!link_is_followable("javascript:alert(1)"));
+        assert_eq!(link_label_problem("", "Shop").as_deref(), Some("A link name needs a URL"));
+        assert_eq!(link_label_problem("https://shop.test/", "Shop"), None);
     }
 
     /// The exposure is a pass-through and nothing more — the rule itself is

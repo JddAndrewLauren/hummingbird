@@ -881,11 +881,13 @@ private fun DetailBody(
                 )
             }
 
-            // Without a link the `LINK` ghost sits here with the other
-            // reference rows, and opens the same shared field; with one,
-            // the row above the disclosure is the affordance and this
-            // section is not drawn — one place per state, never two.
-            if (record.linkUrl == null) {
+            // Without a *followable* link the `LINK` section sits here with
+            // the other reference rows (a ghost when nothing is stored, set
+            // when an unfollowable value is — that is how it gets cleared),
+            // and opens the same shared field; with one, the row above the
+            // disclosure is the affordance and this section is not drawn —
+            // one place per state, never two.
+            if (linkUrl == null) {
                 DetailSection(
                     itemId = itemId,
                     label = "LINK",

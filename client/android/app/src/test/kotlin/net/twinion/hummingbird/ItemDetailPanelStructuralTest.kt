@@ -790,9 +790,17 @@ class ItemDetailPanelStructuralTest {
                 .contains("var editingLink by rememberSaveable( itemId, key = \"link-open-\$itemId\", )"),
         )
         val disclosed = body.substringAfter("if (detailsOpen) {")
+        // Gated on the *followable* value the row above reads, not on the
+        // raw column: a stored URL the core refuses to follow is drawn
+        // nowhere else, and this section is how it gets edited or cleared
+        // (review finding on #782's own PR).
         assertTrue(
-            "without a link, the LINK ghost sits inside the disclosure",
-            disclosed.contains("if (record.linkUrl == null)") && disclosed.contains("label = \"LINK\","),
+            "without a followable link, the LINK section sits inside the disclosure",
+            disclosed.contains("if (linkUrl == null)") && disclosed.contains("label = \"LINK\","),
+        )
+        assertFalse(
+            "and never gated on the raw column, which would hide an unfollowable value",
+            disclosed.contains("if (record.linkUrl == null)"),
         )
         assertFalse(
             "and never a pencil for it either",

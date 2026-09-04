@@ -19,6 +19,7 @@ import uniffi.hummingbird_ffi_mobile.MetaProblems
 import uniffi.hummingbird_ffi_mobile.canSubmitCapture
 import uniffi.hummingbird_ffi_mobile.captureFormMeta
 import uniffi.hummingbird_ffi_mobile.captureMetaProblems
+import uniffi.hummingbird_ffi_mobile.linkLabelProblem
 
 /** What the item screen is showing — the three states
  * [AlertDetailState] has, for the same reason: "this device has not synced
@@ -179,6 +180,9 @@ class ItemDetailViewModel(
     private val hasContentFn: (String) -> Boolean,
     /** The core's date-field rule, injected for the same reason. */
     private val metaProblemsFn: (deadline: String, scheduledDate: String) -> MetaProblems,
+    /** #782's one Link rule (a name needs a URL), the core's
+     * `link_label_problem`, injected for the same reason. */
+    private val linkProblemFn: (url: String, label: String) -> String?,
     /** The shared form components' vocabulary door, injected the same way
      * `CaptureViewModel.formMetaFn` is: every size/energy/context word the
      * panel's editors offer comes from here, never a Kotlin literal. */
@@ -234,8 +238,9 @@ class ItemDetailViewModel(
             val draft = _draft.value ?: return false
             if (!hasContentFn(draft.title)) return false
             // #782: a link name beside no URL is the authority's 400,
-            // refused here for the same reason a malformed date is.
-            if (hasContentFn(draft.linkLabel) && !hasContentFn(draft.linkUrl)) return false
+            // refused here for the same reason a malformed date is, by the
+            // core's own rule.
+            if (linkProblemFn(draft.linkUrl, draft.linkLabel) != null) return false
             val problems = metaProblemsFn(draft.deadline, draft.scheduledDate)
             return problems.deadline == null && problems.scheduledDate == null
         }
@@ -446,6 +451,7 @@ class ItemDetailViewModel(
                 },
                 hasContentFn = ::canSubmitCapture,
                 metaProblemsFn = ::captureMetaProblems,
+                linkProblemFn = ::linkLabelProblem,
                 formMetaFn = ::captureFormMeta,
             )
 

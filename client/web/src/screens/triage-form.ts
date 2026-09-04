@@ -20,8 +20,7 @@
 
 import type { ProjectDTO, TaskItemDTO, TriageEdits } from "../store/protocol";
 import type { TaskProjectResult } from "../store/store";
-import { captureMetaProblems } from "../decisions/seam";
-import { linkProblem } from "./capture-meta";
+import { captureMetaProblems, linkLabelProblem } from "../decisions/seam";
 import { isValidVaultPath } from "../obsidian/vault-uri";
 
 /** One triage-inbox item's editable draft. Every field is a string because
@@ -139,8 +138,8 @@ export function triageDraftProblems(draft: TriageDraft): TriageDraftProblems {
   if (draft.vaultPath.trim().length > 0 && !isValidVaultPath(draft.vaultPath)) {
     problems.vaultPath = "A vault path is relative to the vault — no leading / and no ..";
   }
-  // #782: the same rule the capture box applies, from the same function.
-  const link = linkProblem(draft.linkUrl, draft.linkLabel);
+  // #782: the same rule the capture box applies, from the same core door.
+  const link = linkLabelProblem(draft.linkUrl, draft.linkLabel);
   if (link !== undefined) {
     problems.linkLabel = link;
   }

@@ -233,6 +233,15 @@ pub fn link_is_followable(url: &str) -> bool {
     hummingbird_core::decisions::share::is_followable_link(url)
 }
 
+/// [`hummingbird_core::decisions::share::link_label_problem`] — the one
+/// rule about the pair (a name needs a URL), read by both capture forms'
+/// and the item editor's ViewModels so the refusal is the core's, never a
+/// Kotlin comparison of the two strings.
+#[uniffi::export]
+pub fn link_label_problem(url: &str, label: &str) -> Option<String> {
+    hummingbird_core::decisions::share::link_label_problem(url, label)
+}
+
 /// [`hummingbird_core::decisions::vocabulary::VocabOption`], mirrored as a
 /// `uniffi::Record` — one `<select>`-equivalent option's wire value and
 /// display label, crossed to Kotlin so no size/energy word is ever a
@@ -4270,10 +4279,10 @@ impl MobileTaskHost {
             .map_err(|detail| MobileCaptureError::CaptureFailed { detail })?;
         let energy = parse_optional_vocabulary(&draft.energy, Energy::parse)
             .map_err(|detail| MobileCaptureError::CaptureFailed { detail })?;
-        if !draft.link_label.is_empty() && draft.link_url.is_empty() {
-            return Err(MobileCaptureError::CaptureFailed {
-                detail: "a link name needs a URL".to_string(),
-            });
+        if let Some(detail) =
+            hummingbird_core::decisions::share::link_label_problem(&draft.link_url, &draft.link_label)
+        {
+            return Err(MobileCaptureError::CaptureFailed { detail });
         }
         let options = CaptureOptions {
             size,
@@ -7613,6 +7622,8 @@ mod tests {
         assert_eq!(link_display_label("https://www.youtube.com/watch?v=abc", None), "youtube.com");
         assert!(link_is_followable("https://www.youtube.com/watch?v=abc"));
         assert!(!link_is_followable("javascript:alert(1)"));
+        assert_eq!(link_label_problem("", "Shop").as_deref(), Some("A link name needs a URL"));
+        assert_eq!(link_label_problem("https://shop.test/", "Shop"), None);
         assert_eq!(
             link_display_label("https://www.youtube.com/watch?v=abc", Some("Rehab".to_string())),
             "Rehab",

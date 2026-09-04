@@ -16,6 +16,7 @@
 import type { CaptureFields } from "../store/worker-client";
 import {
   captureMetaProblems as captureMetaProblemsFromSeam,
+  linkLabelProblem,
   priorityFromSelect,
   type CaptureMetaProblems as SeamMetaProblems,
 } from "../decisions/seam";
@@ -134,19 +135,14 @@ export function todayDeadline(nowMs: number): string {
  * `capture-validation.ts`'s. */
 export type CaptureMetaProblems = SeamMetaProblems & { linkLabel?: string };
 
-/** #782's one Link rule, stated once for both forms: a name is only
- * meaningful beside a URL. A form-adapter check rather than a sunk one —
- * the seam (`ffi-web`'s `capture`/`triage`) and the authority both refuse
- * the same shape, so this only moves the message onto the field. */
-export const LINK_LABEL_NEEDS_URL = "A link name needs a URL";
-
-export function linkProblem(linkUrl: string, linkLabel: string): string | undefined {
-  return linkLabel.trim().length > 0 && linkUrl.trim().length === 0 ? LINK_LABEL_NEEDS_URL : undefined;
-}
-
 export function captureMetaProblems(meta: CaptureMeta): CaptureMetaProblems {
   const problems: CaptureMetaProblems = captureMetaProblemsFromSeam(meta.deadline, meta.scheduledDate);
-  const link = linkProblem(meta.linkUrl, meta.linkLabel);
+  // #782's one Link rule — a name needs a URL — is the core's
+  // (`decisions::share::link_label_problem`), read through the seam here and
+  // in `triage-form.ts` alike; the seam's own `capture`/`triage` doors and
+  // the authority refuse the same shape, so this only moves the message
+  // onto the field.
+  const link = linkLabelProblem(meta.linkUrl, meta.linkLabel);
   if (link !== undefined) problems.linkLabel = link;
   return problems;
 }

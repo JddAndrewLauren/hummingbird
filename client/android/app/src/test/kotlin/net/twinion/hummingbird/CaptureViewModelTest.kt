@@ -34,10 +34,14 @@ class CaptureViewModelTest {
     private fun viewModel(
         canSubmitFn: (String) -> Boolean = { it.isNotBlank() },
         metaProblemsFn: (String, String) -> MetaProblems = { _, _ -> noProblems },
+        // A stand-in for the core's `link_label_problem`, like the two above.
+        linkProblemFn: (String, String) -> String? = { url, label ->
+            "A link name needs a URL".takeIf { label.isNotEmpty() && url.isEmpty() }
+        },
         formMetaFn: () -> CaptureFormMeta = { emptyFormMeta },
         projectsFn: suspend () -> List<MobileProject> = { emptyList() },
         captureFn: suspend (CaptureDraft, Long) -> String = { _, _ -> "unused" },
-    ) = CaptureViewModel(canSubmitFn, metaProblemsFn, formMetaFn, projectsFn, captureFn)
+    ) = CaptureViewModel(canSubmitFn, metaProblemsFn, linkProblemFn, formMetaFn, projectsFn, captureFn)
 
     private fun draftWithTitle(title: String) = CaptureFormState(title = title)
 
