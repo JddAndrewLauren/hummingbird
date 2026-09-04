@@ -282,7 +282,13 @@ chain glyph sits on its own row below the details row and *is* in every
 capture-popover capture, but `linkOpen` starts `false`, so the `URL` and
 `Link name` fields behind it are photographed nowhere;
 `screens/capture-meta.test.ts` and `components/domain/ItemPanel.test.tsx`
-(the item panel's always-visible link row and its edit pair) are the cover.
+(the edit pair) are the cover. **The item panel's always-visible link row
+IS photographed**: `demo-task-state.ts` gives exactly one board seed a
+`linkUrl` — `b-f1`, "Fit the new tap washer", the item the
+`projects-dossier-slot-open-*` captures open — with no label, so all eight of
+those captures (four widths × two themes) show the row as the chain glyph plus
+the bare host (`youtube.com`) and its `Edit link` button, under the title and
+above the chips; at 390 it takes its own line without wrapping.
 
 **The capture popover's dictation microphone (#379) is unphotographed, and no
 capture will ever contain it — not the resting mic, and not one of its
