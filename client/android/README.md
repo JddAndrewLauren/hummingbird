@@ -1774,11 +1774,14 @@ edits it, and submits it to Triage or Ready exactly as a typed capture
   `indexOf("http` (ADR-0025: no Kotlin copy of a decision).
 - **Seeding is idempotent.** `seedFromShare` is guarded so a rotation
   never re-seeds over the human's edits.
-- **A share carrying a URL opens the link disclosure expanded and
-  filled**, so what is about to be saved is on screen. `LinkField`
-  (`ui/forms/`) is the chain-icon row below the collapsed details bar on
-  every capture form — the activity, the FAB sheet, and Triage's promote
-  form; a name without a URL blocks submit. The same field edits the Link
+- **A share carrying a URL opens the details disclosure, and the link
+  disclosure inside it, expanded and filled**, so what is about to be
+  saved is on screen. `LinkField` (`ui/forms/`) is the chain-icon row that
+  closes the details disclosure on both capture forms — the activity and
+  the FAB sheet (moved inside it 2026-09-04: on its own row below the
+  collapsed bar it cost the shut form a line and pushed the two buttons
+  down) — and on Triage's promote form; a name without a URL blocks
+  submit. The same field edits the Link
   from the item panel, where the link row itself is always visible outside
   the disclosure and a tap opens it with `ACTION_VIEW`.
 - **Submit finishes back into the sharing app.** The post-submit `finish()`

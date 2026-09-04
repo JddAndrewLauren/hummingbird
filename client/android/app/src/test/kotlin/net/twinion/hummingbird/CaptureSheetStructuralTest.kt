@@ -102,7 +102,7 @@ class CaptureSheetStructuralTest {
             "PriorityRow(",
             "DeadlineField(",
             "CaptureDateField(",
-            // #782: the Link sits below the disclosure, on both surfaces.
+            // #782: the Link is the disclosure's last row, on both surfaces.
             "LinkField(",
         )) {
             assertTrue(

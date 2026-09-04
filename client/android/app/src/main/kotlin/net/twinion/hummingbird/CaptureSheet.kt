@@ -362,17 +362,18 @@ fun CaptureSheet(
                             modifier = Modifier.weight(1f),
                         )
                     }
+                    // The item's one Link (#782) — `CaptureActivity`'s same
+                    // field in the same place, the disclosure's last row
+                    // (operator decision 2026-09-04).
+                    LinkField(
+                        url = draft.linkUrl,
+                        label = draft.linkLabel,
+                        onUrlChange = { viewModel.updateDraft(draft.copy(linkUrl = it)) },
+                        onLabelChange = { viewModel.updateDraft(draft.copy(linkLabel = it)) },
+                        initiallyOpen = draft.linkOpen,
+                    )
                 }
             }
-            // The item's one Link (#782) — `CaptureActivity`'s same field
-            // in the same place, below the disclosure and outside it.
-            LinkField(
-                url = draft.linkUrl,
-                label = draft.linkLabel,
-                onUrlChange = { viewModel.updateDraft(draft.copy(linkUrl = it)) },
-                onLabelChange = { viewModel.updateDraft(draft.copy(linkLabel = it)) },
-                initiallyOpen = draft.linkOpen,
-            )
 
             // `canSubmitDraft()`, not `canSubmit(draft.title)`: the two
             // free-text dates are editable on this surface now, so the

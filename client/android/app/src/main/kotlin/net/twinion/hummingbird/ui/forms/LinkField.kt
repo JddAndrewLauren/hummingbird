@@ -24,7 +24,7 @@ import net.twinion.hummingbird.R
 
 /** The item's one Link (#782): a chain-glyph row that discloses the two
  * fields behind it — the URL, and the optional name it is shown by. Shared
- * by both capture surfaces (below their details disclosure) and the item
+ * by both capture surfaces (the last row of their details disclosure) and the item
  * pane's `LINK` section, for the same reason every other file in this
  * directory is shared: one field behind three doors must not be three
  * hand-copies.

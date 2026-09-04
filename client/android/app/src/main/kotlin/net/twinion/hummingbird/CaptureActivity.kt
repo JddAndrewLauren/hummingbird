@@ -160,6 +160,12 @@ private fun CaptureScreen(
     // (`CaptureBox.tsx`'s `detailsOpen`) — a form that opens to seven
     // fields taxes the common case, which is one line and Enter.
     var detailsOpen by rememberSaveable { mutableStateOf(false) }
+    // A share that brought a URL in opens the disclosure the Link now lives
+    // in, so the reader sees what is about to be saved (#782). An effect,
+    // not an initial value: the seed lands after first composition.
+    LaunchedEffect(draft.linkOpen) {
+        if (draft.linkOpen) detailsOpen = true
+    }
     val metaProblems = viewModel.metaProblems
 
     val micPermission = rememberLauncherForActivityResult(
@@ -377,19 +383,22 @@ private fun CaptureScreen(
                                 modifier = Modifier.weight(1f),
                             )
                         }
+                        // The item's one Link (#782), the disclosure's last
+                        // row (operator decision 2026-09-04: on its own row
+                        // below the disclosure it cost the shut form a line
+                        // of height and pushed the two buttons down). A chain
+                        // glyph, shut until tapped — or already open and
+                        // filled when a share brought a URL in, which also
+                        // opens this disclosure (the `LaunchedEffect` above).
+                        LinkField(
+                            url = draft.linkUrl,
+                            label = draft.linkLabel,
+                            onUrlChange = { viewModel.updateDraft(draft.copy(linkUrl = it)) },
+                            onLabelChange = { viewModel.updateDraft(draft.copy(linkLabel = it)) },
+                            initiallyOpen = draft.linkOpen,
+                        )
                     }
                 }
-                // The item's one Link (#782), below the details disclosure
-                // and outside it (operator's call at the field): a chain
-                // glyph, shut until tapped — or already open and filled
-                // when a share brought a URL in.
-                LinkField(
-                    url = draft.linkUrl,
-                    label = draft.linkLabel,
-                    onUrlChange = { viewModel.updateDraft(draft.copy(linkUrl = it)) },
-                    onLabelChange = { viewModel.updateDraft(draft.copy(linkLabel = it)) },
-                    initiallyOpen = draft.linkOpen,
-                )
             }
 
             // The two destinations the web capture box offers as
