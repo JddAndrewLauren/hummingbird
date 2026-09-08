@@ -70,10 +70,18 @@ repeatedly, because reading them wrong flips a diagnosis:
 
 - **`seq` is monotonic per `session_id`, never per `cycle_id`.** A web
   session, an Android process and the authority's one Durable Object
-  instance are three independent `seq` counters. Order rows by
-  `(session_id, seq)`, never by `seq` alone across a mixed export, and never
-  by `cycle_id` — a cycle can span rows from a session that also logged
-  unrelated cycles in between.
+  instance are three independent `seq` counters — except since #769 an
+  Android process is actually **two**: `Source::Android` rows still carry
+  `DIAGNOSTIC_SESSION`'s own id, while the new `Source::Core` `sync.*`/
+  `http.*` rows from `MobileTaskHost::run`'s observed cycles carry a
+  separate, randomly-minted `mobile-sync-<hex>` id
+  (`mint_sync_session_id`'s own doc says why it can't reuse
+  `DIAGNOSTIC_SESSION`). `operation_id` still joins a queued write's
+  `operation.*` and `http.*` spans across that split (see **Known gaps**
+  item 2) — only `(session_id, seq)` ordering is per-space now. Order rows
+  by `(session_id, seq)`, never by `seq` alone across a mixed export, and
+  never by `cycle_id` — a cycle can span rows from a session that also
+  logged unrelated cycles in between.
 - **`owner` on `core.busy`, `core.wait_started` and `core.acquired` is
   `Option<CoreOwner>`, and `null` means "this writer could not name one" —
   never "nobody held it."** The TypeScript SharedWorker layer that writes
@@ -85,13 +93,14 @@ repeatedly, because reading them wrong flips a diagnosis:
   paragraph exists to prevent.
 - **`operation.finished{success}` means "committed locally and durably
   queued for send," never "reached the authority."** Since #739 the two
-  spans *are* joinable in principle — `operation_id` crosses the
-  outbound-queue boundary on the `QueueEntry` and is stamped onto that
-  write's `http.started`/`http.finished`. But the production wiring that
-  would emit an `http.*` for a queued write to join against is each host's
-  own tracked follow-up — read **Known gaps** item 2 for exactly what #739
-  did and did not change before relying on the join. Either way this event
-  never means the write landed.
+  spans are joinable — `operation_id` crosses the outbound-queue boundary
+  on the `QueueEntry` and is stamped onto that write's
+  `http.started`/`http.finished` — and since #769 the join is live in
+  production on both hosts: both `TaskHostCore::run` and
+  `MobileTaskHost::run` now drive `Core::run_observed`, so a queued write's
+  `http.started` really does carry its enqueuing operation's id. Read
+  **Known gaps** item 2 for the full history. Either way this event never
+  means the write landed.
 
 ## Query the authority's side (Cloudflare)
 

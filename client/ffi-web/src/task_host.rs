@@ -3531,24 +3531,26 @@ mod core_checkout_tests {
     /// carry it through (proven at the core level, spanning a real cycle
     /// boundary, by
     /// `sync::cycle::tests::observed::operation_local_commit_precedes_http_started_for_the_same_operation_across_the_cycle_boundary`,
-    /// including a demonstrated failure on reordering). What #739 did
-    /// **not** change is that [`TaskHostCore::run`] still drives the
-    /// unobserved `Core::run`, not `Core::run_observed` — see that method's
-    /// own doc for why (no working `sleep_ms` for the slow/stalled
-    /// watchdog on this host yet) — so `ffi-web` still never actually emits
-    /// an `http.started` from this production surface, whatever operation
-    /// id it would carry. Wiring `run_observed` into this host is that
-    /// method's own tracked follow-up, not #739's.
+    /// including a demonstrated failure on reordering). **#769 closed the
+    /// other half** — [`TaskHostCore::run`] now drives `Core::run_observed`,
+    /// not the unobserved `Core::run` — so a queued write really does reach
+    /// `http.started` in production now; that is proven by
+    /// `a_queued_write_drained_by_run_emits_http_started_carrying_its_operation_id`
+    /// just below, which (unlike this one) actually calls `run`. This test
+    /// stays scoped to `capture` alone, so its own two assertions above
+    /// remain exactly what they always were: a real ordering pin, and a
+    /// vacuous-by-construction guard against a `capture`-only regression —
+    /// `capture` only enqueues, so this path never issues HTTP and the sink
+    /// holds no `http.started` for any assertion to catch, whether or not
+    /// `run_observed` is wired anywhere else.
     ///
     /// **What a reader inherits, updated for #712's interpretation table.**
     /// The join key now exists end to end (a queued write's `http.*` span
     /// carries the same `operation_id` its `operation.local_commit` did),
-    /// but on the web host specifically an `operation.finished{success}`
-    /// still means "committed locally and durably queued", **never**
-    /// "reached the authority", because no cycle here is observed yet to
-    /// produce the `http.*` half at all. Once `run_observed` lands on this
-    /// host, the two spans become joinable by `operation_id` alone with no
-    /// further change needed here.
+    /// and on the web host an `operation.finished{success}` still means
+    /// only "committed locally and durably queued", **never** "reached the
+    /// authority" — the two spans are joinable by `operation_id` alone, but
+    /// only once the queued write's own drained cycle actually runs.
     #[tokio::test]
     async fn a_successful_capture_emits_local_commit_before_finished_and_no_http_started() {
         let dir = tempfile::tempdir().unwrap();
