@@ -7,7 +7,7 @@
 // function anyone can call.
 
 import { describe, expect, it } from "vitest";
-import { frontierLanes, laneCountFor, packLanes } from "./frontier-lanes";
+import { columnCapFor, frontierLanes, laneCountFor, packLanes } from "./frontier-lanes";
 
 describe("laneCountFor", () => {
   it("gives every column its own lane when the width is unknown", () => {
@@ -171,5 +171,34 @@ describe("frontierLanes", () => {
 
   it("stacks the whole board in one lane on a phone", () => {
     expect(frontierLanes([2, 2, 2, 8], 390)).toEqual([[0, 1, 2, 3]]);
+  });
+});
+
+describe("columnCapFor", () => {
+  it("keeps the board's long-standing cap when the height is unknown", () => {
+    // jsdom, and the first paint before anything is measured. A component
+    // test asserts the same six cards it always asserted.
+    expect(columnCapFor(null)).toBe(6);
+  });
+
+  it("fills the room the board actually has", () => {
+    // The fault this closes: at a 1400px viewport the urgency board stopped
+    // 638px above the fold with 23 items behind its "n more". 1162px of room
+    // is a heading, the gutter, and fourteen 78px cards.
+    expect(columnCapFor(1162)).toBe(14);
+    // 900px viewport, same board: about half that.
+    expect(columnCapFor(662)).toBe(7);
+  });
+
+  it("shows a column rather than a stub on a short viewport", () => {
+    // The floor. A laptop with the capture popover open still gets something
+    // worth reading under the heading.
+    expect(columnCapFor(300)).toBe(4);
+    expect(columnCapFor(0)).toBe(4);
+  });
+
+  it("grows by one card for one card's worth of room", () => {
+    expect(columnCapFor(68 + 78 * 5)).toBe(5);
+    expect(columnCapFor(68 + 78 * 6)).toBe(6);
   });
 });

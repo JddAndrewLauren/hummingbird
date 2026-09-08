@@ -49,7 +49,7 @@ import {
   type Facet,
   type FacetSelection,
 } from "./frontier-facets";
-import { frontierLanes } from "./frontier-lanes";
+import { columnCapFor, frontierLanes } from "./frontier-lanes";
 import { orderFrontier } from "./frontier-order";
 import { triageProcessQueue } from "./triage-process-order";
 import {
@@ -145,13 +145,6 @@ const URGENCY_TEXT: Record<Urgency, string> = {
   soon: "var(--text-secondary)",
   calm: "var(--text-muted)",
 };
-
-/** Cards shown per column before the `n more` toggle. The cap is what makes
- * wrapping work — a wrapping row takes its height from the tallest column in
- * its line, so one fat column would otherwise strand its neighbours in
- * whitespace — and it is the honest cap for this surface anyway: the top few
- * of a column is what "what's next" is asking about. */
-const COLUMN_CAP = 6;
 
 /** The card's meta line, which draws **only if it has something on it**.
  *
@@ -570,11 +563,27 @@ export function FrontierColumns({
   // where no stub can be forgotten.
   const boardRef = useRef<HTMLDivElement>(null);
   const [boardWidth, setBoardWidth] = useState<number | null>(null);
+  // The room under the board, which decides the column cap the same way the
+  // width decides the lane count. Measured from the board's own top to the
+  // fold rather than from the scrolling ancestor's box, because that ancestor
+  // reaches the fold and one fewer coupling to the shell is worth the pixel.
+  const [boardRoom, setBoardRoom] = useState<number | null>(null);
   useLayoutEffect(() => {
     const node = boardRef.current;
     if (!node) {
       return;
     }
+    const measureRoom = () => {
+      const fold = document.documentElement.clientHeight;
+      // Same fold-back to `null` as the width: jsdom answers zero to every box
+      // and a board with no room under it has not been laid out either.
+      setBoardRoom(fold - node.getBoundingClientRect().top || null);
+    };
+    measureRoom();
+    // The board's own observer cannot see this one: the viewport can grow
+    // taller with the board exactly as wide, and that is precisely the resize
+    // that changes the cap.
+    window.addEventListener("resize", measureRoom);
     // The initial read happens whether or not an observer can be built: a
     // browser mid-resize is the observer's job, but the first measurement is
     // this line's, and a layout effect is what makes it land before paint.
@@ -584,13 +593,16 @@ export function FrontierColumns({
     // answer", and answering "one lane" to them would stack the whole board.
     setBoardWidth(node.offsetWidth || null);
     if (typeof ResizeObserver === "undefined") {
-      return;
+      return () => window.removeEventListener("resize", measureRoom);
     }
     const observer = new ResizeObserver(([entry]) => {
       setBoardWidth(entry.target.clientWidth || null);
     });
     observer.observe(node);
-    return () => observer.disconnect();
+    return () => {
+      window.removeEventListener("resize", measureRoom);
+      observer.disconnect();
+    };
   }, []);
 
   const toggleExpanded = (key: string) => {
@@ -626,9 +638,10 @@ export function FrontierColumns({
   // height and nothing else's position. The cost is a lane left short of its
   // share while a column in it is shut, which is transient, self-inflicted and
   // undone by the same click.
+  const columnCap = columnCapFor(boardRoom);
   const laneWeights = columns.map((column) => {
-    const capped = Math.min(column.items.length, COLUMN_CAP);
-    return 1 + capped + (column.items.length > COLUMN_CAP ? 1 : 0);
+    const capped = Math.min(column.items.length, columnCap);
+    return 1 + capped + (column.items.length > columnCap ? 1 : 0);
   });
   // Fewer lanes than the width affords whenever the weights do not reach that
   // far — `packLanes` drops the ones nobody filled, and the survivors widen
@@ -864,7 +877,7 @@ export function FrontierColumns({
                   : (column.label ?? `Project ${column.value}`);
               const isOpen = expanded.has(key);
               const isCollapsed = collapsed.has(key);
-              const visible = isOpen ? column.items : column.items.slice(0, COLUMN_CAP);
+              const visible = isOpen ? column.items : column.items.slice(0, columnCap);
               const hidden = column.items.length - visible.length;
               return (
                 <div
@@ -942,7 +955,7 @@ export function FrontierColumns({
                       column that has since dropped to the cap (a filter picked, an
                       item completed) has `hidden === 0` and would otherwise keep a
                       "Show fewer" that changes nothing when clicked. */}
-                  {!isCollapsed && (hidden > 0 || (isOpen && column.items.length > COLUMN_CAP)) ? (
+                  {!isCollapsed && (hidden > 0 || (isOpen && column.items.length > columnCap)) ? (
                     <ControlButton
                       aria-expanded={isOpen}
                       // The visible text is deliberately terse, which leaves two

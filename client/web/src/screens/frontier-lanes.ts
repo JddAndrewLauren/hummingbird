@@ -1,11 +1,14 @@
-// How Now's frontier columns are distributed across the board's width: how
-// many vertical lanes the measured container affords, and which column goes in
-// which lane.
+// How Now's frontier columns are laid out against the board's measured box:
+// how many vertical lanes its width affords, which column goes in which lane,
+// and how many cards a column shows before its "n more" control — the last of
+// those a question about the board's HEIGHT, and here for the same reason as
+// the other two.
 //
 // **Why this is TS and not Rust, under ADR-0025.** The decision here consumes
 // a *measured pixel width* — a fact only the rendering runtime has, produced
 // by a `ResizeObserver` over a DOM node, and meaningless on a phone whose
-// columns are a single stack. `hummingbird_core::decisions::frontier::
+// columns are a single stack. `columnCapFor` consumes the other axis of the
+// same box and is the same kind of decision. `hummingbird_core::decisions::frontier::
 // group_frontier` still owns everything about the columns themselves:
 // membership, order, labels, the no-value bucket. This module never inspects
 // an item. It takes a count of columns, a weight per column and a width, and
@@ -44,6 +47,47 @@
 // is a run of uniformly tiny columns — four columns of one item over two
 // lanes now read 1,2 / 3,4 rather than 1,3 / 2,4 — and that is accepted:
 // nothing there is far enough down a lane to be missed.
+
+/** What one card and one heading cost vertically, and the breathing room left
+ * under the board. Pixel twins of what the cards actually render at — a card
+ * measures 66px with a one-line title and 87 with two, over a `--space-3`
+ * gap, and the typical card is the one-line one — so this is the same kind of
+ * constant `GAP` is, and moves when the card's padding or type does.
+ *
+ * Erring low is deliberate. A cap one card too generous costs a scroll in a
+ * region that already scrolls; a cap one card too mean is the dead space this
+ * exists to close. */
+const CARD_ROW = 78;
+const HEADING_ROW = 44;
+const BOTTOM_GUTTER = 24;
+
+/** The floor and the unmeasured answer for `columnCapFor`. `DEFAULT` is the
+ * fixed cap the board carried before the height was measured at all: it is
+ * what jsdom and the first paint see, so a component test asserts the same six
+ * cards it always asserted. `MIN` keeps a short viewport — a laptop with the
+ * capture surface open — showing a column rather than a heading and one card. */
+const DEFAULT_COLUMN_CAP = 6;
+const MIN_COLUMN_CAP = 4;
+
+/** How many cards a column shows before it defers the rest to "n more", from
+ * the height the board actually has under it.
+ *
+ * A fixed cap of six was two things at once: an honest editorial claim — the
+ * top few of a column is what "what's next" is asking about — and, silently, a
+ * layout guess. On a tall screen the guess was badly wrong: at 1400px the
+ * urgency board stopped 638px above the fold with 23 items behind a control,
+ * which is dead space the reader has to click to fill. The editorial claim
+ * survives; what the column defers is now what genuinely does not fit.
+ *
+ * `null` is *unmeasured*, and the honest answer there is the cap the board
+ * always had — `laneCountFor`'s doctrine for the same reason. */
+export function columnCapFor(availableHeightPx: number | null): number {
+  if (availableHeightPx === null) {
+    return DEFAULT_COLUMN_CAP;
+  }
+  const fits = Math.floor((availableHeightPx - HEADING_ROW - BOTTOM_GUTTER) / CARD_ROW);
+  return Math.max(fits, MIN_COLUMN_CAP);
+}
 
 /** The narrowest a lane may be before the board drops one, and the gap
  * between lanes. `GAP` is the pixel twin of `--space-6`, the container's own
