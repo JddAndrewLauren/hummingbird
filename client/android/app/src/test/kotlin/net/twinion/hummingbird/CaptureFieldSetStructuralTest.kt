@@ -159,6 +159,8 @@ class CaptureFieldSetStructuralTest {
             "CaptureDateField",
             "DeadlineField",
             "PriorityRow",
+            // #782: the item's one Link, shared for the same reason.
+            "LinkField",
         )) {
             assertTrue(
                 "expected CaptureActivity.kt to import the shared $component rather than " +

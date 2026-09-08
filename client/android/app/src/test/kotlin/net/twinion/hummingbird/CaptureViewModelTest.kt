@@ -15,6 +15,7 @@ import uniffi.hummingbird_ffi_mobile.CaptureDraft
 import uniffi.hummingbird_ffi_mobile.CaptureFormMeta
 import uniffi.hummingbird_ffi_mobile.MetaProblems
 import uniffi.hummingbird_ffi_mobile.MobileProject
+import uniffi.hummingbird_ffi_mobile.ShareDraftRecord
 import uniffi.hummingbird_ffi_mobile.VocabOption
 
 // CaptureViewModel.submit's control flow, exercised entirely with fakes: no
@@ -33,10 +34,14 @@ class CaptureViewModelTest {
     private fun viewModel(
         canSubmitFn: (String) -> Boolean = { it.isNotBlank() },
         metaProblemsFn: (String, String) -> MetaProblems = { _, _ -> noProblems },
+        // A stand-in for the core's `link_label_problem`, like the two above.
+        linkProblemFn: (String, String) -> String? = { url, label ->
+            "A link name needs a URL".takeIf { label.isNotEmpty() && url.isEmpty() }
+        },
         formMetaFn: () -> CaptureFormMeta = { emptyFormMeta },
         projectsFn: suspend () -> List<MobileProject> = { emptyList() },
         captureFn: suspend (CaptureDraft, Long) -> String = { _, _ -> "unused" },
-    ) = CaptureViewModel(canSubmitFn, metaProblemsFn, formMetaFn, projectsFn, captureFn)
+    ) = CaptureViewModel(canSubmitFn, metaProblemsFn, linkProblemFn, formMetaFn, projectsFn, captureFn)
 
     private fun draftWithTitle(title: String) = CaptureFormState(title = title)
 
@@ -275,5 +280,90 @@ class CaptureViewModelTest {
     @Test
     fun `dictation is idle-clean before anything is attempted`() {
         assertNull(viewModel().dictationFailure.value)
+    }
+
+    // #782: the share target's seed, and the Link's one refusal.
+
+    /** The seed lands the core's answer field for field and opens the link
+     * disclosure when a URL arrived — the reader sees what is about to be
+     * saved. Nothing else in the draft is touched. */
+    @Test
+    fun `a share seeds title, description and URL, and opens the link disclosure`() {
+        val vm = viewModel()
+        vm.updateDraft(CaptureFormState(context = "@computer"))
+
+        vm.seedFromShare(
+            ShareDraftRecord(
+                title = "Knee rehab video",
+                description = "Watch this later",
+                linkUrl = "https://www.youtube.com/watch?v=abc",
+            ),
+        )
+
+        val draft = vm.draft.value
+        assertEquals("Knee rehab video", draft.title)
+        assertEquals("Watch this later", draft.description)
+        assertEquals("https://www.youtube.com/watch?v=abc", draft.linkUrl)
+        assertEquals("", draft.linkLabel)
+        assertTrue("a URL opens the disclosure", draft.linkOpen)
+        assertEquals("the rest of the draft is untouched", "@computer", draft.context)
+    }
+
+    @Test
+    fun `a share without a URL leaves the link disclosure shut`() {
+        val vm = viewModel()
+        vm.seedFromShare(ShareDraftRecord(title = "A thought", description = "", linkUrl = ""))
+        assertFalse(vm.draft.value.linkOpen)
+        assertEquals("A thought", vm.draft.value.title)
+    }
+
+    /** `LaunchedEffect(Unit)` re-fires on an Activity recreation, so the
+     * seed must be idempotent or a rotation overwrites the reader's edits
+     * with the share's original words. */
+    @Test
+    fun `a second seed never overwrites what the reader edited after the first`() {
+        val vm = viewModel()
+        val share = ShareDraftRecord(title = "Shared title", description = "", linkUrl = "https://example.test/")
+        vm.seedFromShare(share)
+        vm.updateDraft(vm.draft.value.copy(title = "Edited title", linkLabel = "Example"))
+
+        vm.seedFromShare(share)
+
+        assertEquals("Edited title", vm.draft.value.title)
+        assertEquals("Example", vm.draft.value.linkLabel)
+    }
+
+    /** A link name beside no URL is the authority's 400; it is refused
+     * here first, and captureFn never runs. */
+    @Test
+    fun `a link name without a URL refuses the submit, and never calls captureFn`() = runBlocking {
+        var captureCalled = false
+        val vm = viewModel(
+            canSubmitFn = { true },
+            captureFn = { _, _ -> captureCalled = true; "id" },
+        )
+        vm.updateDraft(draftWithTitle("buy milk").copy(linkLabel = "Shop"))
+
+        assertFalse(vm.canSubmitDraft())
+        assertFalse(vm.submit(CaptureDestination.TRIAGE, 1_000L))
+        assertFalse("captureFn must not run for a stranded link name", captureCalled)
+
+        vm.updateDraft(vm.draft.value.copy(linkUrl = "https://shop.example.test/"))
+        assertTrue("the same name beside a URL is fine", vm.canSubmitDraft())
+    }
+
+    /** Both halves reach the seam's draft. */
+    @Test
+    fun `the link reaches the seam draft`() = runBlocking {
+        var seenDraft: CaptureDraft? = null
+        val vm = viewModel(canSubmitFn = { true }, captureFn = { draft, _ -> seenDraft = draft; "id" })
+        vm.updateDraft(
+            draftWithTitle("buy milk").copy(linkUrl = "https://shop.example.test/", linkLabel = "Shop"),
+        )
+
+        assertTrue(vm.submit(CaptureDestination.READY, 1_000L))
+
+        assertEquals("https://shop.example.test/", seenDraft?.linkUrl)
+        assertEquals("Shop", seenDraft?.linkLabel)
     }
 }

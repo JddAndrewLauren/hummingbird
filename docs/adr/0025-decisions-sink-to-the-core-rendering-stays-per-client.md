@@ -624,3 +624,13 @@ was taken with its eyes open.
 own items is a decision to take again on its own merits, exactly as
 CONTEXT.md says of a second `@homework`-shaped context. The test above is
 unchanged for every other pane: if no decision reads it, it stays home.
+
+## The share-payload mapping sinks before its second caller exists (#782)
+
+*Amended 2026-09-03 (#782).*
+
+| Module | Verdict |
+|---|---|
+| `decisions::share` — `parse_share_payload`, `first_http_url`, `url_host`, `link_display_label` | **sunk on arrival**, with one caller (Android's `ACTION_SEND` alias) and no web share target yet. The tie-breaker is satisfied prospectively: a PWA `share_target` is a known later slice, and the alternative was a Kotlin URL regex in `CaptureActivity` — the kind of hand-copied decision `CaptureFieldSetStructuralTest` already bans in `ui/forms` (date regexes, vocabulary literals) and `ManifestAliasTest` now bans there by name (`Regex(`, `indexOf("http`). What crossed is a mapping (which *field* each piece of a share starts in), a display rule (name → host → URL) and a safety rule (`is_followable_link`: only an `http(s)` URL with a host is drawn as a tap that leaves the app — the web's anchor and Android's `ACTION_VIEW` read the same answer); what did not cross is the seeding itself — `CaptureViewModel.seedFromShare` is a form action, and `Core::capture` still receives the human's title verbatim (ADR-0022) |
+| `capture.rs`'s `parse_seam` | untouched. The share mapping seeds a *draft* the human edits; it is not a capture parser, and lives in its own module so that #42's guard stays a named no-op |
+| `decisions::share::link_label_problem` — "a name needs a URL" | **sunk** (review finding on #782's own PR). The first cut stated the rule as a form check in five client-side places — `capture-meta.ts`'s `linkProblem`, `CaptureViewModel.canSubmitDraft`, `ItemDetailViewModel.canSave`, and both seams' `capture` guards — each a two-string comparison that looked too small to drift. That is exactly the shape #500 sank `capture_meta_problems` for: the rule and its message now live once, both seams export it (`link_label_problem`/`linkLabelProblem`), the web's capture box and triage/item-panel drafts read it through `seam.ts`, and Android's two ViewModels take it injected beside `metaProblemsFn`, with `CaptureSubmitRefusalTest` gating that production passes the real binding. The authority's own 400 for the same shape stays — it is the wire's rule, and a client cannot be trusted to have asked |

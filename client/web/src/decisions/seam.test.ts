@@ -40,6 +40,8 @@ import {
   wasteConstantsFromCore,
   weekendConstantsFromCore,
   paneZoneQueries,
+  linkDisplayLabel,
+  parseSharePayload,
 } from "./seam";
 import { priorityRank } from "../screens/priority";
 import { AUTO_SELECTION, BACKEND_REGISTRY, fallbackEntry } from "../skills/backend-registry";
@@ -143,6 +145,34 @@ describe("the decision seam", () => {
     expect(canSubmitCapture(BOM)).toBe(false);
     expect(canSubmitCapture(NEL)).toBe(false);
     expect(canSubmitCapture(`${BOM}buy milk`)).toBe(true);
+  });
+
+  // #782: the share mapping and the Link's display name, pinned against
+  // the same cases `decisions/share.rs` tests so the two clients cannot
+  // title a shared URL differently.
+  it("answers the share-payload mapping out of the core", () => {
+    expect(parseSharePayload("Knee rehab video", "Watch this later https://www.youtube.com/watch?v=abc")).toEqual({
+      title: "Knee rehab video",
+      description: "Watch this later",
+      linkUrl: "https://www.youtube.com/watch?v=abc",
+    });
+    expect(parseSharePayload("", "https://www.youtube.com/watch?v=abc")).toEqual({
+      title: "youtube.com",
+      description: null,
+      linkUrl: "https://www.youtube.com/watch?v=abc",
+    });
+    expect(parseSharePayload("", "Just a thought")).toEqual({
+      title: "Just a thought",
+      description: null,
+      linkUrl: null,
+    });
+  });
+
+  it("names a link by its label, else its host, else the URL", () => {
+    expect(linkDisplayLabel("https://www.youtube.com/watch?v=abc", "Rehab")).toBe("Rehab");
+    expect(linkDisplayLabel("https://www.youtube.com/watch?v=abc", null)).toBe("youtube.com");
+    expect(linkDisplayLabel("https://www.youtube.com/watch?v=abc", "  ")).toBe("youtube.com");
+    expect(linkDisplayLabel("mailto:x@y", null)).toBe("mailto:x@y");
   });
 
   it("crosses a whole frontier's worth of items and back, ordered", () => {
@@ -482,6 +512,8 @@ function syntheticItem(id: string, stage: TaskItemDTO["stage"]): TaskItemDTO {
     sourceKey: null,
     sourceUrl: null,
     vaultPath: null,
+    linkUrl: null,
+    linkLabel: null,
     archivedAt: null,
     createdAt: 1_755_000_000_000,
     updatedAt: 1_755_000_000_000,

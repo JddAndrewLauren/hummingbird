@@ -38,7 +38,7 @@ import type {
 } from "../store/protocol";
 import type { TaskState } from "../store/store";
 
-export { render, screen, fireEvent, within, act, renderHook } from "@testing-library/react";
+export { render, screen, fireEvent, within, act, renderHook, cleanup } from "@testing-library/react";
 
 afterEach(() => {
   cleanup();
@@ -67,6 +67,8 @@ export function itemDTO(overrides: Partial<TaskItemDTO> = {}): TaskItemDTO {
     sourceKey: null,
     sourceUrl: null,
     vaultPath: null,
+    linkUrl: null,
+    linkLabel: null,
     archivedAt: null,
     createdAt: 1_000,
     updatedAt: 1_000,
