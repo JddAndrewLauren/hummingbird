@@ -1,0 +1,67 @@
+# The browser capture extension (ADR-0037): its test gate, and only that.
+#
+# **Why this is its own workflow.** `tools/browser-capture/` is a plain,
+# dependency-free Manifest V3 tree with a `node --test` suite. It lives under
+# `tools/` rather than `client/` because `client.yml`'s `client/**` filter
+# would run the whole Rust/wasm job for a popup edit — and `tools/**` is
+# gated by nothing today (dropbox-open has no artefact to test, by ADR-0036's
+# own consequence). A path-filtered workflow that covers nothing looks green
+# on every PR (skills.yml's header has the argument), so this one's triggers
+# match exactly what it guards, including the web tokens it copies.
+#
+# No `schedule:` and no deploy: the extension is loaded unpacked from a
+# checkout (tools/browser-capture/README.md). No install step: every import
+# is a `node:` builtin or a relative path, and there is no lockfile. Adding a
+# dependency means adding an install step here.
+name: browser-capture
+
+on:
+  push:
+    branches: [main]
+    # Duplicated verbatim under `pull_request:` below. GitHub Actions does
+    # not expand YAML anchors, so the two lists genuinely have to be
+    # written twice -- keep them identical.
+    paths:
+      - "tools/browser-capture/**"
+      # `design/tokens.css` is a copy of these, pinned by tokens.test.js:
+      # a token change that is not re-copied must fail here, not drift.
+      - "client/web/src/design/tokens/**"
+      - ".github/workflows/browser-capture.yml"
+  # No `branches:` filter on purpose (server.yml does the same): a PR into a
+  # batch integration branch must be gated exactly like a PR into main.
+  pull_request:
+    paths:
+      - "tools/browser-capture/**"
+      - "client/web/src/design/tokens/**"
+      - ".github/workflows/browser-capture.yml"
+
+# Superseded PR pushes cancel their stale runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Three files of pure-function tests; anything slower than this is a
+    # hung test, not a slow one.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same major runner.yml pins, for the same reason: one Node the
+      # repo's dependency-free JS is known to run on.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: node --test (browser-capture)
+        working-directory: tools/browser-capture
+        run: node --test
+
+      # The two page scripts are DOM wiring the suite cannot load, so a
+      # parse error in either would ship silently. `--check` parses without
+      # running.
+      - name: The page scripts parse
+        working-directory: tools/browser-capture
+        run: node --check popup.js && node --check options.js

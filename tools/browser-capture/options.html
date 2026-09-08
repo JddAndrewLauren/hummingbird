@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>hummingbird capture — options</title>
+  <link rel="stylesheet" href="design/tokens.css">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body class="popup">
+  <header class="bar">
+    <span class="hb-meta">token</span>
+    <span id="state" class="hb-meta host"></span>
+  </header>
+
+  <form id="form" class="stack">
+    <div class="field">
+      <label for="token">Device token</label>
+      <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="hb_…">
+      <span class="hint">From 1Password: hummingbird-device-chrome-&lt;machine&gt;. Kept in this browser profile only.</span>
+    </div>
+    <div class="row">
+      <button type="submit" class="btn primary">Store</button>
+      <button id="forget" type="button" class="btn ghost" hidden>Forget</button>
+    </div>
+  </form>
+
+  <p id="status" class="status" role="status" aria-live="polite"></p>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>
