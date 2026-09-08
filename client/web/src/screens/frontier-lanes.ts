@@ -57,7 +57,7 @@
  * Erring low is deliberate. A cap one card too generous costs a scroll in a
  * region that already scrolls; a cap one card too mean is the dead space this
  * exists to close. */
-const CARD_ROW = 78;
+export const CARD_ROW = 78;
 const HEADING_ROW = 44;
 const BOTTOM_GUTTER = 24;
 
@@ -68,6 +68,29 @@ const BOTTOM_GUTTER = 24;
  * capture surface open — showing a column rather than a heading and one card. */
 const DEFAULT_COLUMN_CAP = 6;
 const MIN_COLUMN_CAP = 4;
+
+/** What each column costs the packing in rows: a heading, the cards it shows,
+ * and the "n more" control if it has one.
+ *
+ * **It takes item counts and a cap, and nothing else — that is the whole
+ * point.** There is deliberately no way to tell this function that a column is
+ * collapsed or revealed, because weighing what is DRAWN made every toggle a
+ * repack, and a repack moves columns the reader never touched: shutting
+ * `overdue` slid `calm` into another lane, and revealing `calm` — 29 cards,
+ * suddenly the heaviest thing on the board by a factor of five — pulled the
+ * whole urgency board into one lane. Lanes are a function of the columns and
+ * the measured box; a toggle changes one column's height and no column's
+ * position. Anything wanting to reopen that has to change this signature,
+ * which is the point of the signature.
+ *
+ * Rows rather than pixels because cards are close enough to uniform that
+ * measuring each would buy precision the eye cannot see; the consequence is
+ * that a column of long titles runs a little past its lane-mates. */
+export function laneWeightsFor(itemCounts: readonly number[], columnCap: number): number[] {
+  return itemCounts.map(
+    (count) => 1 + Math.min(count, columnCap) + (count > columnCap ? 1 : 0),
+  );
+}
 
 /** How many cards a column shows before it defers the rest to "n more", from
  * the height the board actually has under it.

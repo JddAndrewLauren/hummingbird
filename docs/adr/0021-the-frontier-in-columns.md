@@ -287,6 +287,30 @@ Consequences below), and its cap with it, so the centre column now has **no**
 independent scroll container. The constraint this decision states is unchanged
 and strictly easier to hold.*
 
+*Amended 2026-09-08 (#795): **the cap is measured, not six.** The columns stopped
+wrapping when #402 packed them into vertical lanes, so the reason stated above —
+a wrapping row takes its height from the tallest column in its line — no longer
+holds up the number; a lane is a stack, and a fat column costs its lane and
+nobody else. What the number was still doing was guessing at the height, and on
+a tall screen it guessed badly: at a 1400px viewport the board stopped 638px
+above the fold with 23 items behind an `n more`. `screens/frontier-lanes.ts`'s
+`columnCapFor` now spends the room between the board and the fold on cards —
+fourteen at 1400, seven at 900, a floor of four, and the old six as the answer
+for a runtime that cannot measure. **The second sentence of the paragraph above
+is the part that survives**: the top few of a column is what "what's next" is
+asking about, and the count never lies about what is hidden. What a column
+defers is now what genuinely does not fit.*
+
+*Amended 2026-09-08 (#795): **a column can be drawn across more than one lane.**
+Decision 1's own amendment makes the urgency axis three bands of one card in
+front of one very full `calm`, which can never fill the board between them — so
+the packing leaves a lane it has no column for, permanently, as a property of
+the axis rather than a state that resolves. The column alone in the last packed
+lane now runs on into that room under a repeated, de-emphasised label, with its
+reveal control at the foot of the last lane. The columns still never scroll
+sideways and still have no overflow of their own, which is what this decision
+actually constrains.*
+
 ### Two rejected alternatives, both tried in the browser
 
 **A sideways-scrolling strip of columns.** Rejected: a board you scroll
@@ -610,8 +634,10 @@ closing the component-test gap the board-world flip left open
   *Three shapes were on the table and two are rejected here, because they are
   the expensive knowledge. **On the card** — error text under the failing
   capture's title — is the most precise about where a failure belongs, and it
-  loses to this decision's own furniture: a column caps at six cards, so a
-  capture behind `n more` would wear a message nobody can see, which is the
+  loses to this decision's own furniture: a column caps at a measured number of
+  cards (six when nothing can be measured — see decision 3's 2026-09-08
+  amendment), so a capture behind `n more` would wear a message nobody can see,
+  which is the
   original bug one layer down. (Decision 2 rules out saying it in colour
   instead: what a card's colour encodes is urgency and nothing else.)
   **Holding the slot open on failure** is the smallest change and the closest to

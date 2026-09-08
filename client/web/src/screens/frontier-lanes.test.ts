@@ -7,7 +7,13 @@
 // function anyone can call.
 
 import { describe, expect, it } from "vitest";
-import { columnCapFor, frontierLanes, laneCountFor, packLanes } from "./frontier-lanes";
+import {
+  columnCapFor,
+  frontierLanes,
+  laneCountFor,
+  laneWeightsFor,
+  packLanes,
+} from "./frontier-lanes";
 
 describe("laneCountFor", () => {
   it("gives every column its own lane when the width is unknown", () => {
@@ -222,5 +228,41 @@ describe("columnCapFor", () => {
   it("grows by one card for one card's worth of room", () => {
     expect(columnCapFor(68 + 78 * 5)).toBe(5);
     expect(columnCapFor(68 + 78 * 6)).toBe(6);
+  });
+});
+
+describe("laneWeightsFor", () => {
+  it("charges a heading, the cards shown, and the control if there is one", () => {
+    // Under the cap: a heading and its cards, no control.
+    expect(laneWeightsFor([1, 3, 6], 6)).toEqual([2, 4, 7]);
+    // Over it: the cap's worth of cards plus the "n more" row.
+    expect(laneWeightsFor([7, 29], 6)).toEqual([8, 8]);
+    // Exactly at it is still no control — nothing is hidden.
+    expect(laneWeightsFor([6], 6)).toEqual([7]);
+  });
+
+  it("costs an empty column its heading alone", () => {
+    expect(laneWeightsFor([0], 6)).toEqual([1]);
+  });
+
+  it("takes counts and a cap, and nothing about what is on screen", () => {
+    // The invariant, and the reason this is a function rather than four lines
+    // in the board: a column's weight is its RESTING height. There is no
+    // parameter for `collapsed` or `expanded` and there must not be one —
+    // weighing what is drawn made every toggle a repack, and a repack moves
+    // columns the reader never touched. The signature is the guard; this test
+    // is what says so out loud when someone reads the file.
+    //
+    // The urgency board's own weights, which are the same shut, open, or with
+    // any of the four collapsed, because nothing here can be told about that.
+    expect(laneWeightsFor([1, 1, 1, 29], 6)).toEqual([2, 2, 2, 8]);
+    expect(laneWeightsFor([1, 1, 1, 29], 14)).toEqual([2, 2, 2, 16]);
+  });
+
+  it("grows the cap without changing what a small column costs", () => {
+    // A taller viewport lifts the cap, and only the columns that were capped
+    // move — which is what keeps a resize from relaying the whole board.
+    expect(laneWeightsFor([2, 2, 2, 29], 6)).toEqual([3, 3, 3, 8]);
+    expect(laneWeightsFor([2, 2, 2, 29], 14)).toEqual([3, 3, 3, 16]);
   });
 });
