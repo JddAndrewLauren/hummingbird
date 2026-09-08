@@ -11,8 +11,9 @@
 # in #773): Actions `schedule:` delivered this at roughly once every four
 # hours against the half-hourly interval below, and `hummingbird-sweeper`
 # is an always-on container that can just run it on time instead.
-# `workflow_dispatch` stays, for a manual run against a fresh checkout; the
-# `crontab` entry now owns the standing cadence.
+# `workflow_dispatch` stays and the `crontab` entry owns the standing
+# cadence — but since 2026-09-08 a dispatch cannot run either: see the
+# credential paragraph below.
 #
 # **This poller watches every *other* scheduled workflow in the repo,
 # itself no longer included** — #774 dropped its own `schedule:`, so
@@ -60,7 +61,12 @@
 # `GITHUB_STATUS_INGEST_TOKEN` this shipped with was unprovisionable — and
 # an unresolvable `secrets.*` expands to the empty string, so the lane
 # failed as "not set" daily rather than as anything naming the real cause
-# (#314).
+# (#314). That same expansion is now this workflow's permanent state: the
+# Actions secret `GH_STATUS_INGEST_TOKEN` was deleted 2026-09-08 along with
+# the other four pollers' (the Fly copies having shipped in #789), so a
+# dispatch fails "not set" by design — a manual one-off run is `flyctl ssh
+# console` on `hummingbird-sweeper`, per `docs/sweeper.md`'s "Secrets"
+# section.
 name: github-status
 
 on:

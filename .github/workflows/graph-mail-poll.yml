@@ -9,7 +9,10 @@
 # credential the sweeper already held: `GRAPH_CLIENT_PRIVATE_KEY` and the
 # `GRAPH_*` identifiers below moved with it, as Fly secrets/`[env]` on
 # `hummingbird-sweeper` instead of Actions secrets/vars. `workflow_dispatch`
-# stays, for a manual run against a fresh checkout.
+# stays, but the Actions secrets this file reads were deleted 2026-09-08,
+# so a dispatch now fails on an empty `secrets.*` — a manual one-off run is
+# `flyctl ssh console` on `hummingbird-sweeper`, per `docs/sweeper.md`'s
+# "Secrets" section.
 #
 # **The blast-radius question this lane was gated on is settled.** An app-only
 # Graph permission reads tenant-wide by default, which put

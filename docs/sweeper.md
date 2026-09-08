@@ -437,22 +437,37 @@ domain-wide delegation.
 **This one credential is every Google consumer in the repo** (operator decision
 on [#486](https://github.com/JddAndrewLauren/hummingbird/issues/486), which also
 closed out #135's open question): the sweeper reads it from a Fly secret, and
-`gmail-poll` and `calendar-poll` read it from the GitHub Actions secret of the
-same name. The calendar scope exists for the poller, not for anything here —
-the sweeper never touches Calendar. The consequence is that **re-minting is a
-three-place operation**: 1Password, then `flyctl secrets set`, then
-`gh secret set`. Leave one behind and the lane reading it fails on a revoked
-grant, not on a missing secret, which is the harder failure to read.
+so — since #774 — do `gmail-poll` and `calendar-poll`, from the very same
+one. The calendar scope exists for the poller, not for anything here — the
+sweeper never touches Calendar. Between #486 and #774 the two pollers read
+an independent GitHub Actions secret of the same name, which made
+re-minting a **three-place operation** (1Password, `flyctl secrets set`,
+`gh secret set`) with the characteristic failure that a place left behind
+fails on a revoked grant, not on a missing secret — the harder one to read.
 
-**#774 narrows that three-place rotation rather than widening it.** Both
-pollers now read `GOOGLE_REFRESH_TOKEN` (and its two siblings) from this
-machine's own Fly secret — the same one the sweeper already held — instead
-of also carrying an independent Actions-secret copy. Once the now-unused
-`GOOGLE_*` Actions secrets are deleted (this issue's own "Verification the
-agent cannot do" step 7), re-minting drops back to the two places every
-other Fly-only credential here already needs: 1Password, then
-`flyctl secrets set`. Until that deletion happens both copies are live and
-the three-place rotation above still applies.
+**#774 narrowed that rotation, and 2026-09-08 finished the narrowing.** The
+five pollers' superseded Actions repository secrets —
+`GMAIL_INGEST_TOKEN`, `CALENDAR_INGEST_TOKEN`, `M365_MAIL_INGEST_TOKEN`,
+`M365_CALENDAR_INGEST_TOKEN`, `GH_STATUS_INGEST_TOKEN`,
+`GRAPH_CLIENT_PRIVATE_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
+`GOOGLE_REFRESH_TOKEN` — were deleted by the operator that day, once #789
+had the Fly copies deployed. Every credential in this section is now
+**Fly-only, and rotation is two places**: 1Password, then
+`flyctl secrets set --stage …` followed by a deploy (or
+`flyctl secrets deploy` when nothing else is shipping). The five
+workflows keep their `workflow_dispatch:` trigger, but a dispatch now reads
+an unresolvable `secrets.*`, which expands to the empty string — so it
+fails as "not set" rather than running against a stale copy. That is the
+accepted cost; there is no Actions fallback for these lanes any more.
+
+**A manual one-off run of a poller is done on this machine.** `flyctl ssh
+console -a hummingbird-sweeper`, then run the binary from `/app/bin/`
+with the env vars its `crontab` entry maps on the command line (the ingest
+token onto `HB_INGEST_TOKEN`, and for `github-status-poll` the PAT onto
+`GITHUB_TOKEN`); the Fly secrets and `fly.toml`'s `[env]` are already in
+the shell's environment. `crontab`'s own entries are the reference for
+each binary's exact mapping — copy the entry's command, minus the
+schedule field.
 
 `HB_API_TOKEN` is a **`sweeper`-scope** token (ADR-0008/0009 `tokens` table),
 sent as `Authorization: Bearer …`. That scope reaches `POST /api/items` and
@@ -554,10 +569,11 @@ Then the Gmail steps below, which were deferred from #45 and never ran.
    account.
 5. **Secrets.** Store the token on the 1Password item first and read it back,
    then `flyctl secrets set GOOGLE_REFRESH_TOKEN=<new token>
-   GMAIL_HEALTHCHECK_URL=<new ping url>` and
-   `gh secret set GOOGLE_REFRESH_TOKEN` (plus `GOOGLE_CLIENT_ID` /
-   `GOOGLE_CLIENT_SECRET`, which `gmail-poll` and `calendar-poll` also read).
-   Any earlier, narrower refresh token is superseded; nothing else changes.
+   GMAIL_HEALTHCHECK_URL=<new ping url>`. That one Fly secret is what
+   `gmail-poll` and `calendar-poll` read too (the Actions copies were
+   deleted 2026-09-08 — see "Secrets" above), so there is no `gh secret
+   set` step any more. Any earlier, narrower refresh token is superseded;
+   nothing else changes.
 6. **Dry run.** Label one test message, export the secrets locally, run
    `./sweep.py --dry-run`, and read both adapters' output — the Gmail adapter
    should log the labelled message and mutate nothing.
@@ -694,7 +710,9 @@ differ from what the gates above expect, and the difference is the point:
 - **Never add a `schedule:` trigger** to `.github/workflows/deploy.yml`, nor
   restore one to `gmail-poll.yml`, `calendar-poll.yml`, `graph-mail-poll.yml`,
   `graph-calendar-poll.yml` or `github-status.yml` (#774 dropped theirs
-  deliberately; `workflow_dispatch:` on each still allows a manual run).
+  deliberately; `workflow_dispatch:` on each survives but cannot run since
+  the 2026-09-08 secret deletion — a manual run is an `flyctl ssh console`
+  on this machine, per "Secrets" above).
   Scheduling on Actions was overturned in #8 (pooled minutes, whole-minute
   billing, the $0 spending cap, 60-day auto-disable). supercronic owns cadence.
   Qualified 2026-08-10 (#120): three of those four clauses were about a

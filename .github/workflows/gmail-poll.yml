@@ -12,8 +12,11 @@
 # `*/15` supercronic clock and already holds the three `GOOGLE_*` secrets
 # this poller reads, so #774 built this binary into that image and gave it
 # a staggered entry in `crontab` instead: the true `*/15` this workflow's
-# comment always claimed, finally delivered. `workflow_dispatch` stays, for
-# a manual run against a fresh checkout.
+# comment always claimed, finally delivered. `workflow_dispatch` stays, but
+# the Actions secrets this file reads were deleted 2026-09-08 (the Fly
+# copies having shipped in #789), so a dispatch now fails on an empty
+# `secrets.*` — a manual one-off run is `flyctl ssh console` on
+# `hummingbird-sweeper`, per `docs/sweeper.md`'s "Secrets" section.
 name: gmail-poll
 
 on:
@@ -76,10 +79,10 @@ jobs:
           # and that this is the operator's own Workspace account rather than
           # a tenant-wide reach.
           #
-          # Rotating it is a THREE-place operation: 1Password, the Fly secret
-          # on `hummingbird-sweeper`, and this Actions secret. Missing one
-          # leaves that consumer failing on a revoked grant rather than on a
-          # missing secret.
+          # Rotating it was a THREE-place operation (1Password, the Fly secret
+          # on `hummingbird-sweeper`, and this Actions secret) until the
+          # Actions copy was deleted 2026-09-08; it is two places now, and
+          # `docs/sweeper.md` is the runbook.
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
