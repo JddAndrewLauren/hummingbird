@@ -130,7 +130,14 @@ use crate::sql::{Sql, SqlError, SqlValue};
 /// [`CREATE_ITEMS`] is written with `, agent …, vault_path TEXT)` on that
 /// one spliced line — verified against a real migrated store's
 /// `sqlite_master`, not reasoned out.
-pub const SCHEMA_VERSION: i64 = 13;
+///
+/// 14 adds the `file_links` table (ADR-0036): the many-per-item Dropbox-
+/// relative paths an item points at. A whole new table, so the growth is
+/// the 6→7 / 7→8 / 11→12 shape — `CREATE TABLE IF NOT EXISTS` on boot,
+/// no [`add_missing_columns`] arm — and, because it references `items`,
+/// it joins [`FK_CHILDREN`]: an `items` rebuild has to stand it aside like
+/// `steps`, `blocked_by` and `grills`.
+pub const SCHEMA_VERSION: i64 = 14;
 
 /// meta: the workspace version counter (one row), bumped by every write.
 /// Every mutated row stamps its `version` from this counter; the delta pull
@@ -412,7 +419,23 @@ CREATE TABLE IF NOT EXISTS grills (
   version         INTEGER NOT NULL
 )";
 
-/// The last twelve entries are #289's version-leading indexes, one per
+/// file_links (ADR-0036): the many-per-item pointers at files in the
+/// operator's Dropbox. `path` is Dropbox-relative and opaque here — the
+/// authority checks non-blank and nothing else; every shape rule is
+/// client-side vendor knowledge (`client/web/src/dropbox/file-link.ts`).
+/// No `label`, no `position`: rows list in insertion order. `removed_at`
+/// is ADR-0020's flag — never deleted. References `items`, so it is one of
+/// [`FK_CHILDREN`].
+pub const CREATE_FILE_LINKS: &str = "\
+CREATE TABLE IF NOT EXISTS file_links (
+  id          TEXT PRIMARY KEY,
+  item_id     TEXT NOT NULL REFERENCES items(id),
+  path        TEXT NOT NULL,
+  removed_at  INTEGER,
+  version     INTEGER NOT NULL
+)";
+
+/// The last thirteen entries are #289's version-leading indexes, one per
 /// synced table, each shaped `(version, <that table's own pull sort key>)`
 /// off `handlers/changes.rs`'s `pull` calls — the compound serves both the
 /// `WHERE version > ?` range predicate and the `ORDER BY version, <pk>` tie-
@@ -425,12 +448,13 @@ CREATE TABLE IF NOT EXISTS grills (
 /// `settings`) had no version index before #289 and use the plain
 /// `idx_<table>_version` name for what is itself the compound — those seven
 /// are not touched by #757.
-const CREATE_INDEXES: [&str; 17] = [
+const CREATE_INDEXES: [&str; 19] = [
     "CREATE INDEX IF NOT EXISTS idx_items_live    ON items(stage) WHERE archived_at IS NULL",
     "CREATE INDEX IF NOT EXISTS idx_steps_item    ON steps(item_id)",
     "CREATE INDEX IF NOT EXISTS idx_items_project ON items(project_id)",
     "CREATE INDEX IF NOT EXISTS idx_grills_item    ON grills(item_id)",
     "CREATE INDEX IF NOT EXISTS idx_project_links_project ON project_links(project_id)",
+    "CREATE INDEX IF NOT EXISTS idx_file_links_item ON file_links(item_id)",
     "CREATE INDEX IF NOT EXISTS idx_projects_version ON projects(version, id)",
     "CREATE INDEX IF NOT EXISTS idx_routes_version ON routes(version, project_id)",
     "CREATE INDEX IF NOT EXISTS idx_fog_version ON fog(version, id)",
@@ -443,12 +467,13 @@ const CREATE_INDEXES: [&str; 17] = [
     "CREATE INDEX IF NOT EXISTS idx_rules_version_id ON rules(version, id)",
     "CREATE INDEX IF NOT EXISTS idx_grills_version_id ON grills(version, id)",
     "CREATE INDEX IF NOT EXISTS idx_project_links_version_id ON project_links(version, id)",
+    "CREATE INDEX IF NOT EXISTS idx_file_links_version_id ON file_links(version, id)",
 ];
 
 /// Every table, parents before children (routes/fog/project_links reference
-/// projects, steps/blocked_by/grills reference items, deliveries references
-/// alerts/rules).
-const CREATE_TABLES: [&str; 16] = [
+/// projects, steps/blocked_by/grills/file_links reference items, deliveries
+/// references alerts/rules).
+const CREATE_TABLES: [&str; 17] = [
     CREATE_META,
     CREATE_PROJECTS,
     CREATE_ROUTES,
@@ -465,6 +490,7 @@ const CREATE_TABLES: [&str; 16] = [
     CREATE_PUSH_TARGETS,
     CREATE_DELIVERIES,
     CREATE_GRILLS,
+    CREATE_FILE_LINKS,
 ];
 
 /// Idempotent: safe to run on every Durable Object construction. A schema-1
@@ -650,7 +676,8 @@ fn add_missing_columns(sql: &dyn Sql) -> Result<(), SqlError> {
 /// from the fresh path, because it *is* the fresh path.
 ///
 /// **Why the parent is never renamed out of the way.** `steps.item_id`,
-/// `blocked_by.{item_id,blocker_id}` and `grills.item_id` all say
+/// `blocked_by.{item_id,blocker_id}`, `grills.item_id` and
+/// `file_links.item_id` all say
 /// `REFERENCES items(id)`. `ALTER TABLE items RENAME TO …` rewrites exactly
 /// those clauses to follow the table, and leaves them pointing at the
 /// scratch name afterwards; dropping and recreating `items` under its own
@@ -817,7 +844,7 @@ fn rebuild_items_for_size_vocabulary(sql: &dyn Sql) -> Result<(), SqlError> {
 
 /// The tables carrying a foreign key onto `items(id)`, which is what makes
 /// them the tables a rebuild of `items` has to stand aside.
-const FK_CHILDREN: [&str; 3] = ["steps", "blocked_by", "grills"];
+const FK_CHILDREN: [&str; 4] = ["steps", "blocked_by", "grills", "file_links"];
 
 /// Where `items`' rows wait while the table underneath them is replaced.
 const ITEMS_SCRATCH: &str = "items_size_rebuild";
@@ -837,7 +864,7 @@ const ITEMS_COLUMNS: &str = "id, seq, title, description, stage, size, energy, c
 ///
 /// `INSERT OR IGNORE`, because the recovery caller may find rows already in
 /// place — an attempt that died between a child's copy and its `DELETE` left
-/// them in both. `steps` and `grills` are keyed on `id` and `blocked_by` on
+/// them in both. `steps`, `grills` and `file_links` are keyed on `id` and `blocked_by` on
 /// `(item_id, blocker_id)`, so the ignored rows are those same rows and not
 /// a silently dropped edit.
 ///

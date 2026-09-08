@@ -15,6 +15,7 @@ mod context;
 mod deadline;
 pub mod diagnostics;
 mod event;
+mod file_link;
 mod github_repo;
 mod grill;
 mod id;
@@ -30,8 +31,8 @@ mod token;
 pub use api::{
     AlertIngest, AlertPatch, ApiError, BlockedByPatch, CalendarTokenResponse, ChangesResponse,
     ConflictResponse, CreateBlockedBy, CreateFog, CreateGrill, CreateItem, CreateProject,
-    CreateProjectLink, CreatePushTarget, CreateRule, CreateStep, FogPatch, ItemPatch, MintToken,
-    ProjectLinkPatch, ProjectPatch, PutSetting, RoutePatch, RulePatch, SnapshotIngest, StepPatch,
+    CreateFileLink, CreateProjectLink, CreatePushTarget, CreateRule, CreateStep, FileLinkPatch,
+    FogPatch, ItemPatch, MintToken, ProjectLinkPatch, ProjectPatch, PutSetting, RoutePatch, RulePatch, SnapshotIngest, StepPatch,
     VERSION_CONFLICT,
 };
 pub use context::{Alert, ContextSnapshot, EnvelopeProblem, Setting, SnapshotEnvelope};
@@ -39,6 +40,7 @@ pub use deadline::{
     deadline_sort_key, is_valid_deadline, minutes_until, now_as_deadline, parse_duration, shift,
     DurationUnit,
 };
+pub use file_link::FileLink;
 pub use event::{
     core_field_type, find_kind, kind_registry_json, Event, EventKindEntry, FieldDescriptor,
     FieldType, FieldValue, CORE_FIELDS, EVENT_KINDS,
