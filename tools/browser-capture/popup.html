@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Capture to hummingbird</title>
+  <link rel="stylesheet" href="design/tokens.css">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body class="popup">
+  <form id="form" class="stack" hidden>
+    <!-- The header row: what this is and where it came from on the left,
+         and on the right three solid squares that say what they are by
+         colour and glyph alone, the web capture box's own row: the inbox
+         (Triage, sky blue — the blue triage wears), the mint (Ready, brand
+         orange), and the mint again with today's date stamped as the
+         deadline (the flag is the design system's deadline glyph). Enter
+         is Triage; a mint is a deliberate click. Glyphs are Lucide's
+         `inbox`, `plus` and `flag`, inlined — an extension page may not
+         load a CDN script. -->
+    <div class="bar">
+      <div class="who">
+        <span class="hb-meta">capture</span>
+        <span id="host" class="hb-meta host"></span>
+      </div>
+      <div class="squares" role="group" aria-label="Where this lands">
+        <button type="submit" class="square info" data-destination="triage" title="Triage" aria-label="Triage">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+        </button>
+        <button type="button" class="square accent" data-destination="ready" title="Mint action" aria-label="Mint action">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+        </button>
+        <button type="button" class="square accent" data-destination="ready" data-today="1" title="Mint for today" aria-label="Mint for today">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" x2="4" y1="22" y2="15"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="field">
+      <label for="title">Title</label>
+      <input id="title" type="text" autocomplete="off" spellcheck="true">
+    </div>
+    <div class="field">
+      <label for="description">Description</label>
+      <textarea id="description" rows="3" placeholder="The only free-prose field — never a checklist"></textarea>
+    </div>
+  </form>
+
+  <p id="status" class="status" role="status" aria-live="polite"></p>
+  <a id="options" class="options" href="#" hidden>Options</a>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

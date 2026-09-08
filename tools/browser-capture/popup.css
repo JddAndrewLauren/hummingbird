@@ -1,0 +1,183 @@
+/* The popup and the options page, on the design tokens (design/tokens.css).
+   Controls follow the design system's Input and Button specs: 36px
+   controls, 10px radius, 1px --border-default, the ember focus ring, one
+   accent used once. Flat colour, no imagery. */
+/* The pages toggle visibility with the `hidden` attribute; the display
+   rules below would otherwise override its UA default. */
+[hidden] {
+  display: none !important;
+}
+.popup {
+  width: 340px;
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-4);
+}
+.who {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.host {
+  text-transform: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.field label {
+  font: var(--weight-semibold) var(--size-body-sm)/1.2 var(--font-sans);
+  color: var(--text-secondary);
+}
+.field input,
+.field textarea {
+  width: 100%;
+  padding: 0 var(--space-5);
+  height: 36px;
+  background: var(--surface-card);
+  color: var(--text-primary);
+  font: var(--type-body);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  transition: border-color var(--dur-fast) var(--ease-flit), box-shadow var(--dur-fast) var(--ease-flit);
+}
+.field textarea {
+  height: auto;
+  padding: var(--space-4) var(--space-5);
+  resize: vertical;
+  line-height: 1.45;
+}
+.field input:focus-visible,
+.field textarea:focus-visible {
+  border-color: var(--accent);
+  box-shadow: var(--ring-focus);
+  outline: none;
+}
+.hint {
+  font: var(--type-body-sm);
+  color: var(--text-muted);
+}
+.row {
+  display: flex;
+  gap: var(--space-4);
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+  padding: 0 var(--space-6);
+  font: var(--weight-semibold) var(--size-body)/1 var(--font-sans);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease-flit), transform var(--dur-fast) var(--ease-hover), box-shadow var(--dur-fast) var(--ease-flit);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.btn.primary {
+  width: 100%;
+  color: var(--on-accent);
+  background: var(--accent);
+  box-shadow: var(--shadow-accent);
+}
+.btn.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  transform: translateY(var(--lift-hover));
+}
+.btn.primary:active:not(:disabled) {
+  background: var(--accent-press);
+  box-shadow: none;
+  transform: scale(var(--press-scale));
+}
+.btn.ghost {
+  color: var(--text-secondary);
+  background: transparent;
+}
+.btn.ghost:hover {
+  color: var(--text-primary);
+  background: var(--surface-quiet);
+}
+.status {
+  font: var(--type-body-sm);
+  color: var(--text-secondary);
+  min-height: 1.45em;
+}
+.status:empty {
+  display: none;
+}
+.status[data-tone="done"] { color: var(--status-done-fg); }
+.status[data-tone="warn"] { color: var(--status-warn-fg); }
+.status[data-tone="danger"] { color: var(--status-danger-fg); }
+.options {
+  font: var(--type-body-sm);
+  align-self: flex-start;
+}
+
+/* The three destination squares — the web IconButton's `solid` variant at
+   36px: a coloured fill, a white glyph, the fill as its own border. `info`
+   pins --sky-600 rather than --stage-triage, whose dark-mode value is too
+   pale to carry a white glyph. */
+.squares {
+  display: flex;
+  gap: var(--space-4);
+  flex-shrink: 0;
+}
+.square {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  color: #ffffff;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-flit), transform var(--dur-fast) var(--ease-hover), box-shadow var(--dur-fast) var(--ease-flit);
+}
+.square svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.square:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.square:hover:not(:disabled) {
+  transform: translateY(var(--lift-hover));
+}
+.square:active:not(:disabled) {
+  transform: scale(var(--press-scale));
+  box-shadow: none;
+}
+.square.info { background: var(--sky-600); box-shadow: var(--shadow-1); }
+.square.info:hover:not(:disabled), .square.info:active:not(:disabled) { background: var(--sky-900); }
+.square.accent { background: var(--accent); box-shadow: var(--shadow-accent); }
+.square.accent:hover:not(:disabled) { background: var(--accent-hover); }
+.square.accent:active:not(:disabled) { background: var(--accent-press); }

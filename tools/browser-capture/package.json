@@ -1,0 +1,13 @@
+{
+  "name": "hummingbird-browser-capture",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The browser extension that captures the current tab as a hummingbird item (ADR-0037). Dependency-free; load unpacked.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}
