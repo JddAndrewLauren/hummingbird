@@ -337,7 +337,7 @@ describe("NowScreen — the frontier list", () => {
     expect(headings.indexOf("Kitchen rebuild")).toBeLessThan(headings.indexOf("No project"));
   });
 
-  it("switches the axis across all four, and each one groups by its own field", () => {
+  it("switches the axis across all five, and each one groups by its own field", () => {
     // One item per axis-value so every axis produces a *named* column — the
     // regression this guards is an axis silently reading the wrong field.
     renderNow(
@@ -361,10 +361,60 @@ describe("NowScreen — the frontier list", () => {
       ["Project", "Kitchen rebuild"],
       ["Size", "deep"],
       ["Energy", "high"],
+      // The item names no deadline, so urgency reads it as `calm` — the
+      // band every deadline-less item lands in, and the reason this axis
+      // has no no-value column of its own.
+      ["Urgency", "calm"],
     ] as const) {
       fireEvent.click(screen.getByRole("button", { name: axis }));
       expect(screen.getByRole("heading", { name: heading })).toBeDefined();
     }
+  });
+
+  it("offers the calm-order control on the urgency axis alone", () => {
+    renderNow(taskState({ frontier: [itemDTO({ id: "i1", title: "Rewire the lamp" })] }));
+
+    // The direction reads the `calm` column and nothing else, so on any
+    // other axis it would be a switch with no visible subject.
+    expect(screen.queryByRole("button", { name: "Oldest first" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Urgency" }));
+    expect(screen.getByRole("button", { name: "Oldest first" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Newest first" })).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Size" }));
+    expect(screen.queryByRole("button", { name: "Newest first" })).toBeNull();
+  });
+
+  it("re-orders the calm column when the direction is switched, and persists it", () => {
+    const { storage } = renderNow(
+      taskState({
+        frontier: [
+          itemDTO({ id: "i1", title: "Older thing", createdAt: 1_000 }),
+          itemDTO({ id: "i2", title: "Newer thing", createdAt: 2_000 }),
+        ],
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Urgency" }));
+    const titlesNow = () =>
+      screen
+        .getAllByRole("button")
+        .map((node) => node.textContent ?? "")
+        .filter((text) => text.includes("Older thing") || text.includes("Newer thing"));
+
+    expect(titlesNow()[0]).toContain("Older thing");
+
+    fireEvent.click(screen.getByRole("button", { name: "Newest first" }));
+    expect(titlesNow()[0]).toContain("Newer thing");
+    // Unlike the filter, the direction is remembered: it re-reads a column
+    // rather than hiding one, so it cannot become a remembered lie about
+    // what you have to do.
+    expect(storage.entries["hb.now.frontier-calm-order"]).toBe("newest");
+
+    // ...and back to the default, which is stored as key absence.
+    fireEvent.click(screen.getByRole("button", { name: "Oldest first" }));
+    expect("hb.now.frontier-calm-order" in storage.entries).toBe(false);
   });
 
   it("caps a column at six cards and says how many are hidden", () => {

@@ -912,6 +912,10 @@ describe("ProjectsScreen", () => {
       expect(screen.getByRole("button", { name: "Context", pressed: true })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Size" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Energy" })).toBeTruthy();
+      // The fifth axis reaches this board for free — `PROJECT_BOARD_AXES`
+      // subtracts `project` from the vocabulary rather than listing what it
+      // offers, which is the property this line pins.
+      expect(screen.getByRole("button", { name: "Urgency" })).toBeTruthy();
       expect(screen.queryByRole("button", { name: "Project" })).toBeNull();
     });
 

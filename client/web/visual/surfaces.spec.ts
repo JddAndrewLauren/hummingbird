@@ -753,6 +753,36 @@ for (const theme of THEMES) {
       });
     });
 
+    test("now's urgency axis captures, with its calm-order control", async ({ page }, testInfo) => {
+      // ADR-0021 decision 1's amendment: the fifth axis, and the one axis
+      // whose columns are not the values of a field. Its own capture rather
+      // than a note in the registry, because two things here are visible
+      // nowhere else — the bands as *columns* (severity-ordered, no
+      // no-value column, since urgency is total) and the Oldest/Newest
+      // control, which is the only member of the axis strip that comes and
+      // goes. The strip's width is the thing worth photographing at every
+      // project: it gains a fifth axis button *and* two more chips at once,
+      // and `expectNoHorizontalOverflow` is what says whether 390 survives
+      // that.
+      await openApp(page, theme, "board");
+      await show(page, "Now", testInfo.project.name);
+      await expect(page.getByRole("heading", { name: "@computer" })).toBeVisible();
+
+      await page.getByRole("button", { name: "Urgency" }).click();
+      // The fixture's deadline-less majority all land here, so `calm` is the
+      // one band guaranteed present whatever today's date is when the gate
+      // runs — every other band depends on the fixture's deadlines against
+      // the real clock.
+      await expect(page.getByRole("heading", { name: "calm" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Oldest first" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Newest first" })).toBeVisible();
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({
+        path: `visual/.captures/now-urgency-${testInfo.project.name}-${theme}.png`,
+        fullPage: true,
+      });
+    });
+
     // #481: the search overlay joins the registry as a photographed surface,
     // closing #331's "the busiest new surface shipping unphotographed"
     // finding. Board world only — until #456, the header's Search button

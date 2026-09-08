@@ -13,6 +13,7 @@ import net.twinion.hummingbird.core.CoreHolder
 import net.twinion.hummingbird.ui.panes.CollapseOverride
 import net.twinion.hummingbird.ui.panes.PaneCollapse
 import net.twinion.hummingbird.core.ZoneBridge
+import uniffi.hummingbird_ffi_mobile.MobileCalmOrder
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 import uniffi.hummingbird_ffi_mobile.MobileSurface
@@ -389,7 +390,13 @@ class NowViewModel(
         fun create(context: Context): NowViewModel =
             NowViewModel(
                 fetchBoardFn = { axis, facets, now ->
-                    CoreHolder.get(context.applicationContext).nowBoard(axis, facets, now)
+                    // `MobileCalmOrder` orders the `urgency` axis's `calm`
+                    // column, and this screen offers no urgency axis (see
+                    // `NowScreen.kt`'s FRONTIER_AXES) — so the value is
+                    // inert here and is passed explicitly anyway, because
+                    // the seam deliberately holds no default of its own.
+                    CoreHolder.get(context.applicationContext)
+                        .nowBoard(axis, facets, now, MobileCalmOrder.OLDEST)
                 },
                 readAxisFn = { FrontierPrefs.readAxis(context.applicationContext) },
                 writeAxisFn = { axis -> FrontierPrefs.writeAxis(context.applicationContext, axis) },

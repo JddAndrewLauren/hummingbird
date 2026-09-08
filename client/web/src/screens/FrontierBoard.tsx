@@ -516,7 +516,7 @@ export function FrontierBoard({
 
       {/* ADR-0021: the frontier in columns, grouped by a switchable axis, in
           place of the fixed project sections this branch used to cut. Project
-          is now one of the four axes, so nothing is lost.
+          is now one of the five axes, so nothing is lost.
 
           The unsorted captures go in as well, marked with their stage chip and
           ordered under the startable actions of whichever column they land in

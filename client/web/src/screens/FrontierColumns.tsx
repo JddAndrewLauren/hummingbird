@@ -30,7 +30,13 @@ import { MarkDoneButton } from "../components/domain/MarkDoneButton";
 import { StageBadge } from "../components/domain/StageBadge";
 import { EmptyState } from "../components/feedback/EmptyState";
 import { ControlButton, SECTION_TOGGLE_HOVER, sectionToggleStyle } from "./ControlButton";
-import { FRONTIER_AXES, groupFrontier, type FrontierAxis } from "./frontier-columns";
+import {
+  CALM_ORDERS,
+  FRONTIER_AXES,
+  groupFrontier,
+  type CalmOrder,
+  type FrontierAxis,
+} from "./frontier-columns";
 import {
   applyFacets,
   contextsOf,
@@ -48,8 +54,10 @@ import { orderFrontier } from "./frontier-order";
 import { triageProcessQueue } from "./triage-process-order";
 import {
   type FrontierPrefsScreen,
+  readCalmOrder,
   readCollapsedColumns,
   readFrontierAxis,
+  writeCalmOrder,
   writeCollapsedColumns,
   writeFrontierAxis,
 } from "./frontier-prefs";
@@ -65,6 +73,15 @@ const AXIS_LABEL: Record<FrontierAxis, string> = {
   project: "Project",
   size: "Size",
   energy: "Energy",
+  urgency: "Urgency",
+};
+
+/** The calm-order control's two labels. Rendered only on the `urgency` axis
+ * — the direction reads its `calm` column and nothing else, so on any other
+ * axis the control would be a switch with no visible subject. */
+const CALM_ORDER_LABEL: Record<CalmOrder, string> = {
+  oldest: "Oldest first",
+  newest: "Newest first",
 };
 
 /** Display text for the column of items naming no value on the live axis —
@@ -74,6 +91,13 @@ const NO_VALUE_LABEL: Record<FrontierAxis, string> = {
   project: "No project",
   size: "No size",
   energy: "No energy",
+  // Unreachable, and pinned so by `urgency_never_yields_a_no_value_column`
+  // in `hummingbird_core::decisions::frontier`: urgency is total, so an item
+  // with no deadline — or one whose deadline will not parse — reads as
+  // `calm` rather than as no value. Present because the map is exhaustive
+  // over the axis vocabulary, and a plausible label is a better fallback
+  // than a crash if that ever stops being true.
+  urgency: "No urgency",
 };
 
 /** ADR-0021 decision 2: **colour encodes urgency and nothing else.** `calm`
@@ -447,6 +471,7 @@ export function FrontierColumns({
     readCollapsedColumns(storage, screen),
   );
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set<string>());
+  const [calmOrder, setCalmOrder] = useState<CalmOrder>(() => readCalmOrder(storage, screen));
   const [filtersOpen, setFiltersOpen] = useState(false);
   // Deliberately NOT persisted — see `frontier-prefs.ts`. Opening Now to a
   // filtered board you would misread as an empty frontier is the failure this
@@ -471,7 +496,7 @@ export function FrontierColumns({
   // capture is next.
   const ordered = [...orderFrontier(frontier), ...triageProcessQueue(triage, grilling, draftItemIds).items];
   const shown = applyFacets(ordered, picked, nowMs);
-  const columns = groupFrontier(shown, axis, projects);
+  const columns = groupFrontier(shown, axis, projects, nowMs, calmOrder);
   const activeFacets = facetCount(picked);
 
   const pickAxis = (next: FrontierAxis) => {
@@ -485,6 +510,14 @@ export function FrontierColumns({
     setCollapsed(new Set<string>());
     writeCollapsedColumns(storage, screen, new Set<string>());
     setExpanded(new Set<string>());
+  };
+
+  const pickCalmOrder = (next: CalmOrder) => {
+    setCalmOrder(next);
+    writeCalmOrder(storage, screen, next);
+    // No collapse or expansion state to clear: the direction re-orders one
+    // column's cards and renames nothing, so every key still means what it
+    // meant.
   };
 
   // The keys a column could legitimately have on this axis, so a write can
@@ -502,7 +535,7 @@ export function FrontierColumns({
   // column the live filter happens to be hiding is not dead, and pruning
   // against `columns` would silently forget it was shut.
   const liveKeys = new Set(
-    groupFrontier(ordered, axis, projects).map((column) => column.value ?? ""),
+    groupFrontier(ordered, axis, projects, nowMs, calmOrder).map((column) => column.value ?? ""),
   );
 
   const toggleCollapsed = (key: string) => {
@@ -613,6 +646,40 @@ export function FrontierColumns({
             {AXIS_LABEL[entry]}
           </ControlButton>
         ))}
+
+        {/* Only the `urgency` axis has a `calm` column to order, so this is
+            the one control on the strip that comes and goes. It sits directly
+            after the axis buttons because it is a modifier of the one just
+            pressed, not a peer of them. */}
+        {axis === "urgency" ? (
+          // A labelled group, not two more loose toggles. The axis buttons
+          // beside these use the identical `aria-pressed` treatment, so
+          // without a name for the pair a screen reader hears seven
+          // same-shaped controls in a row and nothing saying the last two
+          // answer a different question.
+          <div
+            role="group"
+            aria-label="Calm column order"
+            style={{
+              display: "flex",
+              gap: "var(--space-2)",
+              alignItems: "center",
+              marginLeft: "var(--space-4)",
+            }}
+          >
+            {CALM_ORDERS.map((entry) => (
+              <ControlButton
+                key={entry}
+                aria-pressed={calmOrder === entry}
+                onClick={() => pickCalmOrder(entry)}
+                baseStyle={controlStyle(calmOrder === entry)}
+                hoverStyle={controlHoverStyle(calmOrder === entry)}
+              >
+                {CALM_ORDER_LABEL[entry]}
+              </ControlButton>
+            ))}
+          </div>
+        ) : null}
 
         {/* The axis switch is permanent chrome and the filter hides behind a
             button: filtering is the occasional gesture, so only one of the two

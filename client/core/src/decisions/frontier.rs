@@ -9,11 +9,34 @@
 //! frontier order; the old body is deleted, not kept as a second live
 //! implementation, and this is the only place the name survives.
 //!
-//! **Grouping stays clockless, on purpose.** None of the four axes
-//! (context, project, size, energy) is time-varying, so [`group_frontier`]
-//! takes no `now` at all — there is nothing for a clock to leak into, and a
-//! caller cannot accidentally make a column's membership depend on when it
-//! asked.
+//! **Grouping is clockless for four of the five axes.** Context, project,
+//! size and energy are not time-varying, and nothing about how they bucket
+//! can depend on when the caller asked. `urgency` (the fifth axis, added by
+//! ADR-0021 decision 1's own amendment) is time-varying by construction —
+//! it *is* a reading of a deadline against a clock — so [`group_frontier`]
+//! takes `now` as an argument. It is injected, never read ambiently, in
+//! exactly the form [`super::urgency::compute_urgency`] and
+//! [`matches_facets`] already take it: a deadline-shaped local wall-clock
+//! string, resolved by the reader in its own zone, because this crate holds
+//! no tzdb.
+//!
+//! **Grouping never re-sorts, with one named exception.** The caller has
+//! already ordered with [`by_priority_then_due`], and every column preserves
+//! that order — except the `calm` column on the `urgency` axis, which is
+//! re-sorted by `created_at` in the direction [`CalmOrder`] names.
+//!
+//! **What that column actually holds, stated precisely, because the obvious
+//! reading of it is wrong.** `calm` is not "the deadline-less items": it is
+//! everything the world is not pressing on, which is *both* the items naming
+//! no deadline at all *and* every item due beyond
+//! `urgency::SOON_WINDOW_MINUTES` (three days). So the re-sort does discard
+//! a real ordering fact — an Urgent item due in five days sits by its
+//! capture date rather than by its priority, until it crosses into `soon`
+//! and rejoins [`by_priority_then_due`]'s order. That cost is **accepted,
+//! not overlooked** (the operator chose this shape, 2026-09-08): `calm` is
+//! the column you read when nothing is pressing, and "what has been sitting
+//! here longest" / "what just turned up" is the question being asked of it —
+//! the priority ordering is still exactly one axis-switch away.
 //!
 //! **Everything here works over ids, not whole items.** A caller (the web
 //! seam, later Android) already holds the full item; handing the boundary
@@ -27,7 +50,7 @@ use std::collections::HashSet;
 
 use hummingbird_domain::deadline_sort_key;
 
-use super::urgency::compute_urgency;
+use super::urgency::{compute_urgency, UrgencyBand};
 use super::vocabulary::CONTEXTS;
 
 /// The frontier-relevant slice of one item: what [`by_priority_then_due`],
@@ -43,6 +66,11 @@ pub struct FrontierItem {
     pub size: Option<String>,
     pub energy: Option<String>,
     pub project_id: Option<String>,
+    /// Epoch milliseconds, `hummingbird_domain::Item::created_at` verbatim.
+    /// Read by the `urgency` axis alone, to order the `calm` column (see
+    /// [`CalmOrder`]); no other axis and no ordering or facet function
+    /// touches it.
+    pub created_at: i64,
 }
 
 // --------------------------------------------------------------- ordering
@@ -91,19 +119,27 @@ fn compare_deadlines(a: Option<&str>, b: Option<&str>) -> Ordering {
 
 // --------------------------------------------------------------- grouping
 
-/// The axes the frontier can be grouped by (ADR-0021 decision 1) — `project`
-/// answers *what does this belong to*, the other three answer *what can I
-/// do right now, from where I am, with the time and energy I have*.
-/// Deliberately not [`super::vocabulary::FRONTIER_AXES`]: that list is the
-/// *facet* vocabulary (urgency instead of project — colour already carries
-/// urgency across whatever axis is live, and a project column already
-/// isolates one project, so neither is offered the other's way).
+/// The axes the frontier can be grouped by (ADR-0021 decision 1, as amended
+/// by its own decision-1 amendment) — `project` answers *what does this
+/// belong to*, `context`/`size`/`energy` answer *what can I do right now,
+/// from where I am, with the time and energy I have*, and `urgency` answers
+/// *what is the world pressing on me*.
+///
+/// Still deliberately not [`super::vocabulary::FRONTIER_AXES`], though the
+/// two lists now overlap in every member but one: that list is the *facet*
+/// vocabulary and has no `project`, because a project column already
+/// isolates one project. Urgency, which that comment used to give as the
+/// other half of the same asymmetry, is now offered both ways — the
+/// argument that colour already carries it holds against a *redundant*
+/// encoding, not against grouping by it, and a reader who wants the board
+/// partitioned by pressure could not get there from a filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrontierAxis {
     Context,
     Project,
     Size,
     Energy,
+    Urgency,
 }
 
 impl FrontierAxis {
@@ -113,6 +149,7 @@ impl FrontierAxis {
             FrontierAxis::Project => "project",
             FrontierAxis::Size => "size",
             FrontierAxis::Energy => "energy",
+            FrontierAxis::Urgency => "urgency",
         }
     }
 
@@ -122,15 +159,59 @@ impl FrontierAxis {
 }
 
 /// Every grouping axis, in the order the switch offers them — `context`
-/// leads because it is the default.
-pub const FRONTIER_GROUP_AXES: [FrontierAxis; 4] = [
+/// leads because it is the default, `urgency` is last because it is the
+/// newest and the switch's order is not a ranking.
+pub const FRONTIER_GROUP_AXES: [FrontierAxis; 5] = [
     FrontierAxis::Context,
     FrontierAxis::Project,
     FrontierAxis::Size,
     FrontierAxis::Energy,
+    FrontierAxis::Urgency,
 ];
 
 pub const DEFAULT_FRONTIER_AXIS: FrontierAxis = FrontierAxis::Context;
+
+/// Which way the `urgency` axis's `calm` column reads. That column is the
+/// board's "nothing is pressing" pile — every deadline-less item, plus
+/// everything due beyond the `soon` window — and the two useful readings of
+/// such a pile are opposites: oldest-first is the backlog ("what has been
+/// sitting here"), newest-first is the inbox ("what just turned up").
+/// Neither is right enough to hard-code, so the reader picks. See the module
+/// header for what ordering by arrival costs, and why it is accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalmOrder {
+    Oldest,
+    Newest,
+}
+
+impl CalmOrder {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CalmOrder::Oldest => "oldest",
+            CalmOrder::Newest => "newest",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<CalmOrder> {
+        CALM_ORDERS.into_iter().find(|order| order.as_str() == s)
+    }
+}
+
+pub const CALM_ORDERS: [CalmOrder; 2] = [CalmOrder::Oldest, CalmOrder::Newest];
+
+/// Oldest first, matching [`super::queue::order_triage`] — the app's other
+/// `created_at` ordering, and the same claim: the thing that has waited
+/// longest is the thing most easily forgotten.
+pub const DEFAULT_CALM_ORDER: CalmOrder = CalmOrder::Oldest;
+
+/// The `urgency` axis's columns, in the order they are always emitted —
+/// severity, never [`group_frontier`]'s fullest-first. A band's size is not
+/// what makes it worth reading first, and a board whose column order moved
+/// as items crossed band boundaries would re-arrange itself under the
+/// reader for reasons they did not cause. Empty bands are omitted, not
+/// rendered blank.
+const URGENCY_COLUMN_ORDER: [UrgencyBand; 4] =
+    [UrgencyBand::Overdue, UrgencyBand::Now, UrgencyBand::Soon, UrgencyBand::Calm];
 
 /// One project's id and display name — the wire hop [`group_frontier`]
 /// needs to label a `project` column with a real name rather than a raw
@@ -152,12 +233,17 @@ pub struct FrontierColumn {
     pub ids: Vec<String>,
 }
 
-fn raw_axis_value(item: &FrontierItem, axis: FrontierAxis) -> Option<&str> {
+fn raw_axis_value<'a>(item: &'a FrontierItem, axis: FrontierAxis, now: &str) -> Option<&'a str> {
     match axis {
         FrontierAxis::Context => item.context.as_deref(),
         FrontierAxis::Project => item.project_id.as_deref(),
         FrontierAxis::Size => item.size.as_deref(),
         FrontierAxis::Energy => item.energy.as_deref(),
+        // Total, and that is the point: `compute_urgency` answers `calm`
+        // for an item with no deadline and for one whose deadline will not
+        // resolve, so this axis has no no-value bucket at all — the one
+        // axis where ADR-0021's "no-value column always last" never fires.
+        FrontierAxis::Urgency => Some(compute_urgency(item.deadline.as_deref(), now).as_str()),
     }
 }
 
@@ -165,8 +251,8 @@ fn raw_axis_value(item: &FrontierItem, axis: FrontierAxis) -> Option<&str> {
 /// `items.context` is free text with no empty-string rejection on the write
 /// path, so without this fold an API writer could land a *second* no-value
 /// column sharing the caller's `value ?? ""` key.
-fn axis_value(item: &FrontierItem, axis: FrontierAxis) -> Option<String> {
-    match raw_axis_value(item, axis) {
+fn axis_value(item: &FrontierItem, axis: FrontierAxis, now: &str) -> Option<String> {
+    match raw_axis_value(item, axis, now) {
         None => None,
         Some("") => None,
         Some(v) => Some(v.to_string()),
@@ -174,21 +260,32 @@ fn axis_value(item: &FrontierItem, axis: FrontierAxis) -> Option<String> {
 }
 
 /// Columns for one axis: fullest first, and the no-value column always
-/// last whichever axis is live. Ties are broken by first appearance in
-/// `items`, and within a bucket the input order is preserved — the caller
-/// has already ordered with [`by_priority_then_due`], and grouping never
-/// re-sorts.
+/// last. Ties are broken by first appearance in `items`, and within a
+/// bucket the input order is preserved — the caller has already ordered
+/// with [`by_priority_then_due`], and grouping never re-sorts.
+///
+/// **The `urgency` axis is the exception to both sentences**, and to
+/// nothing else: its columns come out in [`URGENCY_COLUMN_ORDER`] rather
+/// than fullest-first, it has no no-value column to place last, and its
+/// `calm` column is re-sorted by `created_at` per `calm_order`. See the
+/// module header for why that exception is worth having.
+///
+/// `now` is a deadline-shaped local wall-clock string, read by the
+/// `urgency` axis alone; the other four ignore it entirely and stay
+/// clockless. `calm_order` is likewise read only by `urgency`.
 pub fn group_frontier(
     items: &[FrontierItem],
     axis: FrontierAxis,
     projects: &[ProjectName],
+    now: &str,
+    calm_order: CalmOrder,
 ) -> Vec<FrontierColumn> {
     let mut order: Vec<Option<String>> = Vec::new();
     let mut buckets: std::collections::HashMap<Option<String>, Vec<String>> =
         std::collections::HashMap::new();
 
     for item in items {
-        let value = axis_value(item, axis);
+        let value = axis_value(item, axis, now);
         let bucket = buckets.entry(value.clone()).or_insert_with(|| {
             order.push(value.clone());
             Vec::new()
@@ -214,6 +311,10 @@ pub fn group_frontier(
         })
         .collect();
 
+    if axis == FrontierAxis::Urgency {
+        return order_urgency_columns(columns, items, calm_order);
+    }
+
     let mut named: Vec<FrontierColumn> = Vec::new();
     let mut unnamed: Vec<FrontierColumn> = Vec::new();
     for column in columns.drain(..) {
@@ -226,6 +327,45 @@ pub fn group_frontier(
     named.sort_by_key(|c| std::cmp::Reverse(c.ids.len()));
 
     named.into_iter().chain(unnamed).collect()
+}
+
+/// The `urgency` axis's own column and within-column order: bands in
+/// [`URGENCY_COLUMN_ORDER`], and the `calm` column re-sorted by
+/// `created_at` with `id` as the tiebreak — ascending both ways, exactly as
+/// [`super::queue::order_triage`] breaks its own tie, so the direction
+/// changes which item leads and never which of two same-instant items does.
+fn order_urgency_columns(
+    mut columns: Vec<FrontierColumn>,
+    items: &[FrontierItem],
+    calm_order: CalmOrder,
+) -> Vec<FrontierColumn> {
+    let created: std::collections::HashMap<&str, i64> =
+        items.iter().map(|item| (item.id.as_str(), item.created_at)).collect();
+
+    for column in columns.iter_mut() {
+        if column.value.as_deref() != Some(UrgencyBand::Calm.as_str()) {
+            continue;
+        }
+        column.ids.sort_by(|a, b| {
+            let (left, right) = (
+                created.get(a.as_str()).copied().unwrap_or_default(),
+                created.get(b.as_str()).copied().unwrap_or_default(),
+            );
+            match calm_order {
+                CalmOrder::Oldest => left.cmp(&right),
+                CalmOrder::Newest => right.cmp(&left),
+            }
+            .then_with(|| a.cmp(b))
+        });
+    }
+
+    columns.sort_by_key(|column| {
+        URGENCY_COLUMN_ORDER
+            .iter()
+            .position(|band| Some(band.as_str()) == column.value.as_deref())
+            .unwrap_or(usize::MAX)
+    });
+    columns
 }
 
 // --------------------------------------------------------------- facets
@@ -386,6 +526,7 @@ mod tests {
             size: None,
             energy: None,
             project_id: None,
+            created_at: 0,
         }
     }
 
@@ -454,9 +595,20 @@ mod tests {
     // ------------------------------------------------------------ group_frontier
     // Ported from `frontier-columns.test.ts`.
 
+    /// The deadline-shaped wall clock every test below reads against — the
+    /// `urgency` axis's bands, and the facet tests' own, are all stated
+    /// relative to this instant.
+    const NOW: &str = "2026-08-13T12:00";
+
     #[test]
     fn collects_items_by_their_value_on_the_live_axis_preserving_input_order() {
         for axis in FRONTIER_GROUP_AXES {
+            // `urgency` has no field to set — its value is derived from the
+            // deadline, and its bucketing, column order and `calm` ordering
+            // are asserted by the tests that follow this section instead.
+            if axis == FrontierAxis::Urgency {
+                continue;
+            }
             let field = |v: &str| -> FrontierItem {
                 let mut it = item("x");
                 match axis {
@@ -464,6 +616,7 @@ mod tests {
                     FrontierAxis::Project => it.project_id = Some(v.to_string()),
                     FrontierAxis::Size => it.size = Some(v.to_string()),
                     FrontierAxis::Energy => it.energy = Some(v.to_string()),
+                    FrontierAxis::Urgency => unreachable!("skipped above"),
                 }
                 it
             };
@@ -471,7 +624,7 @@ mod tests {
             let b = FrontierItem { id: "b".into(), ..field("y") };
             let c = FrontierItem { id: "c".into(), ..field("x") };
 
-            let columns = group_frontier(&[a, b, c], axis, &[]);
+            let columns = group_frontier(&[a, b, c], axis, &[], NOW, DEFAULT_CALM_ORDER);
 
             assert_eq!(columns[0].value.as_deref(), Some("x"));
             assert_eq!(columns[0].ids, vec!["a", "c"]);
@@ -485,7 +638,7 @@ mod tests {
         let unnamed = item("a");
         let named = FrontierItem { context: Some("x".into()), ..item("b") };
 
-        let columns = group_frontier(&[unnamed, named], FrontierAxis::Context, &[]);
+        let columns = group_frontier(&[unnamed, named], FrontierAxis::Context, &[], NOW, DEFAULT_CALM_ORDER);
 
         assert_eq!(
             columns.iter().map(|c| c.value.clone()).collect::<Vec<_>>(),
@@ -499,7 +652,7 @@ mod tests {
         let fat1 = FrontierItem { context: Some("fat".into()), ..item("b") };
         let fat2 = FrontierItem { context: Some("fat".into()), ..item("c") };
 
-        let columns = group_frontier(&[thin, fat1, fat2], FrontierAxis::Context, &[]);
+        let columns = group_frontier(&[thin, fat1, fat2], FrontierAxis::Context, &[], NOW, DEFAULT_CALM_ORDER);
 
         assert_eq!(
             columns.iter().map(|c| c.value.clone()).collect::<Vec<_>>(),
@@ -515,7 +668,7 @@ mod tests {
         let named = FrontierItem { context: Some("@computer".into()), ..item("d") };
 
         let columns =
-            group_frontier(&[unnamed1, unnamed2, unnamed3, named], FrontierAxis::Context, &[]);
+            group_frontier(&[unnamed1, unnamed2, unnamed3, named], FrontierAxis::Context, &[], NOW, DEFAULT_CALM_ORDER);
 
         assert_eq!(columns[0].value.as_deref(), Some("@computer"));
         assert_eq!(columns[1].value, None);
@@ -527,7 +680,7 @@ mod tests {
         let first = FrontierItem { context: Some("@phone".into()), ..item("a") };
         let second = FrontierItem { context: Some("@computer".into()), ..item("b") };
 
-        let columns = group_frontier(&[first, second], FrontierAxis::Context, &[]);
+        let columns = group_frontier(&[first, second], FrontierAxis::Context, &[], NOW, DEFAULT_CALM_ORDER);
 
         assert_eq!(columns[0].value.as_deref(), Some("@phone"));
         assert_eq!(columns[1].value.as_deref(), Some("@computer"));
@@ -539,7 +692,7 @@ mod tests {
         let absent = item("b");
         let named = FrontierItem { context: Some("x".into()), ..item("c") };
 
-        let columns = group_frontier(&[empty, absent, named], FrontierAxis::Context, &[]);
+        let columns = group_frontier(&[empty, absent, named], FrontierAxis::Context, &[], NOW, DEFAULT_CALM_ORDER);
 
         assert_eq!(columns[0].value.as_deref(), Some("x"));
         assert_eq!(columns[1].value, None);
@@ -551,7 +704,7 @@ mod tests {
         let a = FrontierItem { project_id: Some("p-1".into()), ..item("a") };
         let projects = [ProjectName { id: "p-1".into(), name: "Ship the release".into() }];
 
-        let columns = group_frontier(&[a], FrontierAxis::Project, &projects);
+        let columns = group_frontier(&[a], FrontierAxis::Project, &projects, NOW, DEFAULT_CALM_ORDER);
 
         assert_eq!(columns[0].value.as_deref(), Some("p-1"));
         assert_eq!(columns[0].label.as_deref(), Some("Ship the release"));
@@ -562,7 +715,7 @@ mod tests {
         let a = FrontierItem { project_id: Some("unknown-id".into()), ..item("a") };
         let projects = [ProjectName { id: "p-1".into(), name: "Ship the release".into() }];
 
-        let columns = group_frontier(&[a], FrontierAxis::Project, &projects);
+        let columns = group_frontier(&[a], FrontierAxis::Project, &projects, NOW, DEFAULT_CALM_ORDER);
 
         assert_eq!(columns[0].label, None);
     }
@@ -572,7 +725,7 @@ mod tests {
         let a = FrontierItem { context: Some("raw-value".into()), ..item("a") };
         let projects = [ProjectName { id: "raw-value".into(), name: "Not this".into() }];
 
-        let columns = group_frontier(&[a], FrontierAxis::Context, &projects);
+        let columns = group_frontier(&[a], FrontierAxis::Context, &projects, NOW, DEFAULT_CALM_ORDER);
 
         assert_eq!(columns[0].label.as_deref(), Some("raw-value"));
     }
@@ -580,7 +733,7 @@ mod tests {
     #[test]
     fn returns_no_columns_for_an_empty_frontier() {
         for axis in FRONTIER_GROUP_AXES {
-            assert!(group_frontier(&[], axis, &[]).is_empty());
+            assert!(group_frontier(&[], axis, &[], NOW, DEFAULT_CALM_ORDER).is_empty());
         }
     }
 
@@ -594,16 +747,199 @@ mod tests {
         ];
         for axis in FRONTIER_GROUP_AXES {
             let mut ids: Vec<String> =
-                group_frontier(&input, axis, &[]).into_iter().flat_map(|c| c.ids).collect();
+                group_frontier(&input, axis, &[], NOW, DEFAULT_CALM_ORDER).into_iter().flat_map(|c| c.ids).collect();
             ids.sort();
             assert_eq!(ids, vec!["a", "b", "c", "d"]);
         }
     }
 
+    // ------------------------------------------------- group_frontier: urgency
+    // ADR-0021 decision 1's amendment: the fifth axis.
+
+    /// Bands against `NOW` (`2026-08-13T12:00`): overdue is any past
+    /// deadline, `now` is inside 24h, `soon` inside 3 days, `calm` beyond
+    /// that — or no deadline at all.
+    fn dated(id: &str, deadline: &str) -> FrontierItem {
+        FrontierItem { deadline: Some(deadline.to_string()), ..item(id) }
+    }
+
+    #[test]
+    fn urgency_emits_its_bands_in_severity_order_never_fullest_first() {
+        // `calm` is deliberately the fullest, so fullest-first would put it
+        // first if the axis had not opted out of that rule.
+        let input = vec![
+            item("calm-1"),
+            item("calm-2"),
+            item("calm-3"),
+            dated("soon", "2026-08-15T12:00"),
+            dated("now", "2026-08-13T18:00"),
+            dated("overdue", "2026-08-12T12:00"),
+        ];
+
+        let columns = group_frontier(&input, FrontierAxis::Urgency, &[], NOW, DEFAULT_CALM_ORDER);
+
+        assert_eq!(
+            columns.iter().map(|c| c.value.clone()).collect::<Vec<_>>(),
+            vec![
+                Some("overdue".to_string()),
+                Some("now".to_string()),
+                Some("soon".to_string()),
+                Some("calm".to_string()),
+            ],
+        );
+    }
+
+    #[test]
+    fn urgency_omits_a_band_nothing_is_in() {
+        let columns = group_frontier(
+            &[dated("overdue", "2026-08-12T12:00"), item("calm")],
+            FrontierAxis::Urgency,
+            &[],
+            NOW,
+            DEFAULT_CALM_ORDER,
+        );
+
+        assert_eq!(
+            columns.iter().map(|c| c.value.clone()).collect::<Vec<_>>(),
+            vec![Some("overdue".to_string()), Some("calm".to_string())],
+        );
+    }
+
+    #[test]
+    fn urgency_never_yields_a_no_value_column() {
+        // The one axis where ADR-0021's "no-value column always last" never
+        // fires: `compute_urgency` is total, so a deadline-less item and one
+        // whose deadline will not resolve both land in `calm` rather than in
+        // a bucket of their own.
+        let input = vec![item("no-deadline"), dated("unparseable", "sometime next week")];
+
+        let columns = group_frontier(&input, FrontierAxis::Urgency, &[], NOW, DEFAULT_CALM_ORDER);
+
+        assert!(columns.iter().all(|c| c.value.is_some()));
+        assert_eq!(columns.len(), 1);
+        assert_eq!(columns[0].value.as_deref(), Some("calm"));
+        assert_eq!(columns[0].ids.len(), 2);
+    }
+
+    #[test]
+    fn urgency_labels_each_band_by_its_own_wire_spelling() {
+        let columns =
+            group_frontier(&[dated("a", "2026-08-12T12:00")], FrontierAxis::Urgency, &[], NOW, DEFAULT_CALM_ORDER);
+
+        assert_eq!(columns[0].label.as_deref(), Some("overdue"));
+    }
+
+    #[test]
+    fn urgency_orders_the_calm_column_oldest_first_by_default() {
+        let newest = FrontierItem { created_at: 3_000, ..item("c") };
+        let oldest = FrontierItem { created_at: 1_000, ..item("a") };
+        let middle = FrontierItem { created_at: 2_000, ..item("b") };
+
+        let columns = group_frontier(
+            &[newest, oldest, middle],
+            FrontierAxis::Urgency,
+            &[],
+            NOW,
+            DEFAULT_CALM_ORDER,
+        );
+
+        assert_eq!(columns[0].ids, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn urgency_reverses_the_calm_column_under_newest_first() {
+        let newest = FrontierItem { created_at: 3_000, ..item("c") };
+        let oldest = FrontierItem { created_at: 1_000, ..item("a") };
+        let middle = FrontierItem { created_at: 2_000, ..item("b") };
+
+        let columns = group_frontier(
+            &[newest, oldest, middle],
+            FrontierAxis::Urgency,
+            &[],
+            NOW,
+            CalmOrder::Newest,
+        );
+
+        assert_eq!(columns[0].ids, vec!["c", "b", "a"]);
+    }
+
+    #[test]
+    fn urgency_breaks_a_created_at_tie_by_id_in_both_directions() {
+        let b = FrontierItem { created_at: 1_000, ..item("b") };
+        let a = FrontierItem { created_at: 1_000, ..item("a") };
+
+        for order in CALM_ORDERS {
+            let columns =
+                group_frontier(&[b.clone(), a.clone()], FrontierAxis::Urgency, &[], NOW, order);
+            assert_eq!(columns[0].ids, vec!["a", "b"], "{}", order.as_str());
+        }
+    }
+
+    #[test]
+    fn the_calm_column_orders_a_far_future_deadline_by_arrival_too() {
+        // The case the module header calls out: `calm` is not "the
+        // deadline-less items", it is everything the world is not pressing
+        // on — so a dated, prioritised item beyond the `soon` window is in
+        // here with the undated ones and is ordered by arrival like them.
+        // Pinned because it is the cost of this axis's one departure from
+        // `by_priority_then_due`, and a silent change to it would look like
+        // a bug fix.
+        let urgent_but_distant = FrontierItem {
+            priority: 1,
+            deadline: Some("2026-09-30T12:00".into()),
+            created_at: 5_000,
+            ..item("distant")
+        };
+        let undated_older = FrontierItem { created_at: 1_000, ..item("undated") };
+
+        let columns = group_frontier(
+            &[urgent_but_distant, undated_older],
+            FrontierAxis::Urgency,
+            &[],
+            NOW,
+            DEFAULT_CALM_ORDER,
+        );
+
+        assert_eq!(columns.len(), 1);
+        assert_eq!(columns[0].value.as_deref(), Some("calm"));
+        // Arrival, not priority: the Urgent item is second because it is
+        // newer, which `by_priority_then_due` would never do.
+        assert_eq!(columns[0].ids, vec!["undated", "distant"]);
+    }
+
+    #[test]
+    fn urgency_leaves_every_dated_band_in_the_callers_order() {
+        // Only `calm` is re-sorted. The other three keep whatever order
+        // `by_priority_then_due` gave the caller, `created_at` and the
+        // direction notwithstanding.
+        let first = FrontierItem { created_at: 9_000, ..dated("first", "2026-08-12T12:00") };
+        let second = FrontierItem { created_at: 1_000, ..dated("second", "2026-08-12T09:00") };
+
+        for order in CALM_ORDERS {
+            let columns =
+                group_frontier(&[first.clone(), second.clone()], FrontierAxis::Urgency, &[], NOW, order);
+            assert_eq!(columns[0].ids, vec!["first", "second"], "{}", order.as_str());
+        }
+    }
+
+    #[test]
+    fn the_calm_order_vocabulary_round_trips_and_refuses_anything_else() {
+        for order in CALM_ORDERS {
+            assert_eq!(CalmOrder::parse(order.as_str()), Some(order));
+        }
+        assert_eq!(CalmOrder::parse("chronological"), None);
+        assert_eq!(DEFAULT_CALM_ORDER, CalmOrder::Oldest);
+    }
+
+    #[test]
+    fn urgency_is_a_grouping_axis_by_its_wire_spelling() {
+        assert_eq!(FrontierAxis::parse("urgency"), Some(FrontierAxis::Urgency));
+        assert_eq!(FrontierAxis::Urgency.as_str(), "urgency");
+        assert!(FRONTIER_GROUP_AXES.contains(&FrontierAxis::Urgency));
+    }
+
     // -------------------------------------------------------------------- facets
     // Ported from `frontier-facets.test.ts`.
-
-    const NOW: &str = "2026-08-13T12:00";
 
     #[test]
     fn matches_everything_when_nothing_is_picked() {

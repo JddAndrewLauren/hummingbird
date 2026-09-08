@@ -83,7 +83,13 @@ export interface DecisionsModule {
   // combined Now/Triage queue.
   priority_rank(raw: number): number;
   order_frontier_ids(itemsJson: string): string;
-  group_frontier_json(itemsJson: string, axis: string, projectsJson: string): string;
+  group_frontier_json(
+    itemsJson: string,
+    axis: string,
+    projectsJson: string,
+    now: string,
+    calmOrder: string,
+  ): string;
   facet_count_json(selectionJson: string): number;
   toggle_facet_json(selectionJson: string, facet: string, value: string): string;
   apply_facets_ids(itemsJson: string, selectionJson: string, now: string): string;
@@ -497,10 +503,12 @@ export function priorityRankFromCore(raw: number): number {
 // own items — never round-tripping a whole item through JSON in either
 // direction.
 
-/** The seven fields `hummingbird_core::decisions::frontier::FrontierItem`
+/** The eight fields `hummingbird_core::decisions::frontier::FrontierItem`
  * reads — what actually crosses into wasm, camelCase already, and nothing
- * else `TaskItemDTO` carries (no title, no stage, no timestamps): matches
- * `FrontierItemDTO` in `ffi-web/src/decisions.rs` field for field. */
+ * else `TaskItemDTO` carries (no title, no stage): matches
+ * `FrontierItemDTO` in `ffi-web/src/decisions.rs` field for field.
+ * `createdAt` is the one timestamp among them, and it crosses for one
+ * reason: the `urgency` axis's `calm` column is ordered by it. */
 function frontierPayload(items: readonly TaskItemDTO[]): string {
   return JSON.stringify(
     items.map((item) => ({
@@ -511,6 +519,7 @@ function frontierPayload(items: readonly TaskItemDTO[]): string {
       size: item.size,
       energy: item.energy,
       projectId: item.projectId,
+      createdAt: item.createdAt,
     })),
   );
 }
@@ -527,9 +536,10 @@ export function orderFrontier(items: readonly TaskItemDTO[]): TaskItemDTO[] {
   return ids.map((id) => byId.get(id)!);
 }
 
-/** The axes the frontier can be grouped by (ADR-0021 decision 1) —
- * `hummingbird_core::decisions::frontier::FrontierAxis`'s own wire names. */
-export type FrontierAxis = "context" | "project" | "size" | "energy";
+/** The axes the frontier can be grouped by (ADR-0021 decision 1, as
+ * amended) — `hummingbird_core::decisions::frontier::FrontierAxis`'s own
+ * wire names. */
+export type FrontierAxis = "context" | "project" | "size" | "energy" | "urgency";
 
 /** Every axis, in the order the switch offers them — pinned against
  * `hummingbird_core::decisions::frontier::FRONTIER_GROUP_AXES` by
@@ -538,9 +548,29 @@ export type FrontierAxis = "context" | "project" | "size" | "energy";
  * `frontier-columns.ts` (`frontier-prefs.ts`, `FrontierColumns.tsx`), which
  * happens before `initDecisions()` ever resolves — see `field-vocabulary
  * .ts`'s header for the full argument. */
-export const FRONTIER_AXES: readonly FrontierAxis[] = ["context", "project", "size", "energy"];
+export const FRONTIER_AXES: readonly FrontierAxis[] = [
+  "context",
+  "project",
+  "size",
+  "energy",
+  "urgency",
+];
 
 export const DEFAULT_FRONTIER_AXIS: FrontierAxis = "context";
+
+/** Which way the `urgency` axis's `calm` column reads —
+ * `hummingbird_core::decisions::frontier::CalmOrder`'s wire names. Read by
+ * that axis alone; on every other axis the value is carried and ignored. */
+export type CalmOrder = "oldest" | "newest";
+
+/** Both directions, in the order the control offers them — a literal for
+ * the same module-evaluation-time reason `FRONTIER_AXES` is one, and pinned
+ * against the core by `frontier-columns.test.ts`. */
+export const CALM_ORDERS: readonly CalmOrder[] = ["oldest", "newest"];
+
+/** Oldest first, matching `orderTriage`: the thing that has waited longest
+ * is the thing most easily forgotten. */
+export const DEFAULT_CALM_ORDER: CalmOrder = "oldest";
 
 export interface FrontierColumn {
   value: string | null;
@@ -550,18 +580,33 @@ export interface FrontierColumn {
 
 /** `hummingbird_core::decisions::frontier::group_frontier` — fullest column
  * first, the no-value column always last, within-column order preserved
- * from `items`. */
+ * from `items`.
+ *
+ * The `urgency` axis is the exception to all three: its columns come out in
+ * severity order (`overdue`, `now`, `soon`, `calm`, empty bands omitted),
+ * it has no no-value column at all (urgency is total — no deadline reads as
+ * `calm`), and its `calm` column is re-sorted by `createdAt` in
+ * `calmOrder`'s direction. `nowMs` is read by that axis alone; the other
+ * four ignore it and stay clockless. */
 export function groupFrontier(
   items: readonly TaskItemDTO[],
   axis: FrontierAxis,
   projects: readonly ProjectDTO[],
+  nowMs: number,
+  calmOrder: CalmOrder = DEFAULT_CALM_ORDER,
 ): FrontierColumn[] {
   const byId = byIdMap(items);
   const projectsJson = JSON.stringify(
     projects.map((project) => ({ id: project.id, name: project.name })),
   );
   const raw = JSON.parse(
-    required().group_frontier_json(frontierPayload(items), axis, projectsJson),
+    required().group_frontier_json(
+      frontierPayload(items),
+      axis,
+      projectsJson,
+      localWallClock(nowMs),
+      calmOrder,
+    ),
   ) as Array<{ value: string | null; label: string | null; ids: string[] }>;
   return raw.map((column) => ({
     value: column.value,

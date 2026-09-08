@@ -823,6 +823,7 @@ fn to_frontier_item(item: &Item) -> frontier::FrontierItem {
         size: item.size.map(|size| size.as_str().to_string()),
         energy: item.energy.map(|energy| energy.as_str().to_string()),
         project_id: item.project_id.clone(),
+        created_at: item.created_at,
     }
 }
 
@@ -876,17 +877,35 @@ fn to_blocked_item_record(item: &Item, now: &str) -> NowItemRecord {
 }
 
 /// [`FrontierAxis`], mirrored as a `uniffi::Enum` — the grouping axis
-/// switch (M3/#530). A second, uniffi-derived definition of the same four
+/// switch (M3/#530). A second, uniffi-derived definition of the same five
 /// axes rather than an annotation on the core type (ADR-0003, the same
 /// reasoning [`MobileUrgencyBand`] states); [`map_frontier_axis`] is the
 /// only place the two are allowed to drift apart from, and it is
 /// exhaustive with no wildcard arm for exactly that reason.
+///
+/// `Urgency` is carried here because the core enum gained it, **not**
+/// because the phone offers it: `NowScreen.kt` holds its own four-entry
+/// switch list. Whoever puts the fifth button on the phone adds it to that
+/// list and threads [`MobileCalmOrder`] out of a preference; nothing here
+/// has to change again.
+///
+/// **The phone has no clamp for the gap that opens meanwhile**, and it is
+/// worth naming rather than assuming: `FrontierPrefs.readAxis` degrades to
+/// `CONTEXT` only when `valueOf` *throws*, so a stored `"URGENCY"` now
+/// parses and is returned, where before this variant existed it would have
+/// been rejected. The web clamps instead against the axes its board
+/// actually offers (`readFrontierAxis`'s `allowedAxes`), and Android has no
+/// equivalent. Harmless today — nothing on the phone can write that value,
+/// and `AXIS_LABEL[axis] ?: candidate.name` keeps the strip from crashing
+/// if one arrived — but it is the net the *next* mobile-omitted axis would
+/// need, so it belongs to whoever adds the button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum MobileFrontierAxis {
     Context,
     Project,
     Size,
     Energy,
+    Urgency,
 }
 
 fn map_frontier_axis(axis: MobileFrontierAxis) -> frontier::FrontierAxis {
@@ -895,6 +914,23 @@ fn map_frontier_axis(axis: MobileFrontierAxis) -> frontier::FrontierAxis {
         MobileFrontierAxis::Project => frontier::FrontierAxis::Project,
         MobileFrontierAxis::Size => frontier::FrontierAxis::Size,
         MobileFrontierAxis::Energy => frontier::FrontierAxis::Energy,
+        MobileFrontierAxis::Urgency => frontier::FrontierAxis::Urgency,
+    }
+}
+
+/// [`frontier::CalmOrder`], mirrored the same way and for the same reason —
+/// which way the `urgency` axis's `calm` column reads. Read by that axis
+/// alone; on every other axis the caller's value is carried and ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileCalmOrder {
+    Oldest,
+    Newest,
+}
+
+fn map_calm_order(order: MobileCalmOrder) -> frontier::CalmOrder {
+    match order {
+        MobileCalmOrder::Oldest => frontier::CalmOrder::Oldest,
+        MobileCalmOrder::Newest => frontier::CalmOrder::Newest,
     }
 }
 
@@ -1088,6 +1124,7 @@ fn build_now_board(
     axis: frontier::FrontierAxis,
     facets: &frontier::FacetSelection,
     now: &str,
+    calm_order: frontier::CalmOrder,
 ) -> NowBoardRecord {
     let by_id: HashMap<&str, &Item> = frontier_items
         .iter()
@@ -1112,7 +1149,8 @@ fn build_now_board(
         .collect();
 
     let contexts = frontier::contexts_of(&ordered_entries);
-    let live_column_keys: Vec<String> = frontier::group_frontier(&ordered_entries, axis, projects)
+    let live_column_keys: Vec<String> =
+        frontier::group_frontier(&ordered_entries, axis, projects, now, calm_order)
         .into_iter()
         .map(|column| column.value.unwrap_or_default())
         .collect();
@@ -1123,7 +1161,7 @@ fn build_now_board(
         .filter_map(|id| by_id.get(id.as_str()).map(|item| to_frontier_item(item)))
         .collect();
 
-    let columns = frontier::group_frontier(&shown_entries, axis, projects)
+    let columns = frontier::group_frontier(&shown_entries, axis, projects, now, calm_order)
         .into_iter()
         .map(|column| NowColumnRecord {
             value: column.value,
@@ -4647,12 +4685,20 @@ impl MobileTaskHost {
     /// wall clock already rendered into that shape — the same convention
     /// `urgency.rs`'s module header states for [`urgency::compute_urgency`]:
     /// `hummingbird-core` resolves no civil date to an instant, so Android,
-    /// like the web seam, is the reader that does.
+    /// like the web seam, is the reader that does. `now` is read by the
+    /// per-row band on every axis, and by the *grouping* on `Urgency`
+    /// alone.
+    ///
+    /// `calm_order` is likewise `Urgency`'s alone — which way that axis's
+    /// `calm` column reads (see [`MobileCalmOrder`]). The caller passes one
+    /// on every axis rather than the seam defaulting it, so the default
+    /// lives in the client that offers the control instead of here.
     pub async fn now_board(
         &self,
         axis: MobileFrontierAxis,
         facets: NowFacetSelectionRecord,
         now: String,
+        calm_order: MobileCalmOrder,
     ) -> NowBoardRecord {
         let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await;
         let frontier_items = inner.core.frontier();
@@ -4676,6 +4722,7 @@ impl MobileTaskHost {
             map_frontier_axis(axis),
             &to_facet_selection(&facets),
             &now,
+            map_calm_order(calm_order),
         )
     }
 
@@ -7786,12 +7833,33 @@ mod tests {
             "NowScreen.kt's facet ENERGY_VALUES must match this — order included, since the level glyphs' ramp position is the list index (#558). The detail pane's own editor no longer holds a copy: it reads `captureFormMeta`.",
         );
 
+        // The phone offers a **prefix** of the core's grouping axes, not all
+        // of them: `urgency` (ADR-0021 decision 1's amendment) landed on the
+        // web alone, because `AxisRowWrappingTest` pins the whole axis strip
+        // — every label plus the Filter chip — to one unwrapped line at
+        // 419dp, and a fifth chip is a layout decision with its own budget
+        // to spend rather than a label to append. `MobileFrontierAxis`
+        // carries the variant regardless, so whoever spends it changes
+        // `NowScreen.kt`'s three maps and this list, and nothing else.
+        //
+        // Stated as an explicit omission rather than as a subset check: a
+        // *new* core axis nobody has thought about still fails this gate.
+        const NOT_YET_ON_THE_PHONE: [&str; 1] = ["urgency"];
+
         let axes: Vec<&str> = frontier::FRONTIER_GROUP_AXES
             .into_iter()
             .map(|axis| axis.as_str())
             .collect();
+        for omitted in NOT_YET_ON_THE_PHONE {
+            assert!(
+                axes.contains(&omitted),
+                "{omitted} is named as not-yet-on-the-phone but is not a core axis at all",
+            );
+        }
+        let offered: Vec<&str> =
+            axes.iter().copied().filter(|axis| !NOT_YET_ON_THE_PHONE.contains(axis)).collect();
         assert_eq!(
-            axes,
+            offered,
             vec!["context", "project", "size", "energy"],
             "NowScreen.kt's FRONTIER_AXES (and AXIS_LABEL/NO_VALUE_LABEL) must match this order",
         );
@@ -8029,6 +8097,62 @@ mod tests {
         frontier::FacetSelection::default()
     }
 
+    /// The `urgency` axis across the mobile seam (2026-09-08). Android's own
+    /// switch does not offer this axis — `NowScreen.kt` holds four entries —
+    /// but [`MobileFrontierAxis::Urgency`] and [`MobileCalmOrder`] both cross
+    /// the boundary, and without a case exercising them the two `match` arms
+    /// that map them are compile-checked and nothing more. The rule itself is
+    /// tested in `hummingbird_core::decisions::frontier`; this pins that the
+    /// mapping reaches it.
+    #[test]
+    fn now_board_maps_the_urgency_axis_and_its_calm_order_through() {
+        // Against the `now` below: overdue, and two undated items that both
+        // read as `calm` whatever the real clock says.
+        let overdue = item("overdue", 0, Some("2026-08-14T09:00"));
+        let mut older = item("older", 0, None);
+        older.created_at = 1_000;
+        let mut newer = item("newer", 0, None);
+        newer.created_at = 2_000;
+        let now = "2026-08-15T12:00";
+
+        let oldest_first = build_now_board(
+            &[overdue.clone(), newer.clone(), older.clone()],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            map_frontier_axis(MobileFrontierAxis::Urgency),
+            &no_facets(),
+            now,
+            map_calm_order(MobileCalmOrder::Oldest),
+        );
+
+        // Severity order, and no no-value column — the two things this axis
+        // does that no other one does.
+        assert_eq!(
+            oldest_first.columns.iter().map(|c| c.value.clone()).collect::<Vec<_>>(),
+            vec![Some("overdue".to_string()), Some("calm".to_string())],
+        );
+        assert_eq!(board_ids(&oldest_first), vec!["overdue", "older", "newer"]);
+
+        let newest_first = build_now_board(
+            &[overdue, newer, older],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            map_frontier_axis(MobileFrontierAxis::Urgency),
+            &no_facets(),
+            now,
+            map_calm_order(MobileCalmOrder::Newest),
+        );
+
+        // Only `calm` turns over; `overdue` keeps its place.
+        assert_eq!(board_ids(&newest_first), vec!["overdue", "newer", "older"]);
+    }
+
     /// The shared-fixture ordering pin: the exact fixture shapes
     /// `hummingbird_core::decisions::frontier`'s own
     /// `ranks_by_priority_label_never_the_raw_wire_number` and
@@ -8052,6 +8176,7 @@ mod tests {
             frontier::FrontierAxis::Context,
             &no_facets(),
             "2026-08-15T12:00",
+            frontier::CalmOrder::Oldest,
         );
         assert_eq!(board_ids(&board), vec!["urgent", "low", "none"]);
 
@@ -8069,6 +8194,7 @@ mod tests {
             frontier::FrontierAxis::Context,
             &no_facets(),
             "2026-08-13T12:00",
+            frontier::CalmOrder::Oldest,
         );
         assert_eq!(board_ids(&board), vec!["soon", "later", "none-deadline"]);
     }
@@ -8087,6 +8213,7 @@ mod tests {
             frontier::FrontierAxis::Context,
             &no_facets(),
             "2026-08-15T12:00",
+            frontier::CalmOrder::Oldest,
         );
 
         assert_eq!(board.columns.len(), 1);
@@ -8114,6 +8241,7 @@ mod tests {
                 frontier::FrontierAxis::Context,
                 &no_facets(),
                 "2026-08-15T12:00",
+                frontier::CalmOrder::Oldest,
             )
         };
         assert_eq!(build(), build());
@@ -8138,6 +8266,7 @@ mod tests {
             frontier::FrontierAxis::Context,
             &no_facets(),
             "2026-08-15T12:00",
+            frontier::CalmOrder::Oldest,
         );
 
         assert_eq!(board.columns[0].value.as_deref(), Some("@phone"));
@@ -8169,6 +8298,7 @@ mod tests {
             frontier::FrontierAxis::Context,
             &picked,
             "2026-08-15T12:00",
+            frontier::CalmOrder::Oldest,
         );
 
         // @computer has no columns left once the filter is applied...
@@ -8199,6 +8329,7 @@ mod tests {
             frontier::FrontierAxis::Context,
             &picked,
             "2026-08-15T12:00",
+            frontier::CalmOrder::Oldest,
         );
 
         assert_eq!(board_ids(&board), vec!["a"]);
@@ -8227,6 +8358,7 @@ mod tests {
             frontier::FrontierAxis::Context,
             &picked,
             "2026-08-15T12:00",
+            frontier::CalmOrder::Oldest,
         );
 
         // The board is narrowed to @phone alone, but the chip vocabulary
@@ -8259,6 +8391,7 @@ mod tests {
             frontier::FrontierAxis::Context,
             &picked,
             "2026-08-15T12:00",
+            frontier::CalmOrder::Oldest,
         );
 
         assert_eq!(board.shown_count, 1);
@@ -8289,6 +8422,7 @@ mod tests {
             frontier::FrontierAxis::Context,
             &no_facets(),
             "2026-08-15T12:00",
+            frontier::CalmOrder::Oldest,
         );
 
         assert_eq!(
@@ -8314,6 +8448,7 @@ mod tests {
             frontier::FrontierAxis::Context,
             &no_facets(),
             "2026-08-15T12:00",
+            frontier::CalmOrder::Oldest,
         );
 
         assert!(board.columns.is_empty());
@@ -8341,6 +8476,7 @@ mod tests {
                 frontier::FrontierAxis::Context,
                 &no_facets(),
                 "2026-08-15T12:00",
+                frontier::CalmOrder::Oldest,
             );
 
             assert_eq!(
@@ -8369,6 +8505,7 @@ mod tests {
                 frontier::FrontierAxis::Context,
                 &no_facets(),
                 "2026-08-15T12:00",
+                frontier::CalmOrder::Oldest,
             );
 
             assert!(board.blocked[0].item.available_actions.is_empty());
@@ -8435,6 +8572,7 @@ mod tests {
                 MobileFrontierAxis::Context,
                 NowFacetSelectionRecord::default(),
                 "2026-08-15T12:00".to_string(),
+                MobileCalmOrder::Oldest,
             )
             .await;
         assert_eq!(board_ids(&board), vec![urgent_id, low_id]);
@@ -8593,6 +8731,7 @@ mod tests {
                 MobileFrontierAxis::Context,
                 NowFacetSelectionRecord::default(),
                 "2026-08-15T12:00".to_string(),
+                MobileCalmOrder::Oldest,
             )
             .await;
         let record = board
