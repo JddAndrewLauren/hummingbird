@@ -1104,23 +1104,89 @@ mod tests {
         &body[..end]
     }
 
-    /// Every `#[serde(rename = "...")]` tag in
-    /// [`diagnostic_event_declaration`], in declaration order — one per
-    /// variant, since every variant of this enum carries its own rename
-    /// (checked elsewhere: [`a_diagnostic_event_v1_serializes_and_round_trips_stably`]
-    /// and friends pin the wire name of every family). Reads only lines
-    /// that literally start with the attribute, so the doc comment a few
-    /// lines below this one — which quotes `#[serde(rename = "title")]` as
-    /// prose — is not itself mistaken for a variant.
+    /// Every variant's effective wire name, in declaration order (#768).
+    /// Finds each variant by its own declaration line — exactly one level
+    /// of indentation inside the enum body, ending the line in `{` (a
+    /// struct variant) or `,` (a unit variant) — rather than by scanning
+    /// for `#[serde(rename = "...")]` tags: a variant this enum's own
+    /// `#[serde(tag = "name", content = "payload")]` gives no
+    /// `rename_all`, so a variant with no rename attribute of its own still
+    /// serializes under its bare identifier, and previously had **no**
+    /// entry here at all — invisible to
+    /// [`every_declared_variant_has_a_fixture_entry`], which is the exact
+    /// hole #768 was filed over: a variant added without a rename and
+    /// without a fixture entry passed that gate by never being enumerated,
+    /// not by being checked. This function's doc used to claim the rename
+    /// invariant was "checked elsewhere"; nothing did, which is the other
+    /// half of what #768 closes. When a variant's declaration line is
+    /// immediately preceded by a `#[serde(rename = "...")]`, that string is
+    /// its wire name (serde's tag beats the bare identifier); otherwise the
+    /// identifier itself is, matching what `serde_json` actually emits.
+    ///
+    /// Split into a pure [`parse_variant_names`] plus this thin wrapper so
+    /// the parsing rule is unit-testable against a synthetic declaration —
+    /// see [`a_variant_with_no_rename_is_still_discovered_by_its_identifier`]
+    /// below — not only against the real, always-renamed enum, which could
+    /// never by itself prove the no-rename path works.
     fn declared_variant_names() -> Vec<&'static str> {
-        diagnostic_event_declaration()
-            .lines()
-            .filter_map(|line| {
-                let rest = line.trim().strip_prefix("#[serde(rename = \"")?;
-                let end = rest.find('"')?;
-                Some(&rest[..end])
-            })
-            .collect()
+        parse_variant_names(diagnostic_event_declaration())
+    }
+
+    /// The parsing rule [`declared_variant_names`] applies, factored out so
+    /// it can be exercised against a declaration text that (unlike the real
+    /// enum) actually contains a variant with no `#[serde(rename)]` — see
+    /// that function's own doc for what this replaces and why.
+    fn parse_variant_names(declaration: &str) -> Vec<&str> {
+        let lines: Vec<&str> = declaration.lines().collect();
+        let mut names = Vec::new();
+        for (index, line) in lines.iter().enumerate() {
+            // Variant declarations sit at exactly one level of indentation
+            // inside the enum body; a struct variant's own fields (and any
+            // doc comment continuing past this line) sit deeper than this,
+            // so the indent width alone rules them out.
+            if line.len() - line.trim_start().len() != 4 {
+                continue;
+            }
+            let trimmed = line.trim();
+            let identifier = match trimmed.strip_suffix('{').or_else(|| trimmed.strip_suffix(',')) {
+                Some(rest) => rest.trim(),
+                None => continue,
+            };
+            let is_variant_identifier = !identifier.is_empty()
+                && identifier.starts_with(|c: char| c.is_ascii_uppercase())
+                && identifier.chars().all(|c| c.is_ascii_alphanumeric());
+            if !is_variant_identifier {
+                continue;
+            }
+            let rename = index
+                .checked_sub(1)
+                .and_then(|previous| lines[previous].trim().strip_prefix("#[serde(rename = \""))
+                .and_then(|rest| rest.find('"').map(|end| &rest[..end]));
+            names.push(rename.unwrap_or(identifier));
+        }
+        names
+    }
+
+    /// **The rename-blind spot #768 closes.** A variant that carries no
+    /// `#[serde(rename = "...")]` — the exact shape the old
+    /// `declared_variant_names` (a scan for that attribute alone) could
+    /// never see — is still found here, named by its bare identifier
+    /// (`NewFamily`, matching what `serde_json` actually serializes with no
+    /// `rename_all` in play). A renamed variant is unaffected: its wire
+    /// name still comes from the attribute, not the identifier. Both halves
+    /// exercised against a synthetic declaration, not the real (always
+    /// renamed) enum, since the real one alone could never prove the
+    /// no-rename path works.
+    #[test]
+    fn a_variant_with_no_rename_is_still_discovered_by_its_identifier() {
+        let synthetic = "pub enum DiagnosticEvent {\n    \
+             #[serde(rename = \"session.started\")]\n    SessionStarted,\n\n    \
+             /// A variant with no rename attribute at all.\n    NewFamily {\n        \
+             foo: bool,\n    },\n}";
+        assert_eq!(
+            parse_variant_names(synthetic),
+            vec!["session.started", "NewFamily"]
+        );
     }
 
     /// **The fixture-completeness gate (#741).** Adding a variant to
@@ -1146,6 +1212,20 @@ mod tests {
     /// [`no_payload_ever_carries_a_forbidden_field_name`] green (no
     /// fixture to scan) — this test is the one that failed, naming the
     /// missing variant. Reverted before landing.
+    ///
+    /// **Mutation-tested twice more (#768), to close the rename blind
+    /// spot [`declared_variant_names`]'s own doc describes.** (1) Adding a
+    /// bare `MutationTestNoRename,` variant — no `#[serde(rename)]`, no
+    /// fixture entry, only the arm the compiler demands — failed this test:
+    /// `diagnostic event variant(s) declared with no fixture entry in
+    /// \`one_of_every_event_variant\`: ["MutationTestNoRename"]`. Before
+    /// #768 that same mutation passed every test in this module, which is
+    /// the defect this issue was filed over. (2) Adding
+    /// `#[serde(rename = "mutation.test.with_rename")]
+    /// MutationTestWithRename,` — a rename this time, still no fixture
+    /// entry — also failed this test, naming
+    /// `"mutation.test.with_rename"`: the #741 gate still bites a renamed
+    /// variant exactly as before. Both reverted before landing.
     #[test]
     fn every_declared_variant_has_a_fixture_entry() {
         let declared = declared_variant_names();

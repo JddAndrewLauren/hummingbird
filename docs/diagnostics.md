@@ -468,7 +468,19 @@ gap where `worker.started` should be.
    entry — is also closed: `every_declared_variant_has_a_fixture_entry`
    reads every variant's wire name off the enum's own declaration and
    checks it was actually serialized in `one_of_every_event_variant`,
-   naming whichever variant is missing.
+   naming whichever variant is missing. **Closed further — #768.** That
+   discovery step itself used to find variants only by scanning for
+   `#[serde(rename = "...")]` lines, so a variant declared with no rename
+   attribute was never enumerated — invisible to the gate, which then
+   passed by never having looked, not by having checked (proven by
+   mutation: a `title`-carrying variant with no rename and no fixture entry
+   left the whole domain suite green). `declared_variant_names` now finds
+   each variant by its own declaration line and falls back to the bare
+   identifier when no rename attribute precedes it (serde's own default
+   with no `rename_all` on this enum), so a variant is discovered whether
+   or not it carries a rename — closing the gap without needing to newly
+   enforce the rename convention itself, which nothing in this repo did or
+   now does.
 9. **Two of #742's three smaller leftovers from this batch are closed; one
    is not.** Closed — #742: the masked dead disjunct in `evictOverBudget`
    (`client/web/src/worker/diagnostics-store.ts`) is gone — the function
