@@ -100,6 +100,12 @@ export function effectiveDraft(item: TaskItemDTO, touched: Partial<TriageDraft>)
   return { ...draftFromItem(item), ...touched };
 }
 
+/** What a badly-shaped vault path is told to the operator. Exported
+ * because the read-mode note editor (`components/domain/NoteLink.tsx`) is a
+ * second door onto the same column and must not word this differently. */
+export const VAULT_PATH_PROBLEM =
+  "A vault path is relative to the vault — no leading / and no ..";
+
 /** Which fields of a draft cannot be sent, keyed by field so the form can put
  * each message on the control it belongs to rather than in one lump. Empty
  * means the draft is sendable.
@@ -136,7 +142,7 @@ export function triageDraftProblems(draft: TriageDraft): TriageDraftProblems {
   // shape of a path is decided in the one place that also knows how to build
   // the URI from it.
   if (draft.vaultPath.trim().length > 0 && !isValidVaultPath(draft.vaultPath)) {
-    problems.vaultPath = "A vault path is relative to the vault — no leading / and no ..";
+    problems.vaultPath = VAULT_PATH_PROBLEM;
   }
   // #782: the same rule the capture box applies, from the same core door.
   const link = linkLabelProblem(draft.linkUrl, draft.linkLabel);

@@ -32,7 +32,6 @@ import {
 } from "../../screens/triage-form";
 import { useItemDraft } from "../../screens/useItemDraft";
 import { triageFailureFor } from "../../screens/write-failure";
-import { buildUri, derivePath, isValidVaultPath } from "../../obsidian/vault-uri";
 import {
   buildDropboxWebUrl,
   buildOpenUri,
@@ -56,6 +55,7 @@ import type {
 } from "../../store/protocol";
 import type { TaskFileLinkResult, TaskProjectResult, TaskTriageResult } from "../../store/store";
 import type { TriageEdits } from "../../store/worker-client";
+import { NoteLink, noteLinkVisible } from "./NoteLink";
 import { StageBadge } from "./StageBadge";
 
 // **One item panel, two modes.** This is the whole of what an item looks like
@@ -339,39 +339,10 @@ export function ItemPanel({
       ? { itemId: item.id }
       : { itemId: item.id, replace: true, grain: Number(grain) };
 
-  // #771's note affordance. Drawn only when the vault is bound AND this
-  // render can actually deliver on the label: "Start a note" writes the
-  // derived path before opening, so a panel with no `onTriage` behind it
-  // (demo mode) offers it only for an item that already carries one.
-  //
-  // `isValidVaultPath` gates the *stored* path too, not just the typed one.
-  // The triage form checks what the operator types, but `vault_path` is a
-  // plain column the authority only checks for non-blankness, so a path put
-  // there by `sweep.py`, a skill or the agent can hold a leading `/` or a
-  // `..` — shapes this module's header says this client refuses to send.
-  // Refusing to draw the button is how it refuses. (`derivePath` answers
-  // `null` for a title that strips to nothing; same treatment.)
-  const notePath = item.vaultPath ?? derivePath(item.title);
-  const notePointerIsNew = item.vaultPath === null;
-  const showNoteButton =
-    vaultName !== null &&
-    notePath !== null &&
-    isValidVaultPath(notePath) &&
-    (!notePointerIsNew || onTriage !== undefined);
-  // Optimistic, and deliberately so (#771): there is no `x-success` round
-  // trip and the web has no router to receive one. `obsidian://new?…&append`
-  // opens the note when it is there and creates it when it is not, so
-  // re-clicking is always safe — which is what makes the confirmation
-  // unnecessary rather than merely omitted.
-  const openNote = () => {
-    if (notePath === null) {
-      return;
-    }
-    if (notePointerIsNew) {
-      onTriage?.(item.id, null, { vaultPath: notePath });
-    }
-    window.open(buildUri(vaultName ?? "", notePath), "_blank", "noopener,noreferrer");
-  };
+  // #771's note affordance, and every branch it has, is `NoteLink`'s — this
+  // panel only asks whether it draws anything, so the row below is not opened
+  // for a control that renders nothing.
+  const showNoteLink = noteLinkVisible({ item, vaultName, onTriage });
 
   const showFields = mode === "triage" || editing;
   // Detail mode only. On Triage the row renders this itself, *outside* its
@@ -589,7 +560,7 @@ export function ItemPanel({
   // Android's `ACTION_VIEW` — because the column is plain text the
   // authority checks for non-blankness alone, and an anchor to any other
   // scheme is a click this panel would not vouch for (the same refusal
-  // `showNoteButton` makes).
+  // `noteLinkVisible` makes).
   const showLink = item.linkUrl !== null && linkIsFollowable(item.linkUrl);
   const linkRow =
     !showFields && showLink && item.linkUrl !== null ? (
@@ -776,12 +747,12 @@ export function ItemPanel({
           above — a Grill is not an `ItemAction` (`item-actions.ts`'s own
           doc), and the two rows are gated by independent conditions.
 
-          #771's note button shares this row for the same reason: it moves
-          the item through nothing either, and both are things you can do
-          *about* an item rather than to it. Read mode only — while the
+          #771's note affordance shares this row for the same reason: it
+          moves the item through nothing either, and both are things you can
+          do *about* an item rather than to it. Read mode only — while the
           fields are open the Vault path input above is the affordance, and
-          a button that navigates away mid-edit would strand the typing. */}
-      {!showFields && ((onGrillMe && canGrill(item.stage)) || showNoteButton) ? (
+          two live editors over one column would be two ways to disagree. */}
+      {!showFields && ((onGrillMe && canGrill(item.stage)) || showNoteLink) ? (
         <div style={{ display: "flex", gap: "var(--space-4)", flexWrap: "wrap" }}>
           {onGrillMe && canGrill(item.stage) ? (
             <Button
@@ -795,21 +766,8 @@ export function ItemPanel({
               {grillButtonLabel(hasGrillDraft)}
             </Button>
           ) : null}
-          {showNoteButton ? (
-            <Button
-              size="sm"
-              variant="secondary"
-              // The same "this leaves the app" glyph `AlertCard`'s "Open
-              // source" carries, and for the same reason.
-              iconRight="arrow-up-right"
-              // Only the first click writes, so only the first click is
-              // blocked by an unconfirmed mutation. Reopening a note the item
-              // already points at is pure navigation.
-              disabled={notePointerIsNew && item.pending}
-              onClick={openNote}
-            >
-              {notePointerIsNew ? "Start a note" : "Open note"}
-            </Button>
+          {showNoteLink ? (
+            <NoteLink item={item} vaultName={vaultName} onTriage={onTriage} />
           ) : null}
         </div>
       ) : null}
@@ -844,7 +802,7 @@ export function ItemPanel({
           Open fires the helper's scheme; "on dropbox.com" is the always-drawn
           fallback for a device with no helper. A stored path that fails the
           shape rules draws its text and Remove only — refusing to draw Open
-          is how this client refuses, same as the note button above. */}
+          is how this client refuses, same as the note affordance above. */}
       {showFileLinksBlock ? (
         <div>
           <span className="hb-meta">files</span>
