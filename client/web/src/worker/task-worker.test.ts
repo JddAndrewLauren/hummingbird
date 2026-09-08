@@ -84,6 +84,8 @@ const EMPTY_CAPTURE_FIELDS = {
   priority: null,
   deadline: null,
   scheduledDate: null,
+  linkUrl: null,
+  linkLabel: null,
 } as const;
 
 const rawItem = {
@@ -104,6 +106,8 @@ const rawItem = {
   source_key: null,
   source_url: null,
   vault_path: null,
+  link_url: null,
+  link_label: null,
   archived_at: null,
   created_at: 1_000,
   updated_at: 1_000,
@@ -129,6 +133,8 @@ const dtoItem = {
   sourceKey: null,
   sourceUrl: null,
   vaultPath: null,
+  linkUrl: null,
+  linkLabel: null,
   archivedAt: null,
   createdAt: 1_000,
   updatedAt: 1_000,
@@ -1480,6 +1486,8 @@ describe("createTaskRequestQueue", () => {
           priority: null,
           deadline: null,
           scheduledDate: null,
+          linkUrl: null,
+          linkLabel: null,
         },
         nowMs: 1,
       });

@@ -99,6 +99,7 @@ use hummingbird_core::decisions::panes::zone::{ZoneFact, ZoneFacts, ZoneQuery};
 use hummingbird_core::decisions::panes::{
     github, homework, kimi, poller, race, reachability, scps, uptime, vacation, waste, weekend,
 };
+use hummingbird_core::diagnostics::{DiagnosticClock, DiagnosticSession, DiagnosticsContext};
 use hummingbird_core::pane::PaneEnvelope;
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
 use hummingbird_core::storage::FsSnapshotStore;
@@ -193,6 +194,53 @@ pub fn split_deadline(value: &str) -> DeadlineParts {
 #[uniffi::export]
 pub fn join_deadline(date: &str, time: Option<String>) -> String {
     urgency::join_deadline(date, time.as_deref())
+}
+
+/// [`hummingbird_core::decisions::share::ShareDraft`], mirrored as a
+/// `uniffi::Record` — what an `ACTION_SEND` share seeds the capture form
+/// with (#782). `description` and `link_url` cross as `""`-when-unset, the
+/// form's own resting shape, exactly as [`CaptureDraft`] carries them back.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ShareDraftRecord {
+    pub title: String,
+    pub description: String,
+    pub link_url: String,
+}
+
+/// [`hummingbird_core::decisions::share::parse_share_payload`] — the
+/// share-payload mapping, crossed so `CaptureActivity` does no URL parsing
+/// of its own (ADR-0025; `ManifestAliasTest` pins that it never does).
+#[uniffi::export]
+pub fn parse_share_payload(subject: &str, text: &str) -> ShareDraftRecord {
+    let draft = hummingbird_core::decisions::share::parse_share_payload(subject, text);
+    ShareDraftRecord {
+        title: draft.title,
+        description: draft.description.unwrap_or_default(),
+        link_url: draft.link_url.unwrap_or_default(),
+    }
+}
+
+/// [`hummingbird_core::decisions::share::link_display_label`] — what a Link
+/// is called on the item panel: its name, else its host, else the URL.
+#[uniffi::export]
+pub fn link_display_label(url: &str, label: Option<String>) -> String {
+    hummingbird_core::decisions::share::link_display_label(url, label.as_deref())
+}
+
+/// [`hummingbird_core::decisions::share::is_followable_link`] — whether the
+/// item panel draws the Link row at all, and hands its tap to `ACTION_VIEW`.
+#[uniffi::export]
+pub fn link_is_followable(url: &str) -> bool {
+    hummingbird_core::decisions::share::is_followable_link(url)
+}
+
+/// [`hummingbird_core::decisions::share::link_label_problem`] — the one
+/// rule about the pair (a name needs a URL), read by both capture forms'
+/// and the item editor's ViewModels so the refusal is the core's, never a
+/// Kotlin comparison of the two strings.
+#[uniffi::export]
+pub fn link_label_problem(url: &str, label: &str) -> Option<String> {
+    hummingbird_core::decisions::share::link_label_problem(url, label)
 }
 
 /// [`hummingbird_core::decisions::vocabulary::VocabOption`], mirrored as a
@@ -305,6 +353,11 @@ pub struct CaptureDraft {
     pub priority: String,
     pub deadline: String,
     pub scheduled_date: String,
+    /// #782's Link, both halves `""` when unset. A name beside no URL is
+    /// refused at [`MobileTaskHost::capture`], before the core — the same
+    /// rule the authority answers 400 with.
+    pub link_url: String,
+    pub link_label: String,
 }
 
 /// Resolves one optional vocabulary field: `""` is "not set", anything else
@@ -405,6 +458,80 @@ fn mint_mutation_seed(kind: &str, now_ms: i64) -> String {
         Err(_) => format!("mobile-{kind}:{now_ms}:{seq}"),
     }
 }
+
+// -------------------------------------------------------------- #769: run_observed
+
+/// A fresh, process-scoped session id for the
+/// [`hummingbird_core::diagnostics::DiagnosticSession`]
+/// [`MobileTaskHost::run`] drives its observed cycles through — deliberately
+/// **not** `DIAGNOSTIC_SESSION`'s own Android-sourced identity. That static
+/// is set by `diagnostic_init_session`, a separate Kotlin call that can run
+/// *after* [`MobileTaskHost::init`] (`CoreHolder.create`'s own doc), so an
+/// id minted here at `init` time cannot wait on it. This is the same
+/// "different (source, session_id) pairs are fine" split
+/// `client/ffi-web`'s `TaskCoreCell` already established for the identical
+/// reason: `Source::Core`'s `sync.*`/`http.*` events only ever need to
+/// correlate among themselves, never against `Source::Android`'s
+/// `core.*`/`worker.*` ones. Random rather than counter-based for the same
+/// cross-process-uniqueness reason [`mint_mutation_seed`] leads with OS
+/// randomness — a restarted process must never reuse a still-live id.
+fn mint_sync_session_id() -> String {
+    let mut random = [0u8; 16];
+    match getrandom::getrandom(&mut random) {
+        Ok(()) => {
+            let hex: String = random.iter().map(|b| format!("{b:02x}")).collect();
+            format!("mobile-sync-{hex}")
+        }
+        Err(_) => "mobile-sync-unknown".to_string(),
+    }
+}
+
+/// The `Instant` [`MobileDiagnosticClock::monotonic_ms`] measures from —
+/// process-wide, not per-thread: this host runs on a multi-threaded tokio
+/// runtime (`uniffi`'s own `async_runtime = "tokio"`), so a `thread_local`
+/// origin would answer a different question depending which worker thread
+/// happened to poll a given call. Lazily set on first use — `MobileTaskHost::init`
+/// samples this same reading for [`DiagnosticSession::new`]'s own
+/// `origin_monotonic_ms` argument (`ffi-web`'s `TaskCoreCell::new` samples
+/// its equivalent `now_monotonic_ms()` the identical way), so the very
+/// first `elapsed_ms` this session ever records starts at (near) zero
+/// rather than jumping by however long the process had already been alive.
+static SYNC_CLOCK_ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+fn sync_monotonic_ms() -> u64 {
+    SYNC_CLOCK_ORIGIN.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
+/// [`DiagnosticClock`] for [`MobileTaskHost::run`]'s observed cycle (#769):
+/// `sleep_ms` via `tokio::time::sleep` — this host already runs on a real
+/// multi-threaded tokio runtime (unlike `ffi-web`'s bare `wasm32`, which has
+/// to reach for JS `setTimeout` instead), so there is no seam to build here
+/// beyond naming the one this crate already depends on for everything else
+/// async.
+struct MobileDiagnosticClock;
+
+#[async_trait::async_trait]
+impl DiagnosticClock for MobileDiagnosticClock {
+    fn monotonic_ms(&self) -> u64 {
+        sync_monotonic_ms()
+    }
+
+    async fn sleep_ms(&self, ms: u64) {
+        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+    }
+}
+
+/// [`DiagnosticsContext::new`]'s host identity for every observed cycle
+/// [`MobileTaskHost::run`] drives (#769) — the `X-Hummingbird-Client-Platform`/
+/// `-Client-Build` correlation headers. `build` is a placeholder, not a real
+/// app version: wiring Android's actual `versionName` across this uniffi
+/// boundary is out of #769's scope (its brief rules out "changing what the
+/// diagnostics envelope carries"), so this crate supplies a fixed, valid
+/// header value rather than leaving one unset — `sanitize_header_value`
+/// would otherwise substitute its own `"invalid"` sentinel for an empty
+/// string on every single request.
+const SYNC_DIAGNOSTICS_PLATFORM: &str = "android";
+const SYNC_DIAGNOSTICS_BUILD: &str = "unknown";
 
 uniffi::setup_scaffolding!();
 
@@ -1341,8 +1468,14 @@ pub struct ItemDetailRecord {
     /// the whole item. **Nothing on Android draws it**: a gap stays silent,
     /// the same idiom the nav alarm follows — the column syncs, the phone
     /// renders nothing, and no affordance claims a capability the platform
-    /// does not have.
+    /// does not have. That is a statement about the vault path alone; the
+    /// Link pair below is drawn and edited on the phone (#782).
     pub vault_path: Option<String>,
+    /// #782's Link: the one URL an item points at and its optional name.
+    /// Drawn wherever the item is opened, by
+    /// [`link_display_label`]; edited through [`ItemEdit`].
+    pub link_url: Option<String>,
+    pub link_label: Option<String>,
     pub updated_at: i64,
     /// CAS target for the edit, exactly as [`AlertRecord::version`] is for
     /// the ack.
@@ -1394,6 +1527,8 @@ fn to_item_detail_record(
         scheduled_date: item.scheduled_date.clone(),
         source_url: item.source_url.clone(),
         vault_path: item.vault_path.clone(),
+        link_url: item.link_url.clone(),
+        link_label: item.link_label.clone(),
         updated_at: item.updated_at,
         version: item.version,
         steps: detail
@@ -1510,6 +1645,11 @@ pub struct ItemEdit {
     pub project_id: FieldPatch,
     pub deadline: FieldPatch,
     pub scheduled_date: FieldPatch,
+    /// #782's Link. Clearing `link_url` clears `link_label` with it at
+    /// [`to_triage_patch`] — one row state, the authority's own rule,
+    /// applied here so the optimistic row never shows a stranded name.
+    pub link_url: FieldPatch,
+    pub link_label: FieldPatch,
 }
 
 /// [`ItemEdit`] → [`hummingbird_core::TriagePatch`], the one conversion
@@ -1534,6 +1674,11 @@ fn to_triage_patch(edit: &ItemEdit) -> Result<hummingbird_core::TriagePatch, Str
         // the column. `None` is "leave it alone", which is what keeps a
         // path set on the web from being cleared by an edit made here.
         vault_path: None,
+        link_url: edit.link_url.to_text(),
+        link_label: match edit.link_url {
+            FieldPatch::Clear => Some(None),
+            _ => edit.link_label.to_text(),
+        },
     })
 }
 
@@ -2740,6 +2885,9 @@ fn map_scps_event(event: scps::ScpsEvent) -> MobileScpsEvent {
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum MobileScpsQuestFact {
     None,
+    /// A `Text` binding is present but did not parse (#702) — carries the
+    /// offending text back so the Android renderer can show it.
+    Malformed { text: String },
     Current { phrase: String },
     Other { month: String, phrase: String },
 }
@@ -2747,6 +2895,7 @@ pub enum MobileScpsQuestFact {
 fn map_scps_quest_fact(quest: scps::ScpsQuestFact) -> MobileScpsQuestFact {
     match quest {
         scps::ScpsQuestFact::None => MobileScpsQuestFact::None,
+        scps::ScpsQuestFact::Malformed { text } => MobileScpsQuestFact::Malformed { text },
         scps::ScpsQuestFact::Current { phrase } => MobileScpsQuestFact::Current { phrase },
         scps::ScpsQuestFact::Other { month, phrase } => MobileScpsQuestFact::Other { month, phrase },
     }
@@ -3957,6 +4106,20 @@ pub struct MobileTaskHost {
     core_owner: core_lock::CoreOwnershipTracker,
     diag_session: core_lock::CoreLockSession,
     diag_sink: core_lock::BufferingSink,
+    /// #769: the `Source::Core` sibling of `diag_session` above — the
+    /// `hummingbird_core::diagnostics::DiagnosticSession` [`MobileTaskHost::run`]
+    /// builds its per-cycle [`DiagnosticsContext`] from, so a `sync.*`/
+    /// `http.*` event actually reaches `diag_sink` (the same buffer
+    /// `diag_session`'s own `core.*`/`operation.*` events already share) in
+    /// production, not just from a `client/core` test fixture. Its own,
+    /// independent session id — see [`mint_sync_session_id`]'s doc for why
+    /// it does not reuse `DIAGNOSTIC_SESSION`'s.
+    sync_diag_session: DiagnosticSession<'static>,
+    /// The counter [`MobileTaskHost::run`] mints each cycle's `cycle_id`
+    /// from — a different id space from any `operation_id` (`mint_mutation_seed`'s
+    /// callers), so the two can never collide on the same ordinal in the
+    /// exported journal.
+    next_sync_cycle_seq: AtomicU64,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -4027,6 +4190,15 @@ impl MobileTaskHost {
             // advances — rather than minting a second, colliding one.
             diag_session: core_lock::CoreLockSession::new(&DIAGNOSTIC_SESSION.seq),
             diag_sink: core_lock::BufferingSink::new(),
+            // `Box::leak`, once per `MobileTaskHost` (constructed once per
+            // process, like `ffi-web`'s `TaskCoreCell`) — the same bounded,
+            // single leak `TaskCoreCell::new` already accepts for its own
+            // session id.
+            sync_diag_session: DiagnosticSession::new(
+                Box::leak(mint_sync_session_id().into_boxed_str()),
+                sync_monotonic_ms(),
+            ),
+            next_sync_cycle_seq: AtomicU64::new(0),
         }))
     }
 
@@ -4206,11 +4378,19 @@ impl MobileTaskHost {
         inner.core.clear_api_key();
     }
 
-    /// Runs one sync cycle against the live transports. `trigger` is the
-    /// web protocol's string pair (`"timer"` gates on backoff, anything
-    /// else is a deliberate `"user"` gesture); `now_ms` and `jitter_unit`
-    /// come from the host clock and RNG, injected here exactly as on the
-    /// web side so the core stays deterministic under test.
+    /// Runs one observed sync cycle against the live transports (#769).
+    /// `trigger` is the web protocol's string pair (`"timer"` gates on
+    /// backoff, anything else is a deliberate `"user"` gesture); `now_ms`
+    /// and `jitter_unit` come from the host clock and RNG, injected here
+    /// exactly as on the web side so the core stays deterministic under
+    /// test. A fresh, per-call [`DiagnosticsContext`] wraps both transports
+    /// with [`self.sync_diag_session`](DiagnosticSession) and
+    /// [`MobileDiagnosticClock`], so `sync.*`/`http.*` — the latter
+    /// carrying a queued write's `operation_id`, #739's own join key —
+    /// actually reach `self.diag_sink` (and so `take_diagnostic_events`) in
+    /// production, closing the gap this host's own test doc used to name:
+    /// "`MobileTaskHost::run` drives the unobserved `Core::run`… no
+    /// watchdog clock wired up here".
     pub async fn run(
         &self,
         now_ms: i64,
@@ -4222,16 +4402,32 @@ impl MobileTaskHost {
             "timer" => Trigger::Timer,
             _ => Trigger::User,
         };
+        let cycle_id = format!(
+            "{}-cycle-{}",
+            self.sync_diag_session.session_id(),
+            self.next_sync_cycle_seq.fetch_add(1, Ordering::Relaxed)
+        );
+        let clock = MobileDiagnosticClock;
+        let diagnostics = DiagnosticsContext::new(
+            &self.diag_sink,
+            &clock,
+            &self.sync_diag_session,
+            &cycle_id,
+            SYNC_DIAGNOSTICS_PLATFORM,
+            SYNC_DIAGNOSTICS_BUILD,
+            now_ms,
+        );
         let inner = &mut *self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Sync).await;
         let outcome = inner
             .core
-            .run(
+            .run_observed(
                 &inner.read_transport,
                 &inner.write_transport,
                 now_ms,
                 trigger,
                 force_full_sweep,
                 jitter_unit,
+                &diagnostics,
             )
             .await;
         map_run_outcome(outcome)
@@ -4274,6 +4470,11 @@ impl MobileTaskHost {
             .map_err(|detail| MobileCaptureError::CaptureFailed { detail })?;
         let energy = parse_optional_vocabulary(&draft.energy, Energy::parse)
             .map_err(|detail| MobileCaptureError::CaptureFailed { detail })?;
+        if let Some(detail) =
+            hummingbird_core::decisions::share::link_label_problem(&draft.link_url, &draft.link_label)
+        {
+            return Err(MobileCaptureError::CaptureFailed { detail });
+        }
         let options = CaptureOptions {
             size,
             energy,
@@ -4283,6 +4484,8 @@ impl MobileTaskHost {
             project_id: some_if_present(&draft.project_id),
             deadline: some_if_present(&draft.deadline),
             scheduled_date: some_if_present(&draft.scheduled_date),
+            link_url: some_if_present(&draft.link_url),
+            link_label: some_if_present(&draft.link_label),
         };
 
         let seed = mint_mutation_seed("capture", now_ms);
@@ -6532,9 +6735,11 @@ pub fn is_informative_sync_outcome(kind: String) -> bool {
 /// (`HbMessagingService.onMessageReceived`) and, since #710,
 /// `network.changed` (`NetworkMonitor`'s `ConnectivityManager` callback).
 /// Never the whole closed family: `Core::run_observed`'s own
-/// `sync.*`/`http.*`/`operation.*` events would need Android to call the
-/// observed path, which this slice deliberately leaves unwired (see this
-/// crate's `core_lock` module doc for why) — this is the same "mirror a
+/// `sync.*`/`http.*`/`operation.*` events reach `Rust`-side sinks directly
+/// (since #769, [`MobileTaskHost::run`] drives that observed path, and its
+/// events land in the same [`core_lock::BufferingSink`] this crate's own
+/// `core.*`/`operation.*` events already share) — this enum only ever
+/// needs to name the handful *Android itself* mints, the same "mirror a
 /// Rust-owned enum, don't redefine it" shape
 /// [`MobileUrgencyBand`]/[`MobileFrontierAxis`] already use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -6745,6 +6950,8 @@ mod tests {
             priority: String::new(),
             deadline: String::new(),
             scheduled_date: String::new(),
+            link_url: String::new(),
+            link_label: String::new(),
         }
     }
 
@@ -6780,23 +6987,23 @@ mod tests {
     /// `emit_operation_local_commit` against the durable write breaks it.
     /// The `http.started` half is **still vacuous by construction here** —
     /// `capture` only enqueues, so this path never issues HTTP and the
-    /// buffer holds no `http.started` for any assertion to catch. That is
-    /// not the structural gap #739 closed, though: #739 gave the queued
-    /// entry itself an `operation_id` (`hummingbird_core::Core::capture`
-    /// now stamps it, and `drain`'s eventual `http.started`/`http.finished`
+    /// buffer holds no `http.started` for any assertion to catch, whether
+    /// or not `run_observed` is wired anywhere else. That is not the
+    /// structural gap #739 closed, though: #739 gave the queued entry
+    /// itself an `operation_id` (`hummingbird_core::Core::capture` now
+    /// stamps it, and `drain`'s eventual `http.started`/`http.finished`
     /// carry it through — proven at the core level, spanning a real cycle
     /// boundary, by
     /// `hummingbird_core::sync::cycle::tests::observed::operation_local_commit_precedes_http_started_for_the_same_operation_across_the_cycle_boundary`).
-    /// What is still missing on **this** host is that
-    /// [`MobileTaskHost::run`] drives the unobserved `Core::run`, not
-    /// `Core::run_observed` — same reason `ffi-web`'s own `run` doesn't
-    /// either (no watchdog clock wired up here) — so no `http.started` is
-    /// emitted by this production surface at all, whatever operation id it
-    /// would carry once one is. Wiring `run_observed` into this host is a
-    /// separate, already-tracked follow-up, not #739's; until it lands this
-    /// assertion is kept as a regression tripwire for the day capture
-    /// *does* reach the network, not as evidence the join is exercised
-    /// today.
+    /// **#769 closed the other half** — [`MobileTaskHost::run`] now drives
+    /// `Core::run_observed`, not the unobserved `Core::run` — so a queued
+    /// write really does reach `http.started` in production now; that is
+    /// proven by
+    /// `a_queued_write_drained_by_run_emits_http_started_carrying_its_operation_id`
+    /// just below, which (unlike this one) actually calls `run`. This test
+    /// stays scoped to `capture` alone, so its own two assertions above
+    /// remain exactly what they always were: a real ordering pin, and a
+    /// vacuous-by-construction guard against a `capture`-only regression.
     #[tokio::test]
     async fn a_successful_capture_orders_operation_local_commit_before_any_http_started() {
         use hummingbird_core::diagnostics::{DiagnosticEvent, DiagnosticEventV1};
@@ -6864,6 +7071,76 @@ mod tests {
                     && envelope.operation_id.as_deref() == Some(capture_operation_id.as_str())
             }),
             "no http.started event may ever carry capture's own operation_id",
+        );
+    }
+
+    /// Acceptance (#769): "A test per host proves an `http.started` is
+    /// emitted for a queued write carrying the enqueuing operation's id."
+    /// A capture enqueues a write stamped with its own minted `operation_id`
+    /// (`MobileTaskHost::capture`'s own plumbing, unchanged by this issue);
+    /// `run` then drains it against an empty `base_url` (this crate's own
+    /// network-free pattern — `ReqwestMutationTransport::send_with_headers`
+    /// fails on the resulting relative URL, but only *after*
+    /// `InstrumentedMutationTransport::send` has already recorded
+    /// `http.started`), proving the join key #739 built is actually
+    /// exercised in production on this host too, not just reachable from a
+    /// `client/core` fixture.
+    ///
+    /// **This is the demonstrated-failure mutation the brief asks for.**
+    /// Reverting `MobileTaskHost::run` to call the unobserved `Core::run`
+    /// (swap `run_observed` back to `run`, drop the `diagnostics` argument)
+    /// makes this test fail: `Core::run` emits no `http.*` events at all,
+    /// so `take_diagnostic_events` holds no `HttpStarted` event and the
+    /// `expect` below panics with "a queued write's drain must emit
+    /// http.started". Confirmed by hand and reverted before landing.
+    #[tokio::test]
+    async fn a_queued_write_drained_by_run_emits_http_started_carrying_its_operation_id() {
+        use hummingbird_core::diagnostics::{DiagnosticEvent, DiagnosticEventV1};
+
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("run-observed-http-started-ns");
+        // A real (if fake) device token, matching `TaskHostCore`'s own
+        // identical test: an *empty* one would clear the credential at
+        // `init` (its own comment on `empty_key`), so `run` would answer
+        // `NoCredential` and short-circuit before ever reaching the queue
+        // drain — never emitting anything for this test to catch.
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            String::new(),
+            "device-token".to_string(),
+        )
+        .await
+        .unwrap();
+
+        host.capture(title_only_draft("drain me"), 1_000).await.unwrap();
+        let before_run: Vec<DiagnosticEventV1> = host
+            .take_diagnostic_events()
+            .await
+            .iter()
+            .map(|line| serde_json::from_str(&line.json).unwrap())
+            .collect();
+        let operation_id = before_run
+            .iter()
+            .find(|envelope| matches!(envelope.event, DiagnosticEvent::OperationLocalCommit))
+            .and_then(|envelope| envelope.operation_id.clone())
+            .expect("capture's operation.local_commit carries its operation_id");
+
+        let _ = host.run(2_000, "user".to_string(), true, 0.0).await;
+
+        let envelopes: Vec<DiagnosticEventV1> = host
+            .take_diagnostic_events()
+            .await
+            .iter()
+            .map(|line| serde_json::from_str(&line.json).unwrap())
+            .collect();
+        let http_started = envelopes
+            .iter()
+            .find(|envelope| matches!(envelope.event, DiagnosticEvent::HttpStarted { .. }))
+            .expect("a queued write's drain must emit http.started");
+        assert_eq!(
+            http_started.operation_id.as_deref(),
+            Some(operation_id.as_str()),
+            "http.started must carry the enqueuing capture's operation id"
         );
     }
 
@@ -7417,6 +7694,8 @@ mod tests {
             scheduled_date: None,
             source_url: None,
             vault_path: None,
+            link_url: None,
+            link_label: None,
             updated_at: 0,
             version: 1,
             steps: vec![],
@@ -7544,6 +7823,8 @@ mod tests {
             priority: "2".to_string(),
             deadline: "2026-09-01".to_string(),
             scheduled_date: "2026-08-30".to_string(),
+            link_url: "https://example.test/passport".to_string(),
+            link_label: "Renewal form".to_string(),
         };
         let id = host.capture(draft, 1_000).await.unwrap();
 
@@ -7558,6 +7839,58 @@ mod tests {
         assert_eq!(item.priority, 2);
         assert_eq!(item.deadline, Some("2026-09-01".to_string()));
         assert_eq!(item.scheduled_date, Some("2026-08-30".to_string()));
+        assert_eq!(item.link_url, Some("https://example.test/passport".to_string()));
+        assert_eq!(item.link_label, Some("Renewal form".to_string()));
+    }
+
+    /// #782: a link name beside no URL is refused here, before the core,
+    /// exactly as an unrecognised size is — the authority would answer 400
+    /// and the mutation would dead-letter with nothing on screen to say so.
+    #[tokio::test]
+    async fn a_link_name_without_a_url_is_refused_before_the_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("m3-capture-link-name-alone");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            String::new(),
+        )
+        .await
+        .unwrap();
+
+        let draft = CaptureDraft {
+            destination: CaptureDestination::Ready,
+            link_label: "Renewal form".to_string(),
+            ..title_only_draft("renew the passport")
+        };
+        let err = host.capture(draft, 1_000).await.unwrap_err();
+        assert!(matches!(err, MobileCaptureError::CaptureFailed { .. }), "{err}");
+        let inner = host.inner.lock().await;
+        assert_eq!(inner.core.queue_depth(), 0, "nothing was ever queued");
+    }
+
+    /// The two share doors are thin: one mapping each, pinned here so the
+    /// `""`-when-unset shape they hand Kotlin is a tested fact.
+    #[test]
+    fn the_share_doors_cross_the_core_mapping_with_empty_for_unset() {
+        let draft = parse_share_payload("", "https://www.youtube.com/watch?v=abc");
+        assert_eq!(
+            draft,
+            ShareDraftRecord {
+                title: "youtube.com".to_string(),
+                description: String::new(),
+                link_url: "https://www.youtube.com/watch?v=abc".to_string(),
+            }
+        );
+        assert_eq!(link_display_label("https://www.youtube.com/watch?v=abc", None), "youtube.com");
+        assert!(link_is_followable("https://www.youtube.com/watch?v=abc"));
+        assert!(!link_is_followable("javascript:alert(1)"));
+        assert_eq!(link_label_problem("", "Shop").as_deref(), Some("A link name needs a URL"));
+        assert_eq!(link_label_problem("https://shop.test/", "Shop"), None);
+        assert_eq!(
+            link_display_label("https://www.youtube.com/watch?v=abc", Some("Rehab".to_string())),
+            "Rehab",
+        );
     }
 
     /// `destination: Triage` never reaches [`Core::frontier`] (Triage is
@@ -7671,6 +8004,8 @@ mod tests {
             source_key: None,
             source_url: None,
             vault_path: None,
+            link_url: None,
+            link_label: None,
             archived_at: None,
             agent: false,
             created_at: 0,
@@ -8429,6 +8764,8 @@ mod tests {
             project_id: FieldPatch::Untouched,
             deadline: FieldPatch::Untouched,
             scheduled_date: FieldPatch::Untouched,
+            link_url: FieldPatch::Untouched,
+            link_label: FieldPatch::Untouched,
         }
     }
 
@@ -8738,6 +9075,8 @@ mod tests {
             source_key: None,
             source_url: Some("https://example.test/x".into()),
             vault_path: None,
+            link_url: None,
+            link_label: None,
             archived_at: None,
             agent: false,
             created_at: 1,
@@ -8874,6 +9213,8 @@ mod tests {
             project_id: FieldPatch::Untouched,
             deadline: FieldPatch::Untouched,
             scheduled_date: FieldPatch::Untouched,
+            link_url: FieldPatch::Untouched,
+            link_label: FieldPatch::Untouched,
         }
     }
 
@@ -9687,6 +10028,8 @@ mod skills_tests {
                     priority: String::new(),
                     deadline: String::new(),
                     scheduled_date: String::new(),
+                    link_url: String::new(),
+                    link_label: String::new(),
                 },
                 1_000,
             )
@@ -9753,6 +10096,8 @@ mod skills_tests {
                     priority: String::new(),
                     deadline: String::new(),
                     scheduled_date: String::new(),
+                    link_url: String::new(),
+                    link_label: String::new(),
                 },
                 1_000,
             )
@@ -10249,6 +10594,8 @@ mod settings_tests {
             priority: String::new(),
             deadline: String::new(),
             scheduled_date: String::new(),
+            link_url: String::new(),
+            link_label: String::new(),
         }
     }
 
@@ -10265,6 +10612,8 @@ mod settings_tests {
             project_id: FieldPatch::Untouched,
             deadline: FieldPatch::Untouched,
             scheduled_date: FieldPatch::Untouched,
+            link_url: FieldPatch::Untouched,
+            link_label: FieldPatch::Untouched,
         }
     }
 
@@ -10305,6 +10654,8 @@ mod settings_tests {
             source_key: None,
             source_url: None,
             vault_path: None,
+            link_url: None,
+            link_label: None,
             archived_at: None,
             agent: false,
             created_at: 0,
@@ -11180,6 +11531,8 @@ mod diagnostic_ffi_tests {
             priority: String::new(),
             deadline: String::new(),
             scheduled_date: String::new(),
+            link_url: String::new(),
+            link_label: String::new(),
         };
         host.capture(draft, 1_000).await.unwrap();
         let core_lock_seqs: Vec<u64> = host
@@ -11247,6 +11600,8 @@ mod diagnostic_ffi_tests {
             priority: String::new(),
             deadline: String::new(),
             scheduled_date: String::new(),
+            link_url: String::new(),
+            link_label: String::new(),
         };
         host.capture(draft, 1_000).await.unwrap();
 

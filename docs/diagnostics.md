@@ -70,10 +70,18 @@ repeatedly, because reading them wrong flips a diagnosis:
 
 - **`seq` is monotonic per `session_id`, never per `cycle_id`.** A web
   session, an Android process and the authority's one Durable Object
-  instance are three independent `seq` counters. Order rows by
-  `(session_id, seq)`, never by `seq` alone across a mixed export, and never
-  by `cycle_id` — a cycle can span rows from a session that also logged
-  unrelated cycles in between.
+  instance are three independent `seq` counters — except since #769 an
+  Android process is actually **two**: `Source::Android` rows still carry
+  `DIAGNOSTIC_SESSION`'s own id, while the new `Source::Core` `sync.*`/
+  `http.*` rows from `MobileTaskHost::run`'s observed cycles carry a
+  separate, randomly-minted `mobile-sync-<hex>` id
+  (`mint_sync_session_id`'s own doc says why it can't reuse
+  `DIAGNOSTIC_SESSION`). `operation_id` still joins a queued write's
+  `operation.*` and `http.*` spans across that split (see **Known gaps**
+  item 2) — only `(session_id, seq)` ordering is per-space now. Order rows
+  by `(session_id, seq)`, never by `seq` alone across a mixed export, and
+  never by `cycle_id` — a cycle can span rows from a session that also
+  logged unrelated cycles in between.
 - **`owner` on `core.busy`, `core.wait_started` and `core.acquired` is
   `Option<CoreOwner>`, and `null` means "this writer could not name one" —
   never "nobody held it."** The TypeScript SharedWorker layer that writes
@@ -85,13 +93,14 @@ repeatedly, because reading them wrong flips a diagnosis:
   paragraph exists to prevent.
 - **`operation.finished{success}` means "committed locally and durably
   queued for send," never "reached the authority."** Since #739 the two
-  spans *are* joinable in principle — `operation_id` crosses the
-  outbound-queue boundary on the `QueueEntry` and is stamped onto that
-  write's `http.started`/`http.finished`. But the production wiring that
-  would emit an `http.*` for a queued write to join against is each host's
-  own tracked follow-up — read **Known gaps** item 2 for exactly what #739
-  did and did not change before relying on the join. Either way this event
-  never means the write landed.
+  spans are joinable — `operation_id` crosses the outbound-queue boundary
+  on the `QueueEntry` and is stamped onto that write's
+  `http.started`/`http.finished` — and since #769 the join is live in
+  production on both hosts: both `TaskHostCore::run` and
+  `MobileTaskHost::run` now drive `Core::run_observed`, so a queued write's
+  `http.started` really does carry its enqueuing operation's id. Read
+  **Known gaps** item 2 for the full history. Either way this event never
+  means the write landed.
 
 ## Query the authority's side (Cloudflare)
 
@@ -365,9 +374,11 @@ run directly, result `ok`):
 with no `http.started` anywhere in the same journal — a real local commit
 that this proof never sent anywhere, which is exactly what "no later sync"
 looks like in an export. (Since #739, a real send afterward *would* share
-this operation's id — the join key now exists — but `TaskHostCore::run`
-still drives the unobserved `Core::run`, so no host emits the `http.*` half
-in production yet regardless; see "Known gaps" item 2.)
+this operation's id — the join key now exists. At the time this row was
+induced, `TaskHostCore::run` still drove the unobserved `Core::run`, so no
+host emitted the `http.*` half in production at all regardless — **closed
+since #769**, both hosts' own `run` now drive `Core::run_observed`; see
+"Known gaps" item 2 for the current state.)
 
 ### Row 7 — local commit, no UI-visible change: not induced
 
@@ -424,12 +435,24 @@ gap where `worker.started` should be.
    seam prefixes its per-`SharedWorker` ordinal with the session id
    (`TaskCoreCell::mint_operation_id`, whose own doc carries the collision
    this closed), and `ffi-mobile`'s `mint_mutation_seed` reaches the same
-   property with a random suffix. What #739 did **not**
-   change: neither host's own `run` drives `Core::run_observed` yet (item 7
-   below, and `TaskHostCore::run`'s own doc) — so in production, on either
-   host, no `http.*` is actually emitted for a queued write to join against
-   today. The join key exists end to end; the production wiring that would
-   let a reader exercise it is each host's own tracked follow-up.
+   property with a random suffix. What #739 did **not** change: neither
+   host's own `run` drove `Core::run_observed` yet (item 7 below) — so in
+   production, on either host, no `http.*` was actually emitted for a
+   queued write to join against. **Closed further — #769.** Both
+   `TaskHostCore::run` (`client/ffi-web/src/task_host.rs`) and
+   `MobileTaskHost::run` (`client/ffi-mobile/src/lib.rs`) now drive
+   `Core::run_observed` instead, each wrapping a fresh, per-call
+   `DiagnosticsContext` around the live transports — closing the one gap
+   each host's own doc used to cite for staying on the unobserved path: a
+   working `DiagnosticClock::sleep_ms` (JS `setTimeout` on web,
+   `tokio::time::sleep` on Android/mobile, neither reachable from bare
+   `wasm32-unknown-unknown` or from this workspace's own `client/core`,
+   which carries no runtime of its own). A queued write's `http.started`
+   now really does carry its enqueuing operation's id in production on both
+   hosts — proven, including a demonstrated failure on reverting to the
+   unobserved call, by `TaskHostCore`'s
+   `a_queued_write_drained_by_run_emits_http_started_carrying_its_operation_id`
+   and `MobileTaskHost`'s identically-named test.
 3. **`core.busy`/`core.wait_started`/`core.acquired`'s `owner` can be
    `null` while the core is genuinely held.** See "Read a
    `DiagnosticEventV1` row" above — this is the single most misreadable
@@ -448,9 +471,14 @@ gap where `worker.started` should be.
 7. **Android drains `core.*`/`operation.*` into the journal only around a
    `SyncWorker` run (before/after `core.run`) and on export — not on every
    UI action.** A span from an interactive action may sit unrecorded until
-   the next sync or the next export. Also: `Core::run_observed` is not
-   wired on Android, so Android's journal has no `Source::Core`
-   `sync.*`/`http.*` rows at all — only the web PWA does.
+   the next sync or the next export. **The `Core::run_observed` half of
+   this item is closed — #769**: both hosts now drive it (item 2 above), so
+   Android's journal does carry `Source::Core` `sync.*`/`http.*` rows now,
+   same as the web PWA's — but they reach `BufferingSink`, the identical
+   buffer `core.*`/`operation.*` already share, so this item's own drain-cadence
+   caveat still applies to them too: a `sync.*`/`http.*` span from a cycle
+   that runs with nothing draining the buffer still waits for the next
+   `SyncWorker` run or export before it reaches the on-disk journal.
 8. **Closed — #741.** `FORBIDDEN_FIELD_NAMES` in
    `server/domain/src/diagnostics.rs` is `pub`, not `#[cfg(test)]`-private,
    so it is reachable outside a test build. `hummingbird-ffi-mobile`'s own
@@ -468,7 +496,37 @@ gap where `worker.started` should be.
    entry — is also closed: `every_declared_variant_has_a_fixture_entry`
    reads every variant's wire name off the enum's own declaration and
    checks it was actually serialized in `one_of_every_event_variant`,
-   naming whichever variant is missing.
+   naming whichever variant is missing. **Closed further — #768.** That
+   discovery step itself used to find variants only by scanning for
+   `#[serde(rename = "...")]` lines, so a variant declared with no rename
+   attribute was never enumerated — invisible to the gate, which then
+   passed by never having looked, not by having checked (proven by
+   mutation: a `title`-carrying variant with no rename and no fixture entry
+   left the whole domain suite green). `declared_variant_names` now finds
+   each variant by the identifier leading its own declaration line and
+   falls back to that bare identifier when no rename attribute precedes it
+   (serde's own default with no `rename_all` on this enum), so a variant is
+   discovered whether or not it carries a rename — closing the gap without
+   needing to newly enforce the rename convention itself, which nothing in
+   this repo did or now does. **Round 1 of that same review caught a second
+   hole in the fix itself:** matching on how a variant's *line* ended (`{`
+   or `,`) rather than on its identifier made every single-line struct
+   variant — `SyncStarted { force_full_sweep: bool },`, rustfmt's own
+   default whenever a struct variant's fields fit on one line, 9 of the
+   real enum's 23 variants — invisible too, silently reducing the gate's
+   coverage from 23 variants to 14 (proven the same way: deleting one
+   fixture entry left the whole domain suite green). Discovery now takes
+   the identifier off the *front* of the line instead, so it no longer
+   depends on the line's ending shape at all, and a new test
+   (`declared_variant_names_finds_every_variant`) pins the discovered count
+   against `one_of_every_event_variant`'s own (compiler-exhaustive) length,
+   so a future regression that shrinks discovery fails a named test rather
+   than needing a fixture-deletion mutation to notice — the gap
+   `every_declared_variant_has_a_fixture_entry` alone cannot close, since it
+   only ever checks `declared ⊆ fixtured`. The rename lookback was also
+   widened past intervening doc-comment or attribute lines, so one of those
+   sitting between a `#[serde(rename = "...")]` and its variant cannot
+   mis-name it under the bare identifier instead.
 9. **Two of #742's three smaller leftovers from this batch are closed; one
    is not.** Closed — #742: the masked dead disjunct in `evictOverBudget`
    (`client/web/src/worker/diagnostics-store.ts`) is gone — the function

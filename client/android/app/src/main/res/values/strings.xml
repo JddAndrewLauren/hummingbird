@@ -9,4 +9,9 @@
     <string name="capture_launcher_label">Capture</string>
     <string name="capture_shortcut_short_label">Capture</string>
     <string name="capture_shortcut_long_label">Quick capture</string>
+
+    <!-- The share sheet's entry (#782): the app's own name, lowercase as
+         everywhere, over the capture icon — the operator wants to see
+         "hummingbird" in the sheet, not a verb. -->
+    <string name="share_target_label">hummingbird</string>
 </resources>

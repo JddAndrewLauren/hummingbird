@@ -290,13 +290,12 @@ export interface TaskHostLike {
    * (`server/domain/src/diagnostics.rs`), or omitted entirely.
    *
    * **Optional on purpose, not yet implemented by the real wasm `TaskHost`
-   * as this slice (#707) ships**: `Core::run` is called plain today, not
-   * `Core::run_observed`, and #708 (the `ffi-web` checkout instrumentation
-   * that actually produces `core.*` events) has not landed. Calling this
-   * defensively (`host.drainDiagnostics?.()`) means #707's journal, drain
-   * timer and export UI are fully wired and correct now, draining zero
-   * Core events until #708 lands, with no further change needed here once
-   * it does — see issue #707's own posted finding on this sequencing. */
+   * as this slice (#707) ships.** Calling this defensively
+   * (`host.drainDiagnostics?.()`) means #707's journal, drain timer and
+   * export UI are fully wired and correct now, draining zero Core events
+   * until the real `TaskHost` implements it, with no further change
+   * needed here once it does — see issue #707's own posted finding on
+   * this sequencing. */
   drainDiagnostics?(): string;
 }
 
@@ -318,6 +317,8 @@ interface RawItem {
   source_key: string | null;
   source_url: string | null;
   vault_path: string | null;
+  link_url: string | null;
+  link_label: string | null;
   archived_at: number | null;
   created_at: number;
   updated_at: number;
@@ -719,6 +720,8 @@ function mapItem(raw: RawItem): TaskItemDTO {
     sourceKey: raw.source_key,
     sourceUrl: raw.source_url,
     vaultPath: raw.vault_path,
+    linkUrl: raw.link_url,
+    linkLabel: raw.link_label,
     archivedAt: raw.archived_at,
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,

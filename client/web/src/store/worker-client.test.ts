@@ -728,6 +728,8 @@ describe("attachWorkerClient", () => {
       sourceKey: null,
       sourceUrl: null,
       vaultPath: null,
+      linkUrl: null,
+      linkLabel: null,
       archivedAt: null,
       createdAt: 1,
       updatedAt: 1,
@@ -798,6 +800,8 @@ describe("attachWorkerClient", () => {
       sourceKey: null,
       sourceUrl: null,
       vaultPath: null,
+      linkUrl: null,
+      linkLabel: null,
       archivedAt: null,
       createdAt: 1,
       updatedAt: 1,
@@ -1433,6 +1437,8 @@ describe("the task send helpers (#105/S7)", () => {
         priority: null,
         deadline: null,
         scheduledDate: null,
+        linkUrl: null,
+        linkLabel: null,
       },
       nowMs: 1_000,
     });
@@ -1450,6 +1456,7 @@ describe("the task send helpers (#105/S7)", () => {
       priority: 3,
       deadline: "2026-09-01T09:30",
       scheduledDate: "2026-08-30",
+      linkUrl: "https://example.test/milk",
     });
     expect(worker.postMessage).toHaveBeenCalledWith({
       type: "capture",
@@ -1465,6 +1472,8 @@ describe("the task send helpers (#105/S7)", () => {
         priority: 3,
         deadline: "2026-09-01T09:30",
         scheduledDate: "2026-08-30",
+        linkUrl: "https://example.test/milk",
+        linkLabel: null,
       },
       nowMs: 1_000,
     });

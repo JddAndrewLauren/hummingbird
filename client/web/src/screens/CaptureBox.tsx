@@ -26,6 +26,8 @@ import {
   captureMetaProblems,
   EMPTY_CAPTURE_META,
   resolveCaptureFields,
+  todayDeadline,
+  type CaptureMeta,
 } from "./capture-meta";
 import { energyIcon, levelColor, sizeIcon } from "./size-energy";
 import { canSubmitCapture } from "./capture-validation";
@@ -60,7 +62,7 @@ interface LastSubmit {
 
 export interface CaptureBoxProps {
   /** Enqueues one capture at `destination`'s stage. Never called with an
-   * empty/whitespace-only draft: `canSubmitCapture` gates both buttons here
+   * empty/whitespace-only draft: `canSubmitCapture` gates all three buttons here
    * first (#110's "an empty capture is refused client-side"), because
    * `Core::capture` has no opinion of its own and would enqueue it.
    * `fields` (#208) carries the Energy/Size/Context selections, already
@@ -502,6 +504,10 @@ export function CaptureBox({
   // the screen, and a form that reopens to seven fields taxes the next
   // capture for a decision the last one happened to make.
   const [detailsOpen, setDetailsOpen] = useState(false);
+  // #782: the Link field, its own disclosure below the details one — a
+  // chain glyph on its own row, shut until selected, then `URL` + `Link
+  // name`. Shut again after each capture, with `detailsOpen`.
+  const [linkOpen, setLinkOpen] = useState(false);
 
   // Defence in depth rather than a live message: both date fields are native
   // pickers, which cannot hold a date that does not exist, so this finds
@@ -538,6 +544,7 @@ export function CaptureBox({
       setDraft("");
       setMeta({ ...EMPTY_CAPTURE_META, context: meta.context });
       setDetailsOpen(false);
+      setLinkOpen(false);
       // The dictation failure goes with the draft it happened to. Left
       // standing, a "Nothing was heard." would sit under a freshly emptied box
       // describing a session two captures ago — the same stale-report failure
@@ -592,9 +599,22 @@ export function CaptureBox({
       ? (lastCapture.error ?? "That capture didn't go through.")
       : null;
 
-  function submit(destination: CaptureDestination) {
+  // `overrides` is what the "Mint for today" square stamps over the form's
+  // own meta at the moment of submit — resolved into `fields` synchronously,
+  // because a state write would land a render too late for the `onSubmit` on
+  // this same call stack. It is ALSO persisted with `setMeta`: on ok the box
+  // clears anyway, but a failed capture keeps the form for retry, and without
+  // this the override (the user's today choice) would be gone from `meta` —
+  // a later Enter or "Mint action" would then silently submit the stale
+  // deadline instead.
+  function submit(destination: CaptureDestination, overrides: Partial<CaptureMeta> = {}) {
     if (!canSubmit) {
       return;
+    }
+    const merged = { ...meta, ...overrides };
+    const fields = resolveCaptureFields(merged);
+    if (Object.keys(overrides).length > 0) {
+      setMeta(merged);
     }
     // A submit ends any live session, and this is what actually keeps a frozen
     // draft from going stale: `readOnly` stops the *reader* editing the field,
@@ -610,20 +630,21 @@ export function CaptureBox({
     if (demo) {
       // No `captureResult` is coming — the caller's fixture queue IS the
       // acknowledgement, so the demo arm clears and reports right away.
-      onSubmit(draft, destination, resolveCaptureFields(meta));
+      onSubmit(draft, destination, fields);
       setLast({ destination, title: draft });
       setDraft("");
       // Same carve-out as the clear-on-ok block above: context stays, the
       // rest goes. Two sites because demo has no result to wait for.
       setMeta({ ...EMPTY_CAPTURE_META, context: meta.context });
       setDetailsOpen(false);
+      setLinkOpen(false);
       focusField();
       return;
     }
     // The raw string, not a trimmed one: #110's "the raw string reaches the
     // mutation unmodified" — `canSubmitCapture` decides *whether* to submit,
     // never *what* is submitted.
-    onSubmit(draft, destination, resolveCaptureFields(meta));
+    onSubmit(draft, destination, fields);
     setInFlight({ destination, title: draft });
     // Focus stays in the field on purpose: capturing three things in a row is
     // the normal case, and the popover deliberately does not close on submit.
@@ -714,15 +735,15 @@ export function CaptureBox({
           }}
         />
         <div style={{ display: "flex", gap: "var(--space-4)", flexWrap: "wrap" }}>
-          {/* The two destinations, drawn as two solid squares that say what
-              they are by colour and glyph alone. This one is the inbox
+          {/* Three solid squares that say what they are by colour and glyph
+              alone: the two destinations, then the mint-for-today. This one is the inbox
               (`inbox` is triage's own icon in the design system's vocabulary,
               and `info` is the blue triage wears in `StageBadge`)... */}
-          {/* Both carry the same explicit 36: `md`'s own box is 34, and
+          {/* All three carry the same explicit 36: `md`'s own box is 34, and
               `IconButton` spreads `style` last over its own sizing, so this
               is what makes each square exactly the `md` field's height. At
               `lg` they would be 44 and stick 8px above the row. The row's
-              `alignItems: "flex-end"` then lines all three up. */}
+              `alignItems: "flex-end"` then lines all four up. */}
           <IconButton
             size="md"
             style={{ height: 36, width: 36 }}
@@ -747,6 +768,25 @@ export function CaptureBox({
             label="Mint action"
             disabled={!canSubmit}
             onClick={() => submit("ready")}
+          />
+          {/* The third square is the mint again, with today's date stamped
+              as the deadline — the same accent, because it is the same
+              gesture, and the flag glyph is what it adds (the design system's
+              named vocabulary reserves `flag` for a deadline and `calendar`
+              for a scheduled date; this writes a deadline). It overrides a
+              deadline picked under "More details" rather than yielding to
+              it: the button's name is a promise about the date, and a click
+              that silently kept some other day would break it. Date-only,
+              per `todayDeadline`. */}
+          <IconButton
+            size="md"
+            style={{ height: 36, width: 36 }}
+            variant="solid"
+            tone="accent"
+            icon="flag"
+            label="Mint for today"
+            disabled={!canSubmit}
+            onClick={() => submit("ready", { deadline: todayDeadline(Date.now()) })}
           />
         </div>
       </div>
@@ -888,6 +928,46 @@ export function CaptureBox({
               onChange={(event) => setMeta({ ...meta, scheduledDate: event.target.value })}
             />
           </div>
+        </div>
+      ) : null}
+      {/* #782: the Link disclosure, below the details one and independent of
+          it. `label` is the accessible name and the tooltip, as on the
+          details toggle; the glyph is the design system's `link`. */}
+      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+        <IconButton
+          icon="link"
+          label="Link"
+          aria-expanded={linkOpen}
+          active={linkOpen || meta.linkUrl.length > 0}
+          onClick={() => setLinkOpen(!linkOpen)}
+        />
+      </div>
+      {linkOpen ? (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(min(200px, 100%), 1fr))",
+            gap: "var(--space-5)",
+            alignItems: "start",
+          }}
+        >
+          <Input
+            label="URL"
+            size="sm"
+            type="url"
+            inputMode="url"
+            value={meta.linkUrl}
+            placeholder="https://"
+            onChange={(event) => setMeta({ ...meta, linkUrl: event.target.value })}
+          />
+          <Input
+            label="Link name"
+            size="sm"
+            value={meta.linkLabel}
+            error={metaProblems.linkLabel}
+            placeholder="Shown as the host when empty"
+            onChange={(event) => setMeta({ ...meta, linkLabel: event.target.value })}
+          />
         </div>
       ) : null}
       {setupRequired && setupPhase.phase !== "closed" ? (

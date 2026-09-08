@@ -49,6 +49,8 @@ function row(
     sourceKey: null,
     sourceUrl: null,
     vaultPath: null,
+    linkUrl: null,
+    linkLabel: null,
     archivedAt,
     createdAt: 1,
     updatedAt: 1,

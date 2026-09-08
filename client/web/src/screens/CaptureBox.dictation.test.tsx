@@ -84,6 +84,8 @@ const NO_FIELDS = {
   priority: null,
   deadline: null,
   scheduledDate: null,
+  linkUrl: null,
+  linkLabel: null,
 };
 
 function renderBox(options: { onDictatingChange?: (dictating: boolean) => void } = {}) {

@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import kotlin.random.Random
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,6 +20,7 @@ import uniffi.hummingbird_ffi_mobile.MetaProblems
 import uniffi.hummingbird_ffi_mobile.canSubmitCapture
 import uniffi.hummingbird_ffi_mobile.captureFormMeta
 import uniffi.hummingbird_ffi_mobile.captureMetaProblems
+import uniffi.hummingbird_ffi_mobile.linkLabelProblem
 
 /** What the item screen is showing — the three states
  * [AlertDetailState] has, for the same reason: "this device has not synced
@@ -55,6 +57,9 @@ data class ItemDraft(
     val size: String,
     val energy: String,
     val priority: String,
+    /** #782's Link, `""` when unset — the pane draws and edits it. */
+    val linkUrl: String = "",
+    val linkLabel: String = "",
 ) {
     companion object {
         fun of(record: ItemDetailRecord) = ItemDraft(
@@ -66,6 +71,8 @@ data class ItemDraft(
             size = record.size.orEmpty(),
             energy = record.energy.orEmpty(),
             priority = record.priority.toString(),
+            linkUrl = record.linkUrl.orEmpty(),
+            linkLabel = record.linkLabel.orEmpty(),
         )
     }
 
@@ -108,6 +115,11 @@ data class ItemDraft(
         projectId = FieldPatch.Untouched,
         deadline = patch(deadline, from.deadline, hasContent),
         scheduledDate = patch(scheduledDate, from.scheduledDate, hasContent),
+        // #782: the seam clears the name with the URL — one row state — so
+        // a cleared URL beside an untouched name is a whole clear, not a
+        // stranded name.
+        linkUrl = patch(linkUrl, from.linkUrl, hasContent),
+        linkLabel = patch(linkLabel, from.linkLabel, hasContent),
     )
 
     private fun patch(
@@ -169,6 +181,9 @@ class ItemDetailViewModel(
     private val hasContentFn: (String) -> Boolean,
     /** The core's date-field rule, injected for the same reason. */
     private val metaProblemsFn: (deadline: String, scheduledDate: String) -> MetaProblems,
+    /** #782's one Link rule (a name needs a URL), the core's
+     * `link_label_problem`, injected for the same reason. */
+    private val linkProblemFn: (url: String, label: String) -> String?,
     /** The shared form components' vocabulary door, injected the same way
      * `CaptureViewModel.formMetaFn` is: every size/energy/context word the
      * panel's editors offer comes from here, never a Kotlin literal. */
@@ -223,6 +238,10 @@ class ItemDetailViewModel(
         get() {
             val draft = _draft.value ?: return false
             if (!hasContentFn(draft.title)) return false
+            // #782: a link name beside no URL is the authority's 400,
+            // refused here for the same reason a malformed date is, by the
+            // core's own rule.
+            if (linkProblemFn(draft.linkUrl, draft.linkLabel) != null) return false
             val problems = metaProblemsFn(draft.deadline, draft.scheduledDate)
             return problems.deadline == null && problems.scheduledDate == null
         }
@@ -325,7 +344,10 @@ class ItemDetailViewModel(
      * (Triage does — the item leaves its queue) must not close it on a
      * *refused* one, or it unmounts both the refusal message and the draft
      * that caused it. Refusals are worded into [statusLine] rather than
-     * thrown, so a `Unit` return left the caller unable to tell. */
+     * thrown, so a `Unit` return left the caller unable to tell.
+     *
+     * Cancellation rethrows rather than being worded as a failure — the
+     * same amendment [TriageViewModel]'s own `complete` carries. */
     private suspend fun submit(
         itemId: String,
         nowMs: Long,
@@ -345,7 +367,7 @@ class ItemDetailViewModel(
         }
         if (!canSave) {
             _statusLine.value = "$refusal — an item needs a title, " +
-                "and a date must be the shape shown."
+                "a date must be the shape shown, and a link name needs a URL."
             return false
         }
         try {
@@ -354,6 +376,8 @@ class ItemDetailViewModel(
             // the item says, so Back has nothing left to fight over even
             // before the re-read lands.
             _seed.value = draft
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Exception) {
             _statusLine.value = "Couldn't $verb — ${error.message}"
             return false
@@ -433,6 +457,7 @@ class ItemDetailViewModel(
                 },
                 hasContentFn = ::canSubmitCapture,
                 metaProblemsFn = ::captureMetaProblems,
+                linkProblemFn = ::linkLabelProblem,
                 formMetaFn = ::captureFormMeta,
             )
 

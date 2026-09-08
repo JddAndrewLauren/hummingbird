@@ -27,20 +27,12 @@ import { defineConfig } from "@playwright/test";
 // where that stops being the whole story: below `PHONE_MAX_WIDTH_PX`
 // (`src/shell/breakpoints.ts`) the app does use a media query, and the rail
 // is a bottom bar. See `docs/SURFACES.md` for the surface-by-surface matrix.
-//
-// `HB_VISUAL_PORT` (default 5173) is the port both the browser and the dev
-// server use. It exists because this repo is routinely checked out into
-// several worktrees at once, each able to run its own `pnpm dev`, and
-// `reuseExistingServer` will happily attach to whichever one already holds
-// the port: a gate run in one tree then photographs another tree's build and
-// reports green — or red — about code that is not the code under test, with
-// nothing in the output to say so. Giving a worktree its own port is what
-// makes a run provably about that worktree. The value has to reach BOTH
-// `baseURL` and the server this config starts; an override that moved only
-// one would aim the browser at a server other than the one it launched,
-// which is worse than no override at all.
-const port = process.env.HB_VISUAL_PORT || "5173";
-const baseURL = `http://localhost:${port}`;
+// The dev server's port. `HB_VISUAL_PORT` exists because `reuseExistingServer`
+// below will happily photograph whatever is already listening: with several
+// worktrees of this repo on one machine, a gate run on the default port can
+// capture ANOTHER checkout's build and report it as this one's. Set it to a
+// port nobody else uses and the gate starts, and photographs, its own server.
+const port = Number(process.env.HB_VISUAL_PORT ?? 5173);
 
 export default defineConfig({
   testDir: "./visual",
@@ -49,7 +41,7 @@ export default defineConfig({
   fullyParallel: true,
   reporter: [["list"]],
   use: {
-    baseURL,
+    baseURL: `http://localhost:${port}`,
     // A capture of a half-finished paint is a false finding, and this app's
     // fonts are self-hosted (the production CSP allows no Google Fonts), so
     // waiting on the network alone is not enough.
@@ -88,10 +80,8 @@ export default defineConfig({
   ],
   webServer: {
     // `pnpm dev` builds the wasm core first, which the SharedWorker needs.
-    // pnpm appends these args to the end of the script, so `--port` lands on
-    // `vite`, not on the wasm build that precedes it.
-    command: `pnpm dev --port ${port}`,
-    url: baseURL,
+    command: `pnpm dev --port ${port} --strictPort`,
+    url: `http://localhost:${port}`,
     reuseExistingServer: true,
     timeout: 180_000,
   },

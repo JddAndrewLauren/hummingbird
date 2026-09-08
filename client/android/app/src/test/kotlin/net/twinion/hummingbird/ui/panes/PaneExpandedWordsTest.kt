@@ -185,4 +185,12 @@ class PaneExpandedWordsTest {
         )
         assertEquals("No quest set", scpsQuestLine(MobileScpsQuestFact.None, 0L, zone))
     }
+
+    @Test
+    fun `scpsQuestLine names the expected shape for a malformed value, distinct from unset`() {
+        assertEquals(
+            "Quest not understood: \"Impressions of Venice\" — expected \"YYYY-MM phrase\"",
+            scpsQuestLine(MobileScpsQuestFact.Malformed("Impressions of Venice"), 0L, zone),
+        )
+    }
 }

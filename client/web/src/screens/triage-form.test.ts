@@ -26,6 +26,8 @@ const item = itemDTO({
   projectId: null,
   deadline: null,
   scheduledDate: null,
+  linkUrl: null,
+  linkLabel: null,
 });
 
 describe("draftFromItem", () => {
@@ -52,6 +54,8 @@ describe("draftFromItem", () => {
       deadline: "2026-08-14T09:30",
       scheduledDate: "2026-08-12",
       vaultPath: "",
+      linkUrl: "",
+      linkLabel: "",
     });
     expect(draftFromItem(item)).toEqual({
       title: "vague thing",
@@ -64,6 +68,8 @@ describe("draftFromItem", () => {
       deadline: "",
       scheduledDate: "",
       vaultPath: "",
+      linkUrl: "",
+      linkLabel: "",
     });
   });
 });
@@ -375,4 +381,53 @@ describe("vaultPath", () => {
       triageDraftProblems({ ...draftFromItem(item), vaultPath: "../outside.md" }).vaultPath,
     ).toBeTruthy();
   });
+});
+
+/** #782: the Link pair is one row state — a cleared URL takes the name
+ * with it, a name alone travels alone, and a name beside no URL is the
+ * pair's one problem. */
+describe("link", () => {
+  const linked = itemDTO({ linkUrl: "https://www.youtube.com/watch?v=abc", linkLabel: "Rehab" });
+
+  it("sends a re-pointed URL alone, and a renamed link alone", () => {
+    expect(
+      buildTriageEdits({ ...draftFromItem(linked), linkUrl: "https://example.test/x" }, linked),
+    ).toEqual({ linkUrl: "https://example.test/x" });
+    expect(buildTriageEdits({ ...draftFromItem(linked), linkLabel: "Knee" }, linked)).toEqual({
+      linkLabel: "Knee",
+    });
+    expect(buildTriageEdits({ ...draftFromItem(linked), linkLabel: "" }, linked)).toEqual({
+      linkLabel: null,
+    });
+    expect(buildTriageEdits(draftFromItem(linked), linked)).toEqual({});
+  });
+
+  it("clears both halves when the URL is emptied, even with the name still typed", () => {
+    expect(buildTriageEdits({ ...draftFromItem(linked), linkUrl: "" }, linked)).toEqual({
+      linkUrl: null,
+      linkLabel: null,
+    });
+    expect(buildTriageEdits({ ...draftFromItem(linked), linkUrl: "  " }, linked)).toEqual({
+      linkUrl: null,
+      linkLabel: null,
+    });
+  });
+
+  it("sets a URL and a name on an item that had none", () => {
+    expect(
+      buildTriageEdits(
+        { ...draftFromItem(item), linkUrl: "https://example.test/x", linkLabel: "Ex" },
+        item,
+      ),
+    ).toEqual({ linkUrl: "https://example.test/x", linkLabel: "Ex" });
+  });
+
+  it("reports a name beside no URL, and nothing otherwise", () => {
+    expect(
+      triageDraftProblems({ ...draftFromItem(item), linkLabel: "Ex" }).linkLabel,
+    ).toBe("A link name needs a URL");
+    expect(triageDraftProblems({ ...draftFromItem(item), linkUrl: "https://x.test", linkLabel: "Ex" }).linkLabel).toBeUndefined();
+    expect(triageDraftProblems(draftFromItem(item)).linkLabel).toBeUndefined();
+  });
+
 });

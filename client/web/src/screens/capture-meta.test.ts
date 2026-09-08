@@ -5,6 +5,7 @@ import {
   EMPTY_CAPTURE_META,
   captureMetaProblems,
   resolveCaptureFields,
+  todayDeadline,
   type CaptureMeta,
 } from "./capture-meta";
 
@@ -25,7 +26,17 @@ describe("resolveCaptureFields", () => {
       priority: null,
       deadline: null,
       scheduledDate: null,
+      linkUrl: null,
+      linkLabel: null,
     });
+  });
+
+  // #782: trimmed, and dropped when empty — like the description.
+  it("resolves the Link pair, trimming each half and dropping an empty one", () => {
+    const fields = resolveCaptureFields(meta({ linkUrl: " https://example.test/x ", linkLabel: " Ex " }));
+    expect(fields.linkUrl).toBe("https://example.test/x");
+    expect(fields.linkLabel).toBe("Ex");
+    expect(resolveCaptureFields(meta({ linkLabel: "   " })).linkLabel).toBeNull();
   });
 
   it("resolves the typed fields, trimming a description and dropping an empty one", () => {
@@ -85,6 +96,8 @@ describe("resolveCaptureFields", () => {
       priority: null,
       deadline: null,
       scheduledDate: null,
+      linkUrl: null,
+      linkLabel: null,
     });
   });
 
@@ -118,6 +131,14 @@ describe("captureMetaProblems", () => {
     expect(captureMetaProblems(EMPTY_CAPTURE_META)).toEqual({});
   });
 
+  // #782: a name is only meaningful beside a URL — the one thing the Link
+  // pair can get wrong on this form, stated on the name field.
+  it("names a link name typed beside no URL, and nothing otherwise", () => {
+    expect(captureMetaProblems(meta({ linkLabel: "Ex" })).linkLabel).toBe("A link name needs a URL");
+    expect(captureMetaProblems(meta({ linkUrl: "https://example.test/x", linkLabel: "Ex" }))).toEqual({});
+    expect(captureMetaProblems(meta({ linkUrl: "https://example.test/x" }))).toEqual({});
+  });
+
   it("accepts both deadline shapes and a whole-day scheduled date", () => {
     expect(captureMetaProblems(meta({ deadline: "2026-09-01" }))).toEqual({});
     expect(captureMetaProblems(meta({ deadline: "2026-09-01T09:30" }))).toEqual({});
@@ -147,5 +168,19 @@ describe("the capture sliders' stops", () => {
   it("keeps both sliders at two stops or more", () => {
     expect(CAPTURE_SIZE_NAMES.length).toBeGreaterThanOrEqual(2);
     expect(CAPTURE_ENERGY_NAMES.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("todayDeadline", () => {
+  it("renders the local calendar date in the wire's whole-day form", () => {
+    expect(todayDeadline(new Date(2026, 8, 3, 14, 30).getTime())).toBe("2026-09-03");
+  });
+
+  it("reads the local day, not the UTC one, either side of midnight", () => {
+    // 23:30 local on the 3rd stays the 3rd whatever UTC calls it; 00:30 on
+    // the 4th is the 4th. Built with the local-time constructor, so the
+    // expectation holds in every zone the suite runs in.
+    expect(todayDeadline(new Date(2026, 8, 3, 23, 30).getTime())).toBe("2026-09-03");
+    expect(todayDeadline(new Date(2026, 8, 4, 0, 30).getTime())).toBe("2026-09-04");
   });
 });
