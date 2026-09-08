@@ -49,7 +49,7 @@ import {
   type Facet,
   type FacetSelection,
 } from "./frontier-facets";
-import { laneCountFor, packLanes } from "./frontier-lanes";
+import { frontierLanes } from "./frontier-lanes";
 import { orderFrontier } from "./frontier-order";
 import { triageProcessQueue } from "./triage-process-order";
 import {
@@ -564,7 +564,7 @@ export function FrontierColumns({
   // not a placeholder: the first paint has not laid out yet, and jsdom never
   // will. `useIsPhone.ts`'s doctrine applies verbatim — a runtime with no
   // `ResizeObserver` is not a narrow screen, it is a runtime that cannot
-  // answer, and `laneCountFor(null, …)` answers it with the pre-lanes layout
+  // answer, and `frontierLanes(…, null)` answers it with the pre-lanes layout
   // rather than guessing a width. A component test therefore keeps seeing one
   // column per lane; a test of the *packing* asserts `packLanes` directly,
   // where no stub can be forgotten.
@@ -623,7 +623,11 @@ export function FrontierColumns({
     const hasMoreRow = column.items.length > COLUMN_CAP;
     return 1 + visible + (hasMoreRow ? 1 : 0);
   });
-  const lanes = packLanes(laneWeights, laneCountFor(boardWidth, columns.length));
+  // Fewer lanes than the width affords whenever the weights do not reach that
+  // far — `packLanes` drops the ones nobody filled, and the survivors widen
+  // into the space. That is what keeps the urgency axis, three slight bands in
+  // front of one very full `calm`, from drawing two empty tracks.
+  const lanes = frontierLanes(laneWeights, boardWidth);
 
   return (
     <>
