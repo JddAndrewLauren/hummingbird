@@ -30,9 +30,16 @@ WORKDIR /src/server
 # C toolchain to build its assembly/C sources; `rust:1.97.1-slim` carries
 # one (unlike the Debian-slim final stage below), so this stage — not the
 # final image — is where that dependency actually compiles.
+#
+# Every binary is named with `--bin`, including the two whose package has only
+# a default one: cargo applies `--bin` as a target filter across EVERY `-p`
+# in the command, so naming only the graph/github-status bins built exactly
+# those three and silently dropped `hummingbird-gmail-poll` and
+# `hummingbird-calendar-poll` — the build finished green and the `COPY
+# --from` below was the first thing to notice (#774's local `docker build`).
 RUN cargo build --release \
-    -p hummingbird-gmail-poll \
-    -p hummingbird-calendar-poll \
+    -p hummingbird-gmail-poll --bin hummingbird-gmail-poll \
+    -p hummingbird-calendar-poll --bin hummingbird-calendar-poll \
     -p hummingbird-graph-poll --bin graph-mail-poll --bin graph-calendar-poll \
     -p hummingbird-github-status --bin github-status-poll
 
