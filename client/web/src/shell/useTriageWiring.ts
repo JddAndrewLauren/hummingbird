@@ -11,8 +11,15 @@ import { triageItem, type TriageEdits, type WorkerLike } from "../store/worker-c
 // and frontier itself the moment a successful result broadcasts.
 export interface TriageWiring {
   /** `destination` is `null` (#122) for a pure field edit that leaves
-   * `stage` untouched — see `worker-client.ts`'s `triageItem` doc. */
-  triage: (itemId: string, destination: "ready" | null, edits: TriageEdits) => void;
+   * `stage` untouched — see `worker-client.ts`'s `triageItem` doc.
+   *
+   * **Returns the seed it minted**, the same contract `useFileLinksWiring`
+   * carries and for the same reason: `TaskState.lastTriage` is one
+   * broadcast slot shared by every open view, so a caller that needs to
+   * recognise *its own* result — `useCaptureAttachments.ts` is the first —
+   * can only do it by seed. Every existing caller ignores the return and
+   * is unaffected. */
+  triage: (itemId: string, destination: "ready" | null, edits: TriageEdits) => string;
 }
 
 /** Mints this triage's seed. Deterministic — `client/core/src/sync/mod.rs`'s
@@ -32,10 +39,11 @@ export function mintTriageSeed(
 }
 
 export function useTriageWiring(worker: WorkerLike): TriageWiring {
-  function triage(itemId: string, destination: "ready" | null, edits: TriageEdits): void {
+  function triage(itemId: string, destination: "ready" | null, edits: TriageEdits): string {
     const nowMs = Date.now();
     const seed = mintTriageSeed(itemId, destination, nowMs);
     triageItem(worker, seed, itemId, destination, edits, nowMs);
+    return seed;
   }
 
   return { triage };

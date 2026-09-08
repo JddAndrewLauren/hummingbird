@@ -32,18 +32,15 @@ import {
 } from "../../screens/triage-form";
 import { useItemDraft } from "../../screens/useItemDraft";
 import { triageFailureFor } from "../../screens/write-failure";
-import { buildUri, derivePath, isValidVaultPath } from "../../obsidian/vault-uri";
 import {
   buildDropboxWebUrl,
   buildOpenUri,
   isValidFilePath,
-  normalizePastedPath,
   normalizeSeparators,
   splitFilePath,
 } from "../../dropbox/file-link";
 import { writeFailureMessage } from "../../screens/projects/roster";
 import type { FileLinksWiring } from "../../shell/useFileLinksWiring";
-import { linkDisplayLabel, linkIsFollowable } from "../../decisions/seam";
 import { microtaskAffordance } from "../../skills/microtask-affordance";
 import { IDLE, isRunning, stampLabel, type SkillRunState } from "../../skills/run-state";
 import type { MicrotaskRunRequest } from "../../shell/useMicrotaskWiring";
@@ -56,6 +53,9 @@ import type {
 } from "../../store/protocol";
 import type { TaskFileLinkResult, TaskProjectResult, TaskTriageResult } from "../../store/store";
 import type { TriageEdits } from "../../store/worker-client";
+import { FileAttach } from "./FileAttach";
+import { LinkAttach, linkAttachVisible } from "./LinkAttach";
+import { NoteLink, noteLinkVisible } from "./NoteLink";
 import { StageBadge } from "./StageBadge";
 
 // **One item panel, two modes.** This is the whole of what an item looks like
@@ -251,11 +251,12 @@ export function ItemPanel({
   grillMeId,
   microtask,
 }: ItemPanelProps) {
-  // ADR-0036's add row. Its own state rather than the triage draft's: a
-  // file link is a child row, not a field on the item, and adding one is a
-  // create the item's own Save never touches.
-  const [fileLinkInput, setFileLinkInput] = useState("");
-  const [fileLinkProblem, setFileLinkProblem] = useState<string | null>(null);
+  // ADR-0036's file-link writes. Its own state rather than the triage
+  // draft's: a file link is a child row, not a field on the item, and both
+  // adding and removing one are creates the item's own Save never touches.
+  // The seed is all that is left here — the add row's field and its judging
+  // are `FileAttach`'s — because the remove buttons in the list share this
+  // one-write-at-a-time gate with it.
   const [issuedFileLinkSeed, setIssuedFileLinkSeed] = useState<string | null>(null);
   const fileLinkFailure = writeFailureMessage(
     lastFileLinkWrite,
@@ -282,21 +283,14 @@ export function ItemPanel({
     setIssuedFileLinkSeed(null);
   }
 
-  function addFileLink() {
+  // `FileAttach` normalizes and shape-checks the path before it gets here;
+  // this owns only the seed, because the remove buttons in the list below
+  // share the same one-write-at-a-time gate.
+  function addFileLink(path: string) {
     if (!fileLinksWiring) {
       return;
     }
-    const path = normalizePastedPath(fileLinkInput, fileLinksWiring.localRoot);
-    if (path === "") {
-      return;
-    }
-    if (!isValidFilePath(path)) {
-      setFileLinkProblem("A file link is relative to Dropbox — no leading /, no .., no drive letter");
-      return;
-    }
-    setFileLinkProblem(null);
     setIssuedFileLinkSeed(fileLinksWiring.createFileLink(item.id, path));
-    setFileLinkInput("");
   }
 
   // Drawn in detail mode when there is something to draw: links to list, or
@@ -339,39 +333,16 @@ export function ItemPanel({
       ? { itemId: item.id }
       : { itemId: item.id, replace: true, grain: Number(grain) };
 
-  // #771's note affordance. Drawn only when the vault is bound AND this
-  // render can actually deliver on the label: "Start a note" writes the
-  // derived path before opening, so a panel with no `onTriage` behind it
-  // (demo mode) offers it only for an item that already carries one.
-  //
-  // `isValidVaultPath` gates the *stored* path too, not just the typed one.
-  // The triage form checks what the operator types, but `vault_path` is a
-  // plain column the authority only checks for non-blankness, so a path put
-  // there by `sweep.py`, a skill or the agent can hold a leading `/` or a
-  // `..` — shapes this module's header says this client refuses to send.
-  // Refusing to draw the button is how it refuses. (`derivePath` answers
-  // `null` for a title that strips to nothing; same treatment.)
-  const notePath = item.vaultPath ?? derivePath(item.title);
-  const notePointerIsNew = item.vaultPath === null;
-  const showNoteButton =
-    vaultName !== null &&
-    notePath !== null &&
-    isValidVaultPath(notePath) &&
-    (!notePointerIsNew || onTriage !== undefined);
-  // Optimistic, and deliberately so (#771): there is no `x-success` round
-  // trip and the web has no router to receive one. `obsidian://new?…&append`
-  // opens the note when it is there and creates it when it is not, so
-  // re-clicking is always safe — which is what makes the confirmation
-  // unnecessary rather than merely omitted.
-  const openNote = () => {
-    if (notePath === null) {
-      return;
-    }
-    if (notePointerIsNew) {
-      onTriage?.(item.id, null, { vaultPath: notePath });
-    }
-    window.open(buildUri(vaultName ?? "", notePath), "_blank", "noopener,noreferrer");
-  };
+  // #771's note affordance, and every branch it has, is `NoteLink`'s — this
+  // panel only asks whether it draws anything, so the row below is not opened
+  // for a control that renders nothing.
+  const showNoteLink = noteLinkVisible({ item, vaultName, onTriage });
+  const showLinkAttach = linkAttachVisible({ item, onTriage });
+  // Gated on `showFileLinks` as well as the wiring, and not on the wiring
+  // alone: a caller that asked for no file links (Recall's expanded result)
+  // draws neither the list nor `fileLinkFailure`, so an Add here would be a
+  // write whose success AND whose failure are both invisible.
+  const showFileAttach = showFileLinks && fileLinksWiring !== undefined;
 
   const showFields = mode === "triage" || editing;
   // Detail mode only. On Triage the row renders this itself, *outside* its
@@ -583,41 +554,6 @@ export function ItemPanel({
     </div>
   );
 
-  // #782: the Link is always visible wherever the item is opened — tap
-  // follows it, the affordance beside it opens the fields. Drawn only for
-  // an `http(s)` URL — `linkIsFollowable`, the core's rule, shared with
-  // Android's `ACTION_VIEW` — because the column is plain text the
-  // authority checks for non-blankness alone, and an anchor to any other
-  // scheme is a click this panel would not vouch for (the same refusal
-  // `showNoteButton` makes).
-  const showLink = item.linkUrl !== null && linkIsFollowable(item.linkUrl);
-  const linkRow =
-    !showFields && showLink && item.linkUrl !== null ? (
-      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)", flexWrap: "wrap" }}>
-        <a
-          href={item.linkUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "var(--space-2)",
-            font: "var(--type-body-sm)",
-            color: "var(--accent)",
-            minHeight: "var(--row-height, 44px)",
-          }}
-        >
-          <Icon name="link" size={16} />
-          {linkDisplayLabel(item.linkUrl, item.linkLabel)}
-        </a>
-        {onTriage ? (
-          <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>
-            Edit link
-          </Button>
-        ) : null}
-      </div>
-    ) : null;
-
   if (mode === "triage") {
     return (
       <div
@@ -696,8 +632,6 @@ export function ItemPanel({
         </div>
       </div>
 
-      {linkRow}
-
       {showFields ? (
         <>
           {fields}
@@ -774,42 +708,52 @@ export function ItemPanel({
 
       {/* #359: Grill reaches Now. Its own row, not folded into the act row
           above — a Grill is not an `ItemAction` (`item-actions.ts`'s own
-          doc), and the two rows are gated by independent conditions.
-
-          #771's note button shares this row for the same reason: it moves
-          the item through nothing either, and both are things you can do
-          *about* an item rather than to it. Read mode only — while the
-          fields are open the Vault path input above is the affordance, and
-          a button that navigates away mid-edit would strand the typing. */}
-      {!showFields && ((onGrillMe && canGrill(item.stage)) || showNoteButton) ? (
+          doc), and the two rows are gated by independent conditions. */}
+      {!showFields && onGrillMe && canGrill(item.stage) ? (
         <div style={{ display: "flex", gap: "var(--space-4)", flexWrap: "wrap" }}>
-          {onGrillMe && canGrill(item.stage) ? (
-            <Button
-              id={grillMeId}
-              size="sm"
-              variant="secondary"
-              iconLeft="sparkles"
-              disabled={item.pending}
-              onClick={() => onGrillMe(item.id)}
-            >
-              {grillButtonLabel(hasGrillDraft)}
-            </Button>
-          ) : null}
-          {showNoteButton ? (
-            <Button
-              size="sm"
-              variant="secondary"
-              // The same "this leaves the app" glyph `AlertCard`'s "Open
-              // source" carries, and for the same reason.
-              iconRight="arrow-up-right"
-              // Only the first click writes, so only the first click is
-              // blocked by an unconfirmed mutation. Reopening a note the item
-              // already points at is pure navigation.
-              disabled={notePointerIsNew && item.pending}
-              onClick={openNote}
-            >
-              {notePointerIsNew ? "Start a note" : "Open note"}
-            </Button>
+          <Button
+            id={grillMeId}
+            size="sm"
+            variant="secondary"
+            iconLeft="sparkles"
+            disabled={item.pending}
+            onClick={() => onGrillMe(item.id)}
+          >
+            {grillButtonLabel(hasGrillDraft)}
+          </Button>
+        </div>
+      ) : null}
+
+      {/* The three things an item can point at: a **link** (#782, a column),
+          a **note** (#771, a column) and a **file** (ADR-0036, rows). One
+          row, in the same order and with the same glyphs the capture box
+          draws (`CaptureBox.tsx`'s `AttachToggle`), because it is the same
+          gesture in the two places it can be made.
+
+          They used to be three unrelated shapes — an anchor with an "Edit
+          link" that opened the whole Edit form, a secondary button with its
+          own editor, and a labelled text field at the bottom of the files
+          block. Each component's own header records what it gave up.
+
+          Grill me deliberately left this row when the three arrived: it is
+          the one thing here that is not an attachment, and the three are
+          meant to read as a set.
+
+          Read mode only. While the fields are open, the Edit form's own URL,
+          Link name and Vault path inputs are the affordance, and two live
+          editors over one column would be two ways to disagree. The file
+          half has no field up there — it is not a column — so it simply
+          waits for the fields to close. */}
+      {!showFields && (showLinkAttach || showNoteLink || showFileAttach) ? (
+        <div style={{ display: "flex", gap: "var(--space-4)", flexWrap: "wrap", alignItems: "flex-start" }}>
+          {showLinkAttach ? <LinkAttach item={item} onTriage={onTriage} /> : null}
+          {showNoteLink ? <NoteLink item={item} vaultName={vaultName} onTriage={onTriage} /> : null}
+          {showFileAttach && fileLinksWiring ? (
+            <FileAttach
+              onAdd={addFileLink}
+              localRoot={fileLinksWiring.localRoot}
+              disabled={fileLinkWriteOutstanding}
+            />
           ) : null}
         </div>
       ) : null}
@@ -844,7 +788,12 @@ export function ItemPanel({
           Open fires the helper's scheme; "on dropbox.com" is the always-drawn
           fallback for a device with no helper. A stored path that fails the
           shape rules draws its text and Remove only — refusing to draw Open
-          is how this client refuses, same as the note button above. */}
+          is how this client refuses, same as the note affordance above.
+
+          This is the list and nothing else. Adding one is `FileAttach`, up in
+          the attachment row with the link and the note, because adding is the
+          gesture those three share; removing stays here, on the row it
+          removes. Both write through the same outstanding-seed gate. */}
       {showFileLinksBlock ? (
         <div>
           <span className="hb-meta">files</span>
@@ -932,36 +881,6 @@ export function ItemPanel({
               })}
             </ul>
           )}
-          {fileLinksWiring ? (
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                addFileLink();
-              }}
-              style={{ display: "flex", alignItems: "flex-end", gap: "var(--space-3)", marginTop: "var(--space-4)" }}
-            >
-              <Input
-                label="Add a file link"
-                size="sm"
-                style={{ flex: 1, minWidth: 0 }}
-                value={fileLinkInput}
-                error={fileLinkProblem ?? undefined}
-                placeholder="Finance/2026/receipt.pdf"
-                onChange={(event) => {
-                  setFileLinkInput(event.target.value);
-                  setFileLinkProblem(null);
-                }}
-              />
-              <Button
-                type="submit"
-                size="sm"
-                variant="secondary"
-                disabled={fileLinkInput.trim() === "" || fileLinkWriteOutstanding}
-              >
-                Add
-              </Button>
-            </form>
-          ) : null}
           {fileLinkFailure ? (
             <p
               role="alert"

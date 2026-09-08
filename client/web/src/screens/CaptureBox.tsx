@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../components/core/Button";
+import type { IconName } from "../components/core/Icon";
 import { IconButton } from "../components/core/IconButton";
 import { Combobox } from "../components/forms/Combobox";
 import { DeadlineField } from "../components/forms/DeadlineField";
@@ -16,6 +17,10 @@ import {
   type DictationCapability,
   type DictationSession,
 } from "../speech/local-dictation";
+import { FILE_PATH_PROBLEM, isValidFilePath, normalizePastedPath } from "../dropbox/file-link";
+import { derivePath, isValidVaultPath } from "../obsidian/vault-uri";
+import { VAULT_PATH_PROBLEM } from "./triage-form";
+import type { CaptureAttachments } from "../shell/useCaptureAttachments";
 import type { ProjectDTO } from "../store/protocol";
 import type { TaskCaptureResult } from "../store/store";
 import type { CaptureFields } from "../store/worker-client";
@@ -51,6 +56,47 @@ import type { CaptureDestination } from "./capture-destination";
 // `Combobox` rather than a `Select` because context is an open vocabulary —
 // that module's header carries the decision.
 
+/** One of the three attachment disclosures. They are the same control three
+ * times over — the word `Add` and a glyph, and the glyph is the noun — so
+ * they are written once here rather than three times below.
+ *
+ * `carries` is the lit state the #782 link toggle already had as
+ * `IconButton`'s `active`: a disclosure holding a value stays marked while
+ * it is shut, or closing it would look like discarding it. `quiet` is the
+ * design system's brand-tinted secondary, which is that treatment for a
+ * `Button`.
+ *
+ * The label is the accessible name and the hover tooltip both, the same
+ * contract the details chevron above carries — the glyph is unambiguous to
+ * the eye and says nothing at all to a screen reader. */
+function AttachToggle({
+  icon,
+  label,
+  open,
+  carries,
+  onToggle,
+}: {
+  icon: IconName;
+  label: string;
+  open: boolean;
+  carries: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <Button
+      size="sm"
+      variant={carries ? "quiet" : "secondary"}
+      aria-expanded={open}
+      aria-label={label}
+      title={label}
+      iconRight={icon}
+      onClick={onToggle}
+    >
+      Add
+    </Button>
+  );
+}
+
 /** What the box did last, so the surface it sits on can say so. A popover
  * closes over whatever screen the person was on, so nothing else on screen
  * would show the capture landing — and reporting a fact ("Added to Triage")
@@ -69,7 +115,16 @@ export interface CaptureBoxProps {
    * resolved to the wire's vocabulary names by `capture-meta.ts`'s
    * `resolveCaptureFields` — never the slider's own indices or the select's
    * raw empty-string resting value. */
-  onSubmit: (title: string, destination: CaptureDestination, fields: CaptureFields) => void;
+  onSubmit: (
+    title: string,
+    destination: CaptureDestination,
+    fields: CaptureFields,
+    /** The note and file the box collected, which are NOT capture fields and
+     * cannot be — `useCaptureAttachments.ts` says why, and is what writes
+     * them once the capture's own result names the minted id. Both `null`
+     * for a capture that asked for neither, which is nearly all of them. */
+    attachments: CaptureAttachments,
+  ) => void;
   /** The Routes a capture can be filed under, for the Project select behind
    * "More details". `[]` on a device that has never synced — the select
    * still renders, offering "No project" alone, because an empty list is a
@@ -108,6 +163,21 @@ export interface CaptureBoxProps {
    * uses, for the same reason: a plain boolean can't tell a second request
    * from a no-op. A bump while no session is live does nothing. */
   cancelDictationRequestId?: number;
+  /** #771: the operator's Obsidian vault name, off the `obsidian-vault`
+   * binding. `null` — unset, unread, or no binding at all — draws no note
+   * disclosure whatsoever, the same rule `NoteLink` applies on the item
+   * panel: nothing announces a vault that isn't there. */
+  vaultName?: string | null;
+  /** ADR-0036: present when there is file-link wiring behind this render,
+   * carrying the one device-local fact a pasted path needs
+   * (`normalizePastedPath`). Absent — demo mode — draws no file disclosure,
+   * the same "a render with nothing to send it never offers what it cannot
+   * do" contract every other write here carries. */
+  fileLinks?: { localRoot: string | null };
+  /** `useCaptureAttachments`'s report that a follow-up write did not land,
+   * rendered beside `captureError`. The capture itself succeeded, so this is
+   * never the capture's own failure and never reads as one. */
+  attachmentFailure?: string | null;
   /** Reports every change in whether a dictation session is live, so the
    * shell's single Escape handler (`App.tsx`) can decide whether an Escape
    * means "cancel the dictation" or "close the popover" — see
@@ -216,6 +286,9 @@ export function CaptureBox({
   focusRequestId,
   lastCapture,
   onClose,
+  vaultName = null,
+  fileLinks,
+  attachmentFailure = null,
   cancelDictationRequestId,
   onDictatingChange,
 }: CaptureBoxProps) {
@@ -504,10 +577,30 @@ export function CaptureBox({
   // the screen, and a form that reopens to seven fields taxes the next
   // capture for a decision the last one happened to make.
   const [detailsOpen, setDetailsOpen] = useState(false);
-  // #782: the Link field, its own disclosure below the details one — a
-  // chain glyph on its own row, shut until selected, then `URL` + `Link
-  // name`. Shut again after each capture, with `detailsOpen`.
+  // The three attachment disclosures, all shut until asked and all shut
+  // again after each capture (with `detailsOpen`). #782's Link came first
+  // and kept its shape; the note and the file joined it when the three
+  // became one row.
+  //
+  // **The two paths are held here, beside `meta` rather than in it.**
+  // `CaptureMeta`'s whole contract is that `resolveCaptureFields` turns it
+  // into the wire's `CaptureFields`, and neither of these is a member of
+  // that shape — the seam would refuse a capture carrying one
+  // (`deny_unknown_fields`) rather than ignore it. They leave through
+  // `onSubmit`'s fourth argument instead; `useCaptureAttachments.ts` has
+  // the whole story.
   const [linkOpen, setLinkOpen] = useState(false);
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [notePath, setNotePath] = useState("");
+  // Whether `notePath` is something the reader typed, or still the path the
+  // app proposed from the draft. A proposal is shown so it can be judged,
+  // and is thrown away if the disclosure is closed without touching it —
+  // otherwise looking at what a note WOULD be called silently attaches one.
+  // Any edit promotes it, and from then on closing keeps it, which is the
+  // rule the other two disclosures follow for their typed values.
+  const [noteTouched, setNoteTouched] = useState(false);
+  const [fileOpen, setFileOpen] = useState(false);
+  const [filePath, setFilePath] = useState("");
 
   // Defence in depth rather than a live message: both date fields are native
   // pickers, which cannot hold a date that does not exist, so this finds
@@ -515,7 +608,42 @@ export function CaptureBox({
   // has, against the same rules the seam refuses on — and the day one of
   // these becomes free text again, the gate is already here.
   const metaProblems = captureMetaProblems(meta);
-  const canSubmit = canSubmitCapture(draft) && Object.keys(metaProblems).length === 0;
+
+  // The two attachment paths, judged by the same functions their item-panel
+  // twins use — `obsidian/vault-uri.ts` and `dropbox/file-link.ts` — and
+  // reported with the same two messages, so neither surface can invent its
+  // own account of what a bad path is. A file path is normalized first,
+  // because pasting one out of a file manager is how it usually arrives.
+  // An untouched proposal is not an answer: it is only ever sent once the
+  // reader has edited it.
+  const typedNotePath = noteTouched ? notePath.trim() : "";
+  const noteProblem =
+    typedNotePath !== "" && !isValidVaultPath(typedNotePath) ? VAULT_PATH_PROBLEM : undefined;
+  const typedFilePath = normalizePastedPath(filePath, fileLinks?.localRoot ?? null);
+  const fileProblem =
+    typedFilePath !== "" && !isValidFilePath(typedFilePath) ? FILE_PATH_PROBLEM : undefined;
+
+  // **A problem may never hide behind the disclosure that holds it.** Both
+  // paths block every submit below, and both live inside two nested
+  // disclosures, so a path typed and then closed away would disable all three
+  // buttons and silence Enter with nothing on screen saying why. Whatever is
+  // wrong therefore forces its own field, and the details block around it,
+  // back open — the reader can shut it again the moment it is valid.
+  const attachmentProblem = noteProblem !== undefined || fileProblem !== undefined;
+  const detailsShown = detailsOpen || attachmentProblem;
+  const noteFieldShown = noteOpen || noteProblem !== undefined;
+  const fileFieldShown = fileOpen || fileProblem !== undefined;
+
+  // A bad path blocks the capture rather than being dropped from it. That is
+  // this box's existing answer, not a new one: #782's "a link name needs a
+  // URL" already blocks all three buttons through `metaProblems`. Submitting
+  // and silently discarding what someone typed is the alternative, and it is
+  // worse — they would find out by opening the item.
+  const canSubmit =
+    canSubmitCapture(draft) &&
+    Object.keys(metaProblems).length === 0 &&
+    noteProblem === undefined &&
+    fileProblem === undefined;
 
   // Issue #222's rule, applied to capture (#208 tripled what a failed capture
   // would discard: the title PLUS size, energy and context). The draft and
@@ -537,14 +665,28 @@ export function CaptureBox({
   // popover returns `null` when shut (`CapturePopover.tsx`), so the box
   // unmounts and the preserved context dies with it — there is no teardown to
   // write, and nothing survives to the next time capture is opened.
+  /** Everything the disclosures hold, back to shut and empty. Two callers —
+   * the clear-on-ok block below and the demo arm of `submit` — and it exists
+   * so a fourth disclosure can never be added to one of them and forgotten
+   * in the other. It does NOT touch `meta`: the context carve-out is the
+   * caller's, and only one of the two keeps it. */
+  function clearDisclosures(): void {
+    setDetailsOpen(false);
+    setLinkOpen(false);
+    setNoteOpen(false);
+    setNotePath("");
+    setNoteTouched(false);
+    setFileOpen(false);
+    setFilePath("");
+  }
+
   const [processedCaptureSeed, setProcessedCaptureSeed] = useState<string | null>(null);
   if (lastCapture && lastCapture.seed !== processedCaptureSeed) {
     setProcessedCaptureSeed(lastCapture.seed);
     if (lastCapture.kind === "ok") {
       setDraft("");
       setMeta({ ...EMPTY_CAPTURE_META, context: meta.context });
-      setDetailsOpen(false);
-      setLinkOpen(false);
+      clearDisclosures();
       // The dictation failure goes with the draft it happened to. Left
       // standing, a "Nothing was heard." would sit under a freshly emptied box
       // describing a session two captures ago — the same stale-report failure
@@ -627,24 +769,30 @@ export function CaptureBox({
     if (listening) {
       endSession("abort");
     }
+    // Neither of these is a capture field, and neither can be sent with the
+    // capture — `useCaptureAttachments.ts` carries the whole reason. The box
+    // hands them over and stops there, exactly as it hands over `fields`.
+    const attachments: CaptureAttachments = {
+      vaultPath: typedNotePath === "" ? null : typedNotePath,
+      filePath: typedFilePath === "" ? null : typedFilePath,
+    };
     if (demo) {
       // No `captureResult` is coming — the caller's fixture queue IS the
       // acknowledgement, so the demo arm clears and reports right away.
-      onSubmit(draft, destination, fields);
+      onSubmit(draft, destination, fields, attachments);
       setLast({ destination, title: draft });
       setDraft("");
       // Same carve-out as the clear-on-ok block above: context stays, the
       // rest goes. Two sites because demo has no result to wait for.
       setMeta({ ...EMPTY_CAPTURE_META, context: meta.context });
-      setDetailsOpen(false);
-      setLinkOpen(false);
+      clearDisclosures();
       focusField();
       return;
     }
     // The raw string, not a trimmed one: #110's "the raw string reaches the
     // mutation unmodified" — `canSubmitCapture` decides *whether* to submit,
     // never *what* is submitted.
-    onSubmit(draft, destination, fields);
+    onSubmit(draft, destination, fields, attachments);
     setInFlight({ destination, title: draft });
     // Focus stays in the field on purpose: capturing three things in a row is
     // the normal case, and the popover deliberately does not close on submit.
@@ -867,20 +1015,20 @@ export function CaptureBox({
           <span
             style={{
               display: "inline-flex",
-              transform: detailsOpen ? "none" : "rotate(-90deg)",
+              transform: detailsShown ? "none" : "rotate(-90deg)",
               transition: "transform var(--dur-fast) var(--ease-flit)",
             }}
           >
             <IconButton
               icon="chevron-down"
               label="More details"
-              aria-expanded={detailsOpen}
-              onClick={() => setDetailsOpen(!detailsOpen)}
+              aria-expanded={detailsShown}
+              onClick={() => setDetailsOpen(!detailsShown)}
             />
           </span>
         </div>
       </div>
-      {detailsOpen ? (
+      {detailsShown ? (
         <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-5)" }}>
           <Textarea
             label="Description"
@@ -928,46 +1076,127 @@ export function CaptureBox({
               onChange={(event) => setMeta({ ...meta, scheduledDate: event.target.value })}
             />
           </div>
-        </div>
-      ) : null}
-      {/* #782: the Link disclosure, below the details one and independent of
-          it. `label` is the accessible name and the tooltip, as on the
-          details toggle; the glyph is the design system's `link`. */}
-      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
-        <IconButton
-          icon="link"
-          label="Link"
-          aria-expanded={linkOpen}
-          active={linkOpen || meta.linkUrl.length > 0}
-          onClick={() => setLinkOpen(!linkOpen)}
-        />
-      </div>
-      {linkOpen ? (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(min(200px, 100%), 1fr))",
-            gap: "var(--space-5)",
-            alignItems: "start",
-          }}
-        >
-          <Input
-            label="URL"
-            size="sm"
-            type="url"
-            inputMode="url"
-            value={meta.linkUrl}
-            placeholder="https://"
-            onChange={(event) => setMeta({ ...meta, linkUrl: event.target.value })}
-          />
-          <Input
-            label="Link name"
-            size="sm"
-            value={meta.linkLabel}
-            error={metaProblems.linkLabel}
-            placeholder="Shown as the host when empty"
-            onChange={(event) => setMeta({ ...meta, linkLabel: event.target.value })}
-          />
+
+          {/* The three things an item can point at, as one row of three
+              identical controls — the same row, the same order and the same
+              glyphs the item panel draws (`ItemPanel.tsx`), so the gesture is
+              learned once and found twice.
+
+              They live behind "More details" rather than beside the field:
+              the box's whole job is that typing one line and pressing Enter
+              is the fastest thing on screen, and three more controls in the
+              resting state tax every capture for a decision almost none of
+              them make. #782's Link toggle used to sit on its own always-
+              visible row and came in here with the other two.
+
+              Each is drawn only when it could be written: no vault name, no
+              note (nothing announces a vault that isn't there); no file-link
+              wiring, no file. The link needs neither, because it is a column
+              on the item itself. */}
+          <div style={{ display: "flex", gap: "var(--space-4)", flexWrap: "wrap" }}>
+            <AttachToggle
+              icon="link"
+              label="Add a link"
+              open={linkOpen}
+              carries={meta.linkUrl.length > 0}
+              onToggle={() => setLinkOpen(!linkOpen)}
+            />
+            {vaultName !== null ? (
+              <AttachToggle
+                icon="notebook-text"
+                label="Add a note"
+                open={noteFieldShown}
+                carries={typedNotePath.length > 0}
+                onToggle={() => {
+                  // Opening proposes a path from what has been typed so far,
+                  // exactly as `NoteLink`'s editor proposes one from the
+                  // item's title — the same `derivePath`, and the same
+                  // contract: it is a proposal, editable before it is ever
+                  // stored. An empty or unproposable draft opens empty.
+                  // Closing an untouched proposal throws it away, and
+                  // re-opening re-derives it from whatever the draft says by
+                  // then, so a retitled capture never carries a note named
+                  // for the title it had a moment ago.
+                  if (!noteOpen) {
+                    if (!noteTouched) {
+                      setNotePath(derivePath(draft) ?? "");
+                    }
+                  } else if (!noteTouched) {
+                    setNotePath("");
+                  }
+                  setNoteOpen(!noteOpen);
+                }}
+              />
+            ) : null}
+            {fileLinks ? (
+              <AttachToggle
+                icon="dropbox"
+                label="Add a file"
+                open={fileFieldShown}
+                carries={typedFilePath.length > 0}
+                onToggle={() => setFileOpen(!fileOpen)}
+              />
+            ) : null}
+          </div>
+
+          {/* #782's Link pair. Emptying the URL clears the name with it, in
+              the form and not only in the patch, so what is left cannot read
+              as "a name beside no URL". */}
+          {linkOpen ? (
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(min(200px, 100%), 1fr))",
+                gap: "var(--space-5)",
+                alignItems: "start",
+              }}
+            >
+              <Input
+                label="URL"
+                size="sm"
+                type="url"
+                inputMode="url"
+                value={meta.linkUrl}
+                placeholder="https://"
+                onChange={(event) => setMeta({ ...meta, linkUrl: event.target.value })}
+              />
+              <Input
+                label="Link name"
+                size="sm"
+                value={meta.linkLabel}
+                error={metaProblems.linkLabel}
+                placeholder="Shown as the host when empty"
+                onChange={(event) => setMeta({ ...meta, linkLabel: event.target.value })}
+              />
+            </div>
+          ) : null}
+
+          {noteFieldShown ? (
+            <Input
+              label="Vault path"
+              size="sm"
+              icon="notebook-text"
+              value={notePath}
+              error={noteProblem}
+              placeholder="Hummingbird/Knee rehab.md"
+              onChange={(event) => {
+                setNotePath(event.target.value);
+                setNoteTouched(true);
+              }}
+            />
+          ) : null}
+
+          {fileFieldShown ? (
+            <Input
+              label="File path"
+              size="sm"
+              icon="dropbox"
+              value={filePath}
+              error={fileProblem}
+              placeholder="Finance/2026/receipt.pdf"
+              onChange={(event) => setFilePath(event.target.value)}
+            />
+          ) : null}
         </div>
       ) : null}
       {setupRequired && setupPhase.phase !== "closed" ? (
@@ -1022,6 +1251,19 @@ export function CaptureBox({
           style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)", margin: 0 }}
         >
           {captureError}
+        </p>
+      ) : null}
+      {attachmentFailure ? (
+        // Its own paragraph, never folded into `captureError` above: that one
+        // says the capture did not happen, and this one says it did. A reader
+        // who conflates them would go looking for an item that is already
+        // there. `role="alert"` for the same reason as the others — it
+        // appears with no other change on the page.
+        <p
+          role="alert"
+          style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)", margin: 0 }}
+        >
+          {attachmentFailure}
         </p>
       ) : null}
       {last ? (

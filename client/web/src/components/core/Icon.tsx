@@ -32,6 +32,7 @@ import {
   LoaderCircle,
   Mic,
   Moon,
+  NotebookText,
   Play,
   Plus,
   Radio,
@@ -51,6 +52,7 @@ import {
   Zap,
 } from "lucide-react";
 import {
+  DropboxMark,
   EnergyHigh,
   EnergyLow,
   EnergyMedium,
@@ -98,6 +100,12 @@ export const ICON_MAP = {
   // workflow question falls back to `git-branch`. Its five real workflow
   // subjects take mail/mails/calendar/flag, so the default rarely shows.
   "git-branch": GitBranch,
+  // The same gap, answered the other way. ADR-0036's file-link control says
+  // only "Add" plus this glyph, so the glyph IS the noun and a stand-in
+  // (`box`, `cloud`) would leave the button naming nothing in particular —
+  // unlike the workflow question above, where the subject is written beside
+  // it. Drawn in `custom-glyphs.tsx`, which carries the geometry and why.
+  dropbox: DropboxMark,
   globe: Globe,
   "help-circle": HelpCircle,
   inbox: Inbox,
@@ -113,6 +121,9 @@ export const ICON_MAP = {
   // `mic-off` would say "muted", which is not what stopping means.
   mic: Mic,
   moon: Moon,
+  // #771's note affordance. A ruled notebook, not `file-text`: a file is
+  // what the Dropbox control points at, and the two sit in one row.
+  "notebook-text": NotebookText,
   play: Play,
   plus: Plus,
   radio: Radio,

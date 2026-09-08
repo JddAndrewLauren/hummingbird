@@ -42,6 +42,7 @@ import { useTriageWiring } from "./shell/useTriageWiring";
 import { useBackendSelection } from "./shell/useBackendSelection";
 import { useDropboxLocalRoot } from "./shell/useDropboxLocalRoot";
 import { useFileLinksWiring } from "./shell/useFileLinksWiring";
+import { hasAttachments, useCaptureAttachments, type CaptureAttachments } from "./shell/useCaptureAttachments";
 import { useBindingsWiring } from "./shell/useBindingsWiring";
 import { useItemDetailWiring } from "./shell/useItemDetailWiring";
 import { useMicrotaskWiring } from "./shell/useMicrotaskWiring";
@@ -340,8 +341,36 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     setCaptureDictating(false);
   };
 
-  function handleCapture(title: string, destination: CaptureDestination, fields: CaptureFields) {
-    submitCapture(title, destination, Date.now(), fields);
+  const { triage: handleTriage } = useTriageWiring(worker);
+
+  // The capture box's note and file, written once the capture they rode with
+  // has an id to attach them to. Mounted here because this is where all four
+  // of its inputs already are — the triage door, the file-link door, and the
+  // two broadcast result slots it recognises its own writes on — and ABOVE
+  // `handleCapture`, which reads it: a handler declared before the hook it
+  // calls into reads as render-phase work to the compiler's purity lint.
+  const captureAttachments = useCaptureAttachments(
+    handleTriage,
+    fileLinksWiring,
+    task.lastCapture,
+    task.lastTriage,
+    task.lastFileLinkWrite,
+  );
+
+  function handleCapture(
+    title: string,
+    destination: CaptureDestination,
+    fields: CaptureFields,
+    attachments: CaptureAttachments,
+  ) {
+    const seed = submitCapture(title, destination, Date.now(), fields);
+    // Only a capture that actually asked for one is remembered, so a plain
+    // capture never touches the map at all. The follow-up writes go out when
+    // this seed's result comes back naming the minted id —
+    // `useCaptureAttachments.ts` for why they cannot ride along with it.
+    if (hasAttachments(attachments)) {
+      captureAttachments.remember(seed, attachments);
+    }
   }
 
   // The global focus hotkey (#107's decision: shell level, not a leaf
@@ -446,7 +475,6 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     handleCloseItemDetail,
   ]);
   const { act: handleAct } = useItemActions(worker);
-  const { triage: handleTriage } = useTriageWiring(worker);
   // #355/ADR-0023's Grill takeover — the Triage screen's own composition of
   // the turn lane and the Confirm mutation (`useGrillTakeoverWiring.ts`'s
   // own doc).
@@ -782,6 +810,9 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         // `demo` prop for a future caller, but nothing left in this
         // component ever passes `true`.
         demo={false}
+        vaultName={obsidianVaultName(task.bindings)}
+        fileLinks={fileLinksWiring}
+        attachmentFailure={captureAttachments.failure}
         lastCapture={task.lastCapture}
         cancelDictationRequestId={cancelDictationRequestId}
         onDictatingChange={setCaptureDictating}

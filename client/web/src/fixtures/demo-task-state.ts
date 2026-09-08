@@ -155,6 +155,7 @@
 
 import { TRIPS_CALENDAR_BINDING_KEY } from "../calendar/selection";
 import { LINK_BINDING_KEY } from "../screens/homework-pane/homework";
+import { OBSIDIAN_VAULT_BINDING_KEY } from "../obsidian/vault-uri";
 import { QUESTION_ORDER } from "../screens/questions/contract";
 import type { BindingDTO, LedgerRowDTO, ProjectDTO, RecallRowDTO, TaskItemDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
@@ -205,6 +206,11 @@ interface Seed {
    * — the item `projects-dossier-slot-open-*` opens — so the row is
    * photographed rather than only unit-tested. */
   linkUrl?: string;
+  /** #771: the note this item points at in the Obsidian vault. Exactly one
+   * seed carries one, so the affordance's two read-mode states are both
+   * photographed — this seed draws "Open note", every other item draws the
+   * `Add` + note-glyph offer off the vault binding below. */
+  vaultPath?: string;
 }
 
 /** `YYYY-MM-DDTHH:MM`, naive local — the only deadline spelling ADR-0009/0013
@@ -239,7 +245,7 @@ function item(seed: Seed, index: number, loadedAt: number): TaskItemDTO {
     source: seed.source ?? null,
     sourceKey: seed.source ? `${seed.id}-key` : null,
     sourceUrl: null,
-    vaultPath: null,
+    vaultPath: seed.vaultPath ?? null,
     linkUrl: seed.linkUrl ?? null,
     linkLabel: null,
     archivedAt: null,
@@ -309,6 +315,7 @@ const FRONTIER_SEEDS: Seed[] = [
     size: "quick",
     energy: "low",
     linkUrl: "https://www.youtube.com/watch?v=replace-a-tap-washer",
+    vaultPath: "Home/Tap washer.md",
   },
   {
     id: "b-f2",
@@ -749,6 +756,18 @@ const boundHomeworkLinkBinding: BindingDTO = {
   value: { state: "text", text: "https://example.com/j/000000000" },
 };
 
+/** #771's vault name, seeded for the same reason `boundHomeworkLinkBinding`
+ * above is: the note affordance draws nothing at all without it, so without
+ * a value here neither of its states would exist on any capture. A vault
+ * name is a plain string the operator types, so this fixture is a whole
+ * one — nothing about it has to stay out of git. */
+const boundVaultBinding: BindingDTO = {
+  key: OBSIDIAN_VAULT_BINDING_KEY,
+  known: true,
+  pending: false,
+  value: { state: "text", text: "Demo vault" },
+};
+
 /** The seeded state, typed as the real `TaskState` so a field added to that
  * interface fails this file at build time rather than shipping a fixture that
  * silently omits it.
@@ -880,6 +899,7 @@ export function buildDemoTaskState(): TaskState {
       boundRaceBinding,
       boundTripsBinding,
       boundHomeworkLinkBinding,
+      boundVaultBinding,
     ],
     // #715: every question on, which is production's own steady state (a
     // switched-off question is the exception, and one seeded here would

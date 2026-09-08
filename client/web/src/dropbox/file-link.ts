@@ -89,6 +89,14 @@ export function normalizeSeparators(path: string): string {
   return path.replace(/\\/g, "/");
 }
 
+/** What to say when a path fails `isValidFilePath`. Named here, beside the
+ * rule it reports, so the two surfaces that collect a file path — the item
+ * panel's add row and the capture box's — cannot disagree about what is
+ * wrong; the same reason `triage-form.ts` owns `VAULT_PATH_PROBLEM` for the
+ * vault half. */
+export const FILE_PATH_PROBLEM =
+  "A file link is relative to Dropbox — no leading /, no .., no drive letter";
+
 /** Whether `path` is something this client will send, or will draw Open for.
  *
  * Non-empty after trim is the one rule the authority shares. The rest are
