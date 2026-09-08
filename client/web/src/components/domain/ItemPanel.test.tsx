@@ -728,7 +728,7 @@ describe("the file links block (ADR-0036)", () => {
     fireEvent.change(screen.getByLabelText("File path"), {
       target: { value: '"C:\\Dropbox\\Finance\\2026\\receipt.pdf"' },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Add", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
     expect(createFileLink).toHaveBeenCalledWith("item-1", "Finance/2026/receipt.pdf");
     // The editor closes on a sent write, leaving the offer to add another.
     expect(screen.queryByLabelText("File path")).toBeNull();
@@ -740,7 +740,7 @@ describe("the file links block (ADR-0036)", () => {
     openFileAttach();
     fireEvent.change(screen.getByLabelText("File path"), { target: { value: "C:\\Elsewhere\\x.pdf" } });
     expect(screen.getByText(/relative to Dropbox/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Add", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
     expect(createFileLink).not.toHaveBeenCalled();
   });
 
@@ -761,7 +761,7 @@ describe("the file links block (ADR-0036)", () => {
     expect(trash().disabled).toBe(true);
     openFileAttach();
     expect(
-      (screen.getByRole("button", { name: "Add", exact: true }) as HTMLButtonElement).disabled,
+      (screen.getByRole("button", { name: "Add" }) as HTMLButtonElement).disabled,
     ).toBe(true);
 
     // Some other panel's result changes nothing here.
@@ -800,7 +800,7 @@ describe("the file links block (ADR-0036)", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     openFileAttach();
     fireEvent.change(screen.getByLabelText("File path"), { target: { value: "x.pdf" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
     expect(createFileLink).toHaveBeenCalled();
     expect(screen.getByRole("alert").textContent).toBe("nope");
   });
