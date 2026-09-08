@@ -57,7 +57,7 @@ import {
   type Facet,
   type FacetSelection,
 } from "./frontier-facets";
-import { columnCapFor, frontierLanes } from "./frontier-lanes";
+import { columnCapFor, frontierLanes, laneWeightsFor } from "./frontier-lanes";
 import { orderFrontier } from "./frontier-order";
 import { triageProcessQueue } from "./triage-process-order";
 import {
@@ -649,10 +649,22 @@ export function FrontierColumns({
   const boardRef = useRef<HTMLDivElement>(null);
   const [boardWidth, setBoardWidth] = useState<number | null>(null);
   // The room under the board, which decides the column cap the same way the
-  // width decides the lane count. Measured from the board's own top to the
-  // fold rather than from the scrolling ancestor's box, because that ancestor
-  // reaches the fold and one fewer coupling to the shell is worth the pixel.
+  // width decides the lane count — the board's RESTING room, held from the
+  // first measurement and thereafter tracked against the window rather than
+  // re-read.
+  //
+  // Re-reading the board's own top is the obvious thing and is wrong. That top
+  // moves: the item panel opens *above* these columns and pushes them some
+  // 400px down, so a fresh reading there would shrink every column on the
+  // board under the click that opened the panel — the movement the lane
+  // packing goes to such lengths to avoid. Freezing it also fixes an
+  // order-dependence that measuring afresh would keep: resize the window while
+  // a panel is open and the smaller room would stick after it closed. So the
+  // board runs past the fold while something is open, in a region that already
+  // scrolls, and is exactly right at rest — the state the reader is in nearly
+  // all the time.
   const [boardRoom, setBoardRoom] = useState<number | null>(null);
+  const restingRoom = useRef<{ room: number; fold: number } | null>(null);
   useLayoutEffect(() => {
     const node = boardRef.current;
     if (!node) {
@@ -660,9 +672,20 @@ export function FrontierColumns({
     }
     const measureRoom = () => {
       const fold = document.documentElement.clientHeight;
+      const anchor = restingRoom.current;
       // Same fold-back to `null` as the width: jsdom answers zero to every box
       // and a board with no room under it has not been laid out either.
-      setBoardRoom(fold - node.getBoundingClientRect().top || null);
+      if (!anchor) {
+        const room = fold - node.getBoundingClientRect().top;
+        if (room > 0) {
+          restingRoom.current = { room, fold };
+        }
+        setBoardRoom(room || null);
+        return;
+      }
+      // A taller window is that much more room, whatever has since opened
+      // above the board.
+      setBoardRoom(anchor.room + (fold - anchor.fold) || null);
     };
     measureRoom();
     // The board's own observer cannot see this one: the viewport can grow
@@ -702,32 +725,17 @@ export function FrontierColumns({
     });
   };
 
-  // What each column costs in rows, which is what the packing balances: a
-  // header, then the cap's worth of cards, then the "n more" control if it has
-  // one. Rows rather than pixels because cards are close enough to uniform
-  // that measuring each would buy precision the eye cannot see; the
-  // consequence is that a column of long titles can run a little past its
-  // lane-mates, which is the same slack the wrapping row already had.
-  //
-  // **The column's resting height, deliberately — not what is on screen.**
-  // `collapsed` and `expanded` are both ignored here, and it cost a bug to
-  // learn why. Weighing what is drawn makes every collapse and every "n more"
-  // a repack, and a repack moves columns the reader never touched: collapsing
-  // `overdue` slid `calm` into another lane, and expanding `calm` — 29 cards,
-  // suddenly the heaviest thing on the board by a factor of five — pulled the
-  // whole urgency board into a single lane. A board that rearranges itself
-  // under the click that opened one column is the same fault ADR-0021
-  // decision 1's amendment refuses for the bands' order: it moves for reasons
-  // the reader did not cause. So the lanes are a function of the columns and
-  // the measured width alone, and toggling a column changes that column's
-  // height and nothing else's position. The cost is a lane left short of its
-  // share while a column in it is shut, which is transient, self-inflicted and
-  // undone by the same click.
+  // Item counts and the cap, and nothing about what is collapsed or revealed —
+  // `laneWeightsFor`'s own doc carries the two bugs that bought that rule, and
+  // its signature is what keeps it. A board that rearranges itself under the
+  // click that opened one column is the fault ADR-0021 decision 1's amendment
+  // refuses for the bands' order: it moves for reasons the reader did not
+  // cause.
   const columnCap = columnCapFor(boardRoom);
-  const laneWeights = columns.map((column) => {
-    const capped = Math.min(column.items.length, columnCap);
-    return 1 + capped + (column.items.length > columnCap ? 1 : 0);
-  });
+  const laneWeights = laneWeightsFor(
+    columns.map((column) => column.items.length),
+    columnCap,
+  );
   // Fewer lanes than the width affords whenever the weights do not reach that
   // far — `packLanes` drops the ones nobody filled, and the survivors widen
   // into the space. That is what keeps the urgency axis, three slight bands in
