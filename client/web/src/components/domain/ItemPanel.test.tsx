@@ -642,11 +642,11 @@ describe("the file links block (ADR-0036)", () => {
     withWiring?: boolean;
     localRoot?: string | null;
     showFileLinks?: boolean;
-    lastWrite?: { seed: string; itemId: string; kind: "failed"; error: string | null } | null;
+    lastWrite?: { seed: string; itemId: string; kind: "ok" | "failed"; error: string | null } | null;
   } = {}) {
     const createFileLink = vi.fn(() => "seed-create");
     const removeFileLink = vi.fn(() => "seed-remove");
-    render(
+    const panel = (lastWrite: typeof options.lastWrite) => (
       <ItemPanel
         mode="detail"
         item={itemDTO({ id: "item-1", title: "Fit the tap washer" })}
@@ -659,10 +659,15 @@ describe("the file links block (ADR-0036)", () => {
             ? undefined
             : { localRoot: options.localRoot ?? null, createFileLink, removeFileLink }
         }
-        lastFileLinkWrite={options.lastWrite ?? null}
-      />,
+        lastFileLinkWrite={lastWrite ?? null}
+      />
     );
-    return { createFileLink, removeFileLink };
+    const { rerender } = render(panel(options.lastWrite));
+    return {
+      createFileLink,
+      removeFileLink,
+      rerender: (lastWrite: typeof options.lastWrite) => rerender(panel(lastWrite)),
+    };
   }
 
   it("draws nothing at all with no wiring and no links", () => {
@@ -723,6 +728,40 @@ describe("the file links block (ADR-0036)", () => {
     const { removeFileLink } = detail({ fileLinks: [link] });
     fireEvent.click(screen.getByRole("button", { name: "Remove file link" }));
     expect(removeFileLink).toHaveBeenCalledWith(link);
+  });
+
+  it("Remove is one write at a time: the trash and Add sit disabled until this panel's own ok lands", () => {
+    const link = fileLinkDTO({ id: "fl-9", path: "House/Plumbing" });
+    const { removeFileLink, rerender } = detail({ fileLinks: [link] });
+    const trash = () => screen.getByRole("button", { name: "Remove file link" }) as HTMLButtonElement;
+    fireEvent.click(trash());
+    fireEvent.click(trash());
+    expect(removeFileLink).toHaveBeenCalledTimes(1);
+    expect(trash().disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Add" }) as HTMLButtonElement).disabled).toBe(true);
+
+    // Some other panel's result changes nothing here.
+    rerender({ seed: "someone-else", itemId: "item-2", kind: "ok", error: null });
+    expect(trash().disabled).toBe(true);
+
+    rerender({ seed: "seed-remove", itemId: "item-1", kind: "ok", error: null });
+    expect(trash().disabled).toBe(false);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("a stored back-slashed path is read with / separators everywhere", () => {
+    detail({ fileLinks: [fileLinkDTO({ path: "Finance\\2026\\receipt.pdf" })] });
+    expect(screen.getByText("receipt.pdf")).toBeTruthy();
+    expect(screen.getByText("Finance/2026")).toBeTruthy();
+    expect((screen.getByRole("link", { name: "on dropbox.com" }) as HTMLAnchorElement).href).toBe(
+      "https://www.dropbox.com/home/Finance/2026?preview=receipt.pdf",
+    );
+  });
+
+  it("a back-slashed traversal gets Remove but no Open", () => {
+    detail({ fileLinks: [fileLinkDTO({ path: "a\\..\\b.pdf" })] });
+    expect(screen.queryByRole("button", { name: "Open" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Remove file link" })).toBeTruthy();
   });
 
   it("without wiring the list is read-only: Open and the fallback, no Add, no Remove", () => {

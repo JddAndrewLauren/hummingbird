@@ -4,6 +4,7 @@ import {
   buildOpenUri,
   isValidFilePath,
   normalizePastedPath,
+  normalizeSeparators,
   splitFilePath,
 } from "./file-link";
 
@@ -89,6 +90,28 @@ describe("isValidFilePath", () => {
 
   it("does not mistake a name that contains dots for a traversal", () => {
     expect(isValidFilePath("Reports/2026..draft.pdf")).toBe(true);
+    expect(isValidFilePath("Reports/.hidden")).toBe(true);
+  });
+
+  it("reads a back-slash as a separator, so a traversal cannot hide behind one", () => {
+    expect(isValidFilePath("a\\..\\b.pdf")).toBe(false);
+    expect(isValidFilePath("..\\secrets.txt")).toBe(false);
+    expect(isValidFilePath("\\etc\\passwd")).toBe(false);
+    expect(isValidFilePath("Finance\\2026\\receipt.pdf")).toBe(true);
+  });
+
+  it("rejects an empty or a . segment", () => {
+    expect(isValidFilePath("a//b.pdf")).toBe(false);
+    expect(isValidFilePath("House/Plumbing/")).toBe(false);
+    expect(isValidFilePath("./receipt.pdf")).toBe(false);
+    expect(isValidFilePath("a/./b.pdf")).toBe(false);
+  });
+});
+
+describe("normalizeSeparators", () => {
+  it("turns every back-slash into a forward slash and touches nothing else", () => {
+    expect(normalizeSeparators("Finance\\2026\\receipt.pdf")).toBe("Finance/2026/receipt.pdf");
+    expect(normalizeSeparators("Finance/2026/receipt.pdf")).toBe("Finance/2026/receipt.pdf");
   });
 });
 

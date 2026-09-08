@@ -28,6 +28,17 @@ refused path is reported in a message box and nothing is opened. The app's
 own `isValidFilePath` applies the same rules before it ever fires the
 scheme; the helper repeats them because a URL can come from anywhere.
 
+## What both helpers reveal instead of opening
+
+An executable file type is never opened, only shown: Windows runs
+`explorer.exe /select,<target>` and the Mac runs `open -R <target>` for a
+resolved path whose extension is `.exe .bat .cmd .com .ps1 .vbs .js .msi
+.scr .lnk` (Windows) or `.app .command .sh .pkg .dmg .scpt .workflow` (Mac;
+a `.app` bundle is caught by name, not by being a directory). The decision
+is by name alone, so a `.pdf` is opened whatever it contains. This is
+ADR-0036 decision 5 as amended in the wrap-up of 2026-09-08. `test.sh`'s
+`--dry-run` prints such a path as `reveal: <path>`.
+
 ## Not in CI, by design
 
 There is no artefact to build and no host to test on: a URL-scheme handler

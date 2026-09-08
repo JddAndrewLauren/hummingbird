@@ -186,6 +186,37 @@ describe("createCoreStore", () => {
     expect(store.getSnapshot().task.pending).toEqual({ "item-1": false, "item-2": false });
   });
 
+  it("setTaskFileLinks merges one item's file links into the task slice, leaving other items' entries untouched", () => {
+    const store = createCoreStore();
+    const linkOne = {
+      id: "file-link-1",
+      itemId: "item-1",
+      path: "Finance/2026/receipt.pdf",
+      removedAt: null,
+      version: 1,
+    };
+    const linkTwo = {
+      id: "file-link-2",
+      itemId: "item-2",
+      path: "Photos/2026/quest.jpg",
+      removedAt: null,
+      version: 1,
+    };
+    store.setTaskFileLinks("item-1", [linkOne]);
+    store.setTaskFileLinks("item-2", [linkTwo]);
+
+    expect(store.getSnapshot().task.fileLinksByItem).toEqual({
+      "item-1": [linkOne],
+      "item-2": [linkTwo],
+    });
+
+    // A fresh answer for one item replaces that item's list only.
+    store.setTaskFileLinks("item-1", []);
+
+    expect(store.getSnapshot().task.fileLinksByItem).toEqual({ "item-1": [], "item-2": [linkTwo] });
+    expect(store.getSnapshot().calendar).toEqual(initialCalendar);
+  });
+
   it("stops notifying a listener once it unsubscribes", () => {
     const store = createCoreStore();
     const listener = vi.fn();

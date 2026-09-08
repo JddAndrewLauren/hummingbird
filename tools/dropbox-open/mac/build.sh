@@ -7,11 +7,11 @@ app="$here/Hummingbird Open.app"
 resolve="$here/resolve.sh"
 chmod +x "$resolve"
 
-tmp="$(mktemp)"
-sed "s|RESOLVE_SH|$resolve|" "$here/open.applescript" >"$tmp.applescript"
 rm -rf "$app"
-osacompile -o "$app" "$tmp.applescript"
-rm -f "$tmp" "$tmp.applescript"
+osacompile -o "$app" "$here/open.applescript"
+# The applet reads resolve.sh's path from this file at run time; writing it
+# verbatim avoids escaping the path for sed and for an AppleScript literal.
+printf '%s\n' "$resolve" >"$app/Contents/Resources/resolve.path"
 
 plist="$app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier net.twinion.hummingbird.open" "$plist" 2>/dev/null \

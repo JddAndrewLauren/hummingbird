@@ -80,14 +80,27 @@ export function normalizePastedPath(raw: string, localRoot: string | null): stri
   return path;
 }
 
-/** Whether `path` is something this client will send.
+/** `\` read as `/`. The authority stores whatever it was sent, and a row
+ * written by some other client (or a paste that skipped `normalizePastedPath`)
+ * may carry back-slashes; every reader here — the judge, the two URL
+ * builders, the row's name split — sees the path through this first, so a
+ * `\` can never smuggle a segment past a `/`-only split. */
+export function normalizeSeparators(path: string): string {
+  return path.replace(/\\/g, "/");
+}
+
+/** Whether `path` is something this client will send, or will draw Open for.
  *
  * Non-empty after trim is the one rule the authority shares. The rest are
  * attempts to leave Dropbox, or a paste that never became relative: a
- * leading `/`, a `..` segment, a drive letter, a `~`. No extension rule —
- * a folder is a legitimate link, and opening one opens the file browser. */
+ * leading `/` (or `\`), a `..` segment, a drive letter, a `~`. A `.`
+ * segment or an empty one (`a//b`, a trailing `/`) is refused too — not an
+ * escape, but a path no helper resolves the same way twice. Judged on
+ * separator-normalized form, so `a\..\b` fails exactly as `a/../b` does.
+ * No extension rule — a folder is a legitimate link, and opening one opens
+ * the file browser. */
 export function isValidFilePath(path: string): boolean {
-  const trimmed = path.trim();
+  const trimmed = normalizeSeparators(path).trim();
   if (trimmed.length === 0) {
     return false;
   }
@@ -97,7 +110,7 @@ export function isValidFilePath(path: string): boolean {
   if (/^[A-Za-z]:/.test(trimmed)) {
     return false;
   }
-  return !trimmed.split("/").includes("..");
+  return trimmed.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
 }
 
 /** The name a row shows: the basename, with the folder as secondary text.

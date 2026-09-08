@@ -1,4 +1,5 @@
-# Table-driven checks for Resolve-HummingbirdPath. Run by hand:
+# Table-driven checks for Resolve-HummingbirdPath and Get-HummingbirdAction.
+# Run by hand:
 #   .\open.tests.ps1
 . (Join-Path $PSScriptRoot "open.ps1")
 
@@ -27,5 +28,17 @@ Check "hummingbird-open:?path=a%2F..%2Fb.pdf"               $null
 Check "hummingbird-open:?path=D%3A%5Csecrets.txt"           $null
 Check "hummingbird-open:?path=~%2Fx.pdf"                    $null
 Check "not-ours:?path=x"                                    $null
+
+function CheckAction($path, $expected) {
+    $actual = Get-HummingbirdAction $path
+    if ($actual -eq $expected) { Write-Host "ok   $path -> $actual" }
+    else { Write-Host "FAIL $path -> $actual, expected $expected"; $script:failures++ }
+}
+
+CheckAction "C:\Dropbox\Finance\2026\receipt.pdf" "open"
+CheckAction "C:\Dropbox\House\Plumbing"            "open"
+CheckAction "C:\Dropbox\House\fix.ps1"             "reveal"
+CheckAction "C:\Dropbox\House\Setup.EXE"           "reveal"
+CheckAction "C:\Dropbox\House\shortcut.lnk"        "reveal"
 
 if ($failures -gt 0) { Write-Host "$failures failure(s)"; exit 1 } else { Write-Host "all ok" }

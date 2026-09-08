@@ -1,6 +1,8 @@
+// @vitest-environment jsdom
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WorkerLike } from "../store/worker-client";
-import { fileLinkDTO } from "../test/component";
+import { fileLinkDTO, renderHook } from "../test/component";
 import { mintFileLinkRemoveSeed, useFileLinksWiring } from "./useFileLinksWiring";
 
 function fakeWorker(): WorkerLike & { postMessage: ReturnType<typeof vi.fn> } {
@@ -16,7 +18,7 @@ describe("useFileLinksWiring", () => {
     vi.useFakeTimers();
     vi.setSystemTime(2_000);
     const worker = fakeWorker();
-    const wiring = useFileLinksWiring(worker, "C:\\Dropbox");
+    const wiring = renderHook(() => useFileLinksWiring(worker, "C:\\Dropbox")).result.current;
 
     const seed = wiring.createFileLink("item-1", "Finance/2026/receipt.pdf");
 
@@ -34,7 +36,7 @@ describe("useFileLinksWiring", () => {
     vi.useFakeTimers();
     vi.setSystemTime(3_000);
     const worker = fakeWorker();
-    const wiring = useFileLinksWiring(worker, null);
+    const wiring = renderHook(() => useFileLinksWiring(worker, null)).result.current;
     const current = fileLinkDTO({ id: "file-link-1" });
 
     const seed = wiring.removeFileLink(current);

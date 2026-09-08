@@ -2,8 +2,10 @@
 # hummingbird-open: handler, Mac half (ADR-0036). Maps a Dropbox-relative path
 # onto this machine's Dropbox folder and opens it. See ../README.md.
 #
-#   resolve.sh <url>             open the resolved path
-#   resolve.sh --dry-run <url>   print the resolved path, open nothing
+#   resolve.sh <url>             open the resolved path (or reveal it in Finder)
+#   resolve.sh --dry-run <url>   print the resolved path, open nothing; a path
+#                                that would be revealed rather than opened is
+#                                printed as "reveal: <path>"
 #   resolve.sh --root <dir> ...  override the root (tests)
 set -euo pipefail
 
@@ -32,12 +34,18 @@ refuse() {
   if [[ $dry_run -eq 1 ]]; then
     echo "refused: $1" >&2
   else
-    osascript -e "display alert \"hummingbird could not open that file link.\" message \"$1\"" >/dev/null 2>&1 || true
+    # The message travels as argv, never inside the script text: a URL can
+    # come from anywhere and must not be able to write AppleScript.
+    osascript -e 'on run argv' \
+      -e 'display alert "hummingbird could not open that file link." message (item 1 of argv)' \
+      -e 'end run' "$1" >/dev/null 2>&1 || true
   fi
   exit 1
 }
 
-urldecode() { local s="${1//+/ }"; printf '%b' "${s//%/\\x}"; }
+# RFC 3986 percent-decoding only: '+' is form-encoding and stays literal.
+# Backslashes are escaped first so printf %b cannot read one as an escape.
+urldecode() { local s="${1//\\/\\\\}"; s="${s//%/\\x}"; printf '%b' "$s"; }
 
 [[ "$url" == "$PREFIX"* ]] || refuse "not a hummingbird-open URL"
 relative="$(urldecode "${url#"$PREFIX"}")"
@@ -63,9 +71,20 @@ else
 fi
 [[ "$target" == "$root_real/"* ]] || refuse "path escapes the Dropbox root"
 
+# Executable types are revealed in Finder, never opened (ADR-0036 decision 5
+# as amended 2026-09-08). Decided by name alone, so a ".app" bundle counts.
+action=open
+case "$(printf '%s' "${target##*/}" | tr '[:upper:]' '[:lower:]')" in
+  *.app|*.command|*.sh|*.pkg|*.dmg|*.scpt|*.workflow) action=reveal ;;
+esac
+
 if [[ $dry_run -eq 1 ]]; then
-  echo "$target"
+  if [[ $action == reveal ]]; then echo "reveal: $target"; else echo "$target"; fi
   exit 0
 fi
 [[ -e "$target" ]] || refuse "not found: $target"
-open "$target"
+if [[ $action == reveal ]]; then
+  open -R "$target"
+else
+  open "$target"
+fi

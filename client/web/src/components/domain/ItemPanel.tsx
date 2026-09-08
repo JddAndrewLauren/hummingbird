@@ -38,6 +38,7 @@ import {
   buildOpenUri,
   isValidFilePath,
   normalizePastedPath,
+  normalizeSeparators,
   splitFilePath,
 } from "../../dropbox/file-link";
 import { writeFailureMessage } from "../../screens/projects/roster";
@@ -260,6 +261,25 @@ export function ItemPanel({
     issuedFileLinkSeed,
     "That file link write did not go through.",
   );
+  // One write at a time. Remove's seed is `linkId:remove:nowMs`, so a second
+  // tap in the same tick would mint a second seed for a row the first tap
+  // already removed, and the authority's 409 on it would flash a failure
+  // after a success. Add and every trash button sit disabled from the tap
+  // until this panel's own result lands; a landed `ok` releases the seed,
+  // a failure keeps it so `fileLinkFailure` can name it (and the next tap
+  // re-arms). The release is the setState-during-render idiom
+  // (`RankedRegion`'s header says why not an effect), guarded by the seed
+  // comparison so it fires once.
+  const fileLinkWriteOutstanding =
+    issuedFileLinkSeed !== null && (lastFileLinkWrite === null || lastFileLinkWrite.seed !== issuedFileLinkSeed);
+  if (
+    issuedFileLinkSeed !== null &&
+    lastFileLinkWrite !== null &&
+    lastFileLinkWrite.kind === "ok" &&
+    lastFileLinkWrite.seed === issuedFileLinkSeed
+  ) {
+    setIssuedFileLinkSeed(null);
+  }
 
   function addFileLink() {
     if (!fileLinksWiring) {
@@ -784,8 +804,11 @@ export function ItemPanel({
               }}
             >
               {fileLinks.map((link) => {
-                const { name, folder } = splitFilePath(link.path);
-                const openable = isValidFilePath(link.path);
+                // Seen through `normalizeSeparators` once, so the judge, the
+                // name split and both URLs agree on where the segments are.
+                const path = normalizeSeparators(link.path);
+                const { name, folder } = splitFilePath(path);
+                const openable = isValidFilePath(path);
                 return (
                   <li key={link.id} style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
                     <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
@@ -815,14 +838,12 @@ export function ItemPanel({
                           size="sm"
                           variant="secondary"
                           iconRight="arrow-up-right"
-                          onClick={() =>
-                            window.open(buildOpenUri(link.path), "_blank", "noopener,noreferrer")
-                          }
+                          onClick={() => window.open(buildOpenUri(path), "_blank", "noopener,noreferrer")}
                         >
                           Open
                         </Button>
                         <a
-                          href={buildDropboxWebUrl(link.path)}
+                          href={buildDropboxWebUrl(path)}
                           target="_blank"
                           rel="noreferrer"
                           style={{ font: "var(--type-body-sm)", color: "var(--accent)", whiteSpace: "nowrap" }}
@@ -836,6 +857,7 @@ export function ItemPanel({
                         icon="trash-2"
                         label="Remove file link"
                         size="sm"
+                        disabled={fileLinkWriteOutstanding}
                         onClick={() => setIssuedFileLinkSeed(fileLinksWiring.removeFileLink(link))}
                       />
                     ) : null}
@@ -864,7 +886,12 @@ export function ItemPanel({
                   setFileLinkProblem(null);
                 }}
               />
-              <Button type="submit" size="sm" variant="secondary" disabled={fileLinkInput.trim() === ""}>
+              <Button
+                type="submit"
+                size="sm"
+                variant="secondary"
+                disabled={fileLinkInput.trim() === "" || fileLinkWriteOutstanding}
+              >
                 Add
               </Button>
             </form>

@@ -75,6 +75,15 @@ removal, unchanged.
    that folder. **Open, not reveal**, by the operator's choice. This is the
    `obsidian://` mechanism, self-supplied.
 
+   *Amended 2026-09-08 (the wrap-up review of this slice): executable file
+   types are the one exception to "open". A `.exe`, `.bat`, `.cmd`, `.lnk`
+   or `.ps1` on Windows, a `.app`, `.command`, `.sh` or `.pkg` on the Mac
+   (each helper carries its own list), is **revealed** in the file browser
+   with the file selected, never launched — because "open in default app"
+   on those is "run", and a URL any web page can fire after one prompt
+   click must not run whatever the operator happens to keep in Dropbox.
+   Everything else still opens.*
+
 6. **The dropbox.com fallback is always drawn.** The app cannot tell
    whether the helper is installed, so beside every Open is an "on
    dropbox.com" link to the same path in Dropbox's web UI

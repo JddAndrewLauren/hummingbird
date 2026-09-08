@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import type { FileLinkDTO } from "../store/protocol";
 import type { WorkerLike } from "../store/worker-client";
 import { createFileLink, removeFileLink } from "../store/worker-client";
@@ -44,19 +45,24 @@ export function mintFileLinkRemoveSeed(linkId: string, nowMs: number): string {
   return `${linkId}:remove:${nowMs}`;
 }
 
+/** One object per `(worker, localRoot)`: it rides several props deep, and a
+ * fresh identity every render would re-render every panel on the way. */
 export function useFileLinksWiring(worker: WorkerLike, localRoot: string | null): FileLinksWiring {
-  return {
-    localRoot,
-    createFileLink: (itemId, path) => {
-      const seed = mintFileLinkCreateSeed();
-      createFileLink(worker, seed, itemId, path, Date.now());
-      return seed;
-    },
-    removeFileLink: (current) => {
-      const nowMs = Date.now();
-      const seed = mintFileLinkRemoveSeed(current.id, nowMs);
-      removeFileLink(worker, seed, current, nowMs, nowMs);
-      return seed;
-    },
-  };
+  return useMemo(
+    () => ({
+      localRoot,
+      createFileLink: (itemId, path) => {
+        const seed = mintFileLinkCreateSeed();
+        createFileLink(worker, seed, itemId, path, Date.now());
+        return seed;
+      },
+      removeFileLink: (current) => {
+        const nowMs = Date.now();
+        const seed = mintFileLinkRemoveSeed(current.id, nowMs);
+        removeFileLink(worker, seed, current, nowMs, nowMs);
+        return seed;
+      },
+    }),
+    [worker, localRoot],
+  );
 }
