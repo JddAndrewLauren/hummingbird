@@ -23,7 +23,18 @@ hummingbird-rules-engine = { path = "../../server/rules-engine" }
 # reactor, and the generated Kotlin suspend functions poll futures on the
 # runtime uniffi manages, not on any host thread.
 uniffi = { version = "0.28", features = ["tokio"] }
-tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+# `time` for `MobileDiagnosticClock::sleep_ms` (#769) — the observed sync
+# cycle's slow/stalled watchdog needs a real async sleep, and this host
+# (unlike `ffi-web`'s bare `wasm32`) already runs on this very tokio
+# reactor, so `tokio::time::sleep` is the natural seam rather than a second
+# timer dependency.
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+# `hummingbird_core::diagnostics::DiagnosticClock` (#769) is declared
+# `#[async_trait]`-shaped in `hummingbird-core`; implementing it here
+# (`MobileDiagnosticClock`, `lib.rs`) needs the identical macro, same
+# version `hummingbird-core`'s own `Cargo.toml` pins, so the two crates'
+# desugared signatures agree.
+async-trait = "0.1.92"
 # For the one `reqwest::Client` the host constructs and hands to both
 # transports. `default-features = false` + `rustls-tls` deliberately
 # mirrors `../core`'s declaration — cargo unifies features per crate, so a

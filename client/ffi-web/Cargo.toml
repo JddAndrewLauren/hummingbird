@@ -22,6 +22,12 @@ hummingbird-domain = { path = "../../server/domain" }
 # matching on strings here. Same already-carried-by-`hummingbird-core`
 # dependency as `hummingbird-domain` above.
 hummingbird-rules-engine = { path = "../../server/rules-engine" }
+# `hummingbird_core::diagnostics::DiagnosticClock` (#769) is declared
+# `#[async_trait]`-shaped in `hummingbird-core`; implementing it here
+# (`TaskHostClock`, `task_host.rs`) needs the identical macro, same version
+# `hummingbird-core`'s own `Cargo.toml` pins, so the two crates' desugared
+# signatures agree.
+async-trait = "0.1.92"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
@@ -29,6 +35,15 @@ reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 
+# `TaskHostClock`'s native `sleep_ms` (#769) — the observed sync cycle's
+# slow/stalled watchdog needs a real async sleep on the native target this
+# crate's own `cargo test` suite runs on (`now_monotonic_ms`'s doc has the
+# identical per-target split). Declared only for `cfg(not(wasm32))`, so it
+# never reaches the `wasm32-unknown-unknown` artifact `wasm-pack` actually
+# ships — `sleep_ms`'s `wasm32` half sleeps through JS `setTimeout` instead
+# (`task_host.rs`'s `sleep_ms_wasm`).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1", features = ["rt", "macros", "time"] }
+
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros"] }
 tempfile = "3.27.0"
