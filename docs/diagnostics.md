@@ -468,7 +468,37 @@ gap where `worker.started` should be.
    entry — is also closed: `every_declared_variant_has_a_fixture_entry`
    reads every variant's wire name off the enum's own declaration and
    checks it was actually serialized in `one_of_every_event_variant`,
-   naming whichever variant is missing.
+   naming whichever variant is missing. **Closed further — #768.** That
+   discovery step itself used to find variants only by scanning for
+   `#[serde(rename = "...")]` lines, so a variant declared with no rename
+   attribute was never enumerated — invisible to the gate, which then
+   passed by never having looked, not by having checked (proven by
+   mutation: a `title`-carrying variant with no rename and no fixture entry
+   left the whole domain suite green). `declared_variant_names` now finds
+   each variant by the identifier leading its own declaration line and
+   falls back to that bare identifier when no rename attribute precedes it
+   (serde's own default with no `rename_all` on this enum), so a variant is
+   discovered whether or not it carries a rename — closing the gap without
+   needing to newly enforce the rename convention itself, which nothing in
+   this repo did or now does. **Round 1 of that same review caught a second
+   hole in the fix itself:** matching on how a variant's *line* ended (`{`
+   or `,`) rather than on its identifier made every single-line struct
+   variant — `SyncStarted { force_full_sweep: bool },`, rustfmt's own
+   default whenever a struct variant's fields fit on one line, 9 of the
+   real enum's 23 variants — invisible too, silently reducing the gate's
+   coverage from 23 variants to 14 (proven the same way: deleting one
+   fixture entry left the whole domain suite green). Discovery now takes
+   the identifier off the *front* of the line instead, so it no longer
+   depends on the line's ending shape at all, and a new test
+   (`declared_variant_names_finds_every_variant`) pins the discovered count
+   against `one_of_every_event_variant`'s own (compiler-exhaustive) length,
+   so a future regression that shrinks discovery fails a named test rather
+   than needing a fixture-deletion mutation to notice — the gap
+   `every_declared_variant_has_a_fixture_entry` alone cannot close, since it
+   only ever checks `declared ⊆ fixtured`. The rename lookback was also
+   widened past intervening doc-comment or attribute lines, so one of those
+   sitting between a `#[serde(rename = "...")]` and its variant cannot
+   mis-name it under the bare identifier instead.
 9. **Two of #742's three smaller leftovers from this batch are closed; one
    is not.** Closed — #742: the masked dead disjunct in `evictOverBudget`
    (`client/web/src/worker/diagnostics-store.ts`) is gone — the function
