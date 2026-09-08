@@ -1729,8 +1729,9 @@ mod wasm_bindings {
                     return Ok(JsValue::from_str(BUSY_RUN));
                 };
                 let diagnostics = host.diagnostics();
+                let cycle_id = host.mint_cycle_id();
                 let response = host
-                    .run(now_ms as i64, &trigger, force_full_sweep, jitter_unit, diagnostics)
+                    .run(now_ms as i64, &trigger, force_full_sweep, jitter_unit, diagnostics, &cycle_id)
                     .await;
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("RunResponse serializes"),

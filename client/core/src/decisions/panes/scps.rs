@@ -230,23 +230,47 @@ pub fn scps_within_band(next: Option<&ScpsEvent>) -> Option<i64> {
     Some(if next.in_progress { next.end_ms } else { next.start_ms })
 }
 
+/// [`scps_quest`]'s result — #702's fix. Where the old parser returned
+/// `Option<(String, String)>` and let "no binding" and "text present but
+/// malformed" collapse into the same `None`, this type keeps them apart:
+/// [`QuestParse::Unset`] means there is nothing to blame the operator for
+/// (no binding, or one that is not `Text` at all — a non-text binding value
+/// is still unset, never malformed, per the acceptance criteria);
+/// [`QuestParse::Malformed`] means a `Text` binding is present and this
+/// parser could not make sense of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuestParse {
+    /// No `scps-quest` binding, or one whose value is not `Text`.
+    Unset,
+    /// A `Text` binding whose value did not parse as `YYYY-MM <phrase>` —
+    /// carries the stored text back so a client can show it to the
+    /// operator. Operator-authored free text: never let this reach a
+    /// diagnostics journal (`server/domain/src/diagnostics.rs`'s
+    /// `FORBIDDEN_FIELD_NAMES` redaction rule — this pane never wires
+    /// `ScpsQuestFact` into diagnostics, and must not start).
+    Malformed(String),
+    /// `(month, phrase)`, both well-formed.
+    Parsed(String, String),
+}
+
 /// The month-token parser (ADR-0032 part 4): `scps-quest`'s stored text is
 /// `YYYY-MM <phrase>` — the first whitespace-delimited token, then
-/// everything after it, trimmed. Returns `None` for anything that does not
-/// parse: no binding, a non-text binding, a malformed or missing month
-/// token, or a phrase that trims to nothing.
-pub fn scps_quest(inputs: &PaneInputs) -> Option<(String, String)> {
+/// everything after it, trimmed. [`QuestParse::Malformed`] for anything
+/// that does not parse: a malformed or missing month token, or a phrase
+/// that trims to nothing. [`QuestParse::Unset`] only for no binding, or a
+/// non-text one.
+pub fn scps_quest(inputs: &PaneInputs) -> QuestParse {
     let text = match inputs.binding(SCPS_QUEST_BINDING_KEY).map(|binding| &binding.value) {
         Some(BindingValueFact::Text { text }) => text,
-        _ => return None,
+        _ => return QuestParse::Unset,
     };
     let mut parts = text.splitn(2, char::is_whitespace);
-    let month = parts.next()?;
+    let month = parts.next().unwrap_or("");
     let phrase = parts.next().unwrap_or("").trim();
     if !is_month_token(month) || phrase.is_empty() {
-        return None;
+        return QuestParse::Malformed(text.clone());
     }
-    Some((month.to_string(), phrase.to_string()))
+    QuestParse::Parsed(month.to_string(), phrase.to_string())
 }
 
 /// Whether `token` is a well-formed `YYYY-MM` — four digits, a dash, two
@@ -270,9 +294,16 @@ fn is_month_token(token: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ScpsQuestFact {
-    /// No binding, an unparseable one, or `scps-quest` unset — indistinguishable
-    /// to this pane (ADR-0032 part 4's own "treated like `Other`" rule).
+    /// No `scps-quest` binding, or one whose value is not `Text` — never
+    /// conflated with [`ScpsQuestFact::Malformed`] (#702): this is "nothing
+    /// is set", not "something is set and this pane could not read it".
     None,
+    /// A `Text` binding is present but did not parse as `YYYY-MM <phrase>`
+    /// (#702) — carries the offending text back so a client can show it and
+    /// name the expected shape. Operator-authored free text: see
+    /// [`QuestParse::Malformed`]'s own doc on the diagnostics redaction
+    /// rule before wiring this anywhere near a journal.
+    Malformed { text: String },
     /// The stored month equals the device's current civil month.
     Current { phrase: String },
     /// The stored month is not the device's current civil month — shown as
@@ -283,8 +314,9 @@ pub enum ScpsQuestFact {
 /// [`scps_quest`], classified against `today`'s own civil month.
 fn scps_quest_fact(inputs: &PaneInputs, today: &CivilDate) -> ScpsQuestFact {
     match scps_quest(inputs) {
-        None => ScpsQuestFact::None,
-        Some((month, phrase)) => {
+        QuestParse::Unset => ScpsQuestFact::None,
+        QuestParse::Malformed(text) => ScpsQuestFact::Malformed { text },
+        QuestParse::Parsed(month, phrase) => {
             if month == today[..7] {
                 ScpsQuestFact::Current { phrase }
             } else {
@@ -638,12 +670,25 @@ mod tests {
         };
         assert_eq!(
             scps_quest(&inputs_with("2026-09 the beauty of reflections")),
-            Some(("2026-09".to_string(), "the beauty of reflections".to_string()))
+            QuestParse::Parsed("2026-09".to_string(), "the beauty of reflections".to_string())
         );
     }
 
     #[test]
-    fn refuses_a_malformed_month_token_or_an_empty_phrase() {
+    fn an_unset_or_non_text_binding_is_unset_never_malformed() {
+        let no_binding = bound_inputs(now_at("2026-09-01", 9, 0));
+        assert_eq!(scps_quest(&no_binding), QuestParse::Unset);
+
+        let mut non_text = bound_inputs(now_at("2026-09-01", 9, 0));
+        non_text.bindings = Some(vec![BindingFact {
+            key: SCPS_QUEST_BINDING_KEY.to_string(),
+            value: BindingValueFact::Other,
+        }]);
+        assert_eq!(scps_quest(&non_text), QuestParse::Unset);
+    }
+
+    #[test]
+    fn a_present_text_binding_that_does_not_parse_is_malformed_never_unset() {
         let inputs_with = |value: &str| {
             let mut inputs = bound_inputs(now_at("2026-09-01", 9, 0));
             inputs.bindings = Some(vec![BindingFact {
@@ -652,9 +697,16 @@ mod tests {
             }]);
             inputs
         };
-        assert_eq!(scps_quest(&inputs_with("2026-9 x")), None);
-        assert_eq!(scps_quest(&inputs_with("reflections")), None);
-        assert_eq!(scps_quest(&inputs_with("")), None);
+        // A bare phrase with no month token.
+        assert_eq!(scps_quest(&inputs_with("reflections")), QuestParse::Malformed("reflections".to_string()));
+        // A month token alone with no phrase.
+        assert_eq!(scps_quest(&inputs_with("2026-09")), QuestParse::Malformed("2026-09".to_string()));
+        // A month token with a whitespace-only phrase.
+        assert_eq!(scps_quest(&inputs_with("2026-09   ")), QuestParse::Malformed("2026-09   ".to_string()));
+        // Malformed months.
+        for value in ["2026-1 x", "26-01 x", "2026-01-01 x"] {
+            assert_eq!(scps_quest(&inputs_with(value)), QuestParse::Malformed(value.to_string()));
+        }
     }
 
     #[test]
@@ -685,6 +737,30 @@ mod tests {
                 view.quest,
                 ScpsQuestFact::Other { month: "2026-09".to_string(), phrase: "Reflected Light".to_string() }
             ),
+            ScpsResolved::Gap { gap } => panic!("expected facts, got {gap:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unset_binding_and_a_malformed_one_produce_different_facts() {
+        let unset = with_read(bound_inputs(now_at("2026-09-15", 9, 0)), Vec::new());
+        let facts = resolve(&scps_zone_queries(&unset));
+        match scps_view(&unset, &facts).unwrap() {
+            ScpsResolved::Facts(view) => assert_eq!(view.quest, ScpsQuestFact::None),
+            ScpsResolved::Gap { gap } => panic!("expected facts, got {gap:?}"),
+        }
+
+        let mut malformed = bound_inputs(now_at("2026-09-15", 9, 0));
+        malformed.bindings = Some(vec![BindingFact {
+            key: SCPS_QUEST_BINDING_KEY.to_string(),
+            value: BindingValueFact::Text { text: "Impressions of Venice".to_string() },
+        }]);
+        let malformed = with_read(malformed, Vec::new());
+        let facts = resolve(&scps_zone_queries(&malformed));
+        match scps_view(&malformed, &facts).unwrap() {
+            ScpsResolved::Facts(view) => {
+                assert_eq!(view.quest, ScpsQuestFact::Malformed { text: "Impressions of Venice".to_string() })
+            }
             ScpsResolved::Gap { gap } => panic!("expected facts, got {gap:?}"),
         }
     }

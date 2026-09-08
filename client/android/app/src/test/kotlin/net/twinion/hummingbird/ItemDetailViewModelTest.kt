@@ -1,11 +1,13 @@
 package net.twinion.hummingbird
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import uniffi.hummingbird_ffi_mobile.CaptureFormMeta
 import uniffi.hummingbird_ffi_mobile.FieldPatch
@@ -378,6 +380,24 @@ class ItemDetailViewModelTest {
         assertEquals("renamed", model.draft.value?.title)
         assertTrue("still worth asking about on Back", model.isDirty)
         assertTrue(model.statusLine.value?.contains("Couldn't promote") == true)
+    }
+
+    /** Cancellation is not a failure: it rethrows, and no "Couldn't
+     * promote" is worded for a coroutine that was simply cancelled — the
+     * same amendment `TriageViewModelTest`'s own `complete` twin pins. */
+    @Test
+    fun `a cancelled promote rethrows without a statusLine`() = runBlocking {
+        val model = vm(promote = { _, _, _ -> throw CancellationException("scope left") })
+        model.load("i-1", 1_000)
+        model.updateDraft(model.draft.value!!.copy(title = "renamed"))
+
+        try {
+            model.promote("i-1", 2_000)
+            fail("promote must rethrow cancellation")
+        } catch (expected: CancellationException) {
+        }
+
+        assertNull("cancellation must never be worded as a failure", model.statusLine.value)
     }
 
     /** The answer a host closes its pane on. A refusal and a failure are
