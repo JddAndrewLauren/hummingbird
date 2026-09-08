@@ -52,6 +52,73 @@ nowhere else now that `NOTES.md` is gone.
 Now's centre column renders the frontier as **columns** grouped by an axis the
 reader chooses: **Context**, **Project**, **Size**, **Energy**.
 
+*Amended 2026-09-08: there is a **fifth axis, Urgency**, offered on both
+surfaces (Now and a project's dossier), on the operator's own request for a
+board partitioned by what the world is pressing. Everything the set's original
+argument establishes still holds; what follows is what this axis does not
+share with the four, and why each departure is required rather than chosen.*
+
+*(a) **It does not fall to the tripwire below.** That tripwire fires on an
+axis nobody ever switches away from Context, and prescribes deleting the
+switch — it is a claim about the switch earning its chrome, not a cap on the
+set's size. A fifth axis makes the switch more used, not less.*
+
+*(b) **The word was already spent, and this is the reading that frees it.**
+Decision 6 assigns "urgency" to the card's colour, and the `FrontierAxis`
+enum's own doc used to give the asymmetry as: urgency is a facet but not an
+axis, because colour already carries it. That argument is about a **redundant
+encoding**, and it holds — see the amendment to decision 2 below. It never
+was an argument that the partition is not worth having, and a reader who
+wants the board cut by pressure could not get there from a filter: a filter
+hides, and this reader wants everything, arranged.*
+
+*(c) **Its columns are severity-ordered, not fullest-first.** `overdue`,
+`now`, `soon`, `calm`, always, with empty bands omitted. Fullest-first is a
+rule for axes whose values have no order of their own; these have one, and a
+board whose column order re-arranged itself as items crossed band boundaries
+would move under the reader for reasons they did not cause.*
+
+*(d) **It has no no-value column, and cannot grow one.** Urgency is total —
+`compute_urgency` answers `calm` for an item with no deadline and for one
+whose deadline will not resolve — so "the no-value bucket always last" is
+vacuously true here rather than violated. That is pinned by a test
+(`urgency_never_yields_a_no_value_column`), not by this paragraph, because a
+"No urgency" column appearing would be a silent change of meaning.*
+
+*(e) **It is the one axis that reads a clock, and the one whose column is
+re-sorted.** `group_frontier` gains a `now` argument, injected in the usual
+deadline-shaped form; the other four ignore it and remain, as before,
+incapable of depending on when they were asked. And the `calm` column is
+ordered by `created_at` rather than by `by_priority_then_due`. **Which
+direction is the reader's to choose**: oldest-first (the backlog: what has
+been sitting here) or newest-first (the inbox: what just turned up). Neither
+reading is right enough to hard-code.*
+
+*This one has a real cost, and an earlier draft of this paragraph hid it
+behind a false premise — that `calm` is the deadline-less items, so
+priority-then-deadline has nothing to say about it. It is not: `calm` is
+everything the world is not pressing on, which includes every item due
+beyond the three-day `soon` window. So an Urgent item due in five days sits
+in that column by its capture date rather than by its priority, until it
+crosses into `soon` and rejoins the ordering. **Accepted rather than
+overlooked**: `calm` is the column read when nothing is pressing, "what has
+been sitting here longest" is the question actually being asked of it, and
+the priority ordering is one axis-switch away. Recorded here because a
+tradeoff justified by a false premise is one that gets re-argued.*
+
+*(f) **The direction is persisted; the filter still is not.** Decision 5's
+non-persistence rule is about a remembered filter being a remembered lie
+about what you have to do. A direction hides nothing — it re-reads one
+column — so it persists like the axis, in the same device-local key
+namespace (`hb.<screen>.frontier-calm-order`).*
+
+*(g) **The phone does not offer it.** `MobileFrontierAxis` carries the
+variant, but `NowScreen.kt`'s switch strip is pinned by
+`AxisRowWrappingTest` to one unwrapped line at 419dp, and a fifth chip is a
+layout budget to spend rather than a label to append. The drift gate in
+`ffi-mobile` names `urgency` as a deliberate omission rather than checking a
+subset, so a **new** axis nobody has thought about still fails it.*
+
 *Amended 2026-08-21: the board has a **second surface**. An open project's
 dossier renders this same board given only that project's items, in place of
 the ordered action list and fog card ADR-0030's own slices put there — a
@@ -135,6 +202,16 @@ So the claim worth holding is the one that actually does work: **this surface
 adds no fourth meaning to colour.** The design system's rule needs no exception
 either way — which was the point.
 
+*Amended 2026-09-08: with the `urgency` axis live (decision 1's own
+amendment), this decision's "colour reads *across* the axis and position
+reads *along* it" argument has one case where the two say the same thing —
+on that axis, a card's colour is a second statement of the column it is
+already in. That is redundancy, not a fourth meaning, so the rule stands
+unchanged and the swatch is not conditionally suppressed: a card carries its
+band wherever it is read, including in the item panel above the board and on
+the phone, and a mark that disappeared on one axis would be the surface's
+only piece of colour whose absence meant something.*
+
 *Amended 2026-08-13 (#399): this decision's heading and its closing claim were
 narrowed from "colour encodes urgency, and nothing else" / "nothing else on the
 card is coloured" to the card's own colour, in the review round that also
@@ -209,6 +286,30 @@ per-column overflow, and no sideways-scrolling strip.
 Consequences below), and its cap with it, so the centre column now has **no**
 independent scroll container. The constraint this decision states is unchanged
 and strictly easier to hold.*
+
+*Amended 2026-09-08 (#795): **the cap is measured, not six.** The columns stopped
+wrapping when #402 packed them into vertical lanes, so the reason stated above —
+a wrapping row takes its height from the tallest column in its line — no longer
+holds up the number; a lane is a stack, and a fat column costs its lane and
+nobody else. What the number was still doing was guessing at the height, and on
+a tall screen it guessed badly: at a 1400px viewport the board stopped 638px
+above the fold with 23 items behind an `n more`. `screens/frontier-lanes.ts`'s
+`columnCapFor` now spends the room between the board and the fold on cards —
+fourteen at 1400, seven at 900, a floor of four, and the old six as the answer
+for a runtime that cannot measure. **The second sentence of the paragraph above
+is the part that survives**: the top few of a column is what "what's next" is
+asking about, and the count never lies about what is hidden. What a column
+defers is now what genuinely does not fit.*
+
+*Amended 2026-09-08 (#795): **a column can be drawn across more than one lane.**
+Decision 1's own amendment makes the urgency axis three bands of one card in
+front of one very full `calm`, which can never fill the board between them — so
+the packing leaves a lane it has no column for, permanently, as a property of
+the axis rather than a state that resolves. The column alone in the last packed
+lane now runs on into that room under a repeated, de-emphasised label, with its
+reveal control at the foot of the last lane. The columns still never scroll
+sideways and still have no overflow of their own, which is what this decision
+actually constrains.*
 
 ### Two rejected alternatives, both tried in the browser
 
@@ -533,8 +634,10 @@ closing the component-test gap the board-world flip left open
   *Three shapes were on the table and two are rejected here, because they are
   the expensive knowledge. **On the card** — error text under the failing
   capture's title — is the most precise about where a failure belongs, and it
-  loses to this decision's own furniture: a column caps at six cards, so a
-  capture behind `n more` would wear a message nobody can see, which is the
+  loses to this decision's own furniture: a column caps at a measured number of
+  cards (six when nothing can be measured — see decision 3's 2026-09-08
+  amendment), so a capture behind `n more` would wear a message nobody can see,
+  which is the
   original bug one layer down. (Decision 2 rules out saying it in colour
   instead: what a card's colour encodes is urgency and nothing else.)
   **Holding the slot open on failure** is the smallest change and the closest to

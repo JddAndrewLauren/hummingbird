@@ -2,7 +2,7 @@
 // storage, with the five-test template `shell/rail-collapse.test.ts` establishes:
 // default, round-trip, key-removal-not-default, garbage reads as default,
 // absent-and-throwing storage" — run once for the axis and once for the
-// collapsed set.
+// collapsed set, and again for the `urgency` axis's calm-order direction.
 //
 // The key strings are asserted **literally**, per #403, so a rename is a
 // visible break rather than a silently-forgotten preference.
@@ -13,8 +13,10 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  readCalmOrder,
   readCollapsedColumns,
   readFrontierAxis,
+  writeCalmOrder,
   writeCollapsedColumns,
   writeFrontierAxis,
 } from "./frontier-prefs";
@@ -50,6 +52,7 @@ const throwing: StorageLike = {
 
 const AXIS_KEY = "hb.now.frontier-axis";
 const COLLAPSED_KEY = "hb.now.frontier-collapsed";
+const CALM_ORDER_KEY = "hb.now.frontier-calm-order";
 
 describe("frontier-prefs — the grouping axis", () => {
   it("defaults to context when nothing is stored", () => {
@@ -73,7 +76,7 @@ describe("frontier-prefs — the grouping axis", () => {
   it("degrades an unknown stored axis to the default", () => {
     // A newer build's vocabulary, or a hand-edited key. #403: "An unknown
     // stored axis degrades to the default."
-    expect(readFrontierAxis(fakeStorage({ [AXIS_KEY]: "urgency" }), "now")).toBe("context");
+    expect(readFrontierAxis(fakeStorage({ [AXIS_KEY]: "delegation" }), "now")).toBe("context");
     expect(readFrontierAxis(fakeStorage({ [AXIS_KEY]: "" }), "now")).toBe("context");
     expect(readFrontierAxis(fakeStorage({ [AXIS_KEY]: "CONTEXT" }), "now")).toBe("context");
   });
@@ -153,5 +156,45 @@ describe("frontier-prefs — the two boards", () => {
     const storage = fakeStorage({ "hb.projects.frontier-axis": "project" });
     expect(readFrontierAxis(storage, "projects")).toBe("project");
     expect(readFrontierAxis(storage, "projects", ["context", "size", "energy"])).toBe("context");
+  });
+});
+
+describe("frontier-prefs — the urgency axis's calm order", () => {
+  it("defaults to oldest first when nothing is stored", () => {
+    expect(readCalmOrder(fakeStorage(), "now")).toBe("oldest");
+  });
+
+  it("round-trips the non-default direction", () => {
+    const storage = fakeStorage();
+    writeCalmOrder(storage, "now", "newest");
+    expect(storage.entries[CALM_ORDER_KEY]).toBe("newest");
+    expect(readCalmOrder(storage, "now")).toBe("newest");
+  });
+
+  it("removes the key rather than storing the default, so it cannot rot", () => {
+    const storage = fakeStorage({ [CALM_ORDER_KEY]: "newest" });
+    writeCalmOrder(storage, "now", "oldest");
+    expect(CALM_ORDER_KEY in storage.entries).toBe(false);
+    expect(readCalmOrder(storage, "now")).toBe("oldest");
+  });
+
+  it("degrades an unknown stored direction to the default", () => {
+    expect(readCalmOrder(fakeStorage({ [CALM_ORDER_KEY]: "alphabetical" }), "now")).toBe("oldest");
+    expect(readCalmOrder(fakeStorage({ [CALM_ORDER_KEY]: "" }), "now")).toBe("oldest");
+    expect(readCalmOrder(fakeStorage({ [CALM_ORDER_KEY]: "NEWEST" }), "now")).toBe("oldest");
+  });
+
+  it("applies for the session against absent or throwing storage", () => {
+    expect(readCalmOrder(undefined, "now")).toBe("oldest");
+    expect(readCalmOrder(throwing, "now")).toBe("oldest");
+    expect(() => writeCalmOrder(undefined, "now", "newest")).not.toThrow();
+    expect(() => writeCalmOrder(throwing, "now", "newest")).not.toThrow();
+  });
+
+  it("keys the direction per screen, so a project board cannot re-order Now's", () => {
+    const storage = fakeStorage();
+    writeCalmOrder(storage, "projects", "newest");
+    expect(storage.entries["hb.projects.frontier-calm-order"]).toBe("newest");
+    expect(readCalmOrder(storage, "now")).toBe("oldest");
   });
 });

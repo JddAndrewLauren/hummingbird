@@ -1,5 +1,6 @@
-// The frontier board's view preferences — the chosen grouping axis and the set
-// of collapsed columns (#403, ADR-0021 decision 5). A view preference on one
+// The frontier board's view preferences — the chosen grouping axis, the set
+// of collapsed columns (#403, ADR-0021 decision 5) and, since the `urgency`
+// axis, which way that axis's `calm` column reads. A view preference on one
 // device, not a cross-device fact, so it lives in the injectable-`storage`
 // idiom (`screens/storage.ts`'s `StorageLike`) `shell/rail-collapse.ts` and
 // `screens/questions/collapse.ts` already use — never in the `settings` table,
@@ -29,8 +30,11 @@
 // decision 5 keeps out of the `settings` table.
 
 import {
+  CALM_ORDERS,
+  DEFAULT_CALM_ORDER,
   DEFAULT_FRONTIER_AXIS,
   FRONTIER_AXES,
+  type CalmOrder,
   type FrontierAxis,
 } from "./frontier-columns";
 import type { StorageLike } from "./storage";
@@ -47,6 +51,10 @@ function axisKey(screen: FrontierPrefsScreen): string {
 
 function collapsedKey(screen: FrontierPrefsScreen): string {
   return `hb.${screen}.frontier-collapsed`;
+}
+
+function calmOrderKey(screen: FrontierPrefsScreen): string {
+  return `hb.${screen}.frontier-calm-order`;
 }
 
 /** The axis last chosen on this device, or the default. An unrecognised
@@ -135,6 +143,49 @@ export function writeCollapsedColumns(
       storage.removeItem(collapsedKey(screen));
     } else {
       storage.setItem(collapsedKey(screen), JSON.stringify([...collapsed]));
+    }
+  } catch {
+    // Session-only preference; nothing to do.
+  }
+}
+
+/** Which way the `urgency` axis's `calm` column reads on this device, or the
+ * default. Unlike the facet selection above, this one *is* remembered: it is a
+ * reading of a column, not a hiding of one — nothing goes missing from the
+ * board because of it, so it cannot become a remembered lie about what you
+ * have to do.
+ *
+ * Unrecognised stored values degrade to the default, the same rule as the
+ * axis. */
+export function readCalmOrder(
+  storage: StorageLike | undefined,
+  screen: FrontierPrefsScreen,
+): CalmOrder {
+  if (!storage) {
+    return DEFAULT_CALM_ORDER;
+  }
+  try {
+    const stored = storage.getItem(calmOrderKey(screen));
+    return CALM_ORDERS.find((order) => order === stored) ?? DEFAULT_CALM_ORDER;
+  } catch {
+    return DEFAULT_CALM_ORDER;
+  }
+}
+
+export function writeCalmOrder(
+  storage: StorageLike | undefined,
+  screen: FrontierPrefsScreen,
+  order: CalmOrder,
+): void {
+  if (!storage) {
+    return;
+  }
+  try {
+    if (order === DEFAULT_CALM_ORDER) {
+      // The default is key absence, exactly as `writeFrontierAxis` above.
+      storage.removeItem(calmOrderKey(screen));
+    } else {
+      storage.setItem(calmOrderKey(screen), order);
     }
   } catch {
     // Session-only preference; nothing to do.

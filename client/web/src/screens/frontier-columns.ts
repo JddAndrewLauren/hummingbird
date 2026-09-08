@@ -12,9 +12,12 @@
 // `capture-validation.ts` established at M1-1.
 
 export {
+  CALM_ORDERS,
+  DEFAULT_CALM_ORDER,
   DEFAULT_FRONTIER_AXIS,
   FRONTIER_AXES,
   groupFrontier,
+  type CalmOrder,
   type FrontierAxis,
   type FrontierColumn,
 } from "../decisions/seam";

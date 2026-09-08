@@ -7,7 +7,13 @@
 // function anyone can call.
 
 import { describe, expect, it } from "vitest";
-import { laneCountFor, packLanes } from "./frontier-lanes";
+import {
+  columnCapFor,
+  frontierLanes,
+  laneCountFor,
+  laneWeightsFor,
+  packLanes,
+} from "./frontier-lanes";
 
 describe("laneCountFor", () => {
   it("gives every column its own lane when the width is unknown", () => {
@@ -46,13 +52,14 @@ describe("laneCountFor", () => {
 });
 
 describe("packLanes", () => {
-  it("fans the first columns across the lanes before stacking anything", () => {
-    // Every lane starts empty, so the fullest columns — which arrive first —
-    // read left to right along the top, exactly as the wrapping row put them.
+  it("fans the fullest columns across the lanes before stacking anything", () => {
+    // A heavy column carries its whole share on its own, so the next one
+    // starts a fresh lane: on a fullest-first axis the columns still read left
+    // to right along the top, exactly as the wrapping row put them.
     expect(packLanes([9, 8, 7], 3)).toEqual([[0], [1], [2]]);
   });
 
-  it("stacks the short columns under whichever lane is shortest", () => {
+  it("stacks the short columns under the lane already open", () => {
     // The paper cut: `@phone` is tall, `@home` and `@errands` hold one item
     // each, and the wrapping row gave each of them a full track.
     expect(packLanes([9, 2, 2, 2], 2)).toEqual([
@@ -61,10 +68,76 @@ describe("packLanes", () => {
     ]);
   });
 
-  it("breaks a tie leftwards", () => {
+  it("stacks the sparse bands the urgency axis leads with", () => {
+    // The shape this packing exists for, and the one greedy-balance got
+    // wrong: `group_frontier` hands over overdue/now/soon/calm in SEVERITY
+    // order, so the three slight columns arrive first. Balancing gave each of
+    // them a lane of its own and put `calm` under the first; filling stacks
+    // the three and leaves `calm` a lane to itself. Weights are the board's
+    // own at the 1440 capture — a card each for the bands, `COLUMN_CAP` plus
+    // a header and an `n more` row for `calm`.
+    expect(packLanes([2, 2, 2, 8], 3)).toEqual([
+      [0, 1, 2],
+      [3],
+    ]);
+  });
+
+  it("does not swallow a column that dwarfs the ones already in the lane", () => {
+    // `calm` expanded: 29 cards and a header against three bands of one. The
+    // share floors at 31, and a rule aiming merely CLOSEST to it put the whole
+    // board in one lane — 37 is nearer 31 than 6 is. Past the share opens the
+    // next lane instead, so expanding a column never relays the board.
+    expect(packLanes([2, 2, 2, 31], 3)).toEqual([
+      [0, 1, 2],
+      [3],
+    ]);
+    // The same shape at two columns, where the floor and the even split are
+    // furthest apart.
+    expect(packLanes([1, 8], 2)).toEqual([[0], [1]]);
+  });
+
+  it("aims no lane lower than the tallest single column", () => {
+    // Without that floor the even share is 14/3, and `soon` is pulled out of
+    // the severity stack into a lane of its own — three lanes where two hold
+    // the same board at the same height, because `calm` is drawn whole
+    // whatever happens and is 8 rows on its own.
+    expect(packLanes([2, 2, 2, 8], 3)).toEqual([
+      [0, 1, 2],
+      [3],
+    ]);
+  });
+
+  it("draws no lane the weights never reached", () => {
+    // Fewer lanes than asked for, so the survivors widen instead of standing
+    // as empty 240px flex items. Three afforded, two drawn.
+    expect(packLanes([2, 2, 2, 8], 3)).toHaveLength(2);
+    expect(packLanes([5, 1, 1], 3)).toEqual([
+      [0],
+      [1, 2],
+    ]);
+  });
+
+  it("keeps a lumpy fullest-first axis on all the lanes it affords", () => {
+    // The context axis at the 1440 capture, as rendered rows: @computer
+    // capped at 6, then @errands, @phone, @homework, @home, and the no-value
+    // column last. Without the look-ahead the first lane swallowed @errands,
+    // ran to 13 against a 10.3 share, and the third lane was never opened at
+    // all — the whole board on two lanes, one of them half again as tall.
+    expect(packLanes([8, 5, 4, 3, 3, 8], 3)).toEqual([
+      [0],
+      [1, 2],
+      [3, 4, 5],
+    ]);
+  });
+
+  it("splits a run of equal columns in reading order", () => {
+    // The accepted cost of filling rather than balancing, spelled out: these
+    // read 1,2 down the left lane and 3,4 down the right, where balancing
+    // interleaved them 1,3 / 2,4. Nothing here is far enough down a lane to
+    // be missed — the module header says so.
     expect(packLanes([1, 1, 1, 1], 2)).toEqual([
-      [0, 2],
-      [1, 3],
+      [0, 1],
+      [2, 3],
     ]);
   });
 
@@ -74,13 +147,122 @@ describe("packLanes", () => {
     expect(packLanes([1, 9, 3], 1)).toEqual([[0, 1, 2]]);
   });
 
-  it("returns one lane per column when asked for exactly that", () => {
-    // What `laneCountFor(null, n)` produces, spelled out: the pre-lanes board.
-    expect(packLanes([5, 1, 1], 3)).toEqual([[0], [1], [2]]);
+  it("gives every column its own lane when each fills one", () => {
+    expect(packLanes([1, 1, 1], 3)).toEqual([[0], [1], [2]]);
   });
 
-  it("returns no lanes for no lanes, whatever the weights", () => {
+  it("returns no lanes for no lanes, and none for no columns", () => {
     expect(packLanes([1, 2], 0)).toEqual([]);
-    expect(packLanes([], 3)).toEqual([[], [], []]);
+    expect(packLanes([], 3)).toEqual([]);
+  });
+});
+
+describe("frontierLanes", () => {
+  it("gives every column its own lane when the width is unknown", () => {
+    // The pre-lanes board, answered here rather than through the packer: a
+    // runtime that cannot lay out has not chosen a packing, and a jsdom
+    // component test keeps asserting the structure it always asserted. It has
+    // no width to spare either — spare width is a measurement.
+    expect(frontierLanes([2, 2, 2, 8], null)).toEqual({
+      lanes: [[0], [1], [2], [3]],
+      spare: null,
+    });
+    expect(frontierLanes([], null)).toEqual({ lanes: [], spare: null });
+  });
+
+  it("packs into the lanes the measured width affords", () => {
+    // 830px is about what Now's centre column measures at the 1440 capture:
+    // three lanes afforded, two drawn, and the third is `calm`'s to run on
+    // into — it is alone in the last packed lane.
+    expect(frontierLanes([2, 2, 2, 8], 830)).toEqual({
+      lanes: [[0, 1, 2], [3]],
+      spare: { column: 3, lanes: 1 },
+    });
+  });
+
+  it("offers no spare width when the packing used it all", () => {
+    // The context axis at the same width: three lanes afforded, three drawn.
+    expect(frontierLanes([8, 5, 4, 3, 3, 8], 830).spare).toBeNull();
+  });
+
+  it("offers the spare width to nobody when the last lane holds a stack", () => {
+    // A continuation has to sit immediately right of what it continues. The
+    // last lane here holds three columns and so has no single subject.
+    expect(frontierLanes([9, 1, 1, 1], 1400)).toEqual({
+      lanes: [[0], [1, 2, 3]],
+      spare: null,
+    });
+  });
+
+  it("stacks the whole board in one lane on a phone, with nothing to spare", () => {
+    expect(frontierLanes([2, 2, 2, 8], 390)).toEqual({
+      lanes: [[0, 1, 2, 3]],
+      spare: null,
+    });
+  });
+});
+
+describe("columnCapFor", () => {
+  it("keeps the board's long-standing cap when the height is unknown", () => {
+    // jsdom, and the first paint before anything is measured. A component
+    // test asserts the same six cards it always asserted.
+    expect(columnCapFor(null)).toBe(6);
+  });
+
+  it("fills the room the board actually has", () => {
+    // The fault this closes: at a 1400px viewport the urgency board stopped
+    // 638px above the fold with 23 items behind its "n more". 1162px of room
+    // is a heading, the gutter, and fourteen 78px cards.
+    expect(columnCapFor(1162)).toBe(14);
+    // 900px viewport, same board: about half that.
+    expect(columnCapFor(662)).toBe(7);
+  });
+
+  it("shows a column rather than a stub on a short viewport", () => {
+    // The floor. A laptop with the capture popover open still gets something
+    // worth reading under the heading.
+    expect(columnCapFor(300)).toBe(4);
+    expect(columnCapFor(0)).toBe(4);
+  });
+
+  it("grows by one card for one card's worth of room", () => {
+    expect(columnCapFor(68 + 78 * 5)).toBe(5);
+    expect(columnCapFor(68 + 78 * 6)).toBe(6);
+  });
+});
+
+describe("laneWeightsFor", () => {
+  it("charges a heading, the cards shown, and the control if there is one", () => {
+    // Under the cap: a heading and its cards, no control.
+    expect(laneWeightsFor([1, 3, 6], 6)).toEqual([2, 4, 7]);
+    // Over it: the cap's worth of cards plus the "n more" row.
+    expect(laneWeightsFor([7, 29], 6)).toEqual([8, 8]);
+    // Exactly at it is still no control — nothing is hidden.
+    expect(laneWeightsFor([6], 6)).toEqual([7]);
+  });
+
+  it("costs an empty column its heading alone", () => {
+    expect(laneWeightsFor([0], 6)).toEqual([1]);
+  });
+
+  it("takes counts and a cap, and nothing about what is on screen", () => {
+    // The invariant, and the reason this is a function rather than four lines
+    // in the board: a column's weight is its RESTING height. There is no
+    // parameter for `collapsed` or `expanded` and there must not be one —
+    // weighing what is drawn made every toggle a repack, and a repack moves
+    // columns the reader never touched. The signature is the guard; this test
+    // is what says so out loud when someone reads the file.
+    //
+    // The urgency board's own weights, which are the same shut, open, or with
+    // any of the four collapsed, because nothing here can be told about that.
+    expect(laneWeightsFor([1, 1, 1, 29], 6)).toEqual([2, 2, 2, 8]);
+    expect(laneWeightsFor([1, 1, 1, 29], 14)).toEqual([2, 2, 2, 16]);
+  });
+
+  it("grows the cap without changing what a small column costs", () => {
+    // A taller viewport lifts the cap, and only the columns that were capped
+    // move — which is what keeps a resize from relaying the whole board.
+    expect(laneWeightsFor([2, 2, 2, 29], 6)).toEqual([3, 3, 3, 8]);
+    expect(laneWeightsFor([2, 2, 2, 29], 14)).toEqual([3, 3, 3, 16]);
   });
 });

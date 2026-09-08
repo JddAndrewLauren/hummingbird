@@ -260,14 +260,17 @@ pub fn item_grill_button_label(has_draft: bool) -> String {
 // not a second, still-hypothetical one next to it.
 
 use hummingbird_core::decisions::frontier::{
-    self, FacetSelection, Facet, FrontierAxis, FrontierItem, ProjectName,
+    self, CalmOrder, FacetSelection, Facet, FrontierAxis, FrontierItem, ProjectName,
+    DEFAULT_CALM_ORDER,
 };
 use hummingbird_core::decisions::queue::{self, QueueItem};
 
 /// One item as [`FrontierItem`] reads it — `id`, `priority`, `deadline`,
-/// `context`, `size`, `energy` and `projectId`, camelCase, and nothing
-/// else: the frontier rules never read a title, a stage or a timestamp, so
-/// `seam.ts`'s `frontierPayload` never serializes one outward. Deliberately
+/// `context`, `size`, `energy`, `projectId` and `createdAt`, camelCase, and
+/// nothing else: the frontier rules never read a title or a stage, so
+/// `seam.ts`'s `frontierPayload` never serializes one outward. `createdAt`
+/// is the one timestamp that crosses, and only because the `urgency` axis's
+/// `calm` column is ordered by it. Deliberately
 /// a distinct shape from [`crate::task_host::FrontierItemDTO`]: that one is
 /// what the *worker* serializes on its way out of the core (a whole item,
 /// `#[serde(flatten)]`ed), while this is the main-thread seam's own
@@ -282,6 +285,7 @@ pub struct FrontierItemDTO {
     pub size: Option<String>,
     pub energy: Option<String>,
     pub project_id: Option<String>,
+    pub created_at: i64,
 }
 
 fn to_frontier_item(dto: &FrontierItemDTO) -> FrontierItem {
@@ -293,6 +297,7 @@ fn to_frontier_item(dto: &FrontierItemDTO) -> FrontierItem {
         size: dto.size.clone(),
         energy: dto.energy.clone(),
         project_id: dto.project_id.clone(),
+        created_at: dto.created_at,
     }
 }
 
@@ -341,13 +346,28 @@ struct ProjectNameDTO {
 /// `{"value":"..."|null,"label":"..."|null,"ids":["..."]}`.
 ///
 /// `axis` is one of `frontier::FrontierAxis`'s wire names
-/// (`"context"|"project"|"size"|"energy"`); an unrecognised axis answers no
-/// columns rather than panicking.
+/// (`"context"|"project"|"size"|"energy"|"urgency"`); an unrecognised axis
+/// answers no columns rather than panicking.
+///
+/// `now` is the caller's own deadline-shaped local wall clock and
+/// `calm_order` one of [`CalmOrder`]'s wire names (`"oldest"|"newest"`);
+/// both are read by the `urgency` axis alone. An unrecognised `calm_order`
+/// degrades to [`DEFAULT_CALM_ORDER`] rather than answering nothing — the
+/// axis is the caller's whole request and a stale stored direction is not,
+/// which is the same asymmetry `FrontierAxis::parse` degrading to the
+/// default axis already has on the web side.
 #[wasm_bindgen]
-pub fn group_frontier_json(items_json: &str, axis: &str, projects_json: &str) -> String {
+pub fn group_frontier_json(
+    items_json: &str,
+    axis: &str,
+    projects_json: &str,
+    now: &str,
+    calm_order: &str,
+) -> String {
     let Some(axis) = FrontierAxis::parse(axis) else {
         return "[]".to_string();
     };
+    let calm_order = CalmOrder::parse(calm_order).unwrap_or(DEFAULT_CALM_ORDER);
     let items = match parse_items(items_json) {
         Ok(items) => items,
         Err(error) => return serde_json::json!({ "error": error }).to_string(),
@@ -362,7 +382,7 @@ pub fn group_frontier_json(items_json: &str, axis: &str, projects_json: &str) ->
         .map(|p| ProjectName { id: p.id, name: p.name })
         .collect();
 
-    let columns = frontier::group_frontier(&entries, axis, &project_names);
+    let columns = frontier::group_frontier(&entries, axis, &project_names, now, calm_order);
     let json: Vec<serde_json::Value> = columns
         .into_iter()
         .map(|c| serde_json::json!({ "value": c.value, "label": c.label, "ids": c.ids }))
@@ -2256,6 +2276,7 @@ mod tests {
             "priority": 2,
             "projectId": null,
             "deadline": "2026-08-20",
+            "createdAt": 1,
         })
         .to_string()
     }
@@ -2288,7 +2309,7 @@ mod tests {
             one_item("a", "ready"),
             json_item("b", 0, None),
         );
-        let json = group_frontier_json(&payload, "context", "[]");
+        let json = group_frontier_json(&payload, "context", "[]", NOW, "oldest");
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed[0]["value"], serde_json::json!("@errands"));
         assert_eq!(parsed[0]["ids"], serde_json::json!(["a"]));
@@ -2296,7 +2317,50 @@ mod tests {
 
     #[test]
     fn group_frontier_json_answers_no_columns_for_an_unrecognised_axis() {
-        assert_eq!(group_frontier_json("[]", "not-an-axis", "[]"), "[]");
+        assert_eq!(group_frontier_json("[]", "not-an-axis", "[]", NOW, "oldest"), "[]");
+    }
+
+    #[test]
+    fn group_frontier_json_carries_the_urgency_axis_across_the_boundary() {
+        let payload = format!("[{}, {}]", one_item("dated", "ready"), json_item("undated", 0, None));
+
+        let json = group_frontier_json(&payload, "urgency", "[]", NOW, "oldest");
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        // `2026-08-20` against a `2026-08-13` clock is beyond the soon
+        // window, so both items are `calm` — one column, no no-value one.
+        assert_eq!(parsed.as_array().unwrap().len(), 1);
+        assert_eq!(parsed[0]["value"], serde_json::json!("calm"));
+    }
+
+    #[test]
+    fn group_frontier_json_degrades_an_unrecognised_calm_order_to_the_default() {
+        let payload = format!(
+            "[{}, {}]",
+            json_item_created("late", 3_000),
+            json_item_created("early", 1_000),
+        );
+
+        let default = group_frontier_json(&payload, "urgency", "[]", NOW, "oldest");
+        let junk = group_frontier_json(&payload, "urgency", "[]", NOW, "not-an-order");
+
+        assert_eq!(junk, default);
+        let parsed: serde_json::Value = serde_json::from_str(&junk).unwrap();
+        assert_eq!(parsed[0]["ids"], serde_json::json!(["early", "late"]));
+    }
+
+    #[test]
+    fn group_frontier_json_reverses_the_calm_column_on_newest() {
+        let payload = format!(
+            "[{}, {}]",
+            json_item_created("late", 3_000),
+            json_item_created("early", 1_000),
+        );
+
+        let json = group_frontier_json(&payload, "urgency", "[]", NOW, "newest");
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed[0]["ids"], serde_json::json!(["late", "early"]));
     }
 
     #[test]
@@ -2388,6 +2452,27 @@ mod tests {
     /// A minimal [`FrontierItemDTO`] JSON literal, only the fields the
     /// frontier functions read varying by parameter — everything else
     /// fixed at a value none of these tests inspects.
+    /// The deadline-shaped wall clock the seam's own urgency cases read
+    /// against — `hummingbird_core::decisions::frontier`'s tests use the
+    /// same instant, so a band named here means what it means there.
+    const NOW: &str = "2026-08-13T12:00";
+
+    /// A deadline-less item with a `createdAt` of its own — the only thing
+    /// the `urgency` axis's `calm` column orders by.
+    fn json_item_created(id: &str, created_at: i64) -> String {
+        serde_json::json!({
+            "id": id,
+            "size": null,
+            "energy": null,
+            "context": null,
+            "priority": 0,
+            "projectId": null,
+            "deadline": null,
+            "createdAt": created_at,
+        })
+        .to_string()
+    }
+
     fn json_item(id: &str, priority: i64, context: Option<&str>) -> String {
         serde_json::json!({
             "id": id,
@@ -2397,6 +2482,7 @@ mod tests {
             "priority": priority,
             "projectId": null,
             "deadline": null,
+            "createdAt": 1,
         })
         .to_string()
     }

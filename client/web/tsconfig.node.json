@@ -41,6 +41,12 @@
     // `trigger-ids.ts` is where those two constants live so that both the
     // components and this JSX-free project can import them.
     "src/shell/trigger-ids.ts",
+    // Fourth, and the same bargain again: the board's card-row constant is a
+    // pixel twin of what a card renders at, and the spec is the only place
+    // that can check the twin still matches — so it imports the constant
+    // rather than restating 78 and drifting from it silently. Pure TypeScript
+    // with no `components/` import, like the three above.
+    "src/screens/frontier-lanes.ts",
     "vitest.config.ts",
     "playwright.config.ts",
     "visual/**/*.ts",

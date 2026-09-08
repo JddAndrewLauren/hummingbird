@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { NAV_BAR_OVERFLOW } from "../src/shell/nav-bar";
 import { CAPTURE_TRIGGER_ID, RECALL_TRIGGER_ID } from "../src/shell/trigger-ids";
 import { SCREEN_LABELS, SCREENS as SCREEN_ORDER, type Screen } from "../src/shell/screens";
+import { CARD_ROW } from "../src/screens/frontier-lanes";
 
 // The visual gate's one spec. Two jobs, deliberately separated:
 //
@@ -751,6 +752,129 @@ for (const theme of THEMES) {
         path: `visual/.captures/now-columns-${testInfo.project.name}-${theme}.png`,
         fullPage: true,
       });
+    });
+
+    test("now's urgency axis captures, with its calm-order control", async ({ page }, testInfo) => {
+      // ADR-0021 decision 1's amendment: the fifth axis, and the one axis
+      // whose columns are not the values of a field. Its own capture rather
+      // than a note in the registry, because two things here are visible
+      // nowhere else — the bands as *columns* (severity-ordered, no
+      // no-value column, since urgency is total) and the Oldest/Newest
+      // control, which is the only member of the axis strip that comes and
+      // goes. The strip's width is the thing worth photographing at every
+      // project: it gains a fifth axis button *and* two more chips at once,
+      // and `expectNoHorizontalOverflow` is what says whether 390 survives
+      // that.
+      //
+      // It is also the one surface where a column is drawn across two lanes:
+      // three bands of one card never fill a lane between them, so `calm` runs
+      // on into the width the packing could not use, under a "calm continued"
+      // label with the reveal control at the foot of the last lane.
+      await openApp(page, theme, "board");
+      await show(page, "Now", testInfo.project.name);
+      await expect(page.getByRole("heading", { name: "@computer" })).toBeVisible();
+
+      await page.getByRole("button", { name: "Urgency" }).click();
+      // The fixture's deadline-less majority all land here, so `calm` is the
+      // one band guaranteed present whatever today's date is when the gate
+      // runs — every other band depends on the fixture's deadlines against
+      // the real clock.
+      await expect(page.getByRole("heading", { name: "calm" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Oldest first" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Newest first" })).toBeVisible();
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({
+        path: `visual/.captures/now-urgency-${testInfo.project.name}-${theme}.png`,
+        fullPage: true,
+      });
+
+      // Everything below is assertion rather than photography, and it lives
+      // here because this is the only place it CAN live: the board's layout is
+      // measured, jsdom measures nothing, so a component test sees the
+      // unmeasured fallback — one column per lane, a cap of six, no spare
+      // width — and would assert all of this vacuously. `frontier-lanes.test
+      // .ts` covers the arithmetic; these three cover that the arithmetic
+      // reaches the page.
+      // Each band heading against the x of the lane holding it. Headings only,
+      // never the continuation's label: that label is shut along with its
+      // column, so including it would make a correct board fail the collapse
+      // check for the wrong reason.
+      const laneOrigins = () =>
+        page.evaluate(() =>
+          Array.from(document.querySelectorAll("h2"))
+            .filter((node) => /^(overdue|now|soon|calm)$/i.test(node.textContent?.trim() ?? ""))
+            .map((node) => {
+              const lane = node.closest("div")?.parentElement as HTMLElement;
+              return `${node.textContent?.trim()}@${Math.round(lane.getBoundingClientRect().x)}`;
+            }),
+        );
+
+      // `calm` runs on into the lane the packing has no column for — at 1440
+      // and nowhere else, which is a fact about this board rather than a
+      // width worth generalising. The three bands and `calm` are four
+      // columns; 1440's centre column affords three lanes and the packing
+      // fills two, so one is spare. At 1024 the column affords two and fills
+      // two; at 768 and 390 fewer still. Both arms are asserted, so a change
+      // that quietly stopped the run-on — or started one where there is no
+      // room — fails here rather than passing as a board that looks similar.
+      const continued = page.getByText(/^calm continued$/i);
+      if (testInfo.project.name === "wide") {
+        await expect(continued).toBeVisible();
+        // The reveal control belongs to the LAST chunk, where the reading
+        // ends, and counts against everything the column shows rather than
+        // against the chunk it sits under.
+        await expect(page.getByRole("button", { name: /more in calm/i })).toBeVisible();
+      } else {
+        await expect(continued).toHaveCount(0);
+      }
+
+      // The board does not move under the reader's own click — the invariant
+      // `laneWeightsFor`'s signature protects, asserted where the layout
+      // actually exists. Collapse a band, reveal the rest of `calm`, reopen
+      // the band: every lane keeps its x throughout. Both toggles change a
+      // column's height by a screenful, and neither is allowed to move
+      // anything sideways.
+      const origins = await laneOrigins();
+      // `calm` first, and it is the one that matters: it is far and away the
+      // heaviest column on this axis, so under the old rendered-row weights
+      // shutting it dropped its weight from nine rows to one, the share
+      // collapsed with it, and the three bands fanned out across three lanes.
+      // Shutting a one-card band moves nothing under either rule, which is why
+      // a test that only did that would pass against the bug.
+      const shutCalm = page.getByRole("button", { name: "calm", exact: true });
+      await shutCalm.click();
+      expect(await laneOrigins()).toEqual(origins);
+      await shutCalm.click();
+      expect(await laneOrigins()).toEqual(origins);
+
+      const shutOverdue = page.getByRole("button", { name: "overdue", exact: true });
+      await shutOverdue.click();
+      expect(await laneOrigins()).toEqual(origins);
+      await page.getByRole("button", { name: /more in calm/i }).click();
+      expect(await laneOrigins()).toEqual(origins);
+      await shutOverdue.click();
+      expect(await laneOrigins()).toEqual(origins);
+      await page.getByRole("button", { name: /fewer in calm/i }).click();
+      expect(await laneOrigins()).toEqual(origins);
+
+      // `CARD_ROW`'s drift gate. The cap is measured room divided by this
+      // constant, and the constant is a pixel twin of what a card renders at —
+      // so if the card's padding or type changes and this does not, the cap
+      // mis-measures with nothing failing. The band is generous on purpose:
+      // the constant is deliberately the ONE-line card, and a two-line title
+      // runs taller, so the check is that it is still the right ballpark
+      // rather than that every card matches it.
+      const cardRow = await page.evaluate(() => {
+        const heading = Array.from(document.querySelectorAll("h2")).find(
+          (node) => node.textContent?.trim() === "calm",
+        )!;
+        const column = heading.closest("div")!.parentElement!;
+        const card = column.children[1] as HTMLElement;
+        const next = column.children[2] as HTMLElement;
+        return Math.round(next.getBoundingClientRect().top - card.getBoundingClientRect().top);
+      });
+      expect(cardRow).toBeGreaterThanOrEqual(CARD_ROW - 8);
+      expect(cardRow).toBeLessThanOrEqual(CARD_ROW + 28);
     });
 
     // #481: the search overlay joins the registry as a photographed surface,
