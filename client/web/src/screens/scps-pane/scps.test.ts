@@ -216,12 +216,29 @@ describe("scpsQuestLine / scpsCollapsedHeadline", () => {
     expect(scpsCollapsedHeadline(null, view!.quest)).toBe("No SCPS event scheduled");
   });
 
-  it("reads unset or unparseable quest values as 'No quest set'", () => {
-    for (const value of ["reflections", "2026-9 x", ""]) {
-      const unset = withEvents([], { bindings: questBinding(value) });
-      const view = scpsView(unset);
-      expect(view?.quest).toEqual({ kind: "none" });
-      expect(scpsQuestLine(view!.quest, unset.nowMs)).toBe("No quest set");
+  it("reads a truly unset binding as 'No quest set', never malformed", () => {
+    const unset = withEvents([]);
+    const view = scpsView(unset);
+    expect(view?.quest).toEqual({ kind: "none" });
+    expect(scpsQuestLine(view!.quest, unset.nowMs)).toBe("No quest set");
+  });
+
+  it("reads a non-text binding value as unset, not malformed", () => {
+    const nonText = withEvents([], {
+      bindings: [{ key: "scps-quest", known: true, pending: false, value: { state: "other" as const, raw: "42" } }],
+    });
+    const view = scpsView(nonText);
+    expect(view?.quest).toEqual({ kind: "none" });
+  });
+
+  it("reads an unparseable text value as malformed — distinct from unset, naming the expected shape", () => {
+    for (const value of ["reflections", "2026-9 x", "26-01 x", "2026-01-01 x", "2026-09", ""]) {
+      const malformed = withEvents([], { bindings: questBinding(value) });
+      const view = scpsView(malformed);
+      expect(view?.quest).toEqual({ kind: "malformed", text: value });
+      expect(scpsQuestLine(view!.quest, malformed.nowMs)).toBe(
+        `Quest not understood: "${value}" — expected "YYYY-MM phrase"`,
+      );
     }
   });
 });

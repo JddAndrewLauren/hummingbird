@@ -2314,6 +2314,7 @@ export interface ScpsEventCore {
 
 export type ScpsQuestFactCore =
   | { kind: "none" }
+  | { kind: "malformed"; text: string }
   | { kind: "current"; phrase: string }
   | { kind: "other"; month: string; phrase: string };
 

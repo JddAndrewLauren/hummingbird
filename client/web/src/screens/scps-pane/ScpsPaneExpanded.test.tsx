@@ -166,4 +166,18 @@ describe("ScpsPaneExpanded (mounted through RankedRegion)", () => {
     expandScpsRow();
     expect(screen.getByText("Photo Quest — Reflected Light")).toBeTruthy();
   });
+
+  it("names an unparseable quest value's shape, distinct from unset (#702)", () => {
+    mount({
+      events: [],
+      bindings: [
+        { key: "scps-quest", known: true, pending: false, value: { state: "text", text: "Impressions of Venice" } },
+      ],
+    });
+    expandScpsRow();
+    expect(
+      screen.getByText('Quest not understood: "Impressions of Venice" — expected "YYYY-MM phrase"'),
+    ).toBeTruthy();
+    expect(screen.queryByText("No quest set")).toBeNull();
+  });
 });
