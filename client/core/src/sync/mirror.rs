@@ -42,8 +42,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use hummingbird_domain::{
-    Alert, BlockedBy, ChangesResponse, ContextSnapshot, Fog, Item, Project, ProjectLink, Route,
-    Rule, Setting, Step,
+    Alert, BlockedBy, ChangesResponse, ContextSnapshot, FileLink, Fog, Item, Project, ProjectLink,
+    Route, Rule, Setting, Step,
 };
 
 use crate::storage::{Persistable, PersistableSealed};
@@ -94,7 +94,12 @@ use crate::task::Presence;
 /// [`super::cycle::SyncCycle::load`] exists to make impossible, and
 /// deciding per-field which shape changes "really" matter is how that
 /// guarantee erodes.
-pub const SYNC_MIRROR_SCHEMA_VERSION: u32 = 5;
+///
+/// Bumped to 6 for ADR-0036's `file_links` table — the bump-to-4 case
+/// exactly: a new *table*, whose empty default map cannot be told from
+/// "this device hasn't re-swept since the field was added". Discard and
+/// resweep, same as every bump above.
+pub const SYNC_MIRROR_SCHEMA_VERSION: u32 = 6;
 
 /// One stored row plus whether it is currently live — the retained-history
 /// half of the retention rule above.
@@ -122,6 +127,7 @@ pub struct SyncMirror {
     fog: BTreeMap<String, Slot<Fog>>,
     project_links: BTreeMap<String, Slot<ProjectLink>>,
     items: BTreeMap<String, Slot<Item>>,
+    file_links: BTreeMap<String, Slot<FileLink>>,
     steps: BTreeMap<String, Slot<Step>>,
     /// `serde_json` cannot serialize a map keyed by a tuple (it requires
     /// string keys) — [`tuple_key_map`] carries this as an array of entries
@@ -268,6 +274,19 @@ impl SyncMirror {
             .values()
             .filter_map(live_slot)
             .filter(move |link| link.project_id == project_id)
+    }
+
+    /// Every live File link on one item, id order — the item panel's read
+    /// (ADR-0036). Live only: a removed link is retained (flagged, per
+    /// ADR-0020) but never returned here, the `links_for_project` contract.
+    pub fn file_links_for_item<'a>(
+        &'a self,
+        item_id: &'a str,
+    ) -> impl Iterator<Item = &'a FileLink> {
+        self.file_links
+            .values()
+            .filter_map(live_slot)
+            .filter(move |link| link.item_id == item_id)
     }
 
     /// Every live Step attached to `item_id`, id order — first-class
@@ -464,6 +483,14 @@ impl SyncMirror {
             now_ms,
         );
         apply_table(
+            &mut self.file_links,
+            resp.file_links,
+            |l| l.id.clone(),
+            |l| l.removed_at,
+            full,
+            now_ms,
+        );
+        apply_table(
             &mut self.steps,
             resp.steps,
             |s| s.id.clone(),
@@ -647,6 +674,16 @@ mod tests {
         }
     }
 
+    fn file_link(id: &str, item_id: &str) -> FileLink {
+        FileLink {
+            id: id.to_string(),
+            item_id: item_id.to_string(),
+            path: format!("Finance/{id}.pdf"),
+            removed_at: None,
+            version: 1,
+        }
+    }
+
     fn step(id: &str, item_id: &str) -> Step {
         Step {
             id: id.to_string(),
@@ -678,6 +715,7 @@ mod tests {
             fog: vec![],
             project_links: vec![],
             items: vec![item("a-1"), item("a-2")],
+            file_links: vec![file_link("fl-1", "a-1")],
             steps: vec![step("s-1", "a-1")],
             blocked_by: vec![blocked_by("a-1", "a-2")],
             alerts: vec![],
@@ -1152,6 +1190,33 @@ mod tests {
             ..ChangesResponse::empty(2)
         });
         assert_eq!(mirror.links_for_project("p-1").count(), 0, "flagged removal, not a full sweep, demotes it");
+    }
+
+    /// ADR-0036: file links are live-only reads scoped to their item, and a
+    /// removed one (its own `removed_at` flag, ADR-0020) is retained but
+    /// absent from [`SyncMirror::file_links_for_item`].
+    #[test]
+    fn file_links_are_scoped_to_their_item_and_removal_is_flagged() {
+        let mut mirror = SyncMirror::new();
+        mirror.apply_delta(ChangesResponse {
+            version: 1,
+            file_links: vec![file_link("fl-1", "i-1"), file_link("fl-2", "i-2")],
+            ..ChangesResponse::empty(1)
+        });
+        assert_eq!(
+            mirror.file_links_for_item("i-1").map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            vec!["fl-1"]
+        );
+
+        let mut removed = file_link("fl-1", "i-1");
+        removed.removed_at = Some(9_000);
+        removed.version = 2;
+        mirror.apply_delta(ChangesResponse {
+            version: 2,
+            file_links: vec![removed],
+            ..ChangesResponse::empty(2)
+        });
+        assert_eq!(mirror.file_links_for_item("i-1").count(), 0, "flagged removal, not a full sweep, demotes it");
     }
 
     /// #628: open Fog is scoped to its project, and a resolved row
