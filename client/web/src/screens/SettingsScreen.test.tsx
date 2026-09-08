@@ -61,6 +61,7 @@ interface SettingsOptions {
   coreId?: string | null;
   viewOrdinal?: number | null;
   backendSelection?: string;
+  dropboxLocalRoot?: string | null;
   /** #585: the calendar gates key off this, not a build-time env var — most
    * cases in this file want a token present, so the default is "resting"
    * and only the device-token-precondition tests below override it. */
@@ -98,6 +99,7 @@ function renderSettings(options: SettingsOptions = {}) {
   });
   const onSelectionChange = vi.fn();
   const onBackendSelection = vi.fn();
+  const onDropboxLocalRoot = vi.fn();
   const onDownloadDiagnostics = vi.fn();
   const onClearDiagnostics = vi.fn();
   const tree = (current: SettingsOptions) => (
@@ -113,6 +115,8 @@ function renderSettings(options: SettingsOptions = {}) {
       onThemePreference={vi.fn()}
       backendSelection={current.backendSelection ?? "auto"}
       onBackendSelection={onBackendSelection}
+      dropboxLocalRoot={current.dropboxLocalRoot ?? null}
+      onDropboxLocalRoot={onDropboxLocalRoot}
       onConnect={onConnect}
       onSelectionChange={onSelectionChange}
       onRefresh={vi.fn()}
@@ -142,6 +146,7 @@ function renderSettings(options: SettingsOptions = {}) {
     onSetQuestionEnabled,
     onSelectionChange,
     onBackendSelection,
+    onDropboxLocalRoot,
     onDownloadDiagnostics,
     onClearDiagnostics,
     storage,
@@ -752,6 +757,19 @@ describe("SettingsScreen — the calendar picker's locked Trips row (#121)", () 
       false,
     );
     expect(screen.queryByText(/Polled because it answers/)).toBeNull();
+  });
+});
+
+describe("SettingsScreen — this device's Dropbox folder (ADR-0036)", () => {
+  it("shows the stored root and writes a new one on blur, not per keystroke", () => {
+    const { onDropboxLocalRoot } = renderSettings({ dropboxLocalRoot: "C:\\Dropbox" });
+    const input = screen.getByLabelText("Dropbox folder on this device") as HTMLInputElement;
+    expect(input.value).toBe("C:\\Dropbox");
+
+    fireEvent.change(input, { target: { value: "D:\\Dropbox" } });
+    expect(onDropboxLocalRoot).not.toHaveBeenCalled();
+    fireEvent.blur(input);
+    expect(onDropboxLocalRoot).toHaveBeenCalledWith("D:\\Dropbox");
   });
 });
 

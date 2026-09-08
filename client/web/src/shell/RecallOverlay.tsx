@@ -203,6 +203,8 @@ function RecallRow({
             // that would otherwise assert "No Steps yet." is not rendered
             // at all rather than stating a fact it never asked `Core` for.
             showSteps={false}
+            // ADR-0036: no file-links wiring here either, same reasoning.
+            showFileLinks={false}
           />
         </div>
       ) : null}

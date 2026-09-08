@@ -654,6 +654,9 @@ for (const theme of THEMES) {
       // populated here rather than empty.
       await page.getByRole("button", { name: /^Fit the new tap washer/ }).click();
       await expect(page.getByText("Turn off the stopcock")).toBeVisible();
+      // ADR-0036: the fixture seeds two file links on this item, so the
+      // panel's files block is photographed populated here too.
+      await expect(page.getByRole("link", { name: "on dropbox.com" }).first()).toBeVisible();
       await expect(page.getByRole("button", { name: "Close item detail" })).toBeVisible();
       await expectNoHorizontalOverflow(page);
       await page.screenshot({

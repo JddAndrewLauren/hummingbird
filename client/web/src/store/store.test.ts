@@ -33,6 +33,8 @@ const initialTask: TaskState = {
   lastProjectWrite: null,
   linksByProject: {},
   lastProjectLinkWrite: null,
+  fileLinksByItem: {},
+  lastFileLinkWrite: null,
   routeByProject: {},
   lastRouteWrite: null,
   paneReads: {},

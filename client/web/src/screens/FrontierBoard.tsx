@@ -22,6 +22,7 @@ import { ItemPanel } from "../components/domain/ItemPanel";
 import { ItemRow } from "../components/domain/ItemRow";
 import { EmptyState } from "../components/feedback/EmptyState";
 import type { GrillTakeoverWiring } from "../shell/useGrillTakeoverWiring";
+import type { FileLinksWiring } from "../shell/useFileLinksWiring";
 import type { MicrotaskWiring } from "../shell/useMicrotaskWiring";
 import type {
   BlockedFrontierEntryDTO,
@@ -116,6 +117,7 @@ export function FrontierBoard({
   onCloseItemDetail,
   onAct,
   microtask,
+  fileLinks,
   onTriage,
   onCreateProject,
   storage,
@@ -141,6 +143,8 @@ export function FrontierBoard({
   onCloseItemDetail: () => void;
   onAct: (itemId: string, action: TaskActionName) => void;
   microtask?: MicrotaskWiring;
+  /** ADR-0036: forwarded to the open item's panel, exactly as `microtask`. */
+  fileLinks?: FileLinksWiring;
   onTriage?: (itemId: string, destination: "ready" | null, edits: TriageEdits) => void;
   onCreateProject?: (name: string) => void;
   storage?: StorageLike;
@@ -464,6 +468,9 @@ export function FrontierBoard({
             onTriage={onTriage}
             lastTriage={task.lastTriage}
             microtask={microtask}
+            fileLinks={task.fileLinksByItem[selectedItem.id] ?? []}
+            fileLinksWiring={fileLinks}
+            lastFileLinkWrite={task.lastFileLinkWrite}
             // #359: "Grill me" reaches Now — gated by `item-actions.ts`'s
             // `canGrill`, the one deciding function, same as Triage's.
             onGrillMe={grill ? handleGrillMe : undefined}

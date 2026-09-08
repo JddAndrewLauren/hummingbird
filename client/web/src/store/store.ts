@@ -16,6 +16,7 @@ import type {
   PaneReadDTO,
   PollOutcomeName,
   ProjectDTO,
+  FileLinkDTO,
   ProjectLinkDTO,
   RecallRowDTO,
   RouteDTO,
@@ -192,6 +193,16 @@ export interface TaskProjectLinkResult {
   error: string | null;
 }
 
+/** The result of the most recent file-link create/remove request this
+ * view issued (ADR-0036). Same "one broadcast slot" shape as
+ * [`TaskProjectLinkResult`], keyed to the item rather than a project. */
+export interface TaskFileLinkResult {
+  seed: string;
+  itemId: string;
+  kind: "ok" | "failed" | "busy";
+  error: string | null;
+}
+
 /** The result of the most recent Route patch request this view issued
  * (#627, ADR-0030 decision 1). Same "one broadcast slot" shape as
  * [`TaskProjectLinkResult`] — shared across every open dossier, not scoped
@@ -260,6 +271,13 @@ export interface TaskState {
   /** The result of the most recent link create/patch request this view
    * issued (#626) — `null` until the first one resolves. */
   lastProjectLinkWrite: TaskProjectLinkResult | null;
+  /** The item panel's file links, keyed by item id (ADR-0036) — only ever
+   * grows entries a view actually asked about via `getFileLinks`, the same
+   * `stepsByItem` shape. A missing entry means "not read yet". */
+  fileLinksByItem: Record<string, FileLinkDTO[]>;
+  /** The result of the most recent file-link create/remove request this
+   * view issued (ADR-0036) — `null` until the first one resolves. */
+  lastFileLinkWrite: TaskFileLinkResult | null;
   /** The dossier's reading column's Route, keyed by project id (#627) —
    * only ever grows entries a view actually asked about via `getRoute`,
    * the same `linksByProject` shape. A missing entry means "not read yet";
@@ -458,6 +476,8 @@ const initialTaskState: TaskState = {
   archivedProjects: null,
   linksByProject: {},
   lastProjectLinkWrite: null,
+  fileLinksByItem: {},
+  lastFileLinkWrite: null,
   routeByProject: {},
   lastRouteWrite: null,
   ledger: null,
@@ -549,6 +569,11 @@ export function createCoreStore() {
     setTaskState({ linksByProject: { ...state.task.linksByProject, [projectId]: links } });
   }
 
+  // Same idea for `fileLinksByItem` (the item panel, ADR-0036).
+  function setTaskFileLinks(itemId: string, links: FileLinkDTO[]): void {
+    setTaskState({ fileLinksByItem: { ...state.task.fileLinksByItem, [itemId]: links } });
+  }
+
   // Same idea for `routeByProject` (the dossier's reading column, #627).
   function setTaskRoute(projectId: string, route: RouteDTO): void {
     setTaskState({ routeByProject: { ...state.task.routeByProject, [projectId]: route } });
@@ -584,6 +609,7 @@ export function createCoreStore() {
     setTaskPending,
     setTaskSteps,
     setTaskProjectLinks,
+    setTaskFileLinks,
     setTaskRoute,
     setTaskPaneRead,
     setTaskGrillDraft,

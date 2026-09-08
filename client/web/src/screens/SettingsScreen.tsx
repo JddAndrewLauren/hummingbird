@@ -554,6 +554,11 @@ export interface SettingsScreenProps {
    * device-local and never synced (`useBackendSelection.ts`). */
   backendSelection: string;
   onBackendSelection: (selection: string) => void;
+  /** ADR-0036: this device's Dropbox folder, device-local and never synced
+   * (`useDropboxLocalRoot.ts`) — a paste convenience for the item panel's
+   * file-link field, not a binding. `null` when none is set. */
+  dropboxLocalRoot: string | null;
+  onDropboxLocalRoot: (value: string) => void;
   onConnect: () => void;
   onSelectionChange: (selectedCalendarIds: string[]) => void;
   onRefresh: () => void;
@@ -602,6 +607,8 @@ export function SettingsScreen({
   onThemePreference,
   backendSelection,
   onBackendSelection,
+  dropboxLocalRoot,
+  onDropboxLocalRoot,
   onConnect,
   onSelectionChange,
   onRefresh,
@@ -805,6 +812,17 @@ export function SettingsScreen({
               value={backendSelection}
               options={BACKEND_OPTIONS}
               onChange={(event) => onBackendSelection(event.target.value)}
+            />
+            {/* ADR-0036: where Dropbox lives on THIS device. Written on blur,
+                not per keystroke, so a half-typed path never lands in
+                storage; blank clears it. Per-device by design — the same
+                folder is somewhere else on every other machine. */}
+            <Input
+              label="Dropbox folder on this device"
+              hint="Per device, never synced. Strips this prefix off a pasted file path."
+              placeholder="C:\\Dropbox"
+              defaultValue={dropboxLocalRoot ?? ""}
+              onBlur={(event) => onDropboxLocalRoot(event.target.value)}
             />
           </Card>
         </Section>

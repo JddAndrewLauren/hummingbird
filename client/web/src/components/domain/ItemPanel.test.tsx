@@ -6,7 +6,7 @@
 // failure mode `src/test/component.tsx`'s header exists for.
 
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, itemDTO, projectDTO, render, screen, stepDTO } from "../../test/component";
+import { fileLinkDTO, fireEvent, itemDTO, projectDTO, render, screen, stepDTO } from "../../test/component";
 import { IDLE, reduceRun, type SkillEvent, type SkillRunState } from "../../skills/run-state";
 import type { TaskItemDTO } from "../../store/protocol";
 import { ItemPanel } from "./ItemPanel";
@@ -636,6 +636,112 @@ describe("ItemPanel — promotion's copy-at-mint wiring", () => {
 
 /** #771: the note affordance. Every branch turns on two facts — whether a
  * vault is bound, and whether the item already points at a note. */
+describe("the file links block (ADR-0036)", () => {
+  function detail(options: {
+    fileLinks?: ReturnType<typeof fileLinkDTO>[];
+    withWiring?: boolean;
+    localRoot?: string | null;
+    showFileLinks?: boolean;
+    lastWrite?: { seed: string; itemId: string; kind: "failed"; error: string | null } | null;
+  } = {}) {
+    const createFileLink = vi.fn(() => "seed-create");
+    const removeFileLink = vi.fn(() => "seed-remove");
+    render(
+      <ItemPanel
+        mode="detail"
+        item={itemDTO({ id: "item-1", title: "Fit the tap washer" })}
+        projects={[]}
+        steps={[]}
+        fileLinks={options.fileLinks ?? []}
+        showFileLinks={options.showFileLinks}
+        fileLinksWiring={
+          options.withWiring === false
+            ? undefined
+            : { localRoot: options.localRoot ?? null, createFileLink, removeFileLink }
+        }
+        lastFileLinkWrite={options.lastWrite ?? null}
+      />,
+    );
+    return { createFileLink, removeFileLink };
+  }
+
+  it("draws nothing at all with no wiring and no links", () => {
+    detail({ withWiring: false });
+    expect(screen.queryByText("files")).toBeNull();
+    expect(screen.queryByLabelText("Add a file link")).toBeNull();
+  });
+
+  it("draws nothing when the caller never asked for file links", () => {
+    detail({ showFileLinks: false });
+    expect(screen.queryByText("files")).toBeNull();
+  });
+
+  it("Open fires the helper's scheme, and the dropbox.com fallback is always drawn", () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    detail({ fileLinks: [fileLinkDTO({ path: "Finance/2026/receipt.pdf" })] });
+
+    expect(screen.getByText("receipt.pdf")).toBeTruthy();
+    expect(screen.getByText("Finance/2026")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    expect(open).toHaveBeenCalledWith(
+      "hummingbird-open:?path=Finance%2F2026%2Freceipt.pdf",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    expect((screen.getByRole("link", { name: "on dropbox.com" }) as HTMLAnchorElement).href).toBe(
+      "https://www.dropbox.com/home/Finance/2026?preview=receipt.pdf",
+    );
+    open.mockRestore();
+  });
+
+  it("a stored path that climbs out gets Remove but no Open", () => {
+    detail({ fileLinks: [fileLinkDTO({ path: "../secrets.txt" })] });
+    expect(screen.queryByRole("button", { name: "Open" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "on dropbox.com" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Remove file link" })).toBeTruthy();
+  });
+
+  it("Add normalizes a pasted Windows path against this device's root", () => {
+    const { createFileLink } = detail({ localRoot: "C:\\Dropbox" });
+    const input = screen.getByLabelText("Add a file link");
+    fireEvent.change(input, { target: { value: '"C:\\Dropbox\\Finance\\2026\\receipt.pdf"' } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(createFileLink).toHaveBeenCalledWith("item-1", "Finance/2026/receipt.pdf");
+    expect((input as HTMLInputElement).value).toBe("");
+  });
+
+  it("Add refuses a path that never became relative, and writes nothing", () => {
+    const { createFileLink } = detail({ localRoot: null });
+    fireEvent.change(screen.getByLabelText("Add a file link"), { target: { value: "C:\\Elsewhere\\x.pdf" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(createFileLink).not.toHaveBeenCalled();
+    expect(screen.getByText(/relative to Dropbox/)).toBeTruthy();
+  });
+
+  it("Remove hands the row to the wiring", () => {
+    const link = fileLinkDTO({ id: "fl-9", path: "House/Plumbing" });
+    const { removeFileLink } = detail({ fileLinks: [link] });
+    fireEvent.click(screen.getByRole("button", { name: "Remove file link" }));
+    expect(removeFileLink).toHaveBeenCalledWith(link);
+  });
+
+  it("without wiring the list is read-only: Open and the fallback, no Add, no Remove", () => {
+    detail({ withWiring: false, fileLinks: [fileLinkDTO({ path: "House/Plumbing" })] });
+    expect(screen.getByRole("button", { name: "Open" })).toBeTruthy();
+    expect(screen.queryByLabelText("Add a file link")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove file link" })).toBeNull();
+  });
+
+  it("names a failed write only once it is this panel's own", () => {
+    const { createFileLink } = detail({ lastWrite: { seed: "seed-create", itemId: "item-1", kind: "failed", error: "nope" } });
+    expect(screen.queryByRole("alert")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Add a file link"), { target: { value: "x.pdf" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(createFileLink).toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toBe("nope");
+  });
+});
+
 describe("the Obsidian note affordance", () => {
   function detail(options: {
     vaultName?: string | null;

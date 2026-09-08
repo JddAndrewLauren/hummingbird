@@ -13,6 +13,7 @@ import type {
   PaneEnvelopeDTO,
   PaneReadDTO,
   ProjectDTO,
+  FileLinkDTO,
   ProjectLinkDTO,
   RecallGroup,
   RecallRowDTO,
@@ -222,6 +223,17 @@ export interface TaskHostLike {
     archivedAt: number | null,
     nowMs: number,
   ): Promise<string>;
+  /** ADR-0036's per-item file-link read. Mirrors `TaskHost::fileLinks`,
+   * resolved to JSON: `{"kind": "ok"|"busy", "links": [FileLink]}`. */
+  fileLinks(itemId: string): string;
+  /** ADR-0036's file-link create. Mirrors `TaskHost::createFileLink`,
+   * resolved to JSON: `{"kind": "ok"|"failed"|"busy", "id": string|null,
+   * "error": string|null}`. A blank path is refused at the seam. */
+  createFileLink(seed: string, itemId: string, path: string, nowMs: number): Promise<string>;
+  /** ADR-0036's file-link removal. Mirrors `TaskHost::removeFileLink`,
+   * resolved to JSON: `{"kind": "ok"|"failed"|"busy", "error": string|null}`.
+   * `currentJson` is the caller's own last-known `FileLink`, as JSON. */
+  removeFileLink(seed: string, currentJson: string, removedAt: number, nowMs: number): Promise<string>;
   /** #626's per-project link read. Mirrors `TaskHost::projectLinks`,
    * resolved to JSON: `{"kind": "ok"|"busy", "links": [ProjectLink]}`. */
   projectLinks(projectId: string): string;
@@ -521,6 +533,30 @@ interface RawCreateProjectLinkResponse {
 }
 
 interface RawPatchProjectLinkResponse {
+  kind: "ok" | "failed" | "busy";
+  error: string | null;
+}
+
+interface RawFileLink {
+  id: string;
+  item_id: string;
+  path: string;
+  removed_at: number | null;
+  version: number;
+}
+
+interface RawFileLinkListResponse {
+  kind: "ok" | "busy";
+  links: RawFileLink[];
+}
+
+interface RawCreateFileLinkResponse {
+  kind: "ok" | "failed" | "busy";
+  id: string | null;
+  error: string | null;
+}
+
+interface RawRemoveFileLinkResponse {
   kind: "ok" | "failed" | "busy";
   error: string | null;
 }
@@ -839,6 +875,16 @@ function mapProjectLink(raw: RawProjectLink): ProjectLinkDTO {
     url: raw.url,
     label: raw.label,
     position: raw.position,
+    removedAt: raw.removed_at,
+    version: raw.version,
+  };
+}
+
+function mapFileLink(raw: RawFileLink): FileLinkDTO {
+  return {
+    id: raw.id,
+    itemId: raw.item_id,
+    path: raw.path,
     removedAt: raw.removed_at,
     version: raw.version,
   };
@@ -1459,6 +1505,52 @@ export async function handleTaskRequest(
         type: "patchProjectLinkResult",
         seed: request.seed,
         projectId: request.current.projectId,
+        kind: raw.kind,
+        error: raw.error,
+      });
+      return;
+    }
+    case "getFileLinks": {
+      const raw = JSON.parse(host.fileLinks(request.itemId)) as RawFileLinkListResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "fileLinks", itemId: request.itemId, links: raw.links.map(mapFileLink) });
+      return;
+    }
+    case "createFileLink": {
+      const raw = JSON.parse(
+        await host.createFileLink(request.seed, request.itemId, request.path, request.nowMs),
+      ) as RawCreateFileLinkResponse;
+      post({
+        type: "createFileLinkResult",
+        seed: request.seed,
+        itemId: request.itemId,
+        kind: raw.kind,
+        id: raw.id,
+        error: raw.error,
+      });
+      return;
+    }
+    case "removeFileLink": {
+      const raw = JSON.parse(
+        await host.removeFileLink(
+          request.seed,
+          JSON.stringify({
+            id: request.current.id,
+            item_id: request.current.itemId,
+            path: request.current.path,
+            removed_at: request.current.removedAt,
+            version: request.current.version,
+          }),
+          request.removedAt,
+          request.nowMs,
+        ),
+      ) as RawRemoveFileLinkResponse;
+      post({
+        type: "removeFileLinkResult",
+        seed: request.seed,
+        itemId: request.current.itemId,
         kind: raw.kind,
         error: raw.error,
       });

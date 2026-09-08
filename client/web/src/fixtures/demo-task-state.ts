@@ -936,6 +936,16 @@ export function buildDemoTaskState(): TaskState {
       ],
     },
     lastProjectLinkWrite: null,
+    // ADR-0036: the item panel's file links, populated for the item the
+    // visual gate actually opens (`b-f1`, "Fit the new tap washer") — one
+    // file and one folder, so the capture photographs both row shapes.
+    fileLinksByItem: {
+      "b-f1": [
+        { id: "b-f1-file-1", itemId: "b-f1", path: "Finance/2026/tap-washer-receipt.pdf", removedAt: null, version: 1 },
+        { id: "b-f1-file-2", itemId: "b-f1", path: "House/Plumbing", removedAt: null, version: 2 },
+      ],
+    },
+    lastFileLinkWrite: null,
     // #627: the reading column's Route card — one filled row on the
     // dossier the links fixture above also seeds, so the visual gate
     // photographs the card holding real destination/notes text rather than

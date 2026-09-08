@@ -33,16 +33,26 @@ import {
 import { useItemDraft } from "../../screens/useItemDraft";
 import { triageFailureFor } from "../../screens/write-failure";
 import { buildUri, derivePath, isValidVaultPath } from "../../obsidian/vault-uri";
+import {
+  buildDropboxWebUrl,
+  buildOpenUri,
+  isValidFilePath,
+  normalizePastedPath,
+  splitFilePath,
+} from "../../dropbox/file-link";
+import { writeFailureMessage } from "../../screens/projects/roster";
+import type { FileLinksWiring } from "../../shell/useFileLinksWiring";
 import { microtaskAffordance } from "../../skills/microtask-affordance";
 import { IDLE, isRunning, stampLabel, type SkillRunState } from "../../skills/run-state";
 import type { MicrotaskRunRequest } from "../../shell/useMicrotaskWiring";
 import type {
+  FileLinkDTO,
   ProjectDTO,
   StepDTO,
   TaskActionName,
   TaskItemDTO,
 } from "../../store/protocol";
-import type { TaskProjectResult, TaskTriageResult } from "../../store/store";
+import type { TaskFileLinkResult, TaskProjectResult, TaskTriageResult } from "../../store/store";
 import type { TriageEdits } from "../../store/worker-client";
 import { StageBadge } from "./StageBadge";
 
@@ -134,6 +144,24 @@ export interface ItemPanelProps {
    * a caller — Recall's expanded result — with no steps wiring behind this
    * render, so nothing here states a fact it never asked `Core` for. */
   showSteps?: boolean;
+  /** ADR-0036: whatever `TaskState.fileLinksByItem[item.id]` currently
+   * holds — `[]` until the request answers, the same "not yet known" shape
+   * `steps` carries, and the same `showFileLinks` contract as `showSteps`:
+   * a caller with no file-links wiring behind this render passes `false`
+   * rather than letting an empty default read as a confirmed empty list. */
+  fileLinks?: FileLinkDTO[];
+  showFileLinks?: boolean;
+  /** ADR-0036: the two writes and this device's local root, as one object
+   * the way `microtask` travels. Absent draws the list read-only — no Add
+   * row, no Remove — the same "optional, so a render with nothing to send
+   * it never offers what it cannot do" contract every other write here
+   * carries. Open and the dropbox.com fallback need no wiring: they are
+   * navigation. */
+  fileLinksWiring?: FileLinksWiring;
+  /** The most recent file-link write result any view issued
+   * (`TaskState.lastFileLinkWrite`), scoped to this panel's own outstanding
+   * write by seed before it is ever shown. */
+  lastFileLinkWrite?: TaskFileLinkResult | null;
   /** Detail mode's close control. Triage mode has none: the row's own
    * collapsed header is its close control, so a second one inside the panel
    * would be two ways to do one thing. */
@@ -213,10 +241,48 @@ export function ItemPanel({
   onGrillMe,
   hasGrillDraft = false,
   vaultName = null,
+  fileLinks = [],
+  showFileLinks = true,
+  fileLinksWiring,
+  lastFileLinkWrite = null,
   id,
   grillMeId,
   microtask,
 }: ItemPanelProps) {
+  // ADR-0036's add row. Its own state rather than the triage draft's: a
+  // file link is a child row, not a field on the item, and adding one is a
+  // create the item's own Save never touches.
+  const [fileLinkInput, setFileLinkInput] = useState("");
+  const [fileLinkProblem, setFileLinkProblem] = useState<string | null>(null);
+  const [issuedFileLinkSeed, setIssuedFileLinkSeed] = useState<string | null>(null);
+  const fileLinkFailure = writeFailureMessage(
+    lastFileLinkWrite,
+    issuedFileLinkSeed,
+    "That file link write did not go through.",
+  );
+
+  function addFileLink() {
+    if (!fileLinksWiring) {
+      return;
+    }
+    const path = normalizePastedPath(fileLinkInput, fileLinksWiring.localRoot);
+    if (path === "") {
+      return;
+    }
+    if (!isValidFilePath(path)) {
+      setFileLinkProblem("A file link is relative to Dropbox — no leading /, no .., no drive letter");
+      return;
+    }
+    setFileLinkProblem(null);
+    setIssuedFileLinkSeed(fileLinksWiring.createFileLink(item.id, path));
+    setFileLinkInput("");
+  }
+
+  // Drawn in detail mode when there is something to draw: links to list, or
+  // wiring to add one. A read-only render of an item with no links has
+  // nothing honest to say and says nothing.
+  const showFileLinksBlock =
+    mode === "detail" && showFileLinks && (fileLinks.length > 0 || fileLinksWiring !== undefined);
   // Detail mode's Edit state. Always false in triage mode, where the fields
   // are the panel rather than a mode of it.
   const [editing, setEditing] = useState(false);
@@ -686,6 +752,132 @@ export function ItemPanel({
         <p style={{ font: "var(--type-body)", color: "var(--text-secondary)" }}>
           {item.description}
         </p>
+      ) : null}
+
+      {/* ADR-0036's file links: the things an item is about, kept in Dropbox.
+          Open fires the helper's scheme; "on dropbox.com" is the always-drawn
+          fallback for a device with no helper. A stored path that fails the
+          shape rules draws its text and Remove only — refusing to draw Open
+          is how this client refuses, same as the note button above. */}
+      {showFileLinksBlock ? (
+        <div>
+          <span className="hb-meta">files</span>
+          {fileLinks.length === 0 ? (
+            <p
+              style={{
+                font: "var(--type-body-sm)",
+                color: "var(--text-muted)",
+                marginTop: "var(--space-3)",
+              }}
+            >
+              No file links yet.
+            </p>
+          ) : (
+            <ul
+              style={{
+                listStyle: "none",
+                margin: "var(--space-3) 0 0",
+                padding: 0,
+                display: "flex",
+                flexDirection: "column",
+                gap: "var(--space-3)",
+              }}
+            >
+              {fileLinks.map((link) => {
+                const { name, folder } = splitFilePath(link.path);
+                const openable = isValidFilePath(link.path);
+                return (
+                  <li key={link.id} style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+                      <span
+                        title={link.path}
+                        style={{
+                          font: "var(--type-body-sm)",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {name}
+                      </span>
+                      {folder !== null ? (
+                        <span
+                          className="hb-meta"
+                          style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                        >
+                          {folder}
+                        </span>
+                      ) : null}
+                    </div>
+                    {openable ? (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          iconRight="arrow-up-right"
+                          onClick={() =>
+                            window.open(buildOpenUri(link.path), "_blank", "noopener,noreferrer")
+                          }
+                        >
+                          Open
+                        </Button>
+                        <a
+                          href={buildDropboxWebUrl(link.path)}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ font: "var(--type-body-sm)", color: "var(--accent)", whiteSpace: "nowrap" }}
+                        >
+                          on dropbox.com
+                        </a>
+                      </>
+                    ) : null}
+                    {fileLinksWiring ? (
+                      <IconButton
+                        icon="trash-2"
+                        label="Remove file link"
+                        size="sm"
+                        onClick={() => setIssuedFileLinkSeed(fileLinksWiring.removeFileLink(link))}
+                      />
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {fileLinksWiring ? (
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                addFileLink();
+              }}
+              style={{ display: "flex", alignItems: "flex-end", gap: "var(--space-3)", marginTop: "var(--space-4)" }}
+            >
+              <Input
+                label="Add a file link"
+                size="sm"
+                style={{ flex: 1, minWidth: 0 }}
+                value={fileLinkInput}
+                error={fileLinkProblem ?? undefined}
+                placeholder="Finance/2026/receipt.pdf"
+                onChange={(event) => {
+                  setFileLinkInput(event.target.value);
+                  setFileLinkProblem(null);
+                }}
+              />
+              <Button type="submit" size="sm" variant="secondary" disabled={fileLinkInput.trim() === ""}>
+                Add
+              </Button>
+            </form>
+          ) : null}
+          {fileLinkFailure ? (
+            <p
+              role="alert"
+              style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)", marginTop: "var(--space-3)" }}
+            >
+              {fileLinkFailure}
+            </p>
+          ) : null}
+        </div>
       ) : null}
 
       {/* The microtask affordance belongs to the steps block, not the act row

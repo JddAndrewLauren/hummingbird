@@ -14,6 +14,7 @@ import type {
   GrillDraftTurnDTO,
   GrillVerdictName,
   ProjectDTO,
+  FileLinkDTO,
   ProjectLinkDTO,
   RouteDTO,
   RuleDTO,
@@ -115,6 +116,7 @@ type Store = Pick<
   | "setTaskPending"
   | "setTaskSteps"
   | "setTaskProjectLinks"
+  | "setTaskFileLinks"
   | "setTaskRoute"
   | "setTaskPaneRead"
   | "setTaskGrillDraft"
@@ -491,6 +493,27 @@ export function attachWorkerClient(
           // the edit becomes visible once the next completed cycle pulls
           // it back, so this re-request answers the *old* row until then.
           requestProjectLinks(worker, message.projectId);
+        }
+        return;
+      case "fileLinks":
+        store.setTaskFileLinks(message.itemId, message.links);
+        return;
+      case "createFileLinkResult":
+      case "removeFileLinkResult":
+        store.setTaskState({
+          lastFileLinkWrite: {
+            seed: message.seed,
+            itemId: message.itemId,
+            kind: message.kind,
+            error: message.error,
+          },
+        });
+        if (message.kind === "ok") {
+          // No overlay for file links (`Core::create_file_link`'s own doc)
+          // — same reasoning as `createProjectLinkResult`: this re-request
+          // answers the *old* list until the next completed cycle pulls
+          // the change back.
+          requestFileLinks(worker, message.itemId);
         }
         return;
       case "route":
@@ -1093,6 +1116,37 @@ export function patchProject(
     archivedAt: patch.archivedAt ?? null,
     nowMs,
   });
+}
+
+/** ADR-0036's per-item file-link read — the item panel's `requestSteps`-
+ * style per-id fetch. */
+export function requestFileLinks(worker: WorkerLike, itemId: string): void {
+  worker.postMessage({ type: "getFileLinks", itemId });
+}
+
+/** ADR-0036's file-link create. `seed` mints `Core::create_file_link`'s
+ * own queue-entry id. `path` arrives already normalized and shape-checked
+ * by `dropbox/file-link.ts`. */
+export function createFileLink(
+  worker: WorkerLike,
+  seed: string,
+  itemId: string,
+  path: string,
+  nowMs: number,
+): void {
+  worker.postMessage({ type: "createFileLink", seed, itemId, path, nowMs });
+}
+
+/** ADR-0036's file-link removal — the only patch a file link takes.
+ * `current` is the caller's own last-known copy of the row. */
+export function removeFileLink(
+  worker: WorkerLike,
+  seed: string,
+  current: FileLinkDTO,
+  removedAt: number,
+  nowMs: number,
+): void {
+  worker.postMessage({ type: "removeFileLink", seed, current, removedAt, nowMs });
 }
 
 /** #626's per-project link read — the dossier aside's `requestSteps`-style

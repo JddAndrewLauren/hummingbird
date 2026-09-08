@@ -630,6 +630,18 @@ export interface ProjectLinkDTO {
   version: number;
 }
 
+/** One `file_links` row (ADR-0036), as the web host's JSON/DTO shape — a
+ * 1:1 field mirror of `hummingbird_domain::FileLink`, camelCased. The item
+ * panel's read: a Dropbox-relative path an item points at, removed by
+ * flagging (`removedAt`), never deleted, never re-pointed. */
+export interface FileLinkDTO {
+  id: string;
+  itemId: string;
+  path: string;
+  removedAt: number | null;
+  version: number;
+}
+
 /** One `routes` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
  * field mirror of `hummingbird_domain::Route`, camelCased. 1:1 with its
  * project (`projectId` is its own key, not a separate `id`) — the dossier's
@@ -1021,6 +1033,18 @@ export type TaskWorkerRequest =
       removedAt: number | null;
       nowMs: number;
     }
+  /** ADR-0036's per-item file-link read — the item panel's
+   * `getSteps`-style "only what a view actually asked about" fetch. */
+  | { type: "getFileLinks"; itemId: string }
+  /** ADR-0036's file-link create: one `POST /api/file_links`, enqueued
+   * durably. `path` is already normalized and shape-checked by
+   * `dropbox/file-link.ts` before it reaches here; the wasm seam refuses a
+   * blank one. Same caller-mints-`seed` contract as `createProjectLink`. */
+  | { type: "createFileLink"; seed: string; itemId: string; path: string; nowMs: number }
+  /** ADR-0036's file-link removal — the only patch a file link takes.
+   * `current` is the caller's own last-known copy of the row (from the
+   * `fileLinks` push), the CAS `base` a 409 is diffed against. */
+  | { type: "removeFileLink"; seed: string; current: FileLinkDTO; removedAt: number; nowMs: number }
   /** #627's per-project Route read — the dossier's reading column, same
    * "only what a view actually asked about" shape as `getProjectLinks`. */
   | { type: "getRoute"; projectId: string }
@@ -1448,6 +1472,28 @@ export type TaskWorkerResponse =
       type: "patchProjectLinkResult";
       seed: string;
       projectId: string;
+      kind: "ok" | "failed" | "busy";
+      error: string | null;
+    }
+  /** Answers `getFileLinks` (ADR-0036) — the `steps`-style per-item read,
+   * keyed by the requested `itemId`. */
+  | { type: "fileLinks"; itemId: string; links: FileLinkDTO[] }
+  /** ADR-0036's file-link create result, matched back by `seed`. Same
+   * broadcast-not-reply, enqueued-not-saved contract as
+   * `createProjectLinkResult`. */
+  | {
+      type: "createFileLinkResult";
+      seed: string;
+      itemId: string;
+      kind: "ok" | "failed" | "busy";
+      id: string | null;
+      error: string | null;
+    }
+  /** ADR-0036's file-link removal result, matched back by `seed`. */
+  | {
+      type: "removeFileLinkResult";
+      seed: string;
+      itemId: string;
       kind: "ok" | "failed" | "busy";
       error: string | null;
     }
