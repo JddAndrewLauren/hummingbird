@@ -346,7 +346,7 @@ describe("SettingsScreen — the bindings editor", () => {
 describe("SettingsScreen — the standing-question roster (#714, ADR-0034)", () => {
   it("lists every standing question the core knows, in the core's order", () => {
     // The section's spine is the core's roster, not the bindings table: a
-    // fresh device with nothing set still sees all ten questions.
+    // fresh device with nothing set still sees all eleven questions.
     renderSettings({ bindings: [] });
 
     const headings = screen

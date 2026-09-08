@@ -120,7 +120,8 @@ export type StandingQuestion =
   | "kimi"
   | "github"
   | "uptime"
-  | "reachability";
+  | "reachability"
+  | "poller";
 
 /** Declared display order — the last axis of the cross-pane sort, and the
  * order the wiring unions its sources in. Declaration order, not
@@ -136,7 +137,11 @@ export type StandingQuestion =
  * `seam.test.ts`, which is what stops the two lists drifting.
  *
  * `scps` is declared second (#693) — directly after `homework`, before
- * `waste` — the slot ADR-0032's own grilling session settled on. */
+ * `waste` — the slot ADR-0032's own grilling session settled on.
+ *
+ * `poller` is declared **last** (#775): a meta-question over every other
+ * source's own freshness, so it reads as the board's final word rather than
+ * competing with the content-specific questions ahead of it. */
 export const QUESTION_ORDER: readonly StandingQuestion[] = [
   "homework",
   "scps",
@@ -148,6 +153,7 @@ export const QUESTION_ORDER: readonly StandingQuestion[] = [
   "github",
   "uptime",
   "reachability",
+  "poller",
 ];
 
 /** Everything a question needs to answer, and nothing else: the bindings

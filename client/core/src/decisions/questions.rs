@@ -141,6 +141,7 @@ pub fn question_label(question: StandingQuestion) -> &'static str {
         StandingQuestion::Github => "GitHub workflows",
         StandingQuestion::Uptime => "Uptime",
         StandingQuestion::Reachability => "Is this device reachable",
+        StandingQuestion::Poller => "Poller freshness",
     }
 }
 
@@ -165,6 +166,7 @@ pub fn question_bindings(question: StandingQuestion) -> &'static [BindingKey] {
         StandingQuestion::Github => &[],
         StandingQuestion::Uptime => &[],
         StandingQuestion::Reachability => &[],
+        StandingQuestion::Poller => &[],
     }
 }
 
@@ -253,7 +255,7 @@ mod tests {
             .filter(|entry| entry.surface == Surface::Status)
             .map(|entry| entry.question.as_str())
             .collect();
-        assert_eq!(status, ["kimi", "github", "uptime", "reachability"]);
+        assert_eq!(status, ["kimi", "github", "uptime", "reachability", "poller"]);
     }
 
     #[test]

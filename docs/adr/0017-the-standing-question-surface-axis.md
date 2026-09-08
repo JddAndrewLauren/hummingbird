@@ -83,6 +83,28 @@ does not need to make. **Where a poller holds no credential, the credential
 axis stops binding and the poller axis wins**: one binary, one source,
 however many platforms it happens to point requests at.
 
+*Amended 2026-09-02 (#775): a second, deliberate exception to this
+decision's own identity chain.* The `poller` question answers a single
+meta-question — is a source's newest `context_snapshots` row fresh against
+the cadence that row itself declares — over **every** source
+`server/domain/src/sources.rs` registers as a snapshot writer at once, so
+its "pane ≈ one resource" half holds (one pane per source) but its "one
+question, one source" half does not: `poller`'s identity is the *registry*,
+not a single credential or poller binary. This is what frees
+`github-hummingbird/v1` from double duty. Before #775 that source's pane
+was this decision's worked example **and** the board's only signal that any
+poller was alive at all, because it was the only pane reading a poller's
+own freshness. `poller` takes over the second job for every registered
+source, `github-hummingbird/v1` included — read straight off
+`FreshnessFact::declared_cadence_ms`, never by parsing a workflow's run
+history — which narrows `github.rs`'s own pane back to exactly what this
+decision already said it was: one question, one source, one poller,
+answering only whether this repo's own scheduled GitHub Actions workflows
+last ran and succeeded. See `client/core/src/decisions/panes/poller.rs`'s
+own module header for the mechanism, and #773 for where the
+`github-hummingbird/v1` lane goes next (open PRs and issues across named
+repos) now that it is free to.
+
 ## Decision 3 — Probe semantics: the right refusal is the signal
 
 For a poller with no credential to prove reachability with (`uptime/v1`),

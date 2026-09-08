@@ -3,16 +3,13 @@
 # each new message in memory against the live rule set, and upserts an
 # alert for a match — never anything else. Non-matches never touch storage.
 #
-# A fourth Actions `schedule:`, on `gmail-poll.yml`/`calendar-poll.yml`'s own
-# reasoning: this lane has no competing clock (ADR-0011 assigns this
-# cadence to nothing else, and nothing else polls M365 mail).
-#
-# **Live since 2026-08-15 (#486 Phase B).** It was dormant from 2026-08-14:
-# all 73 runs it had ever had failed on `HB_INGEST_TOKEN is not set`, because
-# `M365_MAIL_INGEST_TOKEN`, the `GRAPH_*` vars and `GRAPH_CLIENT_PRIVATE_KEY`
-# were never provisioned. All of them now are, and the lane has run green on
-# both paths (first-run resync and cursor resume) before this `schedule:` was
-# restored.
+# **Moved off Actions `schedule:` at #774, onto the sweeper's supercronic
+# clock** — `gmail-poll.yml`'s header carries the full argument (measured
+# in #773). Unlike the two Google lanes this poller does not share a
+# credential the sweeper already held: `GRAPH_CLIENT_PRIVATE_KEY` and the
+# `GRAPH_*` identifiers below moved with it, as Fly secrets/`[env]` on
+# `hummingbird-sweeper` instead of Actions secrets/vars. `workflow_dispatch`
+# stays, for a manual run against a fresh checkout.
 #
 # **The blast-radius question this lane was gated on is settled.** An app-only
 # Graph permission reads tenant-wide by default, which put
@@ -25,11 +22,6 @@
 name: graph-mail-poll
 
 on:
-  # Every 15 minutes — `hummingbird_graph_poll::mail_cursor::POLLED_EVERY_MS`
-  # must match this interval, and was re-checked against this cron when the
-  # block was restored (#486 Phase B): both are 15 minutes.
-  schedule:
-    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 # One poller at a time. Two overlapping runs would race on the same

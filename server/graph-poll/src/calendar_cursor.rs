@@ -8,7 +8,8 @@ use hummingbird_domain::{SnapshotEnvelope, M365_CALENDAR_V1};
 
 pub const SOURCE: &str = M365_CALENDAR_V1;
 
-/// Must match `.github/workflows/graph-calendar-poll.yml`'s cron.
+/// Must match `crontab`'s entry for `graph-calendar-poll` (#774 moved this
+/// off `graph-calendar-poll.yml`'s Actions `schedule:`).
 pub const POLLED_EVERY_MS: i64 = 15 * 60 * 1000;
 
 pub const CURSOR_KEY: &str = "cursor";

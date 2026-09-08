@@ -65,11 +65,14 @@ describe("StatusScreen", () => {
     );
 
     // Every registered status question is discoverable before this device
-    // has acquired any answer.
+    // has acquired any answer. `getAllBy*`, not `getBy*`: every question but
+    // poller (#775) collapses to one sentinel subject on a fresh device —
+    // poller always ranks one gap tile per source it watches, so its own
+    // label matches several buttons at once.
     for (const label of labels) {
       expect(
-        screen.getByRole("button", { name: new RegExp(label, "i") }),
-      ).toBeTruthy();
+        screen.getAllByRole("button", { name: new RegExp(label, "i") }).length,
+      ).toBeGreaterThan(0);
     }
     // None of Now's own questions ever leak onto this surface.
     expect(screen.queryByRole("button", { name: /which cans/i })).toBeNull();

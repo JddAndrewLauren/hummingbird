@@ -123,6 +123,17 @@ at the first newline. Pipe it minified.
 CI is `.github/workflows/android.yml` (Gradle side) plus `client.yml`
 (the Rust side, whose `client/**` filter covers this directory).
 
+**Nothing but CI compiles the Kotlin.** The repo's mandated local suite is the
+two cargo workspaces plus `client/web`'s vitest and typecheck; none of them
+touches `:app:testDebugUnitTest`, and an environment here normally has no JDK
+or Android SDK to run it with. So a green local run — including an independent
+reviewer's fresh re-run — is not evidence that this directory compiles; only
+`android.yml`'s `build` job is, so read it before calling a Kotlin change done.
+The failure that earns this paragraph: UniFFI renders an all-fieldless enum as
+a native Kotlin `enum class`, not a sealed class, so a test written against the
+sealed shape failed to compile (`Unresolved reference 'NotFetched'`) through
+two review rounds that were green locally.
+
 ## The bottom nav and the More sheet (M3/#532, completed M4/#541)
 
 **One nav form per width** since the unfolded slice: past `ui/WindowWidth.kt`'s

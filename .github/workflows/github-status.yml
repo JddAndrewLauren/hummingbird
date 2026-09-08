@@ -6,34 +6,27 @@
 # inactive repo's scheduled workflows, which stops every cron here at once
 # with no visible gap at the services those workflows write to.
 #
-# **`schedule:` case, per the convention `city-waste.yml` established.**
-# hummingbird is public, so scheduled Actions runs are free, and this lane
-# is self-monitoring on the same posture every prior scheduled workflow here
-# gives: the pane bands its own answer stale at ~6h and then refuses to
-# answer at all, so a stalled poller is visible within a quarter day
-# without anyone watching this workflow. This is the **ninth** `schedule:`
-# in the repo, counted directly against the workflow files at the time this
-# one was added (`city-waste.yml`, `gmail-poll.yml`, `calendar-poll.yml`,
-# `graph-mail-poll.yml`, `graph-calendar-poll.yml`, `race-schedule-poll.yml`,
-# `race-alert-poll.yml`, `kimi-balance.yml`, and this one) — see the repo
-# rule that a workflow header states its own count rather than copying one,
-# since two prior headers here (`city-waste.yml`, `kimi-balance.yml`) were
-# each found stating a wrong count of their own. The same overturn of issue
-# #8's ban applies verbatim — that ban was about a *private* repo's pooled
-# Actions minutes and $0 spending cap, neither of which exists here. It does
-# not compete with any live clock: this is the only thing that ever polls
-# this repo's own run history.
+# **Moved off Actions `schedule:` at #774, onto the sweeper's supercronic
+# clock** — `gmail-poll.yml`'s header carries the full argument (measured
+# in #773): Actions `schedule:` delivered this at roughly once every four
+# hours against the half-hourly interval below, and `hummingbird-sweeper`
+# is an always-on container that can just run it on time instead.
+# `workflow_dispatch` stays, for a manual run against a fresh checkout; the
+# `crontab` entry now owns the standing cadence.
 #
-# **This workflow watches every scheduled workflow, itself included** — it
-# has no special-case exclusion for its own file. It cannot detect its own
-# death (see `server/github-status/src/lib.rs`'s header for why: a dead
-# `github-status.yml` writes nothing, and nothing here can make it write
-# something about itself), but it can and does report its own recent
-# conclusions like any other workflow's, for whatever that is worth while it
-# is alive.
+# **This poller watches every *other* scheduled workflow in the repo,
+# itself no longer included** — #774 dropped its own `schedule:`, so
+# `server/github-status/src/manifest.rs`'s `EVERY_SCHEDULED_WORKFLOW` no
+# longer carries a row for `github-status.yml` (it never needed one to
+# cover *itself*; that list is what this binary reads at build time, not a
+# thing this file declares about its own trigger). It cannot detect its own
+# death either way (see `server/github-status/src/lib.rs`'s header for why:
+# a dead poller writes nothing, and nothing here can make it write
+# something about itself) — that property is unchanged by where it runs.
 #
-# `server/github-status/src/body.rs::POLLED_EVERY_MS` must match this
-# interval — it is what `Freshness` reads as the declared cadence, and
+# `server/github-status/src/body.rs::POLLED_EVERY_MS` must match the
+# interval the poller actually runs at — now `crontab`'s entry for
+# `github-status-poll`, not this file's own (removed) cron — and
 # `server/github-status/tests/contract.rs::polled_every_ms_is_half_an_hour`
 # pins the constant's own side.
 #
@@ -53,21 +46,27 @@
 # terminal against `ADMIN_SECRET` — on `city-waste`'s own blast-radius
 # reasoning, this token reaches one route for one source and its worst-case
 # abuse is a wrong reading on this very pane. **No other credential is
-# needed**: reading this repo's own run history is covered by the automatic,
-# per-run `GITHUB_TOKEN` GitHub Actions already provides, scoped down to
-# read-only via `permissions:` below. The `GH_` prefix is not cosmetic:
-# GitHub reserves `GITHUB_` for its own secrets and answers 422 to any
-# attempt to create one, so the obvious `GITHUB_STATUS_INGEST_TOKEN` this
-# shipped with was unprovisionable — and an unresolvable `secrets.*`
-# expands to the empty string, so the lane failed as "not set" daily rather
-# than as anything naming the real cause (#314).
+# needed here**: a run through this workflow (`workflow_dispatch`) reads
+# this repo's own run history with the automatic, per-run `GITHUB_TOKEN`
+# GitHub Actions already provides, scoped down to read-only via
+# `permissions:` below. **The standing run on `hummingbird-sweeper` (#774)
+# has no such automatic token** — no Actions context exists there — so it
+# authenticates with `GH_STATUS_PAT`, a fine-grained PAT scoped to
+# `contents: read` + `actions: read` on this repo only (the same read-only
+# reach `permissions:` grants `GITHUB_TOKEN` here), set as a Fly secret and
+# mapped onto this binary's `GITHUB_TOKEN` env var by `crontab`. The `GH_`
+# prefix is not cosmetic: GitHub reserves `GITHUB_` for its own secrets and
+# answers 422 to any attempt to create one, so the obvious
+# `GITHUB_STATUS_INGEST_TOKEN` this shipped with was unprovisionable — and
+# an unresolvable `secrets.*` expands to the empty string, so the lane
+# failed as "not set" daily rather than as anything naming the real cause
+# (#314).
 name: github-status
 
 on:
-  schedule:
-    - cron: "*/30 * * * *"
   # A missed or dropped run, and the first run after the token is minted,
-  # otherwise have no trigger at all.
+  # otherwise have no trigger at all — `crontab`'s entry on
+  # `hummingbird-sweeper` owns the standing cadence now (#774).
   workflow_dispatch:
 
 # `GITHUB_TOKEN` needs nothing beyond reading this repo's own Actions run

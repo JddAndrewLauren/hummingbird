@@ -11,6 +11,7 @@ import {
 } from "./contract";
 import { QUESTIONS, panesFrom, rankPanes, requiredCalendarRequests, requiredSources } from "./registry";
 import { questionLabel, questionRoster } from "./roster";
+import { SOURCES } from "../poller-pane/poller";
 
 // The registry, and the two properties that keep it honest: it names every
 // question exactly once, and it ranks every subject of every question — not
@@ -75,16 +76,23 @@ describe("requiredSources", () => {
     }
   });
 
-  it("never asks for a source only a question on the OTHER surface reads (ADR-0017, #311)", () => {
+  it("never asks for a source no question on this surface reads (ADR-0017, #311)", () => {
+    // Not "never a source the other surface's questions read": poller
+    // (#775, status) legitimately shares sources with waste/race (now) —
+    // it watches every registered snapshot source's own freshness, which
+    // is a fact independent of which surface answers content questions
+    // about the same rows. The real invariant is narrower: a surface's
+    // required sources are always a subset of what its OWN questions
+    // declare.
     for (const surface of ["now", "status"] as const) {
       const sources = requiredSources(surface);
-      for (const question of QUESTION_ORDER) {
-        if (QUESTIONS[question].surface === surface) {
-          continue;
-        }
-        for (const source of QUESTIONS[question].sources) {
-          expect(sources).not.toContain(source);
-        }
+      const ownSources = new Set(
+        QUESTION_ORDER.filter((question) => QUESTIONS[question].surface === surface).flatMap(
+          (question) => QUESTIONS[question].sources,
+        ),
+      );
+      for (const source of sources) {
+        expect(ownSources).toContain(source);
       }
     }
   });
@@ -165,7 +173,10 @@ describe("rankPanes", () => {
 
   it("renders every never-polled infra question as a gap, never as nothing (ADR-0017 decision 4, #311)", () => {
     const statusPanes = rankPanes(emptyInputs(), "status");
-    expect(statusPanes).toHaveLength(4);
+    // kimi/github/uptime/reachability contribute one pane each; poller
+    // (#775) contributes one per source it watches (`poller.ts`'s own
+    // `SOURCES`), always ranked.
+    expect(statusPanes).toHaveLength(4 + SOURCES.length);
     expect(statusPanes.every((pane) => pane.answer.answerState === "bound-but-unacquired")).toBe(
       true,
     );
