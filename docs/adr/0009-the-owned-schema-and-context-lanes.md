@@ -40,7 +40,12 @@ the project lane becomes shared-owned — the `routes` DDL comment below
 saying `/to-actions` owns that table records the ownership as it stood in
 2026-08-08 and no longer holds, route/fog/`project_pos` writes being
 arbitrated by CAS like every other row; `projects` gains `github_repo` and
-`default_context`, and a `project_links` table joins the synced set.
+`default_context`, and a `project_links` table joins the synced set. ·
+**amended 2026-09-08 by
+[ADR-0036](0036-an-item-points-at-files-in-dropbox.md):** a `file_links`
+table joins the synced set — the many-per-item Dropbox-relative paths an
+item points at, `SCHEMA_VERSION` 14 → 15, and a fourth member of
+`FK_CHILDREN`; the DDL is in that ADR.
 **Amendments to this ADR follow [the pointer convention](README.md):** what
 a later ADR changed is written in *that* ADR, and named here only. The
 dated notes in the body below are the convention's exception — amendments

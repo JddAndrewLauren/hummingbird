@@ -72,6 +72,16 @@ pub fn project_link(id: &str) -> String {
     format!("/api/project_links/{id}")
 }
 
+/// `POST /api/file_links` (ADR-0036).
+pub fn file_links() -> String {
+    "/api/file_links".to_string()
+}
+
+/// `PATCH /api/file_links/:id` (ADR-0036) — removal only.
+pub fn file_link(id: &str) -> String {
+    format!("/api/file_links/{id}")
+}
+
 pub fn setting(key: &str) -> String {
     format!("/api/settings/{key}")
 }
@@ -124,6 +134,8 @@ mod tests {
             fog_item("x"),
             project_links(),
             project_link("x"),
+            file_links(),
+            file_link("x"),
             setting("x"),
             rules(),
             rule("x"),

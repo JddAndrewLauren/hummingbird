@@ -41,6 +41,12 @@ fn seed_all_nine_tables(sql: &dyn Sql) -> i64 {
         r#"{"id": "l-1", "project_id": "p-1", "url": "https://example.com", "position": 1}"#,
         0,
     ); // v11
+    post_to(
+        sql,
+        "/api/file_links",
+        r#"{"id": "fl-1", "item_id": "a-1", "path": "Finance/2026/receipt.pdf"}"#,
+        0,
+    ); // v12
     meta_version(sql)
 }
 
@@ -48,14 +54,15 @@ fn seed_all_nine_tables(sql: &dyn Sql) -> i64 {
 fn delta_pull_carries_every_synced_table() {
     let sql = RusqliteSql::new();
     let version = seed_all_nine_tables(&sql);
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
 
     let parsed: ChangesResponse = body_as(&changes(&sql, "since=0"));
-    assert_eq!(parsed.version, 11);
+    assert_eq!(parsed.version, 12);
     assert_eq!(parsed.projects.len(), 1);
     assert_eq!(parsed.routes.len(), 1);
     assert_eq!(parsed.fog.len(), 1);
     assert_eq!(parsed.project_links.len(), 1);
+    assert_eq!(parsed.file_links.len(), 1);
     assert_eq!(parsed.items.len(), 2);
     assert_eq!(parsed.steps.len(), 1);
     assert_eq!(parsed.blocked_by.len(), 1);
@@ -83,12 +90,13 @@ fn delta_cursor_filters_every_table_independently() {
     assert!(parsed.settings.is_empty());
 
     // A fresh write moves one row above everything else.
-    patch(&sql, "a-2", r#"{"expected_version": 5, "title": "renamed"}"#, 0); // v12
-    let parsed: ChangesResponse = body_as(&changes(&sql, "since=11"));
-    assert_eq!(parsed.version, 12);
+    patch(&sql, "a-2", r#"{"expected_version": 5, "title": "renamed"}"#, 0); // v13
+    let parsed: ChangesResponse = body_as(&changes(&sql, "since=12"));
+    assert_eq!(parsed.version, 13);
     assert_eq!(parsed.items.len(), 1, "only the re-versioned item");
     assert_eq!(parsed.items[0].id, "a-2");
     assert!(parsed.alerts.is_empty(), "the alert stayed below the cursor");
+    assert!(parsed.file_links.is_empty(), "the file link stayed below the cursor");
 }
 
 /// #114 acceptance criterion 4, pinned as raw body equality on a workspace

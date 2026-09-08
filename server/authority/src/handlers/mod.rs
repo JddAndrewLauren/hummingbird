@@ -8,6 +8,7 @@ mod auth;
 mod blocked_by;
 mod calendar_token;
 mod changes;
+mod file_links;
 mod fog;
 mod grills;
 mod items;
@@ -221,6 +222,10 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         ("PATCH", ["project_links", id]) if !id.is_empty() => {
             project_links::patch(id, req.body, now_ms, sql)
         }
+        ("POST", ["file_links"]) => file_links::create(req.body, now_ms, sql),
+        ("PATCH", ["file_links", id]) if !id.is_empty() => {
+            file_links::patch(id, req.body, now_ms, sql)
+        }
         ("POST", ["steps"]) => steps::create(req.body, now_ms, sql),
         ("PATCH", ["steps", id]) if !id.is_empty() => steps::patch(id, req.body, now_ms, sql),
         ("POST", ["blocked_by"]) => blocked_by::create(req.body, now_ms, sql),
@@ -273,13 +278,14 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         // anything else falls through to 404.
         (
             _,
-            ["items" | "projects" | "fog" | "project_links" | "steps" | "blocked_by" | "alerts"
-                | "rules" | "push_targets" | "snapshots" | "changes" | "sweep" | "grills"],
+            ["items" | "projects" | "fog" | "project_links" | "file_links" | "steps"
+                | "blocked_by" | "alerts" | "rules" | "push_targets" | "snapshots" | "changes"
+                | "sweep" | "grills"],
         ) => Ok(method_not_allowed()),
         (
             _,
-            ["items" | "projects" | "routes" | "fog" | "project_links" | "steps" | "settings"
-                | "alerts" | "rules" | "push_targets" | "grills", id],
+            ["items" | "projects" | "routes" | "fog" | "project_links" | "file_links" | "steps"
+                | "settings" | "alerts" | "rules" | "push_targets" | "grills", id],
         ) if !id.is_empty() =>
         {
             Ok(method_not_allowed())

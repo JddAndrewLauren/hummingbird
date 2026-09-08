@@ -376,7 +376,9 @@ click, since it opens on the screen's own local state — by its own
 and the back affordance survive the phone form. **Two more of the dossier's
 own states join it**, each reached by a click the capture drives itself:
 `projects-dossier-slot-open-*` (the board's selected-item slot, expanded
-above the columns inside a project's narrower centre column) and
+above the columns inside a project's narrower centre column — and, since
+ADR-0036, the panel's populated **files** block, since the fixture seeds two
+file links on the item that capture opens) and
 `projects-dossier-archive-confirm-*` (#630's confirm dialog, the one state
 that names a live-item count). `projects-dossier-empty-board-*` is a third,
 in its own `test()` block: the board's "Nothing startable in this project"

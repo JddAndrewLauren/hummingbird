@@ -53,6 +53,8 @@ function renderBoardSettings(
       onThemePreference={vi.fn()}
       backendSelection="auto"
       onBackendSelection={vi.fn()}
+      dropboxLocalRoot={null}
+      onDropboxLocalRoot={vi.fn()}
       onConnect={vi.fn()}
       onSelectionChange={onSelectionChange}
       onRefresh={vi.fn()}
@@ -124,6 +126,8 @@ describe("SettingsScreen — the board world's calendar card", () => {
         onThemePreference={vi.fn()}
         backendSelection="auto"
         onBackendSelection={vi.fn()}
+      dropboxLocalRoot={null}
+      onDropboxLocalRoot={vi.fn()}
         onConnect={vi.fn()}
         onSelectionChange={vi.fn()}
         onRefresh={vi.fn()}

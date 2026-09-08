@@ -73,6 +73,7 @@ fn changes_since(since: i64, now_ms: i64, sql: &dyn Sql) -> Result<ApiResponse, 
             super::project_links::link_from_row,
         )?,
         items: pull(sql, since, "items", "id", super::items::item_from_row)?,
+        file_links: pull(sql, since, "file_links", "id", super::file_links::link_from_row)?,
         steps: pull(sql, since, "steps", "id", super::steps::step_from_row)?,
         blocked_by: pull(sql, since, "blocked_by", "item_id, blocker_id", super::blocked_by::edge_from_row)?,
         // The horizon is applied here, inside the one code path the sweep

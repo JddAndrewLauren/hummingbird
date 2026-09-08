@@ -8,6 +8,7 @@ import { EmptyState } from "../components/feedback/EmptyState";
 import { Input } from "../components/forms/Input";
 import { Switch } from "../components/forms/Switch";
 import { Textarea } from "../components/forms/Textarea";
+import type { FileLinksWiring } from "../shell/useFileLinksWiring";
 import type { MicrotaskWiring } from "../shell/useMicrotaskWiring";
 import type {
   LedgerRowDTO,
@@ -155,6 +156,8 @@ export interface ProjectsScreenProps {
   onTriage?: (itemId: string, destination: "ready" | null, edits: TriageEdits) => void;
   /** Forwarded to the board's open item panel, exactly as Now does. */
   microtask?: MicrotaskWiring;
+  /** ADR-0036: forwarded the same way. */
+  fileLinks?: FileLinksWiring;
   /** The board's device-local view preferences — the axis and collapsed
    * columns, under this screen's own `hb.projects.*` keys
    * (`frontier-prefs.ts`). Injectable for the same reason Now's is; the
@@ -178,6 +181,7 @@ export function ProjectsScreen({
   onAct,
   onTriage,
   microtask,
+  fileLinks,
   storage,
 }: ProjectsScreenProps) {
   const [openId, setOpenId] = useState<string | null>(null);
@@ -241,6 +245,7 @@ export function ProjectsScreen({
       onTriage={onTriage}
       onCreateProject={onCreateProject}
       microtask={microtask}
+      fileLinks={fileLinks}
       storage={resolvedStorage}
     />
   );
@@ -406,6 +411,7 @@ function Dossier({
   onTriage,
   onCreateProject,
   microtask,
+  fileLinks,
   storage,
 }: {
   row: ProjectRow;
@@ -449,6 +455,7 @@ function Dossier({
   onTriage?: (itemId: string, destination: "ready" | null, edits: TriageEdits) => void;
   onCreateProject: (name: string) => void;
   microtask?: MicrotaskWiring;
+  fileLinks?: FileLinksWiring;
   storage?: StorageLike;
 }) {
   const projectId = row.project.id;
@@ -513,6 +520,7 @@ function Dossier({
             onTriage={onTriage}
             onCreateProject={onCreateProject}
             microtask={microtask}
+            fileLinks={fileLinks}
             storage={storage}
             screen="projects"
             // The `project` axis is degenerate here — every item on this

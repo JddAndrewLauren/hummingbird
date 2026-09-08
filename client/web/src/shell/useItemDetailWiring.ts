@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { requestIsPending, requestSteps, type WorkerLike } from "../store/worker-client";
+import { requestFileLinks, requestIsPending, requestSteps, type WorkerLike } from "../store/worker-client";
 
 // Item detail's own small piece of shell wiring (issue #96, S10): which
 // item (if any) is open, and asking the worker for its Steps the moment
@@ -28,6 +28,10 @@ export function useItemDetailWiring(worker: WorkerLike, syncOutcomeSeq: number):
   useEffect(() => {
     if (selectedItemId !== null) {
       requestSteps(worker, selectedItemId);
+      // ADR-0036: the open item's file links, on the same key and for the
+      // same reason — a create has no overlay, so the row appears through
+      // this re-read once a cycle pulls it back.
+      requestFileLinks(worker, selectedItemId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedItemId, syncOutcomeSeq]);

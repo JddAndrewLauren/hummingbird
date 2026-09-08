@@ -38,6 +38,12 @@ function stepRequests(worker: ReturnType<typeof fakeWorker>): unknown[] {
     .filter((message) => message.type === "getSteps");
 }
 
+function fileLinkRequests(worker: ReturnType<typeof fakeWorker>): unknown[] {
+  return worker.postMessage.mock.calls
+    .map(([message]) => message)
+    .filter((message) => message.type === "getFileLinks");
+}
+
 describe("useItemDetailWiring", () => {
   it("a bumped syncOutcomeSeq re-issues the steps request for the open item", () => {
     const worker = fakeWorker();
@@ -51,6 +57,23 @@ describe("useItemDetailWiring", () => {
     // A re-render on the same cycle asks for nothing further.
     rerender(<Harness worker={worker} syncOutcomeSeq={1} />);
     expect(stepRequests(worker)).toHaveLength(2);
+  });
+
+  it("opening an item requests its file links beside its steps, and a bumped syncOutcomeSeq re-issues both", () => {
+    // ADR-0036: a file-link create has no overlay, so the row only appears
+    // through this per-cycle re-read once a cycle pulls it back — the same
+    // key and the same reason as the steps request above.
+    const worker = fakeWorker();
+    const { rerender } = render(<Harness worker={worker} syncOutcomeSeq={0} />);
+    expect(fileLinkRequests(worker)).toEqual([{ type: "getFileLinks", itemId: "item-1" }]);
+    expect(stepRequests(worker)).toHaveLength(1);
+
+    rerender(<Harness worker={worker} syncOutcomeSeq={1} />);
+    expect(fileLinkRequests(worker)).toHaveLength(2);
+    expect(stepRequests(worker)).toHaveLength(2);
+
+    rerender(<Harness worker={worker} syncOutcomeSeq={1} />);
+    expect(fileLinkRequests(worker)).toHaveLength(2);
   });
 
   it("opening the item already open closes it — the card is the toggle", () => {
@@ -104,5 +127,12 @@ describe("useItemDetailWiring", () => {
     rerender(<Harness worker={worker} syncOutcomeSeq={1} openItemId={null} />);
     rerender(<Harness worker={worker} syncOutcomeSeq={2} openItemId={null} />);
     expect(stepRequests(worker)).toHaveLength(0);
+  });
+
+  it("no item open means no file-links request either", () => {
+    const worker = fakeWorker();
+    const { rerender } = render(<Harness worker={worker} syncOutcomeSeq={0} openItemId={null} />);
+    rerender(<Harness worker={worker} syncOutcomeSeq={1} openItemId={null} />);
+    expect(fileLinkRequests(worker)).toHaveLength(0);
   });
 });

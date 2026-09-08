@@ -8,6 +8,7 @@
 
 import type { GrillTakeoverWiring } from "../shell/useGrillTakeoverWiring";
 import type { Screen } from "../shell/screens";
+import type { FileLinksWiring } from "../shell/useFileLinksWiring";
 import type { MicrotaskWiring } from "../shell/useMicrotaskWiring";
 import type { CalendarReadDTO, TaskActionName } from "../store/protocol";
 import type { TaskState } from "../store/store";
@@ -49,6 +50,8 @@ export interface NowScreenProps {
   /** #273's microtask affordance for the open item, forwarded straight to
    * `ItemDetailPanel`. */
   microtask?: MicrotaskWiring;
+  /** ADR-0036's file-links wiring for the open item, forwarded the same way. */
+  fileLinks?: FileLinksWiring;
   /** S13/#111's triage mutation, for the captures now sitting in the frontier's
    * own columns — `shell/useTriageWiring.ts`'s `triage`, the SAME callback the
    * Triage screen gets. Now is a second view of one inbox, never a second entry
@@ -155,6 +158,7 @@ export function NowScreen({
   calendarConnected,
   onSetScheduledDate,
   microtask,
+  fileLinks,
   onTriage,
   onCreateProject,
   storage,
@@ -186,6 +190,7 @@ export function NowScreen({
           onCloseItemDetail={onCloseItemDetail}
           onAct={onAct}
           microtask={microtask}
+          fileLinks={fileLinks}
           onTriage={onTriage}
           onCreateProject={onCreateProject}
           storage={resolvedStorage}

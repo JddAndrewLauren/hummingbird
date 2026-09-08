@@ -69,10 +69,10 @@ use question_switch::{
     all_switch_keys, question_enabled_from_stored, question_switch_key, QuestionSwitch,
 };
 use hummingbird_domain::{
-    resulting_stage, Alert, AlertPatch, Condition, CreateFog, CreateGrill, CreateItem,
-    CreateProject, CreateProjectLink, CreateRule, CreateStep, Energy, Fog, FogPatch, GrillVerdict,
-    Item, Project, ProjectLink, ProjectLinkPatch, ProjectPatch, Route, RoutePatch, Rule,
-    RulePatch, Setting, Size, Stage, Step, StepPatch, Tier,
+    resulting_stage, Alert, AlertPatch, Condition, CreateFileLink, CreateFog, CreateGrill,
+    CreateItem, CreateProject, CreateProjectLink, CreateRule, CreateStep, Energy, FileLink,
+    FileLinkPatch, Fog, FogPatch, GrillVerdict, Item, Project, ProjectLink, ProjectLinkPatch,
+    ProjectPatch, Route, RoutePatch, Rule, RulePatch, Setting, Size, Stage, Step, StepPatch, Tier,
 };
 
 use serde::{Deserialize, Serialize};
@@ -1325,6 +1325,88 @@ where
                 method: HttpMethod::Patch,
                 base,
                 base_updated_at: current.updated_at,
+                patch_fields,
+                rebase_fields: None,
+            },
+            operation_id: None,
+        };
+        self.cycle.enqueue(entry, now_ms).await?;
+        Ok(())
+    }
+
+    /// Every live File link on one item, insertion order — the item panel's
+    /// read (ADR-0036). "Insertion order" is `version` ascending: the
+    /// authority mints a link's version at create and there is no
+    /// `position` column, so the create stamp is the only order there is.
+    /// Approximate after an un-remove, which re-stamps the row; a fixed
+    /// five-column table was judged worth more than an exact order nobody
+    /// can rearrange.
+    pub fn file_links_for(&self, item_id: &str) -> Vec<FileLink> {
+        let mut links: Vec<FileLink> =
+            self.cycle.mirror().file_links_for_item(item_id).cloned().collect();
+        links.sort_by_key(|link| link.version);
+        links
+    }
+
+    /// Creates a File link (ADR-0036): enqueues a `POST /api/file_links`
+    /// create, durably, exactly [`Core::create_project_link`]'s own shape.
+    /// `seed` mints the deterministic id. Returns the minted id.
+    ///
+    /// `path` is stored as given — the trim-and-refuse-blank and every
+    /// shape rule sit in front of this door, in the web's `dropbox/`
+    /// module; the core stores an operator-chosen string like the
+    /// authority does. No optimistic overlay, same reasoning as
+    /// [`Core::create_project`]'s own doc.
+    pub async fn create_file_link(
+        &mut self,
+        seed: &str,
+        item_id: &str,
+        path: impl Into<String>,
+        now_ms: i64,
+    ) -> Result<String, SnapshotError<QS::Error>> {
+        let id = sync::write::deterministic_id(seed);
+        let create =
+            CreateFileLink { id: id.clone(), item_id: item_id.to_string(), path: path.into() };
+        let body = serde_json::to_value(&create).expect("CreateFileLink always serializes");
+        let entry = QueueEntry {
+            id: id.clone(),
+            intent: MutationIntent::Create { path: sync::write::paths::file_links(), body },
+            operation_id: None,
+        };
+        self.cycle.enqueue(entry, now_ms).await?;
+        Ok(id)
+    }
+
+    /// Removes a File link (ADR-0036): flags `removed_at`, never deletes
+    /// (ADR-0020). The only patch a file link takes — re-pointing is
+    /// remove-then-add, by decision — so unlike
+    /// [`Core::patch_project_link`] this door has one field.
+    pub async fn remove_file_link(
+        &mut self,
+        seed: &str,
+        current: &FileLink,
+        removed_at: i64,
+        now_ms: i64,
+    ) -> Result<(), SnapshotError<QS::Error>> {
+        let base = serde_json::to_value(current).expect("FileLink always serializes");
+        let patch =
+            FileLinkPatch { expected_version: current.version, removed_at: Some(Some(removed_at)) };
+        let mut patch_fields =
+            serde_json::to_value(&patch).expect("FileLinkPatch always serializes");
+        if let serde_json::Value::Object(map) = &mut patch_fields {
+            map.remove("expected_version");
+        }
+
+        let entry = QueueEntry {
+            id: sync::write::deterministic_id(seed),
+            intent: MutationIntent::Patch {
+                path: sync::write::paths::file_link(&current.id),
+                method: HttpMethod::Patch,
+                base,
+                // `FileLink` carries no `updated_at` column — same as
+                // `ProjectLink`, the rebase compares against the row's own
+                // last-seen `version` alone.
+                base_updated_at: 0,
                 patch_fields,
                 rebase_fields: None,
             },
@@ -7335,6 +7417,89 @@ mod tests {
             Some("What permit does this need?")
         );
         assert_eq!(body.get("position").and_then(|v| v.as_i64()), Some(0));
+    }
+
+    /// ADR-0036: creating a File link enqueues one `POST /api/file_links`
+    /// create and overlays nothing — the `create_project_link` contract.
+    #[tokio::test]
+    async fn create_file_link_enqueues_one_post_create() {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+
+        let id = core.create_file_link("seed-1", "i-1", "Finance/2026/receipt.pdf", 2_000).await.unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        assert_eq!(entries.len(), 1);
+        let MutationIntent::Create { path, body } = &entries[0].intent else {
+            panic!("a file-link create is a POST create, not a patch");
+        };
+        assert_eq!(path, "/api/file_links");
+        assert_eq!(body.get("id").and_then(|v| v.as_str()), Some(id.as_str()));
+        assert_eq!(body.get("item_id").and_then(|v| v.as_str()), Some("i-1"));
+        assert_eq!(body.get("path").and_then(|v| v.as_str()), Some("Finance/2026/receipt.pdf"));
+        assert!(core.file_links_for("i-1").is_empty(), "no overlay: visible after the next pull");
+    }
+
+    /// ADR-0036: removing a File link is a CAS patch of `removed_at` alone
+    /// — never a delete, never a re-point.
+    #[tokio::test]
+    async fn remove_file_link_patches_removed_at_only() {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let current = FileLink {
+            id: "fl-1".into(),
+            item_id: "i-1".into(),
+            path: "Finance/2026/receipt.pdf".into(),
+            removed_at: None,
+            version: 4,
+        };
+
+        core.remove_file_link("seed-1", &current, 9_000, 3_000).await.unwrap();
+
+        let entries: Vec<&QueueEntry> = core.cycle.queue().entries().collect();
+        assert_eq!(entries.len(), 1);
+        let MutationIntent::Patch { path, method, base_updated_at, patch_fields, base, .. } =
+            &entries[0].intent
+        else {
+            panic!("a file-link removal is a CAS patch, not a create");
+        };
+        assert_eq!(path, "/api/file_links/fl-1");
+        assert_eq!(*method, HttpMethod::Patch);
+        assert_eq!(*base_updated_at, 0, "FileLink carries no updated_at column");
+        assert_eq!(patch_fields, &serde_json::json!({ "removed_at": 9_000 }));
+        assert_eq!(base.get("version").and_then(|v| v.as_i64()), Some(4));
+    }
+
+    /// ADR-0036: the read lists live links in insertion (`version`) order,
+    /// scoped to the item.
+    #[tokio::test]
+    async fn file_links_for_lists_live_links_in_version_order() {
+        let mut core = Core::new();
+        let link = |id: &str, item: &str, version: i64| FileLink {
+            id: id.into(),
+            item_id: item.into(),
+            path: format!("{id}.pdf"),
+            removed_at: None,
+            version,
+        };
+        let mut removed = link("fl-0", "i-1", 3);
+        removed.removed_at = Some(1);
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 9,
+            file_links: vec![link("fl-b", "i-1", 7), link("fl-a", "i-1", 5), link("fl-x", "i-2", 6), removed],
+            ..hummingbird_domain::ChangesResponse::empty(9)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let outcome = core
+            .run(&read, &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0)
+            .await;
+        assert!(matches!(outcome, CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })));
+        assert_eq!(
+            core.file_links_for("i-1").iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            vec!["fl-a", "fl-b"],
+        );
     }
 
     /// #628 acceptance: "the core gains fog ... patch (question, position,

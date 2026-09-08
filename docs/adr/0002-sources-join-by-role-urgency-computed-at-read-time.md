@@ -1,6 +1,10 @@
 # ADR-0002: Sources join by role; urgency is computed at read time
 
-**Status:** accepted · 2026-08-07 · **amended 2026-08-08 by
+**Status:** accepted · 2026-08-07 · **amended 2026-09-08 by
+[ADR-0036](0036-an-item-points-at-files-in-dropbox.md):** an item may
+point at files in Dropbox, on exactly the terms the #771 amendment below
+gives the vault — a one-way pointer out of the app, never a source; nothing
+is polled, parsed or mirrored, and no file becomes an item. · **amended 2026-08-08 by
 [ADR-0009](0009-the-owned-schema-and-context-lanes.md):** the task authority
 is now the owned server (ADR-0008), and context gains transport lanes —
 server-polled snapshots and pushed alerts. Both taxonomies and rules 1–6

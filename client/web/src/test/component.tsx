@@ -31,6 +31,7 @@ import type {
   PaneReadDTO,
   PaneSnapshotDTO,
   ProjectDTO,
+  FileLinkDTO,
   ProjectLinkDTO,
   RouteDTO,
   StepDTO,
@@ -193,6 +194,17 @@ export function projectLinkDTO(overrides: Partial<ProjectLinkDTO> = {}): Project
   };
 }
 
+export function fileLinkDTO(overrides: Partial<FileLinkDTO> = {}): FileLinkDTO {
+  return {
+    id: "file-link-1",
+    itemId: "item-1",
+    path: "Finance/2026/receipt.pdf",
+    removedAt: null,
+    version: 1,
+    ...overrides,
+  };
+}
+
 export function routeDTO(overrides: Partial<RouteDTO> = {}): RouteDTO {
   return {
     projectId: "project-1",
@@ -237,6 +249,8 @@ export function taskState(overrides: Partial<TaskState> = {}): TaskState {
     lastProjectWrite: null,
     linksByProject: {},
     lastProjectLinkWrite: null,
+    fileLinksByItem: {},
+    lastFileLinkWrite: null,
     routeByProject: {},
     lastRouteWrite: null,
     paneReads: {},

@@ -4,11 +4,13 @@ import {
   actOnTask,
   attachWorkerClient,
   captureTask,
+  createFileLink,
   pollRefresh,
   pollStart,
   pollTimer,
   clearTaskApiKey,
   discardGrillDraft,
+  removeFileLink,
   initTaskApiKey,
   pushTaskApiKey,
   pushTokenToWorker,
@@ -24,6 +26,7 @@ import {
   requestIsPending,
   requestClearDiagnostics,
   requestDiagnosticsExport,
+  requestFileLinks,
   requestMirrorSnapshot,
   requestProjects,
   requestQueueDepth,
@@ -72,6 +75,8 @@ const initialTask: TaskState = {
   lastProjectWrite: null,
   linksByProject: {},
   lastProjectLinkWrite: null,
+  fileLinksByItem: {},
+  lastFileLinkWrite: null,
   routeByProject: {},
   lastRouteWrite: null,
   paneReads: {},
@@ -842,6 +847,132 @@ describe("attachWorkerClient", () => {
     expect(store.getSnapshot().task.stepsByItem).toEqual({ "item-1": [step], "item-2": [] });
   });
 
+  it("writes the file links for the requested item on a fileLinks message, keyed by item id", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    const link = {
+      id: "file-link-1",
+      itemId: "item-1",
+      path: "Finance/2026/receipt.pdf",
+      removedAt: null,
+      version: 1,
+    };
+    worker.onmessage?.({
+      data: { type: "fileLinks", itemId: "item-1", links: [link] },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.fileLinksByItem).toEqual({ "item-1": [link] });
+
+    worker.onmessage?.({
+      data: { type: "fileLinks", itemId: "item-2", links: [] },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.fileLinksByItem).toEqual({ "item-1": [link], "item-2": [] });
+  });
+
+  it("records a createFileLinkResult keyed by seed and re-requests that item's file links on ok", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "createFileLinkResult",
+        seed: "seed-file-link-1",
+        itemId: "item-1",
+        kind: "ok",
+        id: "file-link-1",
+        error: null,
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastFileLinkWrite).toEqual({
+      seed: "seed-file-link-1",
+      itemId: "item-1",
+      kind: "ok",
+      error: null,
+    });
+    // ADR-0036: no overlay for file links — same reasoning as
+    // `createProjectResult` above. The re-request answers the old list
+    // until a cycle pulls the row back.
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getFileLinks", itemId: "item-1" });
+  });
+
+  it("records a failed createFileLinkResult without re-requesting anything", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "createFileLinkResult",
+        seed: "seed-file-link-1",
+        itemId: "item-1",
+        kind: "failed",
+        id: null,
+        error: "path must be non-empty",
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastFileLinkWrite).toEqual({
+      seed: "seed-file-link-1",
+      itemId: "item-1",
+      kind: "failed",
+      error: "path must be non-empty",
+    });
+    expect(worker.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("records a removeFileLinkResult keyed by seed and re-requests that item's file links on ok", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "removeFileLinkResult",
+        seed: "seed-remove-1",
+        itemId: "item-1",
+        kind: "ok",
+        error: null,
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastFileLinkWrite).toEqual({
+      seed: "seed-remove-1",
+      itemId: "item-1",
+      kind: "ok",
+      error: null,
+    });
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getFileLinks", itemId: "item-1" });
+  });
+
+  it("records a failed removeFileLinkResult without re-requesting anything", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "removeFileLinkResult",
+        seed: "seed-remove-1",
+        itemId: "item-1",
+        kind: "failed",
+        error: "already removed",
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastFileLinkWrite).toEqual({
+      seed: "seed-remove-1",
+      itemId: "item-1",
+      kind: "failed",
+      error: "already removed",
+    });
+    expect(worker.postMessage).not.toHaveBeenCalled();
+  });
+
   it("writes the projects on a projects message", () => {
     const worker = fakeWorker();
     const store = createCoreStore();
@@ -1541,6 +1672,43 @@ describe("the task send helpers (#105/S7)", () => {
     const worker = fakeWorker();
     requestSteps(worker, "item-1");
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "getSteps", itemId: "item-1" });
+  });
+
+  it("requestFileLinks posts a getFileLinks request carrying the item id", () => {
+    const worker = fakeWorker();
+    requestFileLinks(worker, "item-1");
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getFileLinks", itemId: "item-1" });
+  });
+
+  it("createFileLink posts a createFileLink request carrying seed, item id, path and clock", () => {
+    const worker = fakeWorker();
+    createFileLink(worker, "seed-file-link-1", "item-1", "Finance/2026/receipt.pdf", 5_000);
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "createFileLink",
+      seed: "seed-file-link-1",
+      itemId: "item-1",
+      path: "Finance/2026/receipt.pdf",
+      nowMs: 5_000,
+    });
+  });
+
+  it("removeFileLink posts a removeFileLink request carrying seed, the current row, removedAt and clock", () => {
+    const worker = fakeWorker();
+    const current = {
+      id: "file-link-1",
+      itemId: "item-1",
+      path: "Finance/2026/receipt.pdf",
+      removedAt: null,
+      version: 1,
+    };
+    removeFileLink(worker, "seed-remove-1", current, 7_000, 7_001);
+    expect(worker.postMessage).toHaveBeenCalledWith({
+      type: "removeFileLink",
+      seed: "seed-remove-1",
+      current,
+      removedAt: 7_000,
+      nowMs: 7_001,
+    });
   });
 
   it("saveGrillDraft posts a saveGrillDraft request carrying the item id, turns and clock", () => {

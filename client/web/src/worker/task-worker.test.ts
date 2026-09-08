@@ -49,6 +49,9 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     projectLinks: vi.fn().mockReturnValue('{"kind":"ok","links":[]}'),
     createProjectLink: vi.fn().mockResolvedValue('{"kind":"ok","id":"link-1","error":null}'),
     patchProjectLink: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
+    fileLinks: vi.fn().mockReturnValue('{"kind":"ok","links":[]}'),
+    createFileLink: vi.fn().mockResolvedValue('{"kind":"ok","id":"file-link-1","error":null}'),
+    removeFileLink: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     route: vi.fn().mockReturnValue('{"kind":"ok","route":null}'),
     patchRoute: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     isPending: vi.fn().mockReturnValue('{"kind":"ok","pending":false}'),
@@ -864,6 +867,170 @@ describe("handleTaskRequest", () => {
       steps: vi.fn().mockReturnValue('{"kind":"busy","steps":[]}'),
     });
     expect(await run({ type: "getSteps", itemId: "item-1" }, host)).toEqual([]);
+  });
+
+  // ADR-0036's file links: the same per-item read/write shape as steps and
+  // project links, with the row's `item_id`/`removed_at` crossing the seam
+  // in snake_case both ways.
+  it("getFileLinks maps every raw file link to its camelCase DTO, alongside the requested item id", async () => {
+    const rawLink = {
+      id: "file-link-1",
+      item_id: "item-1",
+      path: "Finance/2026/receipt.pdf",
+      removed_at: null,
+      version: 1,
+    };
+    const host = fakeHost({
+      fileLinks: vi.fn().mockReturnValue(JSON.stringify({ kind: "ok", links: [rawLink] })),
+    });
+    const posted = await run({ type: "getFileLinks", itemId: "item-1" }, host);
+
+    expect(posted).toEqual([
+      {
+        type: "fileLinks",
+        itemId: "item-1",
+        links: [
+          {
+            id: "file-link-1",
+            itemId: "item-1",
+            path: "Finance/2026/receipt.pdf",
+            removedAt: null,
+            version: 1,
+          },
+        ],
+      },
+    ]);
+    expect(host.fileLinks).toHaveBeenCalledWith("item-1");
+  });
+
+  it('getFileLinks posts nothing when the host answers "busy"', async () => {
+    const host = fakeHost({
+      fileLinks: vi.fn().mockReturnValue('{"kind":"busy","links":[]}'),
+    });
+    expect(await run({ type: "getFileLinks", itemId: "item-1" }, host)).toEqual([]);
+  });
+
+  it("createFileLink hands the host the seed, item, path and clock, and posts the result keyed by seed and item", async () => {
+    const host = fakeHost();
+    const posted = await run(
+      {
+        type: "createFileLink",
+        seed: "seed-file-link-1",
+        itemId: "item-1",
+        path: "Finance/2026/receipt.pdf",
+        nowMs: 5_000,
+      },
+      host,
+    );
+
+    expect(host.createFileLink).toHaveBeenCalledWith(
+      "seed-file-link-1",
+      "item-1",
+      "Finance/2026/receipt.pdf",
+      5_000,
+    );
+    expect(posted).toEqual([
+      {
+        type: "createFileLinkResult",
+        seed: "seed-file-link-1",
+        itemId: "item-1",
+        kind: "ok",
+        id: "file-link-1",
+        error: null,
+      },
+    ]);
+  });
+
+  it("createFileLink relays a failed host answer as-is", async () => {
+    const host = fakeHost({
+      createFileLink: vi
+        .fn()
+        .mockResolvedValue('{"kind":"failed","id":null,"error":"path must be non-empty"}'),
+    });
+    const posted = await run(
+      { type: "createFileLink", seed: "seed-1", itemId: "item-1", path: "", nowMs: 1 },
+      host,
+    );
+
+    expect(posted).toEqual([
+      {
+        type: "createFileLinkResult",
+        seed: "seed-1",
+        itemId: "item-1",
+        kind: "failed",
+        id: null,
+        error: "path must be non-empty",
+      },
+    ]);
+  });
+
+  it("removeFileLink re-serializes `current` to snake_case for the host and posts the result under current's item id", async () => {
+    const host = fakeHost();
+    const current = {
+      id: "file-link-1",
+      itemId: "item-1",
+      path: "Finance/2026/receipt.pdf",
+      removedAt: null,
+      version: 3,
+    };
+    const posted = await run(
+      { type: "removeFileLink", seed: "seed-remove-1", current, removedAt: 7_000, nowMs: 7_001 },
+      host,
+    );
+
+    // The DTO's camelCase never reaches the wasm seam: the host gets the
+    // row back in the shape it handed out, as JSON.
+    expect(host.removeFileLink).toHaveBeenCalledTimes(1);
+    const [seed, currentJson, removedAt, nowMs] = (
+      host.removeFileLink as ReturnType<typeof vi.fn>
+    ).mock.calls[0] as [string, string, number, number];
+    expect(seed).toBe("seed-remove-1");
+    expect(JSON.parse(currentJson)).toEqual({
+      id: "file-link-1",
+      item_id: "item-1",
+      path: "Finance/2026/receipt.pdf",
+      removed_at: null,
+      version: 3,
+    });
+    expect(removedAt).toBe(7_000);
+    expect(nowMs).toBe(7_001);
+
+    expect(posted).toEqual([
+      {
+        type: "removeFileLinkResult",
+        seed: "seed-remove-1",
+        itemId: "item-1",
+        kind: "ok",
+        error: null,
+      },
+    ]);
+  });
+
+  it("removeFileLink relays a failed host answer as-is", async () => {
+    const host = fakeHost({
+      removeFileLink: vi.fn().mockResolvedValue('{"kind":"failed","error":"already removed"}'),
+    });
+    const current = {
+      id: "file-link-1",
+      itemId: "item-2",
+      path: "Finance/2026/receipt.pdf",
+      removedAt: 6_000,
+      version: 1,
+    };
+    const posted = await run(
+      { type: "removeFileLink", seed: "seed-1", current, removedAt: 7_000, nowMs: 7_001 },
+      host,
+    );
+
+    expect(posted).toEqual([
+      {
+        type: "removeFileLinkResult",
+        seed: "seed-1",
+        itemId: "item-2",
+        kind: "failed",
+        error: "already removed",
+      },
+    ]);
   });
 
   // #624: both halves, mapped the same way and kept apart. An archived

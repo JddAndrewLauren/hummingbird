@@ -40,6 +40,8 @@ import { useGrillTakeoverWiring } from "./shell/useGrillTakeoverWiring";
 import { useItemActions } from "./shell/useItemActions";
 import { useTriageWiring } from "./shell/useTriageWiring";
 import { useBackendSelection } from "./shell/useBackendSelection";
+import { useDropboxLocalRoot } from "./shell/useDropboxLocalRoot";
+import { useFileLinksWiring } from "./shell/useFileLinksWiring";
 import { useBindingsWiring } from "./shell/useBindingsWiring";
 import { useItemDetailWiring } from "./shell/useItemDetailWiring";
 import { useMicrotaskWiring } from "./shell/useMicrotaskWiring";
@@ -160,6 +162,10 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   const isPhone = useIsPhone();
   // #274's picker choice: device-local, never synced (`useBackendSelection.ts`).
   const { selection: backendSelection, setSelection: setBackendSelection } = useBackendSelection();
+  // ADR-0036: this device's Dropbox folder — device-local, never synced, a
+  // paste convenience and not a binding (`useDropboxLocalRoot.ts`).
+  const { localRoot: dropboxLocalRoot, setLocalRoot: setDropboxLocalRoot } = useDropboxLocalRoot();
+  const fileLinksWiring = useFileLinksWiring(worker, dropboxLocalRoot);
   const {
     handleConnectClick,
     handleCalendarSelectionChange,
@@ -622,6 +628,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               calendarConnected={calendar.connected}
               onSetScheduledDate={handleSetScheduledDate}
               microtask={microtaskWiring}
+              fileLinks={fileLinksWiring}
               // The same three callbacks the Triage screen gets below: Now is a
               // second view of one inbox, never a second entry point into it.
               onTriage={handleTriage}
@@ -676,6 +683,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               onAct={handleAct}
               onTriage={handleTriage}
               microtask={microtaskWiring}
+              fileLinks={fileLinksWiring}
             />
           )}
           {screen === "alerts" && <AlertsScreen />}
@@ -720,6 +728,8 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               onThemePreference={setPreference}
               backendSelection={backendSelection}
               onBackendSelection={setBackendSelection}
+              dropboxLocalRoot={dropboxLocalRoot}
+              onDropboxLocalRoot={setDropboxLocalRoot}
               onConnect={() => void handleConnectClick()}
               onSelectionChange={handleCalendarSelectionChange}
               onRefresh={handleRefreshClick}

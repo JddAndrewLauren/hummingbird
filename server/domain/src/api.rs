@@ -10,6 +10,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::context::{Alert, ContextSnapshot, Setting};
+use crate::file_link::FileLink;
 use crate::grill::{GrillVerdict, GrillWithoutTranscript};
 use crate::item::{Energy, Item, Size, Stage};
 use crate::project::{Fog, Project, ProjectLink, Route};
@@ -274,6 +275,30 @@ pub struct ProjectLinkPatch {
     pub label: Option<Option<String>>,
     #[serde(default, deserialize_with = "non_null_position", skip_serializing_if = "Option::is_none")]
     pub position: Option<i64>,
+    #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
+    pub removed_at: Option<Option<i64>>,
+}
+
+/// `POST /api/file_links` body (ADR-0036). `path` is non-nullable — a link
+/// with no path points at nothing. No `label` and no `position`: the
+/// basename is the name, and rows list in insertion order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateFileLink {
+    pub id: String,
+    pub item_id: String,
+    pub path: String,
+}
+
+/// `PATCH /api/file_links/:id` body — **removal only**, the exact shape of
+/// [`BlockedByPatch`]. A file link is added and removed whole, never
+/// re-pointed (ADR-0036 decision 6), so `path` is deliberately absent: the
+/// one thing this patch can say is `removed_at` (set) or `null` (un-remove),
+/// under CAS.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileLinkPatch {
+    pub expected_version: i64,
     #[serde(default, deserialize_with = "touched", skip_serializing_if = "Option::is_none")]
     pub removed_at: Option<Option<i64>>,
 }
@@ -590,6 +615,12 @@ pub struct ChangesResponse {
     #[serde(default)]
     pub project_links: Vec<ProjectLink>,
     pub items: Vec<Item>,
+    /// `file_links` (ADR-0036). `#[serde(default)]` on the same #131
+    /// precedent: a response predating this slice carries no `file_links`
+    /// key at all and must still deserialize. Sits after `items` because
+    /// that is its parent.
+    #[serde(default)]
+    pub file_links: Vec<FileLink>,
     pub steps: Vec<Step>,
     pub blocked_by: Vec<BlockedBy>,
     pub alerts: Vec<Alert>,
@@ -619,6 +650,7 @@ impl ChangesResponse {
             fog: vec![],
             project_links: vec![],
             items: vec![],
+            file_links: vec![],
             steps: vec![],
             blocked_by: vec![],
             alerts: vec![],
@@ -726,6 +758,25 @@ mod tests {
         assert_eq!(p.notes, None);
     }
 
+    /// ADR-0036: the file-link patch is removal-only — `removed_at` carries
+    /// the `touched` contract, and a `path` key is refused outright.
+    #[test]
+    fn file_link_patch_is_removal_only() {
+        let p: FileLinkPatch =
+            serde_json::from_str(r#"{"expected_version": 1, "removed_at": 7000}"#).unwrap();
+        assert_eq!(p.removed_at, Some(Some(7000)));
+        let p: FileLinkPatch =
+            serde_json::from_str(r#"{"expected_version": 1, "removed_at": null}"#).unwrap();
+        assert_eq!(p.removed_at, Some(None), "explicit null = un-remove");
+        let p: FileLinkPatch = serde_json::from_str(r#"{"expected_version": 1}"#).unwrap();
+        assert_eq!(p.removed_at, None, "absent = untouched");
+        assert!(
+            serde_json::from_str::<FileLinkPatch>(r#"{"expected_version": 1, "path": "x"}"#)
+                .is_err(),
+            "a file link is never re-pointed"
+        );
+    }
+
     /// #626: `url` is `NOT NULL` and rejects an explicit `null`, `label` and
     /// `removed_at` are double-`Option` — the same contract [`FogPatch`]
     /// carries for `question`/`resolved_at`.
@@ -803,6 +854,7 @@ mod tests {
             "fog",
             "project_links",
             "items",
+            "file_links",
             "steps",
             "blocked_by",
             "alerts",
@@ -863,6 +915,39 @@ mod tests {
         let json = serde_json::to_string(&response).unwrap();
         let back: ChangesResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(back.project_links, vec![link]);
+    }
+
+    /// The acceptance criterion for `file_links` (ADR-0036): a response
+    /// minted before this slice carries no `file_links` key and still
+    /// deserializes.
+    #[test]
+    fn changes_response_without_a_file_links_key_still_deserializes() {
+        let pre_slice = r#"{
+            "version": 1, "projects": [], "routes": [], "fog": [], "project_links": [],
+            "items": [], "steps": [], "blocked_by": [], "alerts": [], "context_snapshots": [],
+            "settings": [], "rules": [], "grills": []
+        }"#;
+        let parsed: ChangesResponse = serde_json::from_str(pre_slice).unwrap();
+        assert!(parsed.file_links.is_empty());
+    }
+
+    /// `file_links` rides the delta pull like any other entity.
+    #[test]
+    fn changes_response_carries_file_links() {
+        let link = FileLink {
+            id: "fl-1".into(),
+            item_id: "i-1".into(),
+            path: "Finance/2026/receipt.pdf".into(),
+            removed_at: None,
+            version: 1,
+        };
+        let response = ChangesResponse {
+            file_links: vec![link.clone()],
+            ..ChangesResponse::empty(1)
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        let back: ChangesResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.file_links, vec![link]);
     }
 
     /// The acceptance criterion for the anti-goal: `grills` participates in

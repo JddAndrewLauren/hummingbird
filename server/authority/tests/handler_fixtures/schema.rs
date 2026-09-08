@@ -58,6 +58,7 @@ fn init_schema_creates_every_adr_0009_table() {
         "push_targets",
         "deliveries",
         "grills",
+        "file_links",
     ] {
         assert!(names.iter().any(|n| n == table), "missing table `{table}` in {names:?}");
     }
@@ -91,6 +92,17 @@ fn init_schema_creates_the_project_links_indexes() {
         !names.iter().any(|n| n == "idx_project_links_version"),
         "idx_project_links_version should be gone (#757)",
     );
+}
+
+/// Pins `file_links`' indexes (ADR-0036) by name, for the reason the
+/// project-links pin above gives.
+#[test]
+fn init_schema_creates_the_file_links_indexes() {
+    let sql = RusqliteSql::new();
+    let names = index_names(&sql);
+    for index in ["idx_file_links_version_id", "idx_file_links_item"] {
+        assert!(names.iter().any(|n| n == index), "missing index `{index}` in {names:?}");
+    }
 }
 
 /// The 1→2 growth path: a schema-1 database (S0's meta + items) is grown
@@ -818,7 +830,13 @@ fn v6_store_with_rows() -> RusqliteSql {
 /// No stash table and no scratch table anywhere — the state a store must be
 /// left in whether the rebuild ran, recovered, or declined.
 fn assert_no_rebuild_residue(sql: &dyn Sql) {
-    for name in ["items_size_rebuild", "steps_fk_stash", "blocked_by_fk_stash", "grills_fk_stash"] {
+    for name in [
+        "items_size_rebuild",
+        "steps_fk_stash",
+        "blocked_by_fk_stash",
+        "grills_fk_stash",
+        "file_links_fk_stash",
+    ] {
         assert!(
             sql.exec("SELECT name FROM sqlite_master WHERE name = ?", &[SqlValue::Text(name.to_string())])
                 .unwrap()
@@ -894,7 +912,7 @@ fn the_size_rebuild_resumes_after_dying_after_the_parent() {
     // Wind the store back to the moment between the parent's reinsert and
     // the children's: rows in the scratch table, `items` empty, children
     // stashed and emptied. `items` already carries the new DDL.
-    for child in ["steps", "blocked_by", "grills"] {
+    for child in ["steps", "blocked_by", "grills", "file_links"] {
         migrated
             .exec(&format!("CREATE TABLE {child}_fk_stash AS SELECT * FROM {child}"), &[])
             .unwrap();
@@ -1601,6 +1619,78 @@ fn the_items_link_migration_is_idempotent() {
             "exactly one {column} column",
         );
     }
+}
+
+/// A genuine v14 store: [`v13_store`] with 13→14's own `ALTER`s applied,
+/// exactly how a real v14 store came to be. `file_links` is not yet
+/// created, which is what the 14→15 growth below has to find.
+fn v14_store() -> RusqliteSql {
+    let sql = v13_store();
+    for ddl in [
+        "ALTER TABLE items ADD COLUMN link_url TEXT",
+        "ALTER TABLE items ADD COLUMN link_label TEXT",
+    ] {
+        sql.exec(ddl, &[]).expect("13→14's own ALTER applies");
+    }
+    sql.exec("UPDATE meta SET schema_version = 14 WHERE id = 1", &[])
+        .expect("v14 meta row seeds");
+    sql
+}
+
+/// The 14→15 growth path (ADR-0036): `file_links`, back to the 8→9 shape —
+/// a purely additive new table, not an [`add_missing_columns`] arm.
+/// `CREATE TABLE IF NOT EXISTS` grows a v14 store for free; the byte-
+/// identity assertion is what catches a `CREATE_FILE_LINKS` whose text
+/// drifts from what a fresh store holds.
+#[test]
+fn init_schema_grows_a_schema_14_database_additively() {
+    let migrated = v14_store();
+    assert_eq!(schema_version(&migrated), 14, "starts genuinely at v14");
+    assert!(
+        !table_names(&migrated).contains(&"file_links".to_string()),
+        "the v14 fixture must not already carry file_links"
+    );
+    migrated
+        .exec(
+            "INSERT INTO items (id, title, stage, created_at, updated_at, version) \
+             VALUES ('i', 'Empty the compost', 'ready', 1000, 1000, 1)",
+            &[],
+        )
+        .unwrap();
+
+    init_schema(&migrated, 0).expect("growth init succeeds");
+
+    assert_eq!(schema_version(&migrated), SCHEMA_VERSION, "schema_version moved forward");
+    assert!(
+        table_names(&migrated).contains(&"file_links".to_string()),
+        "migrated store missing `file_links`",
+    );
+    let rows = migrated.exec("SELECT id FROM items", &[]).unwrap();
+    assert_eq!(rows.len(), 1, "the pre-growth row survives");
+    assert!(
+        migrated.exec("SELECT id FROM file_links", &[]).unwrap().is_empty(),
+        "an item minted before ADR-0036 points at no files",
+    );
+
+    let fresh = RusqliteSql::new();
+    assert_eq!(
+        table_names(&migrated),
+        table_names(&fresh),
+        "a migrated v14 store and a fresh store end up with identical table sets",
+    );
+    assert_eq!(
+        schema_ddl(&migrated),
+        schema_ddl(&fresh),
+        "a migrated v14 store and a fresh store end up with byte-identical DDL",
+    );
+}
+
+#[test]
+fn the_file_links_growth_is_idempotent() {
+    let migrated = v14_store();
+    init_schema(&migrated, 0).expect("first growth succeeds");
+    init_schema(&migrated, 0).expect("second init is a no-op");
+    assert_eq!(schema_version(&migrated), SCHEMA_VERSION);
 }
 
 fn index_names(sql: &dyn Sql) -> Vec<String> {
