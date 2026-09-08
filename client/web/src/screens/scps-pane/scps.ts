@@ -144,8 +144,10 @@ export function scpsCollapsedHeadline(next: ScpsEvent | null, quest: ScpsQuestFa
 }
 
 /** The quest line the expanded pane draws: the current month's phrase, the
- * last-posted one named against its own month, or the plain "unset" line —
- * never a phrase this pane cannot attribute to a month. */
+ * last-posted one named against its own month, the malformed-value line
+ * (#702) — distinct from, and never collapsed into, the plain "unset" line
+ * — or "unset" itself. Never a phrase this pane cannot attribute to a
+ * month. */
 export function scpsQuestLine(quest: ScpsQuestFact, nowMs: number): string {
   if (quest.kind === "current") {
     return `Photo Quest — ${quest.phrase}`;
@@ -154,6 +156,9 @@ export function scpsQuestLine(quest: ScpsQuestFact, nowMs: number): string {
     const today = deviceCivilToday(nowMs);
     const currentMonth = today !== null ? monthName(today) : "this month";
     return `No quest posted for ${currentMonth}; last: ${quest.phrase} (${monthName(quest.month)})`;
+  }
+  if (quest.kind === "malformed") {
+    return `Quest not understood: "${quest.text}" — expected "YYYY-MM phrase"`;
   }
   return "No quest set";
 }

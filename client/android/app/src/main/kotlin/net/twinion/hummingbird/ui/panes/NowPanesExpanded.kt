@@ -307,7 +307,8 @@ internal fun scpsCardTitle(event: MobileScpsEvent): String {
 }
 
 /** `scpsQuestLine` in `scps.ts`, ported — the current month's phrase, the
- * last-posted one named against its own month, or the plain "unset" line. */
+ * last-posted one named against its own month, the malformed-value line
+ * (#702), or the plain "unset" line. */
 internal fun scpsQuestLine(quest: MobileScpsQuestFact, nowMs: Long, zone: ZoneId = ZoneId.systemDefault()): String =
     when (quest) {
         is MobileScpsQuestFact.Current -> "Photo Quest — ${quest.phrase}"
@@ -316,6 +317,7 @@ internal fun scpsQuestLine(quest: MobileScpsQuestFact, nowMs: Long, zone: ZoneId
             val currentMonth = scpsMonthName(String.format(Locale.US, "%04d-%02d", today.year, today.monthValue))
             "No quest posted for $currentMonth; last: ${quest.phrase} (${scpsMonthName(quest.month)})"
         }
+        is MobileScpsQuestFact.Malformed -> "Quest not understood: \"${quest.text}\" — expected \"YYYY-MM phrase\""
         MobileScpsQuestFact.None -> "No quest set"
     }
 

@@ -2804,6 +2804,9 @@ fn map_scps_event(event: scps::ScpsEvent) -> MobileScpsEvent {
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum MobileScpsQuestFact {
     None,
+    /// A `Text` binding is present but did not parse (#702) — carries the
+    /// offending text back so the Android renderer can show it.
+    Malformed { text: String },
     Current { phrase: String },
     Other { month: String, phrase: String },
 }
@@ -2811,6 +2814,7 @@ pub enum MobileScpsQuestFact {
 fn map_scps_quest_fact(quest: scps::ScpsQuestFact) -> MobileScpsQuestFact {
     match quest {
         scps::ScpsQuestFact::None => MobileScpsQuestFact::None,
+        scps::ScpsQuestFact::Malformed { text } => MobileScpsQuestFact::Malformed { text },
         scps::ScpsQuestFact::Current { phrase } => MobileScpsQuestFact::Current { phrase },
         scps::ScpsQuestFact::Other { month, phrase } => MobileScpsQuestFact::Other { month, phrase },
     }
