@@ -10,6 +10,7 @@ import {
   isCapturableUrl,
   isValidId,
   reusablePending,
+  rowMatches,
   todayDeadline,
   tokenProblem,
   urlHost,
@@ -122,8 +123,9 @@ const JSON_TYPE = "application/json";
 const ROW = (id) => JSON.stringify({ id, title: "T", stage: "triage" });
 
 test("a 201 or 200 that echoes the id is saved", () => {
-  assert.deepEqual(classify({ status: 201, contentType: JSON_TYPE, bodyText: ROW("x"), id: "x" }), { kind: "saved", replay: false, message: "Saved" });
-  assert.deepEqual(classify({ status: 200, contentType: "application/json; charset=utf-8", bodyText: ROW("x"), id: "x" }), { kind: "saved", replay: true, message: "Already saved" });
+  const row = JSON.parse(ROW("x"));
+  assert.deepEqual(classify({ status: 201, contentType: JSON_TYPE, bodyText: ROW("x"), id: "x" }), { kind: "saved", replay: false, row, message: "Saved" });
+  assert.deepEqual(classify({ status: 200, contentType: "application/json; charset=utf-8", bodyText: ROW("x"), id: "x" }), { kind: "saved", replay: true, row, message: "Already saved" });
 });
 
 test("a 200 from the static shell is misrouted, not saved", () => {
@@ -152,4 +154,42 @@ test("anything else is an error that keeps the form", () => {
   const outcome = classify({ status: 503, contentType: "text/html", bodyText: "", id: "x" });
   assert.equal(outcome.kind, "error");
   assert.match(outcome.message, /503/);
+});
+
+test("the host refuses a broken IPv6 literal and keeps a non-numeric port", () => {
+  assert.equal(urlHost("http://[::1/x"), null, "unclosed bracket");
+  assert.equal(urlHost("http://[::1]x/"), null, "junk after the bracket");
+  assert.equal(urlHost("http://example.test:abc/"), "example.test:abc", "a non-numeric port is not a port");
+  assert.equal(urlHost("http://example.test:/"), "example.test", "an empty port is dropped, as in Rust");
+  assert.equal(urlHost("https://www."), null, "www. alone is no host");
+  assert.equal(urlHost("https://user@host.test"), "host.test");
+  assert.equal(urlHost("https://WWW.Example.test"), "www.example.test", "www. is stripped before lowercasing, the Rust's own quirk");
+  assert.equal(urlHost("https://Ñandú.test/"), "Ñandú.test", "ASCII-only lowercasing, as to_ascii_lowercase");
+});
+
+test("classify's remaining edges", () => {
+  assert.equal(classify({ status: 403, contentType: JSON_TYPE, bodyText: "{}", id: "x" }).kind, "scope");
+  assert.equal(classify({ status: 400, contentType: JSON_TYPE, bodyText: "{not json", id: "x" }).message, "The authority refused the item.");
+  assert.equal(classify({ status: 400, contentType: JSON_TYPE, bodyText: JSON.stringify({ error: "e" }), id: "x" }).message, "The authority refused the item.");
+  assert.equal(classify({ status: 201, contentType: JSON_TYPE, bodyText: "null", id: "x" }).kind, "misrouted");
+  assert.equal(classify({ status: 200, contentType: JSON_TYPE, bodyText: ROW("x"), id: "x" }).row.id, "x", "the replayed row rides along");
+});
+
+test("a replayed row is this capture only when every sent field agrees", () => {
+  const body = { id: "x", title: "T", link_url: "https://a.test/x" };
+  assert.equal(rowMatches({ id: "x", title: "T", link_url: "https://a.test/x", description: null, stage: "triage" }, body), true);
+  assert.equal(rowMatches({ id: "x", title: "Other", link_url: "https://a.test/x", stage: "triage" }, body), false, "another title");
+  assert.equal(rowMatches({ id: "x", title: "T", link_url: "https://a.test/x", stage: "ready" }, body), false, "another stage");
+  assert.equal(rowMatches({ id: "x", title: "T", link_url: "https://a.test/x", description: "notes", stage: "triage" }, body), false, "a description this send did not carry");
+  const mint = { ...body, stage: "ready", description: "notes" };
+  assert.equal(rowMatches({ id: "x", title: "T", link_url: "https://a.test/x", description: "notes", stage: "ready" }, mint), true);
+  assert.equal(rowMatches(null, body), false);
+});
+
+test("the remaining body and pending edges", () => {
+  const body = buildBody({ id: "abc", title: "T", url: "https://a.test/x", destination: "ready", deadline: "" });
+  assert.deepEqual(Object.keys(body).sort(), ["id", "link_url", "stage", "title"], "an empty deadline is not sent");
+  assert.equal(buildBody({ id: "abc", title: "T", url: "https://a.test/x", description: 42 }).description, undefined);
+  assert.equal(reusablePending({ id: "p", url: "https://a.test/x" }, "https://a.test/x", 2000), null, "no mintedAt");
+  assert.match(tokenProblem(undefined), /Paste the token/);
 });

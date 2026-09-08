@@ -79,8 +79,12 @@ the same change); it names, and does not resolve, a tension with
    popup mints `crypto.randomUUID()` on open and writes `{id, url,
    mintedAt}` to `storage.local` *before* fetching; a reopen on the same
    URL within ten minutes reuses that id, and `POST /api/items`'s
-   idempotency by client id (ADR-0008) turns a doubled save into a 200. A
-   2xx clears it.
+   idempotency by client id (ADR-0008) turns a doubled save into a 200.
+   That 200 carries the stored row, not the new payload, so the popup
+   compares: the same capture is reported as already saved; a different
+   one means the earlier save landed and this is a new item, re-posted
+   once under a fresh id. Only a classified save clears the pending id —
+   a misrouted 200 keeps it.
 
 6. **Responses are classified content-type first, status second.**
    sweep.py's model, for sweep.py's reasons: the authority shares an

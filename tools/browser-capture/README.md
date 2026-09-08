@@ -92,11 +92,15 @@ section is the standing text on what a device token can reach.
 | Blocked at the edge (Cloudflare) | 403 as an HTML page — the edge, not the authority. |
 | The authority answered with a page, not the API. | A 200 that was the static shell, or a row with the wrong id. Nothing was saved. |
 | Could not reach hb.twinion.net. | Network. Save again — the same id is replayed. |
+| This extension is not allowed to reach hb.twinion.net. | The host permission was not granted (Firefox lets a user revoke it). Nothing was sent. |
 
 **Saves survive the popup closing.** The id is written to `storage.local`
 before the fetch; reopening on the same page within ten minutes reuses it,
 and the route's idempotency by client id answers 200 instead of minting a
-second item.
+second item. That 200 carries the *stored* row, so the popup checks it
+against what it just sent: the same capture is "Already saved"; a
+different title, description or destination means the earlier save landed
+and this is a new item, which goes out again under a fresh id.
 
 ## Testing
 

@@ -37,3 +37,8 @@ test("every file the manifest names exists", () => {
 test("the Firefox id is set, so a later signed build needs no manifest change", () => {
   assert.equal(typeof manifest.browser_specific_settings.gecko.id, "string");
 });
+
+test("the keyboard command and the options page are pinned", () => {
+  assert.equal(manifest.commands._execute_action.suggested_key.default, "Alt+Shift+H");
+  assert.equal(manifest.options_ui.page, "options.html");
+});

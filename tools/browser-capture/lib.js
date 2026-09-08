@@ -84,7 +84,9 @@ export function urlHost(url) {
     host = colon !== -1 && /^[0-9]*$/.test(hostPort.slice(colon + 1)) ? hostPort.slice(0, colon) : hostPort;
   }
   if (host.startsWith("www.")) host = host.slice(4);
-  return host === "" ? null : host.toLowerCase();
+  // ASCII-only, as the Rust's `to_ascii_lowercase` is: a non-ASCII host
+  // (unreachable through `tab.url`, which is punycode) is left alone.
+  return host === "" ? null : host.replace(/[A-Z]+/g, (run) => run.toLowerCase());
 }
 
 /// Whether a tab's URL is one an item may carry as its Link: an `http(s)://`
@@ -158,6 +160,22 @@ export function isValidId(id) {
   return typeof id === "string" && id !== "." && id !== ".." && /^[A-Za-z0-9\-._~]+$/.test(id);
 }
 
+/// Whether the row a 200 replay returned is the capture that was just
+/// sent. A replayed id answers with the *stored* row, whatever the new
+/// payload said, so "Already saved" is only true when the two agree; a
+/// different title, description or stage means an earlier popup's save
+/// landed and this one is a new capture that needs a fresh id.
+export function rowMatches(row, body) {
+  if (!row || typeof row !== "object") return false;
+  const stored = (v) => (typeof v === "string" ? v : "");
+  return (
+    stored(row.title) === body.title &&
+    stored(row.description) === (body.description ?? "") &&
+    stored(row.link_url) === body.link_url &&
+    stored(row.stage) === (body.stage ?? "triage")
+  );
+}
+
 /// Reuse a persisted pending id for the same URL inside the TTL, else
 /// `null`. A clock that went backwards is treated as expired.
 export function reusablePending(pending, url, nowMs) {
@@ -195,9 +213,10 @@ export function classify({ status, contentType, bodyText, id }) {
       return MISROUTED;
     }
     if (row?.id !== id) return MISROUTED;
-    // 200 is the idempotent replay of an id this popup already sent; the
-    // popup names the destination itself on a fresh 201.
-    return { kind: "saved", replay: status === 200, message: status === 201 ? "Saved" : "Already saved" };
+    // 200 is the idempotent replay of an id some popup already sent — the
+    // row is the stored one, and the popup checks it against what it sent
+    // (`rowMatches`). It names the destination itself on a fresh 201.
+    return { kind: "saved", replay: status === 200, row, message: status === 201 ? "Saved" : "Already saved" };
   }
   if (status === 401) {
     return { kind: "token", message: "The token was rejected. Paste a fresh one in the extension's options." };
