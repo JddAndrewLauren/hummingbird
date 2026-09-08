@@ -9,8 +9,11 @@
 # clock** — `gmail-poll.yml`'s header carries the full argument (measured
 # in #773), and `graph-mail-poll.yml`'s header carries the credential
 # consequence for this app registration specifically (`GRAPH_*` moved to
-# Fly `[env]`/secrets alongside it). `workflow_dispatch` stays, for a
-# manual run against a fresh checkout.
+# Fly `[env]`/secrets alongside it). `workflow_dispatch` stays, but the
+# Actions secrets this file reads were deleted 2026-09-08, so a dispatch
+# now fails on an empty `secrets.*` — a manual one-off run is `flyctl ssh
+# console` on `hummingbird-sweeper`, per `docs/sweeper.md`'s "Secrets"
+# section.
 #
 # **The Graph posture question is settled**, the same way and by the same
 # credential as `graph-mail-poll`: an Exchange Application Access Policy scopes

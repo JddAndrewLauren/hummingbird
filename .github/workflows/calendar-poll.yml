@@ -9,7 +9,10 @@
 # in #773) and this lane follows it verbatim: same always-on container,
 # same shared `GOOGLE_*` credential, a staggered `crontab` entry replacing
 # the `*/15` this workflow's `schedule:` never actually delivered.
-# `workflow_dispatch` stays, for a manual run against a fresh checkout.
+# `workflow_dispatch` stays, but the Actions secrets this file reads were
+# deleted 2026-09-08, so a dispatch now fails on an empty `secrets.*` — a
+# manual one-off run is `flyctl ssh console` on `hummingbird-sweeper`, per
+# `docs/sweeper.md`'s "Secrets" section.
 # Note this lane's frozen source string is `google-calendar/v1`, not
 # `calendar/v1`, which is what its ingest token must be bound to.
 name: calendar-poll
@@ -70,8 +73,9 @@ jobs:
           # Gmail one it inherits from sharing; `gmail-poll.yml`'s env block
           # carries the full argument for accepting that breadth.
           #
-          # Rotating it is a THREE-place operation: 1Password, the Fly secret
-          # on `hummingbird-sweeper`, and this Actions secret.
+          # Rotating it was a THREE-place operation (1Password, the Fly secret
+          # on `hummingbird-sweeper`, and this Actions secret) until the
+          # Actions copy was deleted 2026-09-08; it is two places now.
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
