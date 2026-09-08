@@ -1106,8 +1106,9 @@ mod tests {
 
     /// Every variant's effective wire name, in declaration order (#768).
     /// Finds each variant by its own declaration line — exactly one level
-    /// of indentation inside the enum body, ending the line in `{` (a
-    /// struct variant) or `,` (a unit variant) — rather than by scanning
+    /// of indentation inside the enum body, starting with an
+    /// uppercase-led identifier that is itself immediately followed (after
+    /// optional whitespace) by `{`, `(`, or `,` — rather than by scanning
     /// for `#[serde(rename = "...")]` tags: a variant this enum's own
     /// `#[serde(tag = "name", content = "payload")]` gives no
     /// `rename_all`, so a variant with no rename attribute of its own still
@@ -1118,10 +1119,33 @@ mod tests {
     /// without a fixture entry passed that gate by never being enumerated,
     /// not by being checked. This function's doc used to claim the rename
     /// invariant was "checked elsewhere"; nothing did, which is the other
-    /// half of what #768 closes. When a variant's declaration line is
-    /// immediately preceded by a `#[serde(rename = "...")]`, that string is
-    /// its wire name (serde's tag beats the bare identifier); otherwise the
-    /// identifier itself is, matching what `serde_json` actually emits.
+    /// half of what #768 closes.
+    ///
+    /// **The identifier is taken off the front of the line, not the whole
+    /// line's shape**, specifically so a struct variant declared on one
+    /// line (`SyncStarted { force_full_sweep: bool },`, the form rustfmt
+    /// produces whenever a struct variant's fields fit) is found exactly
+    /// like a multi-line one (`HttpStarted {` opening a block) or a unit
+    /// variant (`PushReceived,`) — an earlier version of this function
+    /// matched on how the *line* ended (`{` or `,`) rather than on the
+    /// identifier itself, which made the single-line struct-variant shape
+    /// invisible (its line ends in `}` `,`, matching neither) and silently
+    /// dropped 9 of this enum's 23 variants from discovery. See
+    /// [`declared_variant_names_finds_every_variant`] for the regression
+    /// test that shape needs, since [`every_declared_variant_has_a_fixture_entry`]
+    /// alone cannot catch a shrunk `declared` set.
+    ///
+    /// To find a variant's rename, this looks upward from its declaration
+    /// line past any doc-comment (`///`) or attribute (`#[...]`) lines —
+    /// not only the one line directly above — so a variant carrying a doc
+    /// comment or a second attribute between its `#[serde(rename = "...")]`
+    /// and its declaration line still resolves to the renamed wire name
+    /// rather than silently falling back to its bare identifier. The first
+    /// non-doc, non-attribute line it meets ends the search: a
+    /// `#[serde(rename = "...")]` there is the wire name (serde's tag beats
+    /// the bare identifier); anything else means no rename applies, and the
+    /// identifier itself is the wire name, matching what `serde_json`
+    /// actually emits with no `rename_all` in play.
     ///
     /// Split into a pure [`parse_variant_names`] plus this thin wrapper so
     /// the parsing rule is unit-testable against a synthetic declaration —
@@ -1148,20 +1172,46 @@ mod tests {
                 continue;
             }
             let trimmed = line.trim();
-            let identifier = match trimmed.strip_suffix('{').or_else(|| trimmed.strip_suffix(',')) {
-                Some(rest) => rest.trim(),
-                None => continue,
-            };
+            // Take the identifier as the leading run of ASCII alphanumerics
+            // — this is what distinguishes a variant's own declaration line
+            // from any other line at this indentation (a `#[...]`
+            // attribute or a `///` doc comment, neither of which starts
+            // with a letter) — then require it to be immediately followed,
+            // after optional whitespace, by the start of a struct (`{`),
+            // tuple (`(`), or unit (`,`) variant. Checking the *start* of
+            // the line rather than its end is what makes a single-line
+            // struct variant (`SyncStarted { force_full_sweep: bool },`,
+            // ending in `}` `,`, not `{`) visible.
+            let identifier_len = trimmed
+                .find(|c: char| !c.is_ascii_alphanumeric())
+                .unwrap_or(trimmed.len());
+            let identifier = &trimmed[..identifier_len];
             let is_variant_identifier = !identifier.is_empty()
                 && identifier.starts_with(|c: char| c.is_ascii_uppercase())
-                && identifier.chars().all(|c| c.is_ascii_alphanumeric());
+                && trimmed[identifier_len..]
+                    .trim_start()
+                    .starts_with(['{', '(', ',']);
             if !is_variant_identifier {
                 continue;
             }
-            let rename = index
-                .checked_sub(1)
-                .and_then(|previous| lines[previous].trim().strip_prefix("#[serde(rename = \""))
-                .and_then(|rest| rest.find('"').map(|end| &rest[..end]));
+            // Look upward past any doc-comment or attribute lines for a
+            // rename — not only the one line directly above — so an
+            // intervening doc line or second attribute cannot mis-name the
+            // variant (see this function's own doc).
+            let mut rename = None;
+            let mut look = index;
+            while look > 0 {
+                look -= 1;
+                let previous = lines[look].trim();
+                if let Some(rest) = previous.strip_prefix("#[serde(rename = \"") {
+                    rename = rest.find('"').map(|end| &rest[..end]);
+                    break;
+                }
+                if previous.starts_with("#[") || previous.starts_with("///") || previous.is_empty() {
+                    continue;
+                }
+                break;
+            }
             names.push(rename.unwrap_or(identifier));
         }
         names
@@ -1187,6 +1237,47 @@ mod tests {
             parse_variant_names(synthetic),
             vec!["session.started", "NewFamily"]
         );
+    }
+
+    /// **The single-line struct variant #768 review round 1 caught.** A
+    /// struct variant whose fields all fit on its declaration line —
+    /// rustfmt's own default, and how 9 of the real enum's 23 variants are
+    /// actually written (`SyncStarted { force_full_sweep: bool },`) — ends
+    /// its line in `}` `,`, not `{`. An earlier version of this parser
+    /// matched on how the line *ended*, so this exact shape was invisible;
+    /// it passed a full `cargo test --workspace` while silently dropping 9
+    /// variants from `declared_variant_names()`, only caught by mutating
+    /// the fixture list directly (see the PR review this fixes). Exercised
+    /// here both with and without a rename, alongside the multi-line and
+    /// unit forms, so a future regression to line-ending matching fails
+    /// this test rather than only a mutation someone remembers to run.
+    #[test]
+    fn a_single_line_struct_variant_is_still_discovered() {
+        let synthetic = "pub enum DiagnosticEvent {\n    \
+             #[serde(rename = \"sync.started\")]\n    SyncStarted { force_full_sweep: bool },\n    \
+             InlineNoRename { count: u32 },\n\n    \
+             #[serde(rename = \"http.started\")]\n    HttpStarted {\n        \
+             method: String,\n    },\n\n    \
+             PushReceived,\n}";
+        assert_eq!(
+            parse_variant_names(synthetic),
+            vec!["sync.started", "InlineNoRename", "http.started", "PushReceived"]
+        );
+    }
+
+    /// **The rename lookback survives an intervening line.** A doc comment
+    /// or a second attribute sitting between a variant's
+    /// `#[serde(rename = "...")]` and its declaration line must not mask
+    /// the rename — a lookback of exactly one line would silently fall
+    /// back to the bare identifier here, reporting a variant under the
+    /// wrong wire name (PR review round 1, point 4).
+    #[test]
+    fn a_rename_survives_an_intervening_doc_comment_or_attribute() {
+        let synthetic = "pub enum DiagnosticEvent {\n    \
+             #[serde(rename = \"sync.started\")]\n    \
+             /// An unrelated doc line sitting between the rename and the variant.\n    \
+             #[allow(dead_code)]\n    SyncStarted,\n}";
+        assert_eq!(parse_variant_names(synthetic), vec!["sync.started"]);
     }
 
     /// **The fixture-completeness gate (#741).** Adding a variant to
@@ -1248,6 +1339,30 @@ mod tests {
             missing.is_empty(),
             "diagnostic event variant(s) declared with no fixture entry in \
              `one_of_every_event_variant`: {missing:?}"
+        );
+    }
+
+    /// **Pins that discovery finds every declared variant (#768 review
+    /// round 1).** [`every_declared_variant_has_a_fixture_entry`] only
+    /// asserts `declared ⊆ fixtured`, so a regression that shrinks
+    /// `declared_variant_names()` — exactly what the single-line
+    /// struct-variant bug did, dropping 9 of 23 variants — leaves that
+    /// gate green: every name it does find still has a fixture, it just
+    /// stopped finding nine of them. That regression passed a full `cargo
+    /// test --workspace`; only mutating the fixture list directly (as the
+    /// review that filed this test did) exposed it. `one_of_every_event_variant`'s
+    /// `canonical` match is exhaustive with no `_` arm, so a new variant
+    /// forces a new arm there by construction — its length is a trustworthy
+    /// oracle for the true variant count, independent of the same
+    /// source-text scan `declared_variant_names` performs.
+    #[test]
+    fn declared_variant_names_finds_every_variant() {
+        assert_eq!(
+            declared_variant_names().len(),
+            one_of_every_event_variant().len(),
+            "declared_variant_names() found a different number of variants \
+             than `one_of_every_event_variant` fixtures — discovery silently \
+             dropped (or double-counted) a declared variant"
         );
     }
 
