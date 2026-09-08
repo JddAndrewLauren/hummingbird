@@ -155,22 +155,44 @@ describe("frontierLanes", () => {
   it("gives every column its own lane when the width is unknown", () => {
     // The pre-lanes board, answered here rather than through the packer: a
     // runtime that cannot lay out has not chosen a packing, and a jsdom
-    // component test keeps asserting the structure it always asserted.
-    expect(frontierLanes([2, 2, 2, 8], null)).toEqual([[0], [1], [2], [3]]);
-    expect(frontierLanes([], null)).toEqual([]);
+    // component test keeps asserting the structure it always asserted. It has
+    // no width to spare either — spare width is a measurement.
+    expect(frontierLanes([2, 2, 2, 8], null)).toEqual({
+      lanes: [[0], [1], [2], [3]],
+      spare: null,
+    });
+    expect(frontierLanes([], null)).toEqual({ lanes: [], spare: null });
   });
 
   it("packs into the lanes the measured width affords", () => {
     // 830px is about what Now's centre column measures at the 1440 capture:
-    // three lanes afforded, two drawn.
-    expect(frontierLanes([2, 2, 2, 8], 830)).toEqual([
-      [0, 1, 2],
-      [3],
-    ]);
+    // three lanes afforded, two drawn, and the third is `calm`'s to run on
+    // into — it is alone in the last packed lane.
+    expect(frontierLanes([2, 2, 2, 8], 830)).toEqual({
+      lanes: [[0, 1, 2], [3]],
+      spare: { column: 3, lanes: 1 },
+    });
   });
 
-  it("stacks the whole board in one lane on a phone", () => {
-    expect(frontierLanes([2, 2, 2, 8], 390)).toEqual([[0, 1, 2, 3]]);
+  it("offers no spare width when the packing used it all", () => {
+    // The context axis at the same width: three lanes afforded, three drawn.
+    expect(frontierLanes([8, 5, 4, 3, 3, 8], 830).spare).toBeNull();
+  });
+
+  it("offers the spare width to nobody when the last lane holds a stack", () => {
+    // A continuation has to sit immediately right of what it continues. The
+    // last lane here holds three columns and so has no single subject.
+    expect(frontierLanes([9, 1, 1, 1], 1400)).toEqual({
+      lanes: [[0], [1, 2, 3]],
+      spare: null,
+    });
+  });
+
+  it("stacks the whole board in one lane on a phone, with nothing to spare", () => {
+    expect(frontierLanes([2, 2, 2, 8], 390)).toEqual({
+      lanes: [[0, 1, 2, 3]],
+      spare: null,
+    });
   });
 });
 

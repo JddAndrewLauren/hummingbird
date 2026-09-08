@@ -764,6 +764,11 @@ for (const theme of THEMES) {
       // project: it gains a fifth axis button *and* two more chips at once,
       // and `expectNoHorizontalOverflow` is what says whether 390 survives
       // that.
+      //
+      // It is also the one surface where a column is drawn across two lanes:
+      // three bands of one card never fill a lane between them, so `calm` runs
+      // on into the width the packing could not use, under a "calm continued"
+      // label with the reveal control at the foot of the last lane.
       await openApp(page, theme, "board");
       await show(page, "Now", testInfo.project.name);
       await expect(page.getByRole("heading", { name: "@computer" })).toBeVisible();

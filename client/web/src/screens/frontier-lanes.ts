@@ -115,10 +115,17 @@ export function laneCountFor(widthPx: number | null, columnCount: number): numbe
   if (widthPx === null) {
     return columnCount;
   }
+  return Math.min(lanesAfforded(widthPx), columnCount);
+}
+
+/** Lanes this width has room for, before the columns get a say — the same
+ * arithmetic `laneCountFor` caps. Kept apart because the difference between
+ * the two is exactly the board's spare width: three lanes afforded, two
+ * drawn, and the third is the room a column can continue into. */
+function lanesAfforded(widthPx: number): number {
   // `+ GAP` on both sides because n lanes cost n-1 gaps: (w + gap) / (min +
   // gap) is the largest n satisfying n*min + (n-1)*gap <= w.
-  const fits = Math.floor((widthPx + GAP) / (LANE_MIN + GAP));
-  return Math.min(Math.max(fits, 1), columnCount);
+  return Math.max(Math.floor((widthPx + GAP) / (LANE_MIN + GAP)), 1);
 }
 
 /** Which columns land in which lane, as indices into `weights`.
@@ -180,16 +187,43 @@ export function packLanes(weights: readonly number[], laneCount: number): number
   return lanes;
 }
 
-/** The board's whole lane question, from the one measurement it has: which
- * columns are drawn in which lane, given each column's rendered-row weight and
- * the container's measured width.
+/** Which lanes the board draws, and whether one column may run on into the
+ * width they do not use.
  *
- * The unmeasured case is answered here rather than inside the packer, because
- * "one lane per column" is a statement about a runtime that cannot lay out —
- * see `laneCountFor` — and not a packing anyone would choose. */
-export function frontierLanes(weights: readonly number[], widthPx: number | null): number[][] {
+ * `lanes` is the packing: whole columns, in reading order, one entry per drawn
+ * lane. The unmeasured case is answered here rather than inside the packer,
+ * because "one lane per column" is a statement about a runtime that cannot lay
+ * out — see `laneCountFor` — and not a packing anyone would choose.
+ *
+ * `spare` names the room left over. `packLanes` draws only the lanes the
+ * weights reached, so a board affording three and drawing two has a lane's
+ * width going begging; on the urgency axis that is permanent, because three
+ * bands of one card can never fill a lane between them. The column in the last
+ * drawn lane may run on into it.
+ *
+ * **Only that column, and only when it is alone in its lane.** A continuation
+ * has to sit immediately right of what it continues or it is not readable as
+ * one, and that is the only column for which the spare lanes are adjacent. A
+ * last lane holding a stack of columns has no single subject to continue, so
+ * the board draws the lanes it filled and leaves the rest, exactly as before.
+ *
+ * How much of that room is worth taking is the caller's call, not this
+ * module's: it turns on how many items the column actually holds against the
+ * cap, and this module never inspects an item. */
+export type BoardLanes = {
+  lanes: number[][];
+  spare: { column: number; lanes: number } | null;
+};
+
+export function frontierLanes(weights: readonly number[], widthPx: number | null): BoardLanes {
   if (widthPx === null) {
-    return weights.map((_, index) => [index]);
+    return { lanes: weights.map((_, index) => [index]), spare: null };
   }
-  return packLanes(weights, laneCountFor(widthPx, weights.length));
+  const lanes = packLanes(weights, laneCountFor(widthPx, weights.length));
+  const last = lanes[lanes.length - 1];
+  const room = lanesAfforded(widthPx) - lanes.length;
+  return {
+    lanes,
+    spare: room > 0 && last?.length === 1 ? { column: last[0], lanes: room } : null,
+  };
 }

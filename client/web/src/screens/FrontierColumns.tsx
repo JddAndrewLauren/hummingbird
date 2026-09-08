@@ -16,6 +16,14 @@
 // Blocked section. Two components because they have genuinely different
 // densities and affordances, not a variant flag on one.
 //
+// **One column can be drawn across more than one lane.** When the packing
+// leaves lanes it had no column to fill — the urgency axis always does, three
+// bands of one card never filling a lane between them — the column in the last
+// packed lane runs on into them under a repeated, de-emphasised label.
+// `frontier-lanes.ts` decides which column may and how far; this file decides
+// whether that would show anything, because only it knows what the column
+// holds.
+//
 // **Two surfaces mount this now**, via `FrontierBoard.tsx`: Now, and one
 // project's dossier with the same board re-sliced to that project's items.
 // What varies between them is exactly two props — `screen` (whose preference
@@ -145,6 +153,83 @@ const URGENCY_TEXT: Record<Urgency, string> = {
   soon: "var(--text-secondary)",
   calm: "var(--text-muted)",
 };
+
+/** One lane's box. Shared because a column that runs on into the board's spare
+ * width draws lanes of its own after the packed ones, and a continuation that
+ * did not sit on the same grid as what it continues would not read as one. */
+const LANE_STYLE = {
+  flex: "1 1 240px",
+  // See `layout.tsx`'s `Column`: a fixed minimum is an overflow below its own
+  // value, not a floor.
+  minWidth: "min(240px, 100%)",
+  // Wide enough that a narrow window — where only one lane fits beside the
+  // aside — fills its width instead of stranding a strip of empty page.
+  maxWidth: 380,
+  display: "flex",
+  flexDirection: "column",
+  gap: "var(--space-6)",
+} as const;
+
+/** A column's own box inside its lane. */
+const COLUMN_STYLE = {
+  // The lane owns the width now, and every column in it fills that width —
+  // including a collapsed one, which used to shrink to fit so its neighbours
+  // could reflow around the slot it stopped needing. A header that keeps its
+  // lane's width stays a line you can find and reopen rather than a stub
+  // floating beside a full column.
+  width: "100%",
+  display: "flex",
+  flexDirection: "column",
+  gap: "var(--space-3)",
+} as const;
+
+/** The "n more" / "Show fewer" control.
+ *
+ * Its own component because a column that runs on into the spare lanes puts it
+ * at the foot of the LAST of them — where the reading actually ends — and a
+ * second copy of this markup would be a second place to fix anything about it.
+ * The count never lies about what is hidden, and the control is offered only
+ * when there is genuinely something to reveal or re-hide: an expanded column
+ * that has since dropped under the cap (a filter picked, an item completed)
+ * has `hidden === 0` and would otherwise keep a "Show fewer" that changes
+ * nothing when clicked. */
+function RevealControl({
+  heading,
+  hidden,
+  isOpen,
+  onToggle,
+}: {
+  heading: string;
+  hidden: number;
+  isOpen: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <ControlButton
+      aria-expanded={isOpen}
+      // The visible text is deliberately terse, which leaves two columns hiding
+      // the same number of cards with two identically-named buttons and nothing
+      // tying either to its column. The accessible name carries the column, the
+      // same fix the facet chips needed.
+      aria-label={isOpen ? `Show fewer in ${heading}` : `Show ${hidden} more in ${heading}`}
+      onClick={onToggle}
+      baseStyle={{
+        font: "var(--type-body-sm)",
+        minHeight: "var(--row-height)",
+        background: "none",
+        border: "none",
+        borderRadius: "var(--radius-control)",
+        color: "var(--text-link)",
+        cursor: "pointer",
+        textAlign: "left",
+        padding: "0 var(--space-2)",
+      }}
+      hoverStyle={{ background: "var(--surface-quiet)" }}
+    >
+      {isOpen ? "Show fewer" : `${hidden} more`}
+    </ControlButton>
+  );
+}
 
 /** The card's meta line, which draws **only if it has something on it**.
  *
@@ -647,7 +732,59 @@ export function FrontierColumns({
   // far — `packLanes` drops the ones nobody filled, and the survivors widen
   // into the space. That is what keeps the urgency axis, three slight bands in
   // front of one very full `calm`, from drawing two empty tracks.
-  const lanes = frontierLanes(laneWeights, boardWidth);
+  const { lanes, spare } = frontierLanes(laneWeights, boardWidth);
+
+  // How much of the board's spare width the column in the last lane actually
+  // takes. `frontier-lanes.ts` says which column may run on and how far it
+  // could; only here is it known whether that would show anything — a column
+  // inside its cap has nothing to continue, and a lane holding a repeated
+  // heading and no cards is worse than the whitespace it replaced.
+  //
+  // Computed from the column's item count against the cap, both of which are
+  // resting facts, so the number of lanes drawn does not move when a column is
+  // collapsed or revealed. Shutting `calm` leaves its continuation lane
+  // standing and empty; that is the same bargain the packing weights make —
+  // transient, self-inflicted, undone by the click that caused it — and the
+  // alternative is the board re-widthing under the reader's hand.
+  const flow = (() => {
+    if (!spare) {
+      return null;
+    }
+    const column = columns[spare.column];
+    const wanted = Math.ceil(column.items.length / columnCap) - 1;
+    const extra = Math.min(spare.lanes, Math.max(wanted, 0));
+    return extra > 0 ? { column: spare.column, extra } : null;
+  })();
+
+  /** How many lanes a column is drawn across: one, unless it is the one
+   * running on into the spare width. */
+  const partsOf = (columnIndex: number) =>
+    flow?.column === columnIndex ? flow.extra + 1 : 1;
+
+  /** The slice of a column drawn in its `part`-th lane. Shut, a column shows
+   * its cap in each lane it has and defers the rest; open, it spreads
+   * everything it holds evenly across them, so no lane runs far past its
+   * neighbour. */
+  const chunkFor = (columnIndex: number, part: number) => {
+    const column = columns[columnIndex];
+    if (expanded.has(column.value ?? "")) {
+      const size = Math.ceil(column.items.length / partsOf(columnIndex));
+      return column.items.slice(part * size, (part + 1) * size);
+    }
+    return column.items.slice(part * columnCap, (part + 1) * columnCap);
+  };
+
+  /** What a column shows in total, across every lane it occupies — which is
+   * what "n more" counts against, not the one chunk the control sits under. */
+  const shownIn = (columnIndex: number) => {
+    const column = columns[columnIndex];
+    return expanded.has(column.value ?? "")
+      ? column.items.length
+      : Math.min(column.items.length, columnCap * partsOf(columnIndex));
+  };
+
+  const headingFor = (column: (typeof columns)[number]) =>
+    column.value === null ? NO_VALUE_LABEL[axis] : (column.label ?? `Project ${column.value}`);
 
   return (
     <>
@@ -833,14 +970,14 @@ export function FrontierColumns({
           is what `frontier-lanes.ts` decides; that module's header carries
           why the packing is TS and why it is not CSS.
 
-          Two consequences worth naming. DOM order is now lane-major, so
-          keyboard order follows the visual stacks rather than reading across
-          the board — which is what someone tabbing down a lane would expect,
-          and what the wrapping row already did within a line. And collapsing a
-          column, or revealing the rest of one, re-packs: a column can hop to
-          another lane, because its weight is exactly what the toggle changed.
-          Accepted — the alternative is a board that keeps a lane's worth of
-          blank space to hold a position nobody asked it to hold. */}
+          Two consequences worth naming. DOM order is lane-major, so keyboard
+          order follows the visual stacks rather than reading across the board —
+          which is what someone tabbing down a lane would expect, and what the
+          wrapping row already did within a line. And the lanes do NOT move
+          under a collapse or a reveal: the weights they are packed from are
+          each column's resting height, so a toggle changes one column's height
+          and no column's position. That was learned the hard way; the comment
+          on `laneWeights` above carries the two bugs that taught it. */}
       <div
         ref={boardRef}
         style={{
@@ -854,48 +991,24 @@ export function FrontierColumns({
             // The lane index is a legitimate key: lanes are positions on the
             // board, not identities, and the columns inside carry their own.
             key={laneIndex}
-            style={{
-              flex: "1 1 240px",
-              // See `layout.tsx`'s `Column`: a fixed minimum is an overflow
-              // below its own value, not a floor.
-              minWidth: "min(240px, 100%)",
-              // Wide enough that a narrow window — where only one lane fits
-              // beside the aside — fills its width instead of stranding a
-              // strip of empty page.
-              maxWidth: 380,
-              display: "flex",
-              flexDirection: "column",
-              gap: "var(--space-6)",
-            }}
+            style={LANE_STYLE}
           >
             {lane.map((columnIndex) => {
               const column = columns[columnIndex];
               const key = column.value ?? "";
-              const heading =
-                column.value === null
-                  ? NO_VALUE_LABEL[axis]
-                  : (column.label ?? `Project ${column.value}`);
+              const heading = headingFor(column);
               const isOpen = expanded.has(key);
               const isCollapsed = collapsed.has(key);
-              const visible = isOpen ? column.items : column.items.slice(0, columnCap);
-              const hidden = column.items.length - visible.length;
+              const visible = chunkFor(columnIndex, 0);
+              // Against everything the column shows, not against this lane's
+              // slice: a column running on into the spare width has already
+              // shown the next chunk to the right.
+              const hidden = column.items.length - shownIn(columnIndex);
+              const runsOn = flow?.column === columnIndex;
               return (
                 <div
                   key={key}
-                  style={{
-                    // The lane owns the width now, and every column in it fills
-                    // that width — including a collapsed one, which used to
-                    // shrink to fit so its neighbours could reflow around the
-                    // slot it stopped needing. Packing is what buys that space
-                    // back instead: a collapsed column weighs one row, so the
-                    // lanes rebalance around it, and a header that keeps its
-                    // lane's width stays a line you can find and reopen rather
-                    // than a stub floating beside a full column.
-                    width: "100%",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "var(--space-3)",
-                  }}
+                  style={COLUMN_STYLE}
                 >
                   {/* The header is the collapse control. A column you have ruled out
                       (wrong context, wrong energy) should cost one line, not a
@@ -950,44 +1063,97 @@ export function FrontierColumns({
                           onComplete={canMarkDone(item) ? () => onAct(item.id, "complete") : undefined}
                         />
                       ))}
-                  {/* The count never lies about what is hidden. Offered only when
-                      there is genuinely something to reveal or re-hide: an expanded
-                      column that has since dropped to the cap (a filter picked, an
-                      item completed) has `hidden === 0` and would otherwise keep a
-                      "Show fewer" that changes nothing when clicked. */}
-                  {!isCollapsed && (hidden > 0 || (isOpen && column.items.length > columnCap)) ? (
-                    <ControlButton
-                      aria-expanded={isOpen}
-                      // The visible text is deliberately terse, which leaves two
-                      // columns hiding the same number of cards with two
-                      // identically-named buttons and nothing tying either to its
-                      // column. The accessible name carries the column, the same fix
-                      // the facet chips needed.
-                      aria-label={
-                        isOpen ? `Show fewer in ${heading}` : `Show ${hidden} more in ${heading}`
-                      }
-                      onClick={() => toggleExpanded(key)}
-                      baseStyle={{
-                        font: "var(--type-body-sm)",
-                        minHeight: "var(--row-height)",
-                        background: "none",
-                        border: "none",
-                        borderRadius: "var(--radius-control)",
-                        color: "var(--text-link)",
-                        cursor: "pointer",
-                        textAlign: "left",
-                        padding: "0 var(--space-2)",
-                      }}
-                      hoverStyle={{ background: "var(--surface-quiet)" }}
-                    >
-                      {isOpen ? "Show fewer" : `${hidden} more`}
-                    </ControlButton>
+                  {/* A column that runs on hands this to the foot of its last
+                      lane instead — where its reading actually ends. */}
+                  {!isCollapsed &&
+                  !runsOn &&
+                  (hidden > 0 || (isOpen && column.items.length > columnCap)) ? (
+                    <RevealControl
+                      heading={heading}
+                      hidden={hidden}
+                      isOpen={isOpen}
+                      onToggle={() => toggleExpanded(key)}
+                    />
                   ) : null}
                 </div>
               );
             })}
           </div>
         ))}
+
+        {/* The continuation lanes: one column, drawn on across the width the
+            packing had no column to fill. Only ever the column in the last
+            packed lane, so these sit immediately right of the chunk they
+            continue and read as one column rather than as a new one.
+
+            The label is a plain line of meta, deliberately NOT a second `h2`:
+            this is the same column, and a heading here would put a duplicate
+            entry in the outline and offer a collapse control that already
+            exists to its left. The first chunk owns the heading, the count and
+            the collapse; the last owns the reveal. */}
+        {flow
+          ? Array.from({ length: flow.extra }, (_, offset) => {
+              const columnIndex = flow.column;
+              const column = columns[columnIndex];
+              const key = column.value ?? "";
+              const heading = headingFor(column);
+              const isOpen = expanded.has(key);
+              const isCollapsed = collapsed.has(key);
+              const part = offset + 1;
+              const hidden = column.items.length - shownIn(columnIndex);
+              return (
+                <div key={`${key}-part-${part}`} style={LANE_STYLE}>
+                  <div style={COLUMN_STYLE}>
+                    {/* Shut with the rest of the column: a label standing over
+                        no cards names nothing, and the heading it continues is
+                        two lanes to the left saying the same word. The lane
+                        itself stays, holding its width so the board does not
+                        reflow around a collapse. */}
+                    {isCollapsed ? null : (
+                      <p
+                        className="hb-meta"
+                        style={{
+                          margin: 0,
+                          // Sits on the same baseline as the real heading
+                          // beside it, so the chunks line up across the board.
+                          minHeight: "var(--row-height)",
+                          display: "flex",
+                          alignItems: "center",
+                          padding: "0 var(--space-2)",
+                        }}
+                      >
+                        {heading} continued
+                      </p>
+                    )}
+                    {isCollapsed
+                      ? null
+                      : chunkFor(columnIndex, part).map((item) => (
+                          <ItemCard
+                            key={item.id}
+                            item={item}
+                            nowMs={nowMs}
+                            selected={item.id === selectedItemId}
+                            onOpen={() => onOpenItem(item.id)}
+                            onComplete={
+                              canMarkDone(item) ? () => onAct(item.id, "complete") : undefined
+                            }
+                          />
+                        ))}
+                    {!isCollapsed &&
+                    part === flow.extra &&
+                    (hidden > 0 || (isOpen && column.items.length > columnCap)) ? (
+                      <RevealControl
+                        heading={heading}
+                        hidden={hidden}
+                        isOpen={isOpen}
+                        onToggle={() => toggleExpanded(key)}
+                      />
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })
+          : null}
       </div>
     </>
   );
