@@ -605,23 +605,30 @@ export function FrontierColumns({
     });
   };
 
-  // What each column will actually cost in rows, which is what the packing
-  // balances: a header, then whatever is drawn under it. Rendered rows and
-  // NOT `column.items.length` — a collapsed column is one line however much
-  // it holds, and a capped one costs the cap plus its "n more" control. The
-  // unit is a row rather than a pixel because cards are close enough to
-  // uniform that measuring each would buy precision the eye cannot see; the
+  // What each column costs in rows, which is what the packing balances: a
+  // header, then the cap's worth of cards, then the "n more" control if it has
+  // one. Rows rather than pixels because cards are close enough to uniform
+  // that measuring each would buy precision the eye cannot see; the
   // consequence is that a column of long titles can run a little past its
   // lane-mates, which is the same slack the wrapping row already had.
+  //
+  // **The column's resting height, deliberately — not what is on screen.**
+  // `collapsed` and `expanded` are both ignored here, and it cost a bug to
+  // learn why. Weighing what is drawn makes every collapse and every "n more"
+  // a repack, and a repack moves columns the reader never touched: collapsing
+  // `overdue` slid `calm` into another lane, and expanding `calm` — 29 cards,
+  // suddenly the heaviest thing on the board by a factor of five — pulled the
+  // whole urgency board into a single lane. A board that rearranges itself
+  // under the click that opened one column is the same fault ADR-0021
+  // decision 1's amendment refuses for the bands' order: it moves for reasons
+  // the reader did not cause. So the lanes are a function of the columns and
+  // the measured width alone, and toggling a column changes that column's
+  // height and nothing else's position. The cost is a lane left short of its
+  // share while a column in it is shut, which is transient, self-inflicted and
+  // undone by the same click.
   const laneWeights = columns.map((column) => {
-    const key = column.value ?? "";
-    if (collapsed.has(key)) {
-      return 1;
-    }
-    const isOpen = expanded.has(key);
-    const visible = isOpen ? column.items.length : Math.min(column.items.length, COLUMN_CAP);
-    const hasMoreRow = column.items.length > COLUMN_CAP;
-    return 1 + visible + (hasMoreRow ? 1 : 0);
+    const capped = Math.min(column.items.length, COLUMN_CAP);
+    return 1 + capped + (column.items.length > COLUMN_CAP ? 1 : 0);
   });
   // Fewer lanes than the width affords whenever the weights do not reach that
   // far — `packLanes` drops the ones nobody filled, and the survivors widen

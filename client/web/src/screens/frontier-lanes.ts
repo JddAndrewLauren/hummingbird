@@ -81,16 +81,18 @@ export function laneCountFor(widthPx: number | null, columnCount: number): numbe
  *
  * Sequential fill, in the given order: every lane aims at the same share —
  * `total / laneCount`, or the tallest single column if that is more — and each
- * column joins the open lane unless doing so would leave that lane further
- * from its share than stopping short of it does. Order is never rearranged, so a lane reads top-down in
- * exactly the order `group_frontier` handed over, and the lanes left to right
- * in that same order.
+ * column joins the open lane unless it would carry that lane past the share,
+ * in which case it opens the next one. Order is never rearranged, so a lane
+ * reads top-down in exactly the order `group_frontier` handed over, and the
+ * lanes left to right in that same order.
  *
- * The look-ahead is what makes the share a *target* rather than a floor. A
- * lane that stops at 8 of a 10.3 share leaves the next column to open the next
- * lane; without the comparison it would swallow one more column first, run to
- * 13, and — on a board of six lumpy columns — never reach the third lane at
- * all. That was visible on the context axis the moment the fill landed.
+ * Both halves of the share are load-bearing, and each was a visible bug
+ * without the other. `total / laneCount` on its own let the first lane of the
+ * context axis run to 13 against a 10.3 share and never open the third. The
+ * tallest-column floor on its own — paired with a rule that merely aimed
+ * *closest* to the share — put the whole urgency board in one lane the moment
+ * `calm` was expanded: at 31 rows against three slight bands, swallowing them
+ * landed nearer the 31 share than stopping at 6 did.
  *
  * **The returned lanes are all non-empty**, and there may be fewer than
  * `laneCount` of them: a board that affords three lanes but holds one heavy
@@ -118,13 +120,13 @@ export function packLanes(weights: readonly number[], laneCount: number): number
   const lanes: number[][] = [[]];
   let carried = 0;
   weights.forEach((weight, index) => {
-    // Decided before placing, not after: this column either brings the open
-    // lane closer to its share or it does not, and if it does not the lane is
-    // finished. An open lane still holding nothing always takes it — a lane
-    // that skipped its first column would be drawn empty, or not drawn at all.
-    const overshoot = Math.abs(carried + weight - target);
-    const undershoot = Math.abs(carried - target);
-    if (carried > 0 && overshoot > undershoot && lanes.length < count) {
+    // Decided before placing, not after: a column that would carry the open
+    // lane past its share finishes that lane instead of joining it. An open
+    // lane still holding nothing always takes the column whatever it weighs —
+    // a lane that skipped its first column would be drawn empty, or not drawn
+    // at all — which is also why the share can never be below the tallest
+    // column: the lane holding that one is over its share the moment it does.
+    if (carried > 0 && carried + weight > target && lanes.length < count) {
       lanes.push([]);
       carried = 0;
     }

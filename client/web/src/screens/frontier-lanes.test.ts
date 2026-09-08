@@ -76,6 +76,20 @@ describe("packLanes", () => {
     ]);
   });
 
+  it("does not swallow a column that dwarfs the ones already in the lane", () => {
+    // `calm` expanded: 29 cards and a header against three bands of one. The
+    // share floors at 31, and a rule aiming merely CLOSEST to it put the whole
+    // board in one lane — 37 is nearer 31 than 6 is. Past the share opens the
+    // next lane instead, so expanding a column never relays the board.
+    expect(packLanes([2, 2, 2, 31], 3)).toEqual([
+      [0, 1, 2],
+      [3],
+    ]);
+    // The same shape at two columns, where the floor and the even split are
+    // furthest apart.
+    expect(packLanes([1, 8], 2)).toEqual([[0], [1]]);
+  });
+
   it("aims no lane lower than the tallest single column", () => {
     // Without that floor the even share is 14/3, and `soon` is pulled out of
     // the severity stack into a lane of its own — three lanes where two hold
