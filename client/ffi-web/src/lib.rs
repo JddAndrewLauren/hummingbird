@@ -451,6 +451,11 @@ mod wasm_bindings {
     const BUSY_CREATE_PROJECT_LINK: &str = r#"{"kind":"busy","id":null,"error":null}"#;
     // #626: same shape as BUSY_PATCH_PROJECT.
     const BUSY_PATCH_PROJECT_LINK: &str = r#"{"kind":"busy","error":null}"#;
+    // ADR-0036: the file-link trio, same three shapes as the project-link
+    // trio just above.
+    const BUSY_FILE_LINK_LIST: &str = r#"{"kind":"busy","links":[]}"#;
+    const BUSY_CREATE_FILE_LINK: &str = r#"{"kind":"busy","id":null,"error":null}"#;
+    const BUSY_REMOVE_FILE_LINK: &str = r#"{"kind":"busy","error":null}"#;
     // #627: `route: null` here means the same thing it means when the
     // mirror simply hasn't pulled the row yet ([`RouteResponse`]'s own
     // doc) — a busy answer is one more reason this device cannot say.
@@ -826,6 +831,78 @@ mod wasm_bindings {
                     .await;
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("PatchProjectLinkResponse serializes"),
+                ))
+            })
+        }
+
+        /// Every live File link on one item, as JSON: `{"kind": "ok"|"busy",
+        /// "links": [FileLink]}` — the item panel's read (ADR-0036).
+        #[wasm_bindgen(js_name = fileLinks)]
+        pub fn file_links(&self, item_id: String) -> String {
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_FILE_LINK_LIST.to_string(), |host| serde_json::to_string(&host.file_links(&item_id))
+                    .expect("FileLinkListResponse serializes"))
+        }
+
+        /// Creates a File link (ADR-0036). Resolves to JSON:
+        /// `{"kind": "ok"|"failed"|"busy", "id": string|null, "error": string|null}`.
+        /// The path is trimmed and a blank one refused before `Core` is
+        /// reached ([`TaskHostCore::create_file_link`]); its shape was the
+        /// web's `dropbox/` module's call before this. `"ok"` means
+        /// *enqueued*, not *saved* — no optimistic overlay. Checked out as
+        /// the triage owner: an item-lane edit, like the panel's other
+        /// writes.
+        #[wasm_bindgen(js_name = createFileLink)]
+        pub fn create_file_link(
+            &self,
+            seed: String,
+            item_id: String,
+            path: String,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Triage, now_ms as i64) else {
+                    return Ok(JsValue::from_str(BUSY_CREATE_FILE_LINK));
+                };
+                let response = host.create_file_link(&seed, &item_id, &path, now_ms as i64).await;
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("CreateFileLinkResponse serializes"),
+                ))
+            })
+        }
+
+        /// Removes a File link (ADR-0036) — flags `removed_at`, the only
+        /// patch a file link takes. Resolves to JSON:
+        /// `{"kind": "ok"|"failed"|"busy", "error": string|null}`.
+        /// `current_json` is the caller's own last-known [`FileLink`] (from
+        /// [`TaskHost::fileLinks`]), as JSON — the `base` a 409's rebase
+        /// diffs against.
+        #[wasm_bindgen(js_name = removeFileLink)]
+        pub fn remove_file_link(
+            &self,
+            seed: String,
+            current_json: String,
+            removed_at: f64,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let current: hummingbird_domain::FileLink = match serde_json::from_str(&current_json) {
+                    Ok(link) => link,
+                    Err(error) => {
+                        return Ok(JsValue::from_str(&format!(
+                            r#"{{"kind":"failed","error":"malformed file link: {error}"}}"#
+                        )))
+                    }
+                };
+                let Some(mut host) = inner.core.checkout(CoreOwner::Triage, now_ms as i64) else {
+                    return Ok(JsValue::from_str(BUSY_REMOVE_FILE_LINK));
+                };
+                let response = host
+                    .remove_file_link(&seed, &current, removed_at as i64, now_ms as i64)
+                    .await;
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("RemoveFileLinkResponse serializes"),
                 ))
             })
         }

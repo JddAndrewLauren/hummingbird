@@ -35,8 +35,8 @@ use hummingbird_core::{
 };
 use hummingbird_domain::{
     core_field_type, is_valid_deadline, is_valid_github_repo, Alert, Condition, Energy,
-    EventKindEntry, FieldType, Fog, Item, Project, ProjectLink, Route, Rule, Size, Stage, Step,
-    Tier, CORE_FIELDS, EVENT_KINDS, GrillVerdict,
+    EventKindEntry, FieldType, FileLink, Fog, Item, Project, ProjectLink, Route, Rule, Size,
+    Stage, Step, Tier, CORE_FIELDS, EVENT_KINDS, GrillVerdict,
 };
 
 // The real, target-specific store `Core::init` resolves to internally is a
@@ -445,6 +445,33 @@ pub struct CreateProjectLinkResponse {
 /// shape as [`PatchProjectResponse`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PatchProjectLinkResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
+/// The wrapper around [`TaskHostCore::fileLinks`]'s answer — the item
+/// panel's read (ADR-0036). Same `"busy"` contract as
+/// [`ProjectLinkListResponse`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct FileLinkListResponse {
+    pub kind: &'static str,
+    pub links: Vec<FileLink>,
+}
+
+/// What [`TaskHostCore::create_file_link`] resolves to (ADR-0036). Same
+/// three-way split as [`CreateProjectLinkResponse`], and the same "ok
+/// means *enqueued*, not *saved*" — no optimistic overlay.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CreateFileLinkResponse {
+    pub kind: &'static str,
+    pub id: Option<String>,
+    pub error: Option<String>,
+}
+
+/// What [`TaskHostCore::remove_file_link`] resolves to (ADR-0036). Same
+/// shape as [`PatchProjectLinkResponse`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RemoveFileLinkResponse {
     pub kind: &'static str,
     pub error: Option<String>,
 }
@@ -2127,6 +2154,60 @@ impl TaskHostCore {
                 kind: "failed",
                 error: Some(error.to_string()),
             },
+        }
+    }
+
+    /// Every live File link on one item, per [`Core::file_links_for`]
+    /// (ADR-0036) — the item panel's read.
+    pub fn file_links(&self, item_id: &str) -> FileLinkListResponse {
+        FileLinkListResponse { kind: "ok", links: self.core.file_links_for(item_id) }
+    }
+
+    /// Creates a File link, per [`Core::create_file_link`] (ADR-0036). The
+    /// path is trimmed and a blank one refused **before `Core` is reached**
+    /// — the authority answers 400 on a blank path, same discipline
+    /// [`TaskHostCore::create_project_link`] follows for `url`. The path's
+    /// *shape* is not judged here: that is the web's `dropbox/` module's
+    /// vendor knowledge, applied before this seam is called.
+    pub async fn create_file_link(
+        &mut self,
+        seed: &str,
+        item_id: &str,
+        path: &str,
+        now_ms: i64,
+    ) -> CreateFileLinkResponse {
+        let path = path.trim();
+        if path.is_empty() {
+            return CreateFileLinkResponse {
+                kind: "failed",
+                id: None,
+                error: Some("path must be non-empty".to_string()),
+            };
+        }
+        match self.core.create_file_link(seed, item_id, path, now_ms).await {
+            Ok(id) => CreateFileLinkResponse { kind: "ok", id: Some(id), error: None },
+            Err(error) => CreateFileLinkResponse {
+                kind: "failed",
+                id: None,
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Removes a File link, per [`Core::remove_file_link`] (ADR-0036).
+    /// `current` is the caller's own last-known copy of the row (from
+    /// [`TaskHostCore::file_links`]), the "caller supplies `base`" contract
+    /// every CAS write here follows.
+    pub async fn remove_file_link(
+        &mut self,
+        seed: &str,
+        current: &FileLink,
+        removed_at: i64,
+        now_ms: i64,
+    ) -> RemoveFileLinkResponse {
+        match self.core.remove_file_link(seed, current, removed_at, now_ms).await {
+            Ok(()) => RemoveFileLinkResponse { kind: "ok", error: None },
+            Err(error) => RemoveFileLinkResponse { kind: "failed", error: Some(error.to_string()) },
         }
     }
 
@@ -6171,6 +6252,72 @@ mod project_tests {
             .await;
 
         assert_eq!(response.kind, "ok");
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+    }
+}
+
+#[cfg(test)]
+mod file_link_tests {
+    use super::*;
+
+    /// ADR-0036: the authority 400s on a blank path, so this seam refuses
+    /// one before `Core::create_file_link` is reached, and mints no queue
+    /// entry.
+    #[tokio::test]
+    async fn creating_a_file_link_rejects_a_blank_path_before_reaching_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-create-file-link-empty");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        for path in ["", "   ", "\t\n"] {
+            let response = host.create_file_link("seed-1", "i-1", path, 1_000).await;
+            assert_eq!(response.kind, "failed", "{path:?} is refused");
+            assert!(response.id.is_none());
+            assert_eq!(
+                host.queue_depth(),
+                QueueDepthResponse { kind: "ok", depth: 0 },
+                "{path:?} minted no queue entry"
+            );
+        }
+    }
+
+    /// A good path enqueues exactly one create, trimmed, and the link is
+    /// still absent from the read — no optimistic overlay.
+    #[tokio::test]
+    async fn creating_a_file_link_enqueues_it_and_overlays_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-create-file-link-ok");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        let response = host.create_file_link("seed-1", "i-1", "  Finance/2026/receipt.pdf  ", 1_000).await;
+
+        assert_eq!(response.kind, "ok");
+        assert!(response.id.is_some());
+        assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
+        assert_eq!(
+            host.file_links("i-1"),
+            FileLinkListResponse { kind: "ok", links: Vec::new() },
+            "no overlay: the link appears only once a cycle pulls it back"
+        );
+    }
+
+    /// Removing enqueues one CAS patch against the caller's copy.
+    #[tokio::test]
+    async fn removing_a_file_link_enqueues_one_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-remove-file-link");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let current = FileLink {
+            id: "fl-1".to_string(),
+            item_id: "i-1".to_string(),
+            path: "Finance/2026/receipt.pdf".to_string(),
+            removed_at: None,
+            version: 3,
+        };
+
+        let response = host.remove_file_link("seed-1", &current, 9_000, 1_000).await;
+
+        assert_eq!(response, RemoveFileLinkResponse { kind: "ok", error: None });
         assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 1 });
     }
 }
