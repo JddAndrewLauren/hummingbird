@@ -75,6 +75,10 @@ beforeEach(() => {
 
 /** Every optional field left at rest — what `resolveCaptureFields` hands
  * `onSubmit` when nothing beside the title was touched. */
+/** The fourth `onSubmit` argument: a capture that asked for neither a
+ * note nor a file, which is every capture in this file. */
+const NO_ATTACHMENTS = { vaultPath: null, filePath: null };
+
 const NO_FIELDS = {
   size: null,
   energy: null,
@@ -211,7 +215,7 @@ describe("CaptureBox — dictation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Triage" }));
     // #110: the raw spliced string, unmodified, through the same path a typed
     // capture takes — and the metadata untouched by the session.
-    expect(onSubmit).toHaveBeenCalledWith("call the vet", "triage", NO_FIELDS);
+    expect(onSubmit).toHaveBeenCalledWith("call the vet", "triage", NO_FIELDS, NO_ATTACHMENTS);
   });
 
   it("lands the transcript at the caret with the suffix intact", async () => {
@@ -335,7 +339,7 @@ describe("CaptureBox — dictation", () => {
     await startListening();
     hear("call the vet");
     fireEvent.click(screen.getByRole("button", { name: "Triage" }));
-    expect(onSubmit).toHaveBeenCalledWith("call the vet", "triage", NO_FIELDS);
+    expect(onSubmit).toHaveBeenCalledWith("call the vet", "triage", NO_FIELDS, NO_ATTACHMENTS);
     expect(seam.aborts).toBe(1);
     view.rerender(
       <CaptureBox
@@ -428,7 +432,7 @@ describe("CaptureBox — dictation", () => {
     await startListening();
     hear("call the vet");
     fireEvent.click(screen.getByRole("button", { name: "Triage" }));
-    expect(onSubmit).toHaveBeenCalledWith("call the vet", "triage", NO_FIELDS);
+    expect(onSubmit).toHaveBeenCalledWith("call the vet", "triage", NO_FIELDS, NO_ATTACHMENTS);
 
     view.rerender(
       <CaptureBox
@@ -461,7 +465,7 @@ describe("CaptureBox — dictation", () => {
     expect(onSubmit).toHaveBeenCalledWith("call the vet", "triage", {
       ...NO_FIELDS,
       context: "@phone",
-    });
+    }, NO_ATTACHMENTS);
   });
 });
 

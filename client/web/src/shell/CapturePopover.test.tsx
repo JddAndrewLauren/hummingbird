@@ -17,6 +17,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { CapturePopover } from "./CapturePopover";
 import { CONTEXTS } from "../screens/field-vocabulary";
+import { VAULT_PATH_PROBLEM } from "../screens/triage-form";
+import { FILE_PATH_PROBLEM } from "../dropbox/file-link";
 import type { ProjectDTO } from "../store/protocol";
 import type { TaskCaptureResult } from "../store/store";
 import { fireEvent, render, screen } from "../test/component";
@@ -28,6 +30,13 @@ function renderPopover(
     lastCapture?: TaskCaptureResult | null;
     projects?: ProjectDTO[];
     contextSuggestions?: readonly string[];
+    /** #771: `null` (the default) is an unbound vault, which draws no note
+     * disclosure at all. */
+    vaultName?: string | null;
+    /** ADR-0036: absent (the default) is a render with no file-link wiring
+     * behind it, which draws no file disclosure. */
+    fileLinks?: { localRoot: string | null };
+    attachmentFailure?: string | null;
   } = {},
 ) {
   const onSubmit = vi.fn();
@@ -40,6 +49,9 @@ function renderPopover(
     projects: options.projects ?? [],
     contextSuggestions: options.contextSuggestions ?? CONTEXTS,
     demo: options.demo ?? false,
+    vaultName: options.vaultName ?? null,
+    fileLinks: options.fileLinks,
+    attachmentFailure: options.attachmentFailure ?? null,
     lastCapture,
   });
   const view = render(<CapturePopover {...props(options.lastCapture ?? null)} />);
@@ -54,6 +66,10 @@ function field(): HTMLInputElement {
 
 /** Every optional field left at rest — what `resolveCaptureFields` hands
  * `onSubmit` when nothing beside the title was touched. */
+/** The fourth `onSubmit` argument: a capture that asked for neither a
+ * note nor a file, which is every capture in this file. */
+const NO_ATTACHMENTS = { vaultPath: null, filePath: null };
+
 const NO_FIELDS = {
   size: null,
   energy: null,
@@ -154,7 +170,7 @@ describe("CapturePopover — the capture box", () => {
     fireEvent.click(screen.getByRole("button", { name: "Triage" }));
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
-    expect(onSubmit).toHaveBeenCalledWith("  Buy   OAT milk  ", "triage", NO_FIELDS);
+    expect(onSubmit).toHaveBeenCalledWith("  Buy   OAT milk  ", "triage", NO_FIELDS, NO_ATTACHMENTS);
   });
 
   it("sends the skip — the mint button captures straight into Ready", () => {
@@ -163,7 +179,7 @@ describe("CapturePopover — the capture box", () => {
     fireEvent.click(screen.getByRole("button", { name: "Mint action" }));
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
-    expect(onSubmit).toHaveBeenCalledWith("Order the worktop", "ready", NO_FIELDS);
+    expect(onSubmit).toHaveBeenCalledWith("Order the worktop", "ready", NO_FIELDS, NO_ATTACHMENTS);
   });
 
   it("mints for today: straight into Ready with a date-only deadline", () => {
@@ -178,7 +194,7 @@ describe("CapturePopover — the capture box", () => {
       expect(onSubmit).toHaveBeenCalledWith("Pay the water bill", "ready", {
         ...NO_FIELDS,
         deadline: "2026-09-03",
-      });
+      }, NO_ATTACHMENTS);
     } finally {
       vi.useRealTimers();
     }
@@ -197,7 +213,7 @@ describe("CapturePopover — the capture box", () => {
       expect(onSubmit).toHaveBeenCalledWith("Pay the water bill", "ready", {
         ...NO_FIELDS,
         deadline: "2026-09-03",
-      });
+      }, NO_ATTACHMENTS);
     } finally {
       vi.useRealTimers();
     }
@@ -207,7 +223,7 @@ describe("CapturePopover — the capture box", () => {
     const { onSubmit } = renderPopover();
     fireEvent.change(field(), { target: { value: "Call the plumber" } });
     fireEvent.keyDown(field(), { key: "Enter" });
-    expect(onSubmit).toHaveBeenCalledWith("Call the plumber", "triage", NO_FIELDS);
+    expect(onSubmit).toHaveBeenCalledWith("Call the plumber", "triage", NO_FIELDS, NO_ATTACHMENTS);
   });
 
   it("does not submit on the Enter that commits an IME composition", () => {
@@ -256,6 +272,12 @@ describe("CapturePopover — the full field set behind More details", () => {
     expect(screen.queryByLabelText("Priority")).toBeNull();
     expect(screen.queryByLabelText("Deadline")).toBeNull();
     expect(screen.queryByLabelText("Scheduled date")).toBeNull();
+    // The three attachment toggles are behind the same chevron: three more
+    // controls in the resting state would tax every capture for a decision
+    // almost none of them make.
+    expect(screen.queryByRole("button", { name: "Add a link" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add a note" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add a file" })).toBeNull();
     expect(
       screen.getByRole("button", { name: /more details/i }).getAttribute("aria-expanded"),
     ).toBe("false");
@@ -302,7 +324,7 @@ describe("CapturePopover — the full field set behind More details", () => {
       scheduledDate: "2026-08-30",
       linkUrl: null,
       linkLabel: null,
-    });
+    }, NO_ATTACHMENTS);
   });
 
   it("names an hour through the deadline field's own second gesture", () => {
@@ -318,7 +340,7 @@ describe("CapturePopover — the full field set behind More details", () => {
     expect(onSubmit).toHaveBeenCalledWith("Call the vet", "triage", {
       ...NO_FIELDS,
       deadline: "2026-09-01T09:30",
-    });
+    }, NO_ATTACHMENTS);
   });
 
   it("cannot be given an impossible date at all — the controls are pickers", () => {
@@ -376,7 +398,7 @@ describe("CapturePopover — the capture meta (#208)", () => {
       size: "deep",
       energy: "high",
       context: "@garden",
-    });
+    }, NO_ATTACHMENTS);
   });
 
   it("sends only the one field the reader set, leaving the other two absent", () => {
@@ -389,7 +411,7 @@ describe("CapturePopover — the capture meta (#208)", () => {
     expect(onSubmit).toHaveBeenCalledWith("Buy soil", "triage", {
       ...NO_FIELDS,
       energy: "high",
-    });
+    }, NO_ATTACHMENTS);
   });
 
   // The clear-on-ok rule, and its one carve-out. Energy and Size are
@@ -428,7 +450,7 @@ describe("CapturePopover — the capture meta (#208)", () => {
     expect(onSubmit).toHaveBeenLastCalledWith("Buy compost", "triage", {
       ...NO_FIELDS,
       context: "@garden",
-    });
+    }, NO_ATTACHMENTS);
   });
 
   // The suggestions are the caller's, not a list this component holds: a
@@ -547,5 +569,221 @@ describe("CapturePopover — the clear-on-ok rule (#222)", () => {
       lastCapture: { seed: "s1", kind: "failed", id: null, error: "Nope." },
     });
     expect(screen.queryByText("Nope.")).toBeNull();
+  });
+});
+
+/** The three things a capture can point at, as one row behind "More details".
+ * The link is a pair of columns on the item and rides on the capture itself;
+ * the note and the file cannot (`useCaptureAttachments.ts` says why) and
+ * leave through `onSubmit`'s fourth argument instead. */
+describe("CapturePopover — the attachment row", () => {
+  const VAULT = { vaultName: "JDD" };
+  const DROPBOX = { fileLinks: { localRoot: null } };
+
+  function openDetails() {
+    fireEvent.click(screen.getByRole("button", { name: /more details/i }));
+  }
+
+  it("draws all three once the details are open", () => {
+    renderPopover({ ...VAULT, ...DROPBOX });
+    openDetails();
+    expect(screen.getByRole("button", { name: "Add a link" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add a note" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add a file" })).toBeTruthy();
+  });
+
+  /** A control that cannot be written is not drawn — the same rule the item
+   * panel's note affordance applies. Nothing announces a vault that isn't
+   * there, and a render with no file-link wiring cannot create a file link. */
+  it("draws only the link when there is no vault and no file wiring", () => {
+    renderPopover();
+    openDetails();
+    expect(screen.getByRole("button", { name: "Add a link" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Add a note" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add a file" })).toBeNull();
+  });
+
+  /** The path is *proposed* from what has been typed so far and editable
+   * before it is ever stored — the same `derivePath` the item panel's note
+   * editor proposes from the item's title. */
+  it("proposes a vault path from the draft, and carries the edited one", () => {
+    const { onSubmit } = renderPopover(VAULT);
+    fireEvent.change(field(), { target: { value: "Knee rehab" } });
+    openDetails();
+    fireEvent.click(screen.getByRole("button", { name: "Add a note" }));
+
+    const path = screen.getByLabelText("Vault path") as HTMLInputElement;
+    expect(path.value).toBe("Hummingbird/Knee rehab.md");
+
+    fireEvent.change(path, { target: { value: "Reading/Knee.md" } });
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
+
+    expect(onSubmit).toHaveBeenLastCalledWith("Knee rehab", "triage", NO_FIELDS, {
+      vaultPath: "Reading/Knee.md",
+      filePath: null,
+    });
+  });
+
+  /** Pasting a path out of a file manager — absolute, quoted, backslashed —
+   * is how one usually arrives, and `normalizePastedPath` is the same
+   * function the item panel's own add row uses. */
+  it("normalizes a pasted file path against this device's root", () => {
+    const { onSubmit } = renderPopover({ fileLinks: { localRoot: "C:\\Dropbox" } });
+    fireEvent.change(field(), { target: { value: "Pay the invoice" } });
+    openDetails();
+    fireEvent.click(screen.getByRole("button", { name: "Add a file" }));
+    fireEvent.change(screen.getByLabelText("File path"), {
+      target: { value: '"C:\\Dropbox\\Finance\\2026\\receipt.pdf"' },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
+
+    expect(onSubmit).toHaveBeenLastCalledWith("Pay the invoice", "triage", NO_FIELDS, {
+      vaultPath: null,
+      filePath: "Finance/2026/receipt.pdf",
+    });
+  });
+
+  it("carries all three at once, the link on the capture and the other two beside it", () => {
+    const { onSubmit } = renderPopover({ ...VAULT, ...DROPBOX });
+    fireEvent.change(field(), { target: { value: "Fit the washer" } });
+    openDetails();
+    fireEvent.click(screen.getByRole("button", { name: "Add a link" }));
+    fireEvent.change(screen.getByLabelText("URL"), { target: { value: "https://example.test/x" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add a note" }));
+    fireEvent.change(screen.getByLabelText("Vault path"), { target: { value: "Reading/Tap.md" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add a file" }));
+    fireEvent.change(screen.getByLabelText("File path"), { target: { value: "House/tap.pdf" } });
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
+
+    expect(onSubmit).toHaveBeenLastCalledWith(
+      "Fit the washer",
+      "triage",
+      { ...NO_FIELDS, linkUrl: "https://example.test/x" },
+      { vaultPath: "Reading/Tap.md", filePath: "House/tap.pdf" },
+    );
+  });
+
+  /** A bad path blocks the capture rather than being silently dropped from
+   * it — the same answer #782's "a link name needs a URL" already gives.
+   * Submitting and discarding what someone typed would be found out by
+   * opening the item. */
+  it("refuses the capture while a path is bad, and says so in the shared words", () => {
+    const { onSubmit } = renderPopover({ ...VAULT, ...DROPBOX });
+    fireEvent.change(field(), { target: { value: "Knee rehab" } });
+    openDetails();
+    fireEvent.click(screen.getByRole("button", { name: "Add a note" }));
+    fireEvent.change(screen.getByLabelText("Vault path"), { target: { value: "../outside.md" } });
+
+    expect(screen.getByText(VAULT_PATH_PROBLEM)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Triage" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText("Vault path"), { target: { value: "Reading/Knee.md" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add a file" }));
+    fireEvent.change(screen.getByLabelText("File path"), { target: { value: "../../etc/passwd" } });
+    expect(screen.getByText(FILE_PATH_PROBLEM)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Triage" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  /** A proposal is shown so it can be judged, not so it can be attached
+   * behind the reader's back. Opening the note toggle to see what a note
+   * WOULD be called, then closing it, must leave the item pointing at
+   * nothing. */
+  it("throws away an untouched derived path, and re-derives it from the current draft", () => {
+    const { onSubmit } = renderPopover(VAULT);
+    fireEvent.change(field(), { target: { value: "Knee rehab" } });
+    openDetails();
+
+    const toggle = () => screen.getByRole("button", { name: "Add a note" });
+    fireEvent.click(toggle());
+    expect((screen.getByLabelText("Vault path") as HTMLInputElement).value).toBe(
+      "Hummingbird/Knee rehab.md",
+    );
+    fireEvent.click(toggle());
+
+    // Retitled while the proposal was shut: reopening must not offer a note
+    // named for the title the capture used to have.
+    fireEvent.change(field(), { target: { value: "Shoulder rehab" } });
+    fireEvent.click(toggle());
+    expect((screen.getByLabelText("Vault path") as HTMLInputElement).value).toBe(
+      "Hummingbird/Shoulder rehab.md",
+    );
+    fireEvent.click(toggle());
+
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
+    expect(onSubmit).toHaveBeenLastCalledWith("Shoulder rehab", "triage", NO_FIELDS, {
+      vaultPath: null,
+      filePath: null,
+    });
+  });
+
+  it("keeps an edited path when the disclosure is closed", () => {
+    const { onSubmit } = renderPopover(VAULT);
+    fireEvent.change(field(), { target: { value: "Knee rehab" } });
+    openDetails();
+    fireEvent.click(screen.getByRole("button", { name: "Add a note" }));
+    fireEvent.change(screen.getByLabelText("Vault path"), { target: { value: "Reading/Knee.md" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add a note" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
+    expect(onSubmit).toHaveBeenLastCalledWith("Knee rehab", "triage", NO_FIELDS, {
+      vaultPath: "Reading/Knee.md",
+      filePath: null,
+    });
+  });
+
+  /** A problem that blocks every submit must never be hideable. Closing the
+   * disclosure over a bad path would otherwise disable all three buttons and
+   * silence Enter with nothing on screen saying why. */
+  it("will not let a blocking path be closed away", () => {
+    renderPopover(VAULT);
+    fireEvent.change(field(), { target: { value: "Knee rehab" } });
+    openDetails();
+    fireEvent.click(screen.getByRole("button", { name: "Add a note" }));
+    fireEvent.change(screen.getByLabelText("Vault path"), { target: { value: "../outside.md" } });
+
+    // Shut the field, then the whole details block. Both refuse.
+    fireEvent.click(screen.getByRole("button", { name: "Add a note" }));
+    expect(screen.getByLabelText("Vault path")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /more details/i }));
+    expect(screen.getByText(VAULT_PATH_PROBLEM)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Triage" }) as HTMLButtonElement).disabled).toBe(true);
+
+    // Repaired, both disclosures fall shut on their own — back to the state
+    // the reader had actually left them in, since nothing is being forced
+    // open any more. The path they typed is still carried.
+    fireEvent.change(screen.getByLabelText("Vault path"), { target: { value: "Reading/Knee.md" } });
+    expect(screen.queryByLabelText("Vault path")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add a note" })).toBeNull();
+    expect((screen.getByRole("button", { name: "Triage" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  /** #222, extended to the two paths: a failed capture keeps everything the
+   * reader typed, and an ok clears it along with the disclosures. */
+  it("keeps the paths through a failure and clears them on an ok", () => {
+    const { rerender } = renderPopover({ ...VAULT, ...DROPBOX });
+    fireEvent.change(field(), { target: { value: "Knee rehab" } });
+    openDetails();
+    fireEvent.click(screen.getByRole("button", { name: "Add a note" }));
+    fireEvent.change(screen.getByLabelText("Vault path"), { target: { value: "Reading/Knee.md" } });
+    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
+
+    rerender({ seed: "s1", kind: "failed", id: null, error: "nope" });
+    expect((screen.getByLabelText("Vault path") as HTMLInputElement).value).toBe("Reading/Knee.md");
+
+    rerender({ seed: "s2", kind: "ok", id: "item-9", error: null });
+    expect(screen.queryByLabelText("Vault path")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add a note" })).toBeNull();
+  });
+
+  /** The capture landed and the thing that rode with it did not — a separate
+   * report from `captureError`, because a reader who took this for a failed
+   * capture would go looking for an item that is already there. */
+  it("renders the attachment failure its own way", () => {
+    renderPopover({ attachmentFailure: "The item was captured, but its note link didn't go through." });
+    expect(
+      screen.getByText("The item was captured, but its note link didn't go through."),
+    ).toBeTruthy();
   });
 });

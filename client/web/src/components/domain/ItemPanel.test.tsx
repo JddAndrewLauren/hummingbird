@@ -669,15 +669,32 @@ describe("the file links block (ADR-0036)", () => {
     };
   }
 
+  /** Adding a file link is `FileAttach`, in the attachment row above the
+   * list — one click to reveal the field, which is the same gesture the
+   * link and note affordances beside it use. */
+  function openFileAttach() {
+    fireEvent.click(screen.getByRole("button", { name: "Add a file" }));
+  }
+
   it("draws nothing at all with no wiring and no links", () => {
     detail({ withWiring: false });
     expect(screen.queryByText("files")).toBeNull();
-    expect(screen.queryByLabelText("Add a file link")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add a file" })).toBeNull();
   });
 
   it("draws nothing when the caller never asked for file links", () => {
     detail({ showFileLinks: false });
     expect(screen.queryByText("files")).toBeNull();
+  });
+
+  /** …including the Add control, which lives in the attachment row above and
+   * so is gated separately. Wiring alone is not enough: a caller that asked
+   * for no file links draws neither the resulting list nor the failure line,
+   * so an Add here would be a write whose success AND whose failure are both
+   * invisible. */
+  it("offers no Add a file when the caller never asked for file links, wiring or not", () => {
+    detail({ showFileLinks: false });
+    expect(screen.queryByRole("button", { name: "Add a file" })).toBeNull();
   });
 
   it("Open fires the helper's scheme, and the dropbox.com fallback is always drawn", () => {
@@ -707,19 +724,24 @@ describe("the file links block (ADR-0036)", () => {
 
   it("Add normalizes a pasted Windows path against this device's root", () => {
     const { createFileLink } = detail({ localRoot: "C:\\Dropbox" });
-    const input = screen.getByLabelText("Add a file link");
-    fireEvent.change(input, { target: { value: '"C:\\Dropbox\\Finance\\2026\\receipt.pdf"' } });
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    openFileAttach();
+    fireEvent.change(screen.getByLabelText("File path"), {
+      target: { value: '"C:\\Dropbox\\Finance\\2026\\receipt.pdf"' },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add", exact: true }));
     expect(createFileLink).toHaveBeenCalledWith("item-1", "Finance/2026/receipt.pdf");
-    expect((input as HTMLInputElement).value).toBe("");
+    // The editor closes on a sent write, leaving the offer to add another.
+    expect(screen.queryByLabelText("File path")).toBeNull();
+    expect(screen.getByRole("button", { name: "Add a file" })).toBeTruthy();
   });
 
   it("Add refuses a path that never became relative, and writes nothing", () => {
     const { createFileLink } = detail({ localRoot: null });
-    fireEvent.change(screen.getByLabelText("Add a file link"), { target: { value: "C:\\Elsewhere\\x.pdf" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
-    expect(createFileLink).not.toHaveBeenCalled();
+    openFileAttach();
+    fireEvent.change(screen.getByLabelText("File path"), { target: { value: "C:\\Elsewhere\\x.pdf" } });
     expect(screen.getByText(/relative to Dropbox/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Add", exact: true }));
+    expect(createFileLink).not.toHaveBeenCalled();
   });
 
   it("Remove hands the row to the wiring", () => {
@@ -737,7 +759,10 @@ describe("the file links block (ADR-0036)", () => {
     fireEvent.click(trash());
     expect(removeFileLink).toHaveBeenCalledTimes(1);
     expect(trash().disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Add" }) as HTMLButtonElement).disabled).toBe(true);
+    openFileAttach();
+    expect(
+      (screen.getByRole("button", { name: "Add", exact: true }) as HTMLButtonElement).disabled,
+    ).toBe(true);
 
     // Some other panel's result changes nothing here.
     rerender({ seed: "someone-else", itemId: "item-2", kind: "ok", error: null });
@@ -766,15 +791,16 @@ describe("the file links block (ADR-0036)", () => {
   it("without wiring the list is read-only: Open and the fallback, no Add, no Remove", () => {
     detail({ withWiring: false, fileLinks: [fileLinkDTO({ path: "House/Plumbing" })] });
     expect(screen.getByRole("button", { name: "Open" })).toBeTruthy();
-    expect(screen.queryByLabelText("Add a file link")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add a file" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove file link" })).toBeNull();
   });
 
   it("names a failed write only once it is this panel's own", () => {
     const { createFileLink } = detail({ lastWrite: { seed: "seed-create", itemId: "item-1", kind: "failed", error: "nope" } });
     expect(screen.queryByRole("alert")).toBeNull();
-    fireEvent.change(screen.getByLabelText("Add a file link"), { target: { value: "x.pdf" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    openFileAttach();
+    fireEvent.change(screen.getByLabelText("File path"), { target: { value: "x.pdf" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add", exact: true }));
     expect(createFileLink).toHaveBeenCalled();
     expect(screen.getByRole("alert").textContent).toBe("nope");
   });
@@ -812,8 +838,11 @@ describe("the Obsidian note affordance", () => {
     return onTriage;
   }
 
+  /** Any control the note affordance draws — `Add a note`, `Open note`, or
+   * the `…` beside it. Deliberately not `/link/i` any more: the link
+   * affordance now sits in the same row and would match it. */
   function noteButton() {
-    return screen.queryByRole("button", { name: /note|link/i });
+    return screen.queryByRole("button", { name: /note/i });
   }
 
   /** The editor's own field. It carries no label — the button that opened it
@@ -831,7 +860,7 @@ describe("the Obsidian note affordance", () => {
     const open = vi.spyOn(window, "open").mockImplementation(() => null);
     const onTriage = detail({ vaultName: "JDD" });
 
-    fireEvent.click(screen.getByRole("button", { name: "Link a note" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add a note" }));
 
     expect(pathField().value).toBe("Hummingbird/Knee rehab.md");
     expect(onTriage).not.toHaveBeenCalled();
@@ -845,7 +874,7 @@ describe("the Obsidian note affordance", () => {
     const open = vi.spyOn(window, "open").mockImplementation(() => null);
     const onTriage = detail({ vaultName: "JDD" });
 
-    fireEvent.click(screen.getByRole("button", { name: "Link a note" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add a note" }));
     fireEvent.change(pathField(), { target: { value: "Reading/Knee.md" } });
     fireEvent.click(screen.getByRole("button", { name: "Link" }));
 
@@ -900,7 +929,7 @@ describe("the Obsidian note affordance", () => {
   it("refuses to send a path that leaves the vault, and says so in the form's own words", () => {
     const onTriage = detail({ vaultName: "JDD" });
 
-    fireEvent.click(screen.getByRole("button", { name: "Link a note" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add a note" }));
     fireEvent.change(pathField(), { target: { value: "../outside.md" } });
 
     expect(screen.getByText(VAULT_PATH_PROBLEM)).toBeTruthy();
@@ -920,9 +949,9 @@ describe("the Obsidian note affordance", () => {
   });
 
   /** A panel with no worker behind it (demo mode) cannot persist a path, so
-   * it never offers to — a button labelled "Link a note" that silently
+   * it never offers to — a button that silently
    * records nothing is worse than no button. */
-  it("offers no Link a note without an onTriage to record the path", () => {
+  it("offers no Add a note without an onTriage to record the path", () => {
     detail({ vaultName: "JDD", withTriage: false });
     expect(noteButton()).toBeNull();
   });
@@ -955,7 +984,7 @@ describe("the Obsidian note affordance", () => {
   /** A title of nothing but stripped characters derives no name at all, and
    * `Hummingbird/.md` is a hidden note every such item would share — so
    * there is nothing to propose and nothing to link. */
-  it("offers no Link a note for a title that strips to an empty name", () => {
+  it("offers no Add a note for a title that strips to an empty name", () => {
     detail({ vaultName: "JDD", title: "???" });
     expect(noteButton()).toBeNull();
   });
@@ -979,10 +1008,12 @@ describe("the Obsidian note affordance", () => {
   });
 });
 
-/** #782: the Link row. Always visible in read mode wherever the item is
- * opened, follows the link on click, and the affordance beside it opens the
- * fields. */
-describe("the Link row", () => {
+/** #782's Link, as `LinkAttach` draws it — the same three states `NoteLink`
+ * has, in the same row. It replaced the anchor-plus-`Edit link` pair: the
+ * button carries the same `linkDisplayLabel` text and the same target, and
+ * the `…` beside it opens an editor of its own rather than the whole Edit
+ * form. */
+describe("the Link affordance", () => {
   function detail(options: {
     linkUrl?: string | null;
     linkLabel?: string | null;
@@ -1005,12 +1036,20 @@ describe("the Link row", () => {
     return onTriage;
   }
 
-  it("draws an anchor named by the label, opening in a new tab", () => {
-    detail({ linkUrl: "https://www.youtube.com/watch?v=abc", linkLabel: "Rehab" });
+  /** A real anchor, not a button calling `window.open`: this control's whole
+   * job is to go somewhere, and the role is what gives it middle-click,
+   * modifier-click, "Copy link address" and a place in a screen reader's
+   * link list. The panel drew an `<a>` before this row existed, and the move
+   * into the row must not have cost it. */
+  it("is an anchor named by the label, opening in a new tab", () => {
+    const onTriage = detail({ linkUrl: "https://www.youtube.com/watch?v=abc", linkLabel: "Rehab" });
+
     const anchor = screen.getByRole("link", { name: "Rehab" });
+
     expect(anchor.getAttribute("href")).toBe("https://www.youtube.com/watch?v=abc");
     expect(anchor.getAttribute("target")).toBe("_blank");
     expect(anchor.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(onTriage).not.toHaveBeenCalled();
   });
 
   it("names an unnamed link by its host", () => {
@@ -1018,25 +1057,78 @@ describe("the Link row", () => {
     expect(screen.getByRole("link", { name: "youtube.com" })).toBeTruthy();
   });
 
-  it("draws nothing for an item with no link, and nothing for a non-http one", () => {
+  it("offers Add for an item with no link at all", () => {
     detail({});
-    expect(screen.queryByRole("link")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Edit link" })).toBeNull();
-    cleanup();
+    expect(screen.getByRole("button", { name: "Add a link" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Edit or remove the link" })).toBeNull();
+  });
+
+  /** The column is plain text the authority only checks for non-blankness,
+   * so a writer that is not this client can leave a scheme this one would
+   * not vouch for. It draws no way to follow such a URL — but it still draws
+   * the `…`, because the Edit form is no longer the door to repairing it. */
+  it("refuses to follow a non-http link, but still offers to repair it", () => {
     detail({ linkUrl: "javascript:alert(1)", linkLabel: "Nope" });
+    expect(screen.queryByRole("link", { name: "Nope" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Edit or remove the link" })).toBeTruthy();
+  });
+
+  it("the … opens an editor over the stored pair, and saves both halves", () => {
+    const onTriage = detail({ linkUrl: "https://example.test/x", linkLabel: "Old" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit or remove the link" }));
+    expect((screen.getByLabelText("URL") as HTMLInputElement).value).toBe("https://example.test/x");
+    expect((screen.getByLabelText("Link name") as HTMLInputElement).value).toBe("Old");
+
+    fireEvent.change(screen.getByLabelText("Link name"), { target: { value: "New" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onTriage).toHaveBeenCalledWith("item-1", null, {
+      linkUrl: "https://example.test/x",
+      linkLabel: "New",
+    });
+  });
+
+  /** Emptying the URL takes the name with it in the form, so what is left
+   * can never read as "a name beside no URL" — the one state the pair may
+   * not be in, and the one `linkLabelProblem` reports. */
+  it("emptying the URL clears the name, and a name alone blocks the save", () => {
+    detail({ linkUrl: "https://example.test/x", linkLabel: "Old" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit or remove the link" }));
+    fireEvent.change(screen.getByLabelText("URL"), { target: { value: "" } });
+    expect((screen.getByLabelText("Link name") as HTMLInputElement).value).toBe("");
+
+    fireEvent.change(screen.getByLabelText("Link name"), { target: { value: "Stranded" } });
+    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("Remove link clears both halves", () => {
+    const onTriage = detail({ linkUrl: "https://example.test/x", linkLabel: "Old" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit or remove the link" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove link" }));
+
+    expect(onTriage).toHaveBeenCalledWith("item-1", null, { linkUrl: null, linkLabel: null });
+  });
+
+  /** Read-only AND unfollowable leaves nothing worth drawing — an `…` with
+   * nowhere to send what it collects is not an affordance. */
+  it("draws nothing for an unfollowable link with no onTriage", () => {
+    detail({ linkUrl: "mailto:someone@example.test", withTriage: false });
+    expect(screen.queryByRole("button", { name: "Edit or remove the link" })).toBeNull();
     expect(screen.queryByRole("link")).toBeNull();
   });
 
-  it("Edit link opens the fields, and offers no such button without an onTriage", () => {
-    detail({ linkUrl: "https://example.test/x" });
-    fireEvent.click(screen.getByRole("button", { name: "Edit link" }));
-    expect(screen.getByLabelText("URL")).toBeTruthy();
-    expect(screen.getByLabelText("Link name")).toBeTruthy();
-    expect(screen.queryByRole("link")).toBeNull();
-    cleanup();
+  /** A panel with no worker behind it (demo mode) can still follow a link —
+   * that writes nothing — but never offers to change one. */
+  it("without an onTriage it follows but never edits, and offers no Add", () => {
     detail({ linkUrl: "https://example.test/x", withTriage: false });
     expect(screen.getByRole("link", { name: "example.test" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Edit link" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit or remove the link" })).toBeNull();
+    cleanup();
+    detail({ withTriage: false });
+    expect(screen.queryByRole("button", { name: "Add a link" })).toBeNull();
   });
 
   it("clearing the URL through the triage save sends both halves as null", () => {

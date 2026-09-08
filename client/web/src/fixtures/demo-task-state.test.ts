@@ -229,6 +229,7 @@ describe("buildDemoTaskState — #452 grows the seed past the frontier and the i
     expect(keys).toEqual([
       "city-waste-page",
       "homework-link",
+      "obsidian-vault",
       "race-series",
       "trips-calendar",
     ]);

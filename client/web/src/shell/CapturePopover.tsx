@@ -5,6 +5,7 @@ import type { CaptureDestination } from "../screens/capture-destination";
 import type { ProjectDTO } from "../store/protocol";
 import type { TaskCaptureResult } from "../store/store";
 import type { CaptureFields } from "../store/worker-client";
+import type { CaptureAttachments } from "./useCaptureAttachments";
 import { CAPTURE_TRIGGER_ID } from "./trigger-ids";
 import { useIsPhone } from "./useIsPhone";
 
@@ -30,7 +31,12 @@ export interface CapturePopoverProps {
    * instead of being a no-op. */
   focusRequestId: number;
   onClose: () => void;
-  onSubmit: (title: string, destination: CaptureDestination, fields: CaptureFields) => void;
+  onSubmit: (
+    title: string,
+    destination: CaptureDestination,
+    fields: CaptureFields,
+    attachments: CaptureAttachments,
+  ) => void;
   /** The Routes a capture can be filed under, forwarded straight to
    * `CaptureBox`'s Project select. `App.tsx` passes `task.projects`
    * unconditionally. */
@@ -40,6 +46,13 @@ export interface CapturePopoverProps {
    * `App.tsx` because that is where the store's slices are. */
   contextSuggestions: readonly string[];
   demo: boolean;
+  /** #771/ADR-0036: the two facts the note and file disclosures need, and
+   * the report of a follow-up write that did not land. All three forwarded
+   * straight to `CaptureBox`; this popover holds none of it, exactly as it
+   * holds no dictation state. */
+  vaultName?: string | null;
+  fileLinks?: { localRoot: string | null };
+  attachmentFailure?: string | null;
   /** `TaskState.lastCapture`, threaded through to `CaptureBox` — the box
    * clears only once a result actually reports `"ok"` (#222), and a failed
    * one is words beside the field. */
@@ -80,6 +93,9 @@ export function CapturePopover({
   projects,
   contextSuggestions,
   demo,
+  vaultName,
+  fileLinks,
+  attachmentFailure,
   lastCapture,
   cancelDictationRequestId,
   onDictatingChange,
@@ -241,6 +257,9 @@ export function CapturePopover({
             contextSuggestions={contextSuggestions}
             demo={demo}
             focusRequestId={focusRequestId}
+            vaultName={vaultName}
+            fileLinks={fileLinks}
+            attachmentFailure={attachmentFailure}
             lastCapture={lastCapture}
             onClose={onClose}
             cancelDictationRequestId={cancelDictationRequestId}

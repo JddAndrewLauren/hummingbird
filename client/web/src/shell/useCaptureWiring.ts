@@ -26,12 +26,17 @@ import {
 // screen BEFORE this is ever reached — this hook trusts its caller and
 // enqueues whatever it is handed.
 export interface CaptureWiring {
+  /** Returns the seed it minted. `useCaptureAttachments.ts` is the first
+   * caller that needs it: `TaskState.lastCapture` is a broadcast to every
+   * connected view rather than a reply to this one, so the seed is the only
+   * way to recognise the result of the capture this call sent. Callers with
+   * nothing to attach ignore the return. */
   submitCapture: (
     title: string,
     destination: CaptureDestination,
     nowMs: number,
     fields?: CaptureFields,
-  ) => void;
+  ) => string;
 }
 
 /** Mints a fresh, non-deterministic seed for one capture. Non-deterministic
@@ -88,7 +93,7 @@ export function submitCaptureRequest(
   nowMs: number,
   fields: CaptureFields = {},
   seed: string = mintSeed(),
-): void {
+): string {
   captureTask(worker, seed, title, destination, nowMs, fields);
   requestTriageInbox(worker);
   if (destination === "ready") {
@@ -98,6 +103,7 @@ export function submitCaptureRequest(
     // the next 60s cycle is the one the person just typed.
     requestFrontier(worker);
   }
+  return seed;
 }
 
 export function useCaptureWiring(
@@ -124,8 +130,6 @@ export function useCaptureWiring(
       destination: CaptureDestination,
       nowMs: number,
       fields: CaptureFields = {},
-    ) => {
-      submitCaptureRequest(worker, title, destination, nowMs, fields);
-    },
+    ) => submitCaptureRequest(worker, title, destination, nowMs, fields),
   };
 }

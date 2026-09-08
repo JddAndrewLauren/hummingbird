@@ -285,18 +285,39 @@ Scheduled date — appear in no capture. `shell/CapturePopover.test.tsx` (which
 drives the disclosure open and asserts every revealed field onto the submit)
 and `components/forms/DeadlineField.test.tsx` are the cover, and the expanded card
 is worth a hand pass at 390 in particular, where it is the tallest thing the
-popover can become. **The Link disclosure (#782) follows the same rule**: its
-chain glyph sits on its own row below the details row and *is* in every
-capture-popover capture, but `linkOpen` starts `false`, so the `URL` and
-`Link name` fields behind it are photographed nowhere;
-`screens/capture-meta.test.ts` and `components/domain/ItemPanel.test.tsx`
-(the edit pair) are the cover. **The item panel's always-visible link row
-IS photographed**: `demo-task-state.ts` gives exactly one board seed a
-`linkUrl` — `b-f1`, "Fit the new tap washer", the item the
-`projects-dossier-slot-open-*` captures open — with no label, so all eight of
-those captures (four widths × two themes) show the row as the chain glyph plus
-the bare host (`youtube.com`) and its `Edit link` button, under the title and
-above the chips; at 390 it takes its own line without wrapping.
+popover can become. **The three attachment toggles now fall entirely behind
+that same disclosure, and with them the last of #782's Link that a capture
+used to reach.** The Link toggle sat on its own always-visible row below the
+details row and *was* in every capture-popover capture; it moved inside
+`detailsOpen` when the note and the file joined it, so all three — `Add` plus
+the chain, the notebook and the Dropbox mark — and all three editors behind
+them (`URL`/`Link name`, `Vault path`, `File path`) are now photographed
+**nowhere**. The resting popover is correspondingly shorter than the captures
+before this pass, which is the visible change in every `capture-popover-*`
+frame. `shell/CapturePopover.test.tsx` is the cover and now carries the
+weight alone: it drives the disclosure open, asserts which of the three are
+drawn (the note needs a bound vault, the file needs wiring), and asserts all
+three onto the submit. The expanded card stays worth a hand pass at 390, where
+it is the tallest thing the popover can become and now three rows taller.
+
+**The item panel's link row is photographed, in a new shape.** The
+always-visible anchor plus its `Edit link` button is gone: `LinkAttach` draws
+one control carrying the same `linkDisplayLabel` text, the same target and the
+same chain glyph, beside `NoteLink` and `FileAttach` in the attachment row. It
+is **still a real `<a href>`** — `Button`'s `href` renders an anchor wearing
+the button's skin, which is what keeps the link role, the middle-click and the
+"Copy link address" the old row had; a `<button>` calling `window.open` looked
+identical and would have lost all three silently. The row sits *below* the act
+row now, not under the title and above the chips.
+`demo-task-state.ts` still gives exactly one board seed a `linkUrl` — `b-f1`,
+"Fit the new tap washer", the item the `projects-dossier-slot-open-*` captures
+open — with no label, so all eight of those captures (four widths × two
+themes) show that row as `youtube.com` plus its `…`, then `Open note` plus its
+`…`, then `Add` and the Dropbox mark; at 390 the row wraps rather than
+ellipsising, which those captures are what prove. That seed carries a
+`vaultPath` and two file links as well, so the same eight frames are the only
+place all three affordances are photographed side by side — and the reason a
+change to any one of them must re-run this gate.
 
 **The capture popover's dictation microphone (#379) is unphotographed, and no
 capture will ever contain it — not the resting mic, and not one of its

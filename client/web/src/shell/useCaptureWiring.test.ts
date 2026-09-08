@@ -41,6 +41,24 @@ describe("submitCaptureRequest", () => {
     expect(types).toEqual(["capture", "getTriageInbox"]);
   });
 
+  /** The seed this returns is what `useCaptureAttachments.ts` keys a capture's
+   * note and file writes on. `TaskState.lastCapture` is a broadcast to every
+   * connected view rather than a reply to this call, so a returned seed that
+   * did not match the one actually posted would leave those attachments
+   * waiting for a result that never arrives — silently, with the capture
+   * itself landing fine. Both halves are asserted: the caller's own seed
+   * comes back, and a minted one comes back as the very value posted. */
+  it("returns the seed it posted, both when given one and when minting its own", () => {
+    const given = fakeWorker();
+    expect(submitCaptureRequest(given, "buy milk", "triage", 1_000, {}, "seed-1")).toBe("seed-1");
+
+    const minted = fakeWorker();
+    const seed = submitCaptureRequest(minted, "buy milk", "triage", 1_000);
+
+    expect(seed).toBe(minted.postMessage.mock.calls[0][0].seed);
+    expect(seed).not.toBe("");
+  });
+
   it("the capture message itself carries the raw title and stage unmodified, with every field absent by default", () => {
     const worker = fakeWorker();
 

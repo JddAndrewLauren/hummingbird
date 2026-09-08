@@ -2,7 +2,8 @@
 // operator can do to `items.vault_path` without opening the fields.
 //
 // **Three states, one control cluster.** An item pointing at nothing offers
-// "Link a note", which opens an editor prefilled with `derivePath(title)` —
+// `Add` and the note glyph, which opens an editor prefilled with
+// `derivePath(title)` —
 // the path is *proposed* and editable before it is stored, never written by
 // the click that offers it. An item already pointing somewhere offers "Open
 // note" plus an `…` reopening that same editor over the stored value, with
@@ -16,6 +17,9 @@
 // built; the action row won because linking is a thing you do, not a fact the
 // panel states, and it keeps the panel's read mode free of a control that is
 // empty on almost every item.*
+// *That resting label was the words "Link a note" until this component joined
+// the link and file affordances in one row: all three say `Add`, and the
+// glyph is what names which. The three states themselves are unchanged.*
 //
 // **Never a second copy of the path rules.** What a path may look like is
 // `obsidian/vault-uri.ts`'s `isValidVaultPath`, and the message when it does
@@ -111,7 +115,7 @@ export function NoteLink({ item, vaultName, onTriage }: NoteLinkProps) {
         <div style={{ display: "flex", alignItems: "flex-start", gap: "var(--space-4)" }}>
           <Input
             size="sm"
-            icon="link"
+            icon="notebook-text"
             value={draft}
             error={invalid ? VAULT_PATH_PROBLEM : undefined}
             placeholder="Hummingbird/Knee rehab.md"
@@ -162,8 +166,18 @@ export function NoteLink({ item, vaultName, onTriage }: NoteLinkProps) {
 
   if (stored === null) {
     return (
-      <Button size="sm" variant="secondary" iconLeft="link" onClick={startEditing}>
-        Link a note
+      <Button
+        size="sm"
+        variant="secondary"
+        iconRight="notebook-text"
+        // The glyph is the noun, so the label has to do the naming the glyph
+        // cannot for a screen reader — and it is the hover tooltip too, the
+        // same contract the capture box's matching toggle carries.
+        aria-label="Add a note"
+        title="Add a note"
+        onClick={startEditing}
+      >
+        Add
       </Button>
     );
   }
@@ -173,6 +187,7 @@ export function NoteLink({ item, vaultName, onTriage }: NoteLinkProps) {
       <Button
         size="sm"
         variant="secondary"
+        iconLeft="notebook-text"
         // The same "this leaves the app" glyph `AlertCard`'s "Open source"
         // carries, and for the same reason.
         iconRight="arrow-up-right"
