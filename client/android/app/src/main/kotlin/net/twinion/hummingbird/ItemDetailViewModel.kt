@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import kotlin.random.Random
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -343,7 +344,10 @@ class ItemDetailViewModel(
      * (Triage does — the item leaves its queue) must not close it on a
      * *refused* one, or it unmounts both the refusal message and the draft
      * that caused it. Refusals are worded into [statusLine] rather than
-     * thrown, so a `Unit` return left the caller unable to tell. */
+     * thrown, so a `Unit` return left the caller unable to tell.
+     *
+     * Cancellation rethrows rather than being worded as a failure — the
+     * same amendment [TriageViewModel]'s own `complete` carries. */
     private suspend fun submit(
         itemId: String,
         nowMs: Long,
@@ -372,6 +376,8 @@ class ItemDetailViewModel(
             // the item says, so Back has nothing left to fight over even
             // before the re-read lands.
             _seed.value = draft
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Exception) {
             _statusLine.value = "Couldn't $verb — ${error.message}"
             return false
