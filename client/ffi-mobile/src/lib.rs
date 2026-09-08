@@ -99,6 +99,7 @@ use hummingbird_core::decisions::panes::zone::{ZoneFact, ZoneFacts, ZoneQuery};
 use hummingbird_core::decisions::panes::{
     github, homework, kimi, race, reachability, scps, uptime, vacation, waste, weekend,
 };
+use hummingbird_core::diagnostics::{DiagnosticClock, DiagnosticSession, DiagnosticsContext};
 use hummingbird_core::pane::PaneEnvelope;
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
 use hummingbird_core::storage::FsSnapshotStore;
@@ -457,6 +458,80 @@ fn mint_mutation_seed(kind: &str, now_ms: i64) -> String {
         Err(_) => format!("mobile-{kind}:{now_ms}:{seq}"),
     }
 }
+
+// -------------------------------------------------------------- #769: run_observed
+
+/// A fresh, process-scoped session id for the
+/// [`hummingbird_core::diagnostics::DiagnosticSession`]
+/// [`MobileTaskHost::run`] drives its observed cycles through — deliberately
+/// **not** `DIAGNOSTIC_SESSION`'s own Android-sourced identity. That static
+/// is set by `diagnostic_init_session`, a separate Kotlin call that can run
+/// *after* [`MobileTaskHost::init`] (`CoreHolder.create`'s own doc), so an
+/// id minted here at `init` time cannot wait on it. This is the same
+/// "different (source, session_id) pairs are fine" split
+/// `client/ffi-web`'s `TaskCoreCell` already established for the identical
+/// reason: `Source::Core`'s `sync.*`/`http.*` events only ever need to
+/// correlate among themselves, never against `Source::Android`'s
+/// `core.*`/`worker.*` ones. Random rather than counter-based for the same
+/// cross-process-uniqueness reason [`mint_mutation_seed`] leads with OS
+/// randomness — a restarted process must never reuse a still-live id.
+fn mint_sync_session_id() -> String {
+    let mut random = [0u8; 16];
+    match getrandom::getrandom(&mut random) {
+        Ok(()) => {
+            let hex: String = random.iter().map(|b| format!("{b:02x}")).collect();
+            format!("mobile-sync-{hex}")
+        }
+        Err(_) => "mobile-sync-unknown".to_string(),
+    }
+}
+
+/// The `Instant` [`MobileDiagnosticClock::monotonic_ms`] measures from —
+/// process-wide, not per-thread: this host runs on a multi-threaded tokio
+/// runtime (`uniffi`'s own `async_runtime = "tokio"`), so a `thread_local`
+/// origin would answer a different question depending which worker thread
+/// happened to poll a given call. Lazily set on first use — `MobileTaskHost::init`
+/// samples this same reading for [`DiagnosticSession::new`]'s own
+/// `origin_monotonic_ms` argument (`ffi-web`'s `TaskCoreCell::new` samples
+/// its equivalent `now_monotonic_ms()` the identical way), so the very
+/// first `elapsed_ms` this session ever records starts at (near) zero
+/// rather than jumping by however long the process had already been alive.
+static SYNC_CLOCK_ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+fn sync_monotonic_ms() -> u64 {
+    SYNC_CLOCK_ORIGIN.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
+/// [`DiagnosticClock`] for [`MobileTaskHost::run`]'s observed cycle (#769):
+/// `sleep_ms` via `tokio::time::sleep` — this host already runs on a real
+/// multi-threaded tokio runtime (unlike `ffi-web`'s bare `wasm32`, which has
+/// to reach for JS `setTimeout` instead), so there is no seam to build here
+/// beyond naming the one this crate already depends on for everything else
+/// async.
+struct MobileDiagnosticClock;
+
+#[async_trait::async_trait]
+impl DiagnosticClock for MobileDiagnosticClock {
+    fn monotonic_ms(&self) -> u64 {
+        sync_monotonic_ms()
+    }
+
+    async fn sleep_ms(&self, ms: u64) {
+        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+    }
+}
+
+/// [`DiagnosticsContext::new`]'s host identity for every observed cycle
+/// [`MobileTaskHost::run`] drives (#769) — the `X-Hummingbird-Client-Platform`/
+/// `-Client-Build` correlation headers. `build` is a placeholder, not a real
+/// app version: wiring Android's actual `versionName` across this uniffi
+/// boundary is out of #769's scope (its brief rules out "changing what the
+/// diagnostics envelope carries"), so this crate supplies a fixed, valid
+/// header value rather than leaving one unset — `sanitize_header_value`
+/// would otherwise substitute its own `"invalid"` sentinel for an empty
+/// string on every single request.
+const SYNC_DIAGNOSTICS_PLATFORM: &str = "android";
+const SYNC_DIAGNOSTICS_BUILD: &str = "unknown";
 
 uniffi::setup_scaffolding!();
 
@@ -3966,6 +4041,20 @@ pub struct MobileTaskHost {
     core_owner: core_lock::CoreOwnershipTracker,
     diag_session: core_lock::CoreLockSession,
     diag_sink: core_lock::BufferingSink,
+    /// #769: the `Source::Core` sibling of `diag_session` above — the
+    /// `hummingbird_core::diagnostics::DiagnosticSession` [`MobileTaskHost::run`]
+    /// builds its per-cycle [`DiagnosticsContext`] from, so a `sync.*`/
+    /// `http.*` event actually reaches `diag_sink` (the same buffer
+    /// `diag_session`'s own `core.*`/`operation.*` events already share) in
+    /// production, not just from a `client/core` test fixture. Its own,
+    /// independent session id — see [`mint_sync_session_id`]'s doc for why
+    /// it does not reuse `DIAGNOSTIC_SESSION`'s.
+    sync_diag_session: DiagnosticSession<'static>,
+    /// The counter [`MobileTaskHost::run`] mints each cycle's `cycle_id`
+    /// from — a different id space from any `operation_id` (`mint_mutation_seed`'s
+    /// callers), so the two can never collide on the same ordinal in the
+    /// exported journal.
+    next_sync_cycle_seq: AtomicU64,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -4036,6 +4125,15 @@ impl MobileTaskHost {
             // advances — rather than minting a second, colliding one.
             diag_session: core_lock::CoreLockSession::new(&DIAGNOSTIC_SESSION.seq),
             diag_sink: core_lock::BufferingSink::new(),
+            // `Box::leak`, once per `MobileTaskHost` (constructed once per
+            // process, like `ffi-web`'s `TaskCoreCell`) — the same bounded,
+            // single leak `TaskCoreCell::new` already accepts for its own
+            // session id.
+            sync_diag_session: DiagnosticSession::new(
+                Box::leak(mint_sync_session_id().into_boxed_str()),
+                sync_monotonic_ms(),
+            ),
+            next_sync_cycle_seq: AtomicU64::new(0),
         }))
     }
 
@@ -4215,11 +4313,19 @@ impl MobileTaskHost {
         inner.core.clear_api_key();
     }
 
-    /// Runs one sync cycle against the live transports. `trigger` is the
-    /// web protocol's string pair (`"timer"` gates on backoff, anything
-    /// else is a deliberate `"user"` gesture); `now_ms` and `jitter_unit`
-    /// come from the host clock and RNG, injected here exactly as on the
-    /// web side so the core stays deterministic under test.
+    /// Runs one observed sync cycle against the live transports (#769).
+    /// `trigger` is the web protocol's string pair (`"timer"` gates on
+    /// backoff, anything else is a deliberate `"user"` gesture); `now_ms`
+    /// and `jitter_unit` come from the host clock and RNG, injected here
+    /// exactly as on the web side so the core stays deterministic under
+    /// test. A fresh, per-call [`DiagnosticsContext`] wraps both transports
+    /// with [`self.sync_diag_session`](DiagnosticSession) and
+    /// [`MobileDiagnosticClock`], so `sync.*`/`http.*` — the latter
+    /// carrying a queued write's `operation_id`, #739's own join key —
+    /// actually reach `self.diag_sink` (and so `take_diagnostic_events`) in
+    /// production, closing the gap this host's own test doc used to name:
+    /// "`MobileTaskHost::run` drives the unobserved `Core::run`… no
+    /// watchdog clock wired up here".
     pub async fn run(
         &self,
         now_ms: i64,
@@ -4231,16 +4337,32 @@ impl MobileTaskHost {
             "timer" => Trigger::Timer,
             _ => Trigger::User,
         };
+        let cycle_id = format!(
+            "{}-cycle-{}",
+            self.sync_diag_session.session_id(),
+            self.next_sync_cycle_seq.fetch_add(1, Ordering::Relaxed)
+        );
+        let clock = MobileDiagnosticClock;
+        let diagnostics = DiagnosticsContext::new(
+            &self.diag_sink,
+            &clock,
+            &self.sync_diag_session,
+            &cycle_id,
+            SYNC_DIAGNOSTICS_PLATFORM,
+            SYNC_DIAGNOSTICS_BUILD,
+            now_ms,
+        );
         let inner = &mut *self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Sync).await;
         let outcome = inner
             .core
-            .run(
+            .run_observed(
                 &inner.read_transport,
                 &inner.write_transport,
                 now_ms,
                 trigger,
                 force_full_sweep,
                 jitter_unit,
+                &diagnostics,
             )
             .await;
         map_run_outcome(outcome)
@@ -6548,9 +6670,11 @@ pub fn is_informative_sync_outcome(kind: String) -> bool {
 /// (`HbMessagingService.onMessageReceived`) and, since #710,
 /// `network.changed` (`NetworkMonitor`'s `ConnectivityManager` callback).
 /// Never the whole closed family: `Core::run_observed`'s own
-/// `sync.*`/`http.*`/`operation.*` events would need Android to call the
-/// observed path, which this slice deliberately leaves unwired (see this
-/// crate's `core_lock` module doc for why) — this is the same "mirror a
+/// `sync.*`/`http.*`/`operation.*` events reach `Rust`-side sinks directly
+/// (since #769, [`MobileTaskHost::run`] drives that observed path, and its
+/// events land in the same [`core_lock::BufferingSink`] this crate's own
+/// `core.*`/`operation.*` events already share) — this enum only ever
+/// needs to name the handful *Android itself* mints, the same "mirror a
 /// Rust-owned enum, don't redefine it" shape
 /// [`MobileUrgencyBand`]/[`MobileFrontierAxis`] already use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -6798,23 +6922,23 @@ mod tests {
     /// `emit_operation_local_commit` against the durable write breaks it.
     /// The `http.started` half is **still vacuous by construction here** —
     /// `capture` only enqueues, so this path never issues HTTP and the
-    /// buffer holds no `http.started` for any assertion to catch. That is
-    /// not the structural gap #739 closed, though: #739 gave the queued
-    /// entry itself an `operation_id` (`hummingbird_core::Core::capture`
-    /// now stamps it, and `drain`'s eventual `http.started`/`http.finished`
+    /// buffer holds no `http.started` for any assertion to catch, whether
+    /// or not `run_observed` is wired anywhere else. That is not the
+    /// structural gap #739 closed, though: #739 gave the queued entry
+    /// itself an `operation_id` (`hummingbird_core::Core::capture` now
+    /// stamps it, and `drain`'s eventual `http.started`/`http.finished`
     /// carry it through — proven at the core level, spanning a real cycle
     /// boundary, by
     /// `hummingbird_core::sync::cycle::tests::observed::operation_local_commit_precedes_http_started_for_the_same_operation_across_the_cycle_boundary`).
-    /// What is still missing on **this** host is that
-    /// [`MobileTaskHost::run`] drives the unobserved `Core::run`, not
-    /// `Core::run_observed` — same reason `ffi-web`'s own `run` doesn't
-    /// either (no watchdog clock wired up here) — so no `http.started` is
-    /// emitted by this production surface at all, whatever operation id it
-    /// would carry once one is. Wiring `run_observed` into this host is a
-    /// separate, already-tracked follow-up, not #739's; until it lands this
-    /// assertion is kept as a regression tripwire for the day capture
-    /// *does* reach the network, not as evidence the join is exercised
-    /// today.
+    /// **#769 closed the other half** — [`MobileTaskHost::run`] now drives
+    /// `Core::run_observed`, not the unobserved `Core::run` — so a queued
+    /// write really does reach `http.started` in production now; that is
+    /// proven by
+    /// `a_queued_write_drained_by_run_emits_http_started_carrying_its_operation_id`
+    /// just below, which (unlike this one) actually calls `run`. This test
+    /// stays scoped to `capture` alone, so its own two assertions above
+    /// remain exactly what they always were: a real ordering pin, and a
+    /// vacuous-by-construction guard against a `capture`-only regression.
     #[tokio::test]
     async fn a_successful_capture_orders_operation_local_commit_before_any_http_started() {
         use hummingbird_core::diagnostics::{DiagnosticEvent, DiagnosticEventV1};
@@ -6882,6 +7006,76 @@ mod tests {
                     && envelope.operation_id.as_deref() == Some(capture_operation_id.as_str())
             }),
             "no http.started event may ever carry capture's own operation_id",
+        );
+    }
+
+    /// Acceptance (#769): "A test per host proves an `http.started` is
+    /// emitted for a queued write carrying the enqueuing operation's id."
+    /// A capture enqueues a write stamped with its own minted `operation_id`
+    /// (`MobileTaskHost::capture`'s own plumbing, unchanged by this issue);
+    /// `run` then drains it against an empty `base_url` (this crate's own
+    /// network-free pattern — `ReqwestMutationTransport::send_with_headers`
+    /// fails on the resulting relative URL, but only *after*
+    /// `InstrumentedMutationTransport::send` has already recorded
+    /// `http.started`), proving the join key #739 built is actually
+    /// exercised in production on this host too, not just reachable from a
+    /// `client/core` fixture.
+    ///
+    /// **This is the demonstrated-failure mutation the brief asks for.**
+    /// Reverting `MobileTaskHost::run` to call the unobserved `Core::run`
+    /// (swap `run_observed` back to `run`, drop the `diagnostics` argument)
+    /// makes this test fail: `Core::run` emits no `http.*` events at all,
+    /// so `take_diagnostic_events` holds no `HttpStarted` event and the
+    /// `expect` below panics with "a queued write's drain must emit
+    /// http.started". Confirmed by hand and reverted before landing.
+    #[tokio::test]
+    async fn a_queued_write_drained_by_run_emits_http_started_carrying_its_operation_id() {
+        use hummingbird_core::diagnostics::{DiagnosticEvent, DiagnosticEventV1};
+
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("run-observed-http-started-ns");
+        // A real (if fake) device token, matching `TaskHostCore`'s own
+        // identical test: an *empty* one would clear the credential at
+        // `init` (its own comment on `empty_key`), so `run` would answer
+        // `NoCredential` and short-circuit before ever reaching the queue
+        // drain — never emitting anything for this test to catch.
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            String::new(),
+            "device-token".to_string(),
+        )
+        .await
+        .unwrap();
+
+        host.capture(title_only_draft("drain me"), 1_000).await.unwrap();
+        let before_run: Vec<DiagnosticEventV1> = host
+            .take_diagnostic_events()
+            .await
+            .iter()
+            .map(|line| serde_json::from_str(&line.json).unwrap())
+            .collect();
+        let operation_id = before_run
+            .iter()
+            .find(|envelope| matches!(envelope.event, DiagnosticEvent::OperationLocalCommit))
+            .and_then(|envelope| envelope.operation_id.clone())
+            .expect("capture's operation.local_commit carries its operation_id");
+
+        let _ = host.run(2_000, "user".to_string(), true, 0.0).await;
+
+        let envelopes: Vec<DiagnosticEventV1> = host
+            .take_diagnostic_events()
+            .await
+            .iter()
+            .map(|line| serde_json::from_str(&line.json).unwrap())
+            .collect();
+        let http_started = envelopes
+            .iter()
+            .find(|envelope| matches!(envelope.event, DiagnosticEvent::HttpStarted { .. }))
+            .expect("a queued write's drain must emit http.started");
+        assert_eq!(
+            http_started.operation_id.as_deref(),
+            Some(operation_id.as_str()),
+            "http.started must carry the enqueuing capture's operation id"
         );
     }
 
