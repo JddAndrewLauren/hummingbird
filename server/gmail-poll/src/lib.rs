@@ -85,7 +85,10 @@ mod resume;
 
 pub use alert::plan as plan_alert;
 pub use batch::{fold_messages, Batch};
-pub use cursor::{envelope as cursor_envelope, parse_cursor, CursorError, CURSOR_KEY, CURSOR_SCHEMA, SOURCE};
+pub use cursor::{
+    envelope as cursor_envelope, parse_cursor, CursorError, CURSOR_KEY, CURSOR_SCHEMA,
+    POLLED_EVERY_MS, SOURCE,
+};
 pub use event::message_to_event;
 pub use evaluate::{evaluate_events, Match};
 pub use history::{

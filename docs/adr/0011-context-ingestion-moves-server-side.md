@@ -158,6 +158,23 @@ built `server/gmail-poll` the way `server/city-waste` (#120) was built:
 `GET /api/snapshots` (both added alongside it) as an `ingest` token rather
 than running inside `hummingbird-authority-worker`.
 
+*Amended 2026-09-02 (#774): the trigger moved; the shape did not. Actions
+`schedule:` delivered this poller at roughly once every four hours against
+the `*/15` it asked for — GitHub batches and delays scheduled runs and
+guarantees no interval — measured and argued in #773. So #774 built the
+binary into the `hummingbird-sweeper` image and gave it a staggered entry in
+`crontab`, on the supercronic clock that always-on machine already runs for
+`sweep.py`: one clock extended, not a second one started (CLAUDE.md's "no
+competing clocks"). `.github/workflows/gmail-poll.yml` keeps
+`workflow_dispatch:` only, for a manual run against a fresh checkout, and its
+header carries the argument in full. **Out-of-process — what this amendment
+actually decided, and what the Status header entry above names — is
+unchanged:** the poller still runs outside `hummingbird-authority-worker`,
+reading `GET /api/rules` and `GET /api/snapshots` as an `ingest` token. The
+other three evaluated-stream pollers moved with it, as did `github-status`
+(ADR-0017 decision 2); `crontab` is where every one of those cadences now
+lives.*
+
 **Why, standing on its own:** `server/worker` has no test harness of any
 kind (the split that already separates `authority/src/fcm.rs` from
 `worker/src/fcm.rs`), so a cursor-loss decision, a rule-evaluation fold, or
@@ -218,6 +235,12 @@ out-of-process shape: its own GitHub Actions `schedule:`
 (`.github/workflows/calendar-poll.yml`), reading `GET /api/rules` and
 `GET /api/snapshots` as an `ingest` token bound to `google-calendar/v1`,
 never running inside `hummingbird-authority-worker`.
+
+*Amended 2026-09-02 (#774): this leg followed #135's off Actions `schedule:`
+as well — a staggered `crontab` entry on `hummingbird-sweeper`'s supercronic
+clock, `workflow_dispatch:` retained on the workflow. Out-of-process, the
+`ingest` token bound to `google-calendar/v1`, and the `busy_now` snapshot
+below are all unchanged; see the #774 note in the amendment above.*
 
 Unlike Gmail, the credential question here needed no fresh resolution: the
 decision table at the top of this ADR already specified "Google Calendar:
@@ -282,3 +305,13 @@ not something this implementation may decide or verify silently — until
 that policy exists, the certificate's actual worst-case abuse sits closer
 to `ADMIN_SECRET`'s side of CLAUDE.md's blast-radius line than to
 `CITY_WASTE_INGEST_TOKEN`'s.
+
+*Amended 2026-09-02 (#774): both Graph pollers moved off Actions `schedule:`
+onto `hummingbird-sweeper`'s supercronic clock with the two Google lanes, and
+this credential moved with them — `GRAPH_CLIENT_PRIVATE_KEY` is a Fly secret
+on that machine now, set from the operator's terminal, with the non-secret
+`GRAPH_*` identifiers as `[env]` in `fly.toml`; it is no longer an Actions
+secret, so the trust boundary this resolution reasoned about is not the one
+it rests behind. Whether an Application Access Policy bounds the app
+registration is untouched by where the key is held —
+`.github/workflows/graph-mail-poll.yml`'s header carries that record.*

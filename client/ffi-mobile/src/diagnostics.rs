@@ -1,16 +1,21 @@
 //! The pure half of Android's diagnostic-event minting (#709): builds one
 //! `DiagnosticEventV1` (owned by `hummingbird_core::diagnostics`, #706) for
 //! an event Android mints itself — outside any observed sync cycle, which
-//! is #710's job to wire through `DiagnosticSink` — and serializes it to
-//! the exact NDJSON line `net.twinion.hummingbird.diagnostics.
+//! is `MobileTaskHost::run`'s own job to wire through `DiagnosticSink`
+//! since #769 (`core_lock`'s `BufferingSink`, not this module) — and
+//! serializes it to the exact NDJSON line `net.twinion.hummingbird.diagnostics.
 //! DiagnosticsRecorder` appends verbatim.
 //!
 //! **Why this exists at all, rather than a Kotlin-side event builder.**
 //! #706's module header forbids a host redefining the closed event family
 //! or the envelope shape — Android's `session.started`/`worker.*`/
 //! `push.received` events still have to come from *somewhere*, since they
-//! are not produced by a `Core::run_observed` cycle (`CoreHolder` never
-//! calls the observed path; that wiring is #710's). Reusing the real
+//! are not produced by a `Core::run_observed` cycle: `MobileTaskHost::run`
+//! does call that path since #769 (`lib.rs`'s own diagnostics section), but
+//! its `sync.*`/`http.*`/`operation.*` events reach `core_lock`'s
+//! `BufferingSink` directly — none of them is ever one of Android's own
+//! four mints, so this module still has nothing to do with them. Reusing
+//! the real
 //! `DiagnosticEventV1`/`DiagnosticEvent`/`Source` types here — rather than
 //! a parallel Kotlin `data class` guessing at the same field names and
 //! `serde` renames — is what keeps Android's own NDJSON lines byte-for-byte
@@ -35,8 +40,9 @@ use hummingbird_core::diagnostics::{
 /// `operation_id`/`request_id` are always `None` here: none of Android's
 /// own four mints (`session.started`, `worker.started`/`finished`,
 /// `push.received`) belongs to a sync cycle or a correlated HTTP call —
-/// only `Core::run_observed`'s own emissions ever set those, and Android
-/// does not call that path (yet — #710).
+/// only `Core::run_observed`'s own emissions ever set those — reached since
+/// #769 by `MobileTaskHost::run`, but through `core_lock`'s
+/// `BufferingSink` directly, never through this function.
 pub(crate) fn event_envelope(
     session_id: &str,
     seq: u64,

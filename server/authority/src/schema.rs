@@ -131,13 +131,23 @@ use crate::sql::{Sql, SqlError, SqlValue};
 /// one spliced line — verified against a real migrated store's
 /// `sqlite_master`, not reasoned out.
 ///
-/// 14 adds the `file_links` table (ADR-0036): the many-per-item Dropbox-
+/// 14 adds `items.link_url` and `items.link_label` (#782): the one Link an
+/// item points at, and its optional name. The 8→9 shape — two nullable
+/// columns on an existing table — so [`add_missing_columns`] gains a
+/// seventh and eighth arm. Two columns and not a table because the
+/// cardinality is one per item, exactly `vault_path`'s (a *list* of links
+/// is `project_links`, on a project). Both splice after `vault_path` on
+/// [`CREATE_ITEMS`]' one spliced line, in the order the `ALTER`s run —
+/// verified against a real migrated store's `sqlite_master`, not reasoned
+/// out.
+///
+/// 15 adds the `file_links` table (ADR-0036): the many-per-item Dropbox-
 /// relative paths an item points at. A whole new table, so the growth is
 /// the 6→7 / 7→8 / 11→12 shape — `CREATE TABLE IF NOT EXISTS` on boot,
 /// no [`add_missing_columns`] arm — and, because it references `items`,
 /// it joins [`FK_CHILDREN`]: an `items` rebuild has to stand it aside like
 /// `steps`, `blocked_by` and `grills`.
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 /// meta: the workspace version counter (one row), bumped by every write.
 /// Every mutated row stamps its `version` from this counter; the delta pull
@@ -202,8 +212,8 @@ CREATE TABLE IF NOT EXISTS project_links (
 /// [`SCHEMA_VERSION`]. FKs are documentation here regardless: enforcement
 /// is off by default in SQLite, and handlers validate referents explicitly.
 ///
-/// **The trailing `, agent …, vault_path TEXT)` on its own line is
-/// load-bearing, not a typo**, and — the part worth reading twice — it is a *different* shape
+/// **The trailing `, agent …, vault_path TEXT, link_url TEXT, link_label
+/// TEXT)` on its own line is load-bearing, not a typo**, and — the part worth reading twice — it is a *different* shape
 /// from [`CREATE_ALERTS`]'s inline one even though both encode the same
 /// rule. Both must spell the table exactly as `ALTER TABLE … ADD COLUMN`
 /// splices it, because the growth tests assert a migrated store and a fresh
@@ -214,8 +224,8 @@ CREATE TABLE IF NOT EXISTS project_links (
 /// `UNIQUE(source, source_key)`, so its column lands snug against
 /// `version`'s line; `items` has no table constraint, so `agent` lands
 /// after the newline, immediately before the `)` — and `vault_path`
-/// (12→13, #771) lands after `agent` on that same spliced line, for the
-/// same reason. Copying `alerts`'
+/// (12→13, #771) lands after `agent` on that same spliced line, and the
+/// Link pair (13→14, #782) after it, for the same reason. Copying `alerts`'
 /// formatting here was the first attempt and
 /// `init_schema_grows_a_schema_2_database_additively` failed on that one
 /// newline.
@@ -242,7 +252,7 @@ CREATE TABLE IF NOT EXISTS items (
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL,
   version     INTEGER NOT NULL
-, agent INTEGER NOT NULL DEFAULT 0, vault_path TEXT)";
+, agent INTEGER NOT NULL DEFAULT 0, vault_path TEXT, link_url TEXT, link_label TEXT)";
 
 pub const CREATE_STEPS: &str = "\
 CREATE TABLE IF NOT EXISTS steps (
@@ -620,9 +630,10 @@ fn archive_unaddressable_items(sql: &dyn Sql, now_ms: i64) -> Result<(), SqlErro
 /// Every column added to an already-existing table since the schema was
 /// first written — `alerts.subject_key` (3→4, ADR-0015), `items.agent`
 /// (4→5, #115), `projects`' pair (8→9, #625), `rules.deleted_at`
-/// (9→10) and `items.vault_path` (12→13, #771). The arms are independent
-/// and each reads its own column's presence, so a store at any starting
-/// version reaches the same shape.
+/// (9→10), `items.vault_path` (12→13, #771) and `items`' Link pair
+/// (13→14, #782). The arms are independent and each reads its own
+/// column's presence, so a store at any starting version reaches the same
+/// shape.
 ///
 /// Runs **after** the create loop, which is what makes one rule cover every
 /// starting shape: by this point `alerts` certainly exists, either because
@@ -654,6 +665,12 @@ fn add_missing_columns(sql: &dyn Sql) -> Result<(), SqlError> {
     }
     if !column_exists(sql, "items", "vault_path")? {
         sql.exec("ALTER TABLE items ADD COLUMN vault_path TEXT", &[])?;
+    }
+    if !column_exists(sql, "items", "link_url")? {
+        sql.exec("ALTER TABLE items ADD COLUMN link_url TEXT", &[])?;
+    }
+    if !column_exists(sql, "items", "link_label")? {
+        sql.exec("ALTER TABLE items ADD COLUMN link_label TEXT", &[])?;
     }
     Ok(())
 }

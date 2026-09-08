@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use hummingbird_core::bindings::{Binding, BindingKey};
 use hummingbird_core::decisions::panes::contract::QUESTION_ORDER;
 use hummingbird_core::diagnostics::{
-    DiagnosticEvent, DiagnosticEventV1, DiagnosticSession, DiagnosticSink, OperationOutcome,
-    SyncOutcome,
+    DiagnosticClock, DiagnosticEvent, DiagnosticEventV1, DiagnosticSession, DiagnosticSink,
+    DiagnosticsContext, OperationOutcome, SyncOutcome,
 };
 /// Re-exported so `lib.rs`'s wasm bindings (the checkout call sites) can
 /// name it as `task_host::CoreOwner` alongside [`TaskCoreCell`], rather
@@ -25,7 +25,7 @@ pub use hummingbird_core::diagnostics::CoreOwner;
 use hummingbird_core::question_switch::QuestionSwitch;
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
 use hummingbird_core::sync::write::ReqwestMutationTransport;
-use hummingbird_core::sync::{CycleOutcome, ReqwestSyncTransport, Trigger};
+use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
 use hummingbird_core::freshness::Freshness;
 use hummingbird_core::pane::PaneSnapshot;
 use hummingbird_core::search::Group;
@@ -159,6 +159,15 @@ pub struct TriageEdits {
     /// item, but which note an item points at is an operator choice.
     #[serde(default, deserialize_with = "touched")]
     pub vault_path: Option<Option<String>>,
+    /// #782's Link, three-state each for `vault_path`'s reason. A name
+    /// beside no URL is refused at [`TaskHostCore::triage`], judged over
+    /// the edit alone: a name sent with an absent URL is trusted to sit
+    /// beside a stored one (the authority makes the final call over the
+    /// current row); a name sent with a cleared URL is refused here.
+    #[serde(default, deserialize_with = "touched")]
+    pub link_url: Option<Option<String>>,
+    #[serde(default, deserialize_with = "touched")]
+    pub link_label: Option<Option<String>>,
 }
 
 /// Every field the capture box may set on a brand-new item, as the JS side
@@ -204,6 +213,13 @@ pub struct CaptureFields {
     /// date is the do-date a human chose, which has no minute.
     #[serde(default)]
     pub scheduled_date: Option<String>,
+    /// #782's Link, settable at capture because the capture box carries the
+    /// field (and a share target, one day, would carry the URL in). A
+    /// `link_label` without a `link_url` is refused before the seam.
+    #[serde(default)]
+    pub link_url: Option<String>,
+    #[serde(default)]
+    pub link_label: Option<String>,
 }
 
 /// Distinguishes "key absent" from "key present, value null" for a
@@ -1088,6 +1104,74 @@ fn now_wall_clock_ms() -> i64 {
     }
 }
 
+/// [`hummingbird_core::diagnostics::DiagnosticClock`] for this host (#769):
+/// [`now_monotonic_ms`] answers the synchronous half directly, and
+/// `sleep_ms` closes the one gap #708's own `TaskHostCore::run` doc used to
+/// cite for staying on the unobserved `Core::run` — "the latter needs a
+/// real `DiagnosticClock`... and this crate has no working `sleep_ms` to
+/// give it". It does now: `setTimeout` on `wasm32` (reached the same way
+/// `lib.rs`'s `mint_session_id` reaches `crypto.randomUUID` — through
+/// `js_sys::Reflect` against the JS global, never a `web-sys` dependency
+/// this crate deliberately has none of), and `tokio::time::sleep` natively
+/// so this module's own `cargo test` suite can exercise the slow/stalled
+/// watchdog too (see `now_monotonic_ms`'s doc for the identical
+/// per-target split, and this crate's `Cargo.toml` for why the native-only
+/// `tokio` dependency this needs never reaches the `wasm32` artifact
+/// `wasm-pack` actually ships).
+struct TaskHostClock;
+
+/// [`DiagnosticsContext::new`]'s host identity for every observed cycle
+/// this crate runs (#769) — the `X-Hummingbird-Client-Platform`/`-Client-Build`
+/// correlation headers. `build` is a placeholder, not a real version:
+/// wiring `client/web/src/shell/build-version.ts`'s own build string across
+/// the wasm boundary is out of #769's scope (its brief rules out "changing
+/// what the diagnostics envelope carries"), so this crate supplies a fixed,
+/// valid header value rather than leaving one unset — `sanitize_header_value`
+/// would otherwise substitute its own `"invalid"` sentinel for an empty
+/// string on every single request.
+const DIAGNOSTICS_PLATFORM: &str = "web";
+const DIAGNOSTICS_BUILD: &str = "unknown";
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl DiagnosticClock for TaskHostClock {
+    fn monotonic_ms(&self) -> u64 {
+        now_monotonic_ms()
+    }
+
+    async fn sleep_ms(&self, ms: u64) {
+        #[cfg(target_arch = "wasm32")]
+        {
+            sleep_ms_wasm(ms).await;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+        }
+    }
+}
+
+/// `wasm32`'s half of [`TaskHostClock::sleep_ms`] — a `js_sys::Promise`
+/// resolved by the JS global's own `setTimeout`, reached through
+/// `js_sys::Reflect` rather than a `web-sys` binding (this crate has none;
+/// see [`TaskHostClock`]'s own doc). `Promise::new`'s executor hands back
+/// `resolve` as a real `js_sys::Function` already, so no
+/// `wasm_bindgen::closure::Closure` is needed either — `setTimeout` is
+/// called with `resolve` itself as its callback.
+#[cfg(target_arch = "wasm32")]
+async fn sleep_ms_wasm(ms: u64) {
+    use wasm_bindgen::JsCast;
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        let global = js_sys::global();
+        let set_timeout = js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("setTimeout"))
+            .expect("setTimeout exists in a JS execution environment")
+            .dyn_into::<js_sys::Function>()
+            .expect("global.setTimeout is a function");
+        let _ = set_timeout.call2(&global, &resolve, &wasm_bindgen::JsValue::from_f64(ms as f64));
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
 /// The most events [`DiagnosticBuffer`] holds before it starts dropping the
 /// oldest ones — #708 review round 1: an unbounded `Vec` bounded only by
 /// drain cadence still grows without limit on any path that never drains
@@ -1242,39 +1326,27 @@ impl<'a> OperationDiagnostics<'a> {
     /// the original 401 itself produced, so the journal shows the ongoing
     /// hold rather than a gap; never the token value, only the closed
     /// outcome name. `NoCredential` (nobody ever pushed a token) is not a
-    /// "hold" and emits nothing, the same as it always has. A real cycle
-    /// (`CoreCycleOutcome::Cycle`) is mapped the same way `client/core`'s
-    /// own `sync_outcome_of` maps [`CycleOutcome`] — covering, in
-    /// particular, a connection error (`PullFailed`) and a persistence
-    /// failure (`PersistFailed`) with the classified outcome the brief's
-    /// acceptance list asks for, since [`TaskHostCore::run`] does not (this
-    /// slice, deliberately — see its own doc) route through the full
-    /// `run_observed`/`DiagnosticsContext` machinery.
+    /// "hold" and emits nothing, the same as it always has.
+    ///
+    /// **#769: a real cycle (`CoreCycleOutcome::Cycle`) emits nothing here
+    /// any more, either.** Before #769, [`TaskHostCore::run`] drove the
+    /// unobserved `Core::run`, and this was the *only* place a completed
+    /// cycle's outcome ever reached the journal — hence the `sync_outcome_of`
+    /// mapping this method used to carry directly. `TaskHostCore::run` now
+    /// drives [`Core::run_observed`], whose own per-cycle
+    /// `DiagnosticsContext` already records a cycle-scoped `sync.finished`
+    /// (`cycle_id: Some(..)`) for that exact outcome before this method is
+    /// ever reached — mapping `Cycle` to a second, session-scoped
+    /// `sync.finished` (`cycle_id: None`) here would duplicate it in the
+    /// exported journal, so this method is now a no-op for that case.
     pub fn emit_sync_outcome(&self, wall_clock_ms: i64, outcome: &CoreCycleOutcome) {
-        let mapped = match outcome {
-            CoreCycleOutcome::NoCredential => return,
-            CoreCycleOutcome::Held => SyncOutcome::CredentialNeeded,
-            CoreCycleOutcome::Cycle(cycle) => sync_outcome_of(cycle),
-        };
-        self.emit(wall_clock_ms, None, DiagnosticEvent::SyncFinished { outcome: mapped });
-    }
-}
-
-/// Collapses [`CycleOutcome`] to the redacted [`SyncOutcome`] — the exact
-/// mapping `client/core/src/diagnostics/context.rs::sync_outcome_of` uses
-/// for its own (cycle-scoped) emission; duplicated here in miniature
-/// rather than imported because that function takes a `&DiagnosticsContext`
-/// call site this crate's own (cycle-less) `run` never builds. Kept
-/// side-by-side with that function's own doc so a future change to either
-/// vocabulary is easy to notice.
-fn sync_outcome_of(outcome: &CycleOutcome) -> SyncOutcome {
-    match outcome {
-        CycleOutcome::Skipped => SyncOutcome::Skipped,
-        CycleOutcome::Blocked { .. } => SyncOutcome::Blocked,
-        CycleOutcome::CredentialNeeded { .. } => SyncOutcome::CredentialNeeded,
-        CycleOutcome::PersistFailed { .. } => SyncOutcome::PersistFailed,
-        CycleOutcome::PullFailed { .. } => SyncOutcome::PullFailed,
-        CycleOutcome::Completed { .. } => SyncOutcome::Completed,
+        if let CoreCycleOutcome::Held = outcome {
+            self.emit(
+                wall_clock_ms,
+                None,
+                DiagnosticEvent::SyncFinished { outcome: SyncOutcome::CredentialNeeded },
+            );
+        }
     }
 }
 
@@ -1327,6 +1399,12 @@ pub struct TaskCoreCell {
     sink: DiagnosticBuffer,
     session: DiagnosticSession<'static>,
     next_operation_seq: AtomicU64,
+    /// #769: a separate counter from `next_operation_seq` — a cycle id and
+    /// an operation id are different id spaces (a queued write's
+    /// `operation_id` outlives the cycle that eventually drains it), and
+    /// sharing one counter would let a `mint_cycle_id`/`mint_operation_id`
+    /// pair collide on the same ordinal in the exported journal.
+    next_cycle_seq: AtomicU64,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -1344,6 +1422,7 @@ impl TaskCoreCell {
             sink: DiagnosticBuffer::default(),
             session: DiagnosticSession::new(session_id, now_monotonic_ms()),
             next_operation_seq: AtomicU64::new(0),
+            next_cycle_seq: AtomicU64::new(0),
         }
     }
 
@@ -1382,6 +1461,24 @@ impl TaskCoreCell {
             "{}-op-{}",
             self.session.session_id(),
             self.next_operation_seq.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    /// Mints a fresh id for one observed sync cycle (#769) —
+    /// [`hummingbird_core::diagnostics::DiagnosticsContext::new`]'s
+    /// `cycle_id`, which every `sync.*`/`http.*` event that cycle emits, and
+    /// the `<cycle_id>-<ordinal>` request ids `DiagnosticsContext::next_request_id`
+    /// mints within it, correlate on. Session-scoped the same way
+    /// [`Self::mint_operation_id`] is, but drawn from its own counter — a
+    /// cycle id and an operation id are different id spaces, and sharing
+    /// one would let the two collide on the same ordinal in the exported
+    /// journal whenever a cycle and an operation happened to be minted the
+    /// same number of calls apart.
+    pub fn mint_cycle_id(&self) -> String {
+        format!(
+            "{}-cycle-{}",
+            self.session.session_id(),
+            self.next_cycle_seq.fetch_add(1, Ordering::Relaxed)
         )
     }
 
@@ -1585,6 +1682,10 @@ impl<'a> CoreGuard<'a> {
 
     pub fn mint_operation_id(&self) -> String {
         self.cell.mint_operation_id()
+    }
+
+    pub fn mint_cycle_id(&self) -> String {
+        self.cell.mint_cycle_id()
     }
 }
 
@@ -2710,6 +2811,21 @@ impl TaskHostCore {
                 return fail("scheduled date must be YYYY-MM-DD".to_string());
             }
         }
+        if fields.link_url.as_deref().is_some_and(|url| url.trim().is_empty()) {
+            diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Failure);
+            return fail("link URL must be non-empty".to_string());
+        }
+        if fields.link_label.as_deref().is_some_and(|label| label.trim().is_empty()) {
+            diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Failure);
+            return fail("link name must be non-empty".to_string());
+        }
+        if let Some(problem) = hummingbird_core::decisions::share::link_label_problem(
+            fields.link_url.as_deref().unwrap_or(""),
+            fields.link_label.as_deref().unwrap_or(""),
+        ) {
+            diagnostics.emit_operation_finished(now_ms, operation_id, OperationOutcome::Failure);
+            return fail(problem);
+        }
         let options = CaptureOptions {
             size,
             energy,
@@ -2719,6 +2835,8 @@ impl TaskHostCore {
             project_id: fields.project_id,
             deadline: fields.deadline,
             scheduled_date: fields.scheduled_date,
+            link_url: fields.link_url,
+            link_label: fields.link_label,
         };
         match self.core.capture(seed, title, stage, now_ms, options, Some(operation_id)).await {
             Ok(id) => {
@@ -2870,6 +2988,23 @@ impl TaskHostCore {
                 return fail_op(reject("vault path must be non-empty".to_string()));
             }
         }
+        if let Some(Some(link_url)) = &edits.link_url {
+            if link_url.trim().is_empty() {
+                return fail_op(reject("link URL must be non-empty".to_string()));
+            }
+        }
+        if let Some(Some(link_label)) = &edits.link_label {
+            if link_label.trim().is_empty() {
+                return fail_op(reject("link name must be non-empty".to_string()));
+            }
+        }
+        if matches!(edits.link_label, Some(Some(_))) && matches!(edits.link_url, Some(None)) {
+            return fail_op(reject("a link name needs a URL".to_string()));
+        }
+        // #782: clearing the URL clears the name with it — the authority's
+        // one-row-state rule, sent explicitly so the queued patch says what
+        // the row will hold.
+        let link_label = if matches!(edits.link_url, Some(None)) { Some(None) } else { edits.link_label };
         let patch = TriagePatch {
             title: edits.title,
             description: edits.description,
@@ -2881,6 +3016,8 @@ impl TaskHostCore {
             deadline: edits.deadline,
             scheduled_date: edits.scheduled_date,
             vault_path: edits.vault_path,
+            link_url: edits.link_url,
+            link_label,
         };
         match self.core.triage(seed, item_id, promote_to_ready, patch, now_ms, Some(operation_id)).await {
             Ok(()) => {
@@ -3062,20 +3199,17 @@ impl TaskHostCore {
         }
     }
 
-    /// Runs one [`Core::run`] cycle against the live `reqwest` transports.
-    ///
-    /// #708: deliberately still `Core::run`, not `Core::run_observed` — the
-    /// latter needs a real [`hummingbird_core::diagnostics::DiagnosticClock`]
-    /// (its slow/stalled watchdog `select`s the call against a 5s/30s
-    /// sleep), and this crate has no working `sleep_ms` to give it without
-    /// a real timer dependency this slice does not add (see this module's
-    /// header on why `wasm_bindgen` itself stays out of this file). Wiring
-    /// full `sync.*`/`http.*` cycle instrumentation into this call is
-    /// tracked as a follow-up, not silently skipped — see this issue's
-    /// posted finding. What #708 *does* close here, with no watchdog
-    /// needed at all, is [`OperationDiagnostics::emit_sync_outcome`]'s own
-    /// gap: `Held`/`NoCredential`/a real cycle's outcome are all now
-    /// visible in the journal.
+    /// Runs one [`Core::run_observed`] cycle against the live `reqwest`
+    /// transports (#769) — a fresh, per-call [`DiagnosticsContext`] wraps
+    /// both, so `sync.*`/`http.*` (the latter carrying a queued write's
+    /// `operation_id`, #739's own join key) actually reach the journal in
+    /// production, closing the gap #708's doc used to cite for staying on
+    /// the unobserved `Core::run`: "this crate has no working `sleep_ms`"
+    /// — see [`TaskHostClock`]'s own doc for what closed that. `cycle_id`
+    /// is caller-minted (this crate has no RNG of its own, the same
+    /// reasoning `capture`/`triage`'s own `operation_id` parameter
+    /// documents) — the one real call site (`lib.rs`'s `run_sync` wasm
+    /// binding) mints it via [`TaskCoreCell::mint_cycle_id`].
     pub async fn run(
         &mut self,
         now_ms: i64,
@@ -3083,20 +3217,32 @@ impl TaskHostCore {
         force_full_sweep: bool,
         jitter_unit: f64,
         diagnostics: OperationDiagnostics<'_>,
+        cycle_id: &str,
     ) -> RunResponse {
         let trigger = match trigger {
             "timer" => Trigger::Timer,
             _ => Trigger::User,
         };
+        let clock = TaskHostClock;
+        let cycle_diagnostics = DiagnosticsContext::new(
+            diagnostics.sink,
+            &clock,
+            diagnostics.session,
+            cycle_id,
+            DIAGNOSTICS_PLATFORM,
+            DIAGNOSTICS_BUILD,
+            now_ms,
+        );
         let outcome = self
             .core
-            .run(
+            .run_observed(
                 &self.read_transport,
                 &self.write_transport,
                 now_ms,
                 trigger,
                 force_full_sweep,
                 jitter_unit,
+                &cycle_diagnostics,
             )
             .await;
         diagnostics.emit_sync_outcome(now_ms, &outcome);
@@ -3180,7 +3326,7 @@ impl TaskHostCore {
         let sink = DiagnosticBuffer::default();
         let session = DiagnosticSession::new("test-session", 0);
         let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
-        self.run(now_ms, trigger, force_full_sweep, jitter_unit, diagnostics).await
+        self.run(now_ms, trigger, force_full_sweep, jitter_unit, diagnostics, "test-cycle").await
     }
 }
 
@@ -3466,24 +3612,26 @@ mod core_checkout_tests {
     /// carry it through (proven at the core level, spanning a real cycle
     /// boundary, by
     /// `sync::cycle::tests::observed::operation_local_commit_precedes_http_started_for_the_same_operation_across_the_cycle_boundary`,
-    /// including a demonstrated failure on reordering). What #739 did
-    /// **not** change is that [`TaskHostCore::run`] still drives the
-    /// unobserved `Core::run`, not `Core::run_observed` — see that method's
-    /// own doc for why (no working `sleep_ms` for the slow/stalled
-    /// watchdog on this host yet) — so `ffi-web` still never actually emits
-    /// an `http.started` from this production surface, whatever operation
-    /// id it would carry. Wiring `run_observed` into this host is that
-    /// method's own tracked follow-up, not #739's.
+    /// including a demonstrated failure on reordering). **#769 closed the
+    /// other half** — [`TaskHostCore::run`] now drives `Core::run_observed`,
+    /// not the unobserved `Core::run` — so a queued write really does reach
+    /// `http.started` in production now; that is proven by
+    /// `a_queued_write_drained_by_run_emits_http_started_carrying_its_operation_id`
+    /// just below, which (unlike this one) actually calls `run`. This test
+    /// stays scoped to `capture` alone, so its own two assertions above
+    /// remain exactly what they always were: a real ordering pin, and a
+    /// vacuous-by-construction guard against a `capture`-only regression —
+    /// `capture` only enqueues, so this path never issues HTTP and the sink
+    /// holds no `http.started` for any assertion to catch, whether or not
+    /// `run_observed` is wired anywhere else.
     ///
     /// **What a reader inherits, updated for #712's interpretation table.**
     /// The join key now exists end to end (a queued write's `http.*` span
     /// carries the same `operation_id` its `operation.local_commit` did),
-    /// but on the web host specifically an `operation.finished{success}`
-    /// still means "committed locally and durably queued", **never**
-    /// "reached the authority", because no cycle here is observed yet to
-    /// produce the `http.*` half at all. Once `run_observed` lands on this
-    /// host, the two spans become joinable by `operation_id` alone with no
-    /// further change needed here.
+    /// and on the web host an `operation.finished{success}` still means
+    /// only "committed locally and durably queued", **never** "reached the
+    /// authority" — the two spans are joinable by `operation_id` alone, but
+    /// only once the queued write's own drained cycle actually runs.
     #[tokio::test]
     async fn a_successful_capture_emits_local_commit_before_finished_and_no_http_started() {
         let dir = tempfile::tempdir().unwrap();
@@ -3654,8 +3802,20 @@ mod core_checkout_tests {
     /// exercised through a real cycle: an empty `base_url` forces
     /// `pull_failed` (this file's own established network-free test
     /// pattern, see `map_run_outcome`'s doc just above).
+    ///
+    /// **#769: this now runs the full observed cycle**, not just the one
+    /// synthetic event `emit_sync_outcome` used to hand-map — so the sink
+    /// carries `sync.started`, the queue-drain phase pair, the pull phase
+    /// pair, the failed pull's own `http.started`/`http.finished`, and
+    /// finally a *cycle-scoped* `sync.finished` (`cycle_id: Some(..)`,
+    /// unlike the session-scoped one this test pinned before #769). This
+    /// assertion is exactly the one that would fail if `TaskHostCore::run`
+    /// ever reverted to the unobserved `Core::run`: reverting drops every
+    /// event in this list back to nothing (`Core::run` emits no
+    /// diagnostics of its own at all), so `sink.drain()` would come back
+    /// empty and this `unwrap` would panic.
     #[tokio::test]
-    async fn a_connection_error_during_run_emits_sync_finished_pull_failed() {
+    async fn a_connection_error_during_run_emits_a_cycle_scoped_sync_finished_pull_failed() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-sync-2");
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
@@ -3665,28 +3825,67 @@ mod core_checkout_tests {
         let session = DiagnosticSession::new("s", 0);
         let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
 
-        let response = host.run(1_000, "user", true, 0.0, diagnostics).await;
+        let response = host.run(1_000, "user", true, 0.0, diagnostics, "cycle-1").await;
         assert_eq!(response.kind, "pull_failed");
 
         let events = sink.drain();
-        assert_eq!(events.len(), 1);
-        match &events[0].event {
+        let sync_finished = events
+            .iter()
+            .find(|e| matches!(e.event, DiagnosticEvent::SyncFinished { .. }))
+            .expect("run_observed must emit a sync.finished for a completed cycle");
+        match &sync_finished.event {
             DiagnosticEvent::SyncFinished { outcome } => assert_eq!(*outcome, SyncOutcome::PullFailed),
-            other => panic!("expected sync.finished, got {other:?}"),
+            other => unreachable!("filtered for SyncFinished, got {other:?}"),
         }
+        assert_eq!(
+            sync_finished.cycle_id.as_deref(),
+            Some("cycle-1"),
+            "a real cycle's sync.finished must carry its cycle_id, not the session-scoped None emit_sync_outcome used before #769"
+        );
     }
 
-    /// The persistence-failure half of the same acceptance criterion,
-    /// exercised directly against [`sync_outcome_of`] the same way
-    /// `map_run_outcome`'s own tests build a [`CycleOutcome`] by hand
-    /// rather than forcing a real store failure through a whole cycle.
-    #[test]
-    fn a_persistence_failure_outcome_maps_to_sync_finished_persist_failed() {
-        let outcome = CycleOutcome::PersistFailed {
-            message: "disk full".to_string(),
-            retry_after_ms: 1_000,
-        };
-        assert_eq!(sync_outcome_of(&outcome), SyncOutcome::PersistFailed);
+    /// Acceptance (#769): "A test per host proves an `http.started` is
+    /// emitted for a queued write carrying the enqueuing operation's id."
+    /// A capture enqueues a write stamped with `"op-test"` (`capture_test`'s
+    /// own fixed operation id); `run` then drains it against an empty
+    /// `base_url`, which fails the send but only *after*
+    /// `InstrumentedMutationTransport::send` has already recorded
+    /// `http.started` — proving the join key #739 built is actually
+    /// exercised in production, not just reachable from a `client/core`
+    /// fixture.
+    ///
+    /// **This is the demonstrated-failure mutation the brief asks for.**
+    /// Reverting `TaskHostCore::run` to call the unobserved `Core::run`
+    /// (swap `run_observed` back to `run`, drop the `diagnostics` argument)
+    /// makes this test fail: `Core::run` emits no `http.*` events at all,
+    /// so `sink.drain()` holds no `HttpStarted` event and the `expect`
+    /// below panics with "a queued write's drain must emit http.started".
+    /// Confirmed by hand and reverted before landing.
+    #[tokio::test]
+    async fn a_queued_write_drained_by_run_emits_http_started_carrying_its_operation_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-sync-http-started");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
+            .await
+            .unwrap();
+        host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000)
+            .await;
+
+        let sink = DiagnosticBuffer::default();
+        let session = DiagnosticSession::new("s", 0);
+        let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
+        let _ = host.run(2_000, "user", true, 0.0, diagnostics, "cycle-1").await;
+
+        let events = sink.drain();
+        let http_started = events
+            .iter()
+            .find(|e| matches!(e.event, DiagnosticEvent::HttpStarted { .. }))
+            .expect("a queued write's drain must emit http.started");
+        assert_eq!(
+            http_started.operation_id.as_deref(),
+            Some("op-test"),
+            "http.started must carry the enqueuing capture's operation id"
+        );
     }
 
     // --------------------------------------------- PendingApiKeyOp ordering
@@ -3925,6 +4124,11 @@ mod triage_tests {
         assert_eq!(edits.context, None, "an absent key leaves the field alone");
         assert_eq!(edits.title, None);
         assert_eq!(edits.priority, None);
+        assert_eq!(edits.link_url, None, "#782's pair reads the same three states");
+        let edits: TriageEdits =
+            serde_json::from_str(r#"{"linkUrl":"https://example.test/","linkLabel":null}"#).unwrap();
+        assert_eq!(edits.link_url, Some(Some("https://example.test/".to_string())));
+        assert_eq!(edits.link_label, Some(None));
 
         assert!(
             serde_json::from_str::<TriageEdits>(r#"{"project_id":"p1"}"#).is_err(),
@@ -3960,6 +4164,11 @@ mod triage_tests {
         assert_eq!(fields.deadline, None, "a null is simply not set");
         assert_eq!(fields.priority, Some(3));
         assert_eq!(fields.context, None, "an absent key is not set either");
+        assert_eq!(fields.link_url, None);
+        let fields: CaptureFields =
+            serde_json::from_str(r#"{"linkUrl":"https://example.test/","linkLabel":"Ex"}"#).unwrap();
+        assert_eq!(fields.link_url, Some("https://example.test/".to_string()));
+        assert_eq!(fields.link_label, Some("Ex".to_string()));
 
         assert_eq!(
             serde_json::from_str::<CaptureFields>("{}").unwrap(),
@@ -4009,6 +4218,15 @@ mod triage_tests {
                 scheduled_date: Some("2026-08-12T09:30".to_string()),
                 ..CaptureFields::default()
             },
+            // #782: a link name beside no URL, and a blank half.
+            CaptureFields {
+                link_label: Some("Ex".to_string()),
+                ..CaptureFields::default()
+            },
+            CaptureFields {
+                link_url: Some("  ".to_string()),
+                ..CaptureFields::default()
+            },
         ];
         for fields in cases {
             let response = host
@@ -4044,6 +4262,8 @@ mod triage_tests {
                     priority: Some(2),
                     deadline: Some("2026-09-01T09:30".to_string()),
                     scheduled_date: Some("2026-08-30".to_string()),
+                    link_url: Some("https://example.test/milk".to_string()),
+                    link_label: Some("Milk".to_string()),
                 },
                 1_000,
             )
@@ -4059,6 +4279,8 @@ mod triage_tests {
         assert_eq!(item.priority, 2);
         assert_eq!(item.deadline.as_deref(), Some("2026-09-01T09:30"));
         assert_eq!(item.scheduled_date.as_deref(), Some("2026-08-30"));
+        assert_eq!(item.link_url.as_deref(), Some("https://example.test/milk"));
+        assert_eq!(item.link_label.as_deref(), Some("Milk"));
     }
 
     /// Every value rule the authority answers 400 on is checked before
@@ -4103,6 +4325,15 @@ mod triage_tests {
                     ..Default::default()
                 },
             ),
+            (
+                "a link name beside a cleared URL",
+                TriageEdits {
+                    link_url: Some(None),
+                    link_label: Some(Some("Ex".to_string())),
+                    ..Default::default()
+                },
+            ),
+            ("a blank link URL", TriageEdits { link_url: Some(Some(" ".to_string())), ..Default::default() }),
         ];
 
         for (what, edits) in rejected {
@@ -5416,6 +5647,8 @@ mod tests {
             source_key: None,
             source_url: None,
             vault_path: None,
+            link_url: None,
+            link_label: None,
             archived_at: None,
             agent: false,
             created_at: 1,
@@ -5841,14 +6074,14 @@ mod question_switch_tests {
     }
 
     #[tokio::test]
-    async fn a_fresh_host_reports_all_ten_questions_on() {
+    async fn a_fresh_host_reports_all_eleven_questions_on() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-switch-fresh");
         let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
 
         let response = host.question_switches();
         assert_eq!(response.kind, "ok");
-        assert_eq!(response.switches.len(), 10);
+        assert_eq!(response.switches.len(), 11);
         assert!(response.switches.iter().all(|switch| switch.enabled && !switch.pending));
     }
 

@@ -60,7 +60,7 @@ describe("StatusBoard", () => {
   it("labels each group with the number of subjects actually in it", () => {
     render(board());
     const infra = ranked().filter((pane) =>
-      ["kimi", "uptime", "reachability"].includes(pane.question),
+      ["kimi", "uptime", "reachability", "poller"].includes(pane.question),
     ).length;
     expect(infra).toBeGreaterThan(0);
     expect(

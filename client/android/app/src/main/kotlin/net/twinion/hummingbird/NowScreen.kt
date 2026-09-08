@@ -220,7 +220,8 @@ private fun nowPaneLabel(pane: MobileRankedPane): String = when (pane.standingQu
     MobileStandingQuestion.KIMI,
     MobileStandingQuestion.GITHUB,
     MobileStandingQuestion.UPTIME,
-    MobileStandingQuestion.REACHABILITY ->
+    MobileStandingQuestion.REACHABILITY,
+    MobileStandingQuestion.POLLER ->
         error("a Status-surface question reached the Now screen: ${pane.standingQuestion}")
 }
 

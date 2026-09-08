@@ -26,6 +26,8 @@ function item(overrides: Partial<TaskItemDTO> = {}): TaskItemDTO {
     sourceKey: null,
     sourceUrl: null,
     vaultPath: null,
+    linkUrl: null,
+    linkLabel: null,
     archivedAt: null,
     createdAt: 1,
     updatedAt: 1,

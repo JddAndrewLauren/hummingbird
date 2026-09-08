@@ -17,6 +17,7 @@ import uniffi.hummingbird_ffi_mobile.MobileKimiResolved
 import uniffi.hummingbird_ffi_mobile.MobilePaneBand
 import uniffi.hummingbird_ffi_mobile.MobilePaneFacts
 import uniffi.hummingbird_ffi_mobile.MobilePaneFreshness
+import uniffi.hummingbird_ffi_mobile.MobilePollerResolved
 import uniffi.hummingbird_ffi_mobile.MobileProbeExpected
 import uniffi.hummingbird_ffi_mobile.MobileProbeGap
 import uniffi.hummingbird_ffi_mobile.MobileProbeResolved
@@ -92,6 +93,7 @@ internal fun StatusPaneExpanded(pane: MobileRankedPane, nowMs: Long, headline: B
         is MobilePaneFacts.Github -> GithubPaneExpanded(pane, facts.resolved, nowMs, headline)
         is MobilePaneFacts.Uptime -> UptimePaneExpanded(pane, facts.resolved, headline)
         is MobilePaneFacts.Reachability -> ReachabilityPaneExpanded(facts.facts, headline)
+        is MobilePaneFacts.Poller -> PollerPaneExpanded(pane, facts.resolved, headline)
         is MobilePaneFacts.Homework,
         is MobilePaneFacts.Scps,
         is MobilePaneFacts.Waste,
@@ -395,6 +397,64 @@ private fun UptimePaneExpanded(
         }
         if (facts.stale) {
             StaleLine(facts.freshness)
+        }
+    }
+}
+
+// ----------------------------------------------------------------- poller
+
+/** `PollerPaneBody` in `PollerPaneExpanded.tsx`, ported: a headline first
+ * (the source itself — this pane touches no body, so there is no separate
+ * name to draw), then the raw age and the declared cadence, no stale line
+ * of its own (unlike its siblings, this pane's whole answer already IS a
+ * freshness judgement — `poller.rs`'s own header). */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PollerPaneExpanded(
+    pane: MobileRankedPane,
+    resolved: MobilePollerResolved,
+    headline: Boolean,
+) {
+    val facts = when (resolved) {
+        is MobilePollerResolved.Gap -> {
+            GapBody("No answer has been fetched yet.")
+            return
+        }
+        is MobilePollerResolved.Facts -> resolved.facts
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (headline) {
+            Text(
+                pane.subjectKey,
+                style = MaterialTheme.typography.titleLarge,
+                color = when (facts.band) {
+                    MobilePaneBand.IMMINENT -> MaterialTheme.colorScheme.error
+                    MobilePaneBand.DISTANT -> warnColor()
+                    MobilePaneBand.LIVE,
+                    MobilePaneBand.NEAR,
+                    MobilePaneBand.DORMANT -> MaterialTheme.colorScheme.onSurface
+                },
+            )
+        }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                when (val freshness = facts.freshness) {
+                    is MobilePaneFreshness.Age -> "as of ${ageWords(freshness.ageMs)}"
+                    MobilePaneFreshness.Unknown -> "age unknown"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                when (val freshness = facts.freshness) {
+                    is MobilePaneFreshness.Age ->
+                        freshness.declaredCadenceMs?.let { "declared cadence ${cadenceWords(it)}" }
+                            ?: "cadence unreadable"
+                    MobilePaneFreshness.Unknown -> "cadence unreadable"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

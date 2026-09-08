@@ -70,6 +70,11 @@ export interface DecisionsModule {
   join_deadline(date: string, time: string | undefined): string;
   capture_meta_problems(deadline: string, scheduledDate: string): string;
   priority_from_select(raw: string): number | undefined;
+  // #782: the share-payload mapping and the Link's display name.
+  parse_share_payload(subject: string, text: string): string;
+  link_display_label(url: string, label: string | undefined): string;
+  link_is_followable(url: string): boolean;
+  link_label_problem(url: string, label: string): string | undefined;
   size_options_json(): string;
   energy_options_json(): string;
   contexts_json(): string;
@@ -199,6 +204,12 @@ export interface DecisionsModule {
   reachability_facts_json(inputsJson: string): string;
   reachability_answer_json(inputsJson: string): string;
   reachability_constants_json(): string;
+  // #775: the poller-health question.
+  poller_subjects_json(inputsJson: string): string;
+  poller_band_json(freshnessJson: string): string;
+  poller_facts_json(source: string, inputsJson: string): string;
+  poller_answer_json(source: string, inputsJson: string): string;
+  poller_constants_json(): string;
   parse_race_body_json(snapshotJson: string): string;
   race_series_from_binding_json(text: string): string;
   race_setup_json(inputsJson: string): string;
@@ -386,6 +397,45 @@ export function captureMetaProblems(deadline: string, scheduledDate: string): Ca
  * capture box's `"0"` -> "not sent" priority rule. */
 export function priorityFromSelect(raw: string): number | null {
   return required().priority_from_select(raw) ?? null;
+}
+
+/** `hummingbird_core::decisions::share::ShareDraft` (#782): what a
+ * `text/plain` share seeds the capture form with. */
+export interface ShareDraft {
+  title: string;
+  description: string | null;
+  linkUrl: string | null;
+}
+
+/** `hummingbird_core::decisions::share::parse_share_payload` — the
+ * share-payload mapping Android's share target uses (#782). No web share
+ * target reads it yet; it is exported so that when one does, the mapping is
+ * the phone's rather than a copy. */
+export function parseSharePayload(subject: string, text: string): ShareDraft {
+  return JSON.parse(required().parse_share_payload(subject, text)) as ShareDraft;
+}
+
+/** `hummingbird_core::decisions::share::link_display_label` — what an
+ * item's Link is called wherever it is drawn: its name, else its host, else
+ * the URL itself. */
+export function linkDisplayLabel(url: string, label: string | null): string {
+  return required().link_display_label(url, label ?? undefined);
+}
+
+/** `hummingbird_core::decisions::share::is_followable_link` — whether the
+ * item panel draws the Link row at all: an `http(s)` URL with a host, and
+ * nothing else. Decided once so the web's anchor and Android's
+ * `ACTION_VIEW` cannot disagree about what is safe to follow. */
+export function linkIsFollowable(url: string): boolean {
+  return required().link_is_followable(url);
+}
+
+/** `hummingbird_core::decisions::share::link_label_problem` — the one rule
+ * about the pair, a name needs a URL, as the message to show on the name
+ * field or `undefined` when nothing is wrong. Read by the capture box and
+ * the triage/item-panel drafts alike, so neither hand-copies the rule. */
+export function linkLabelProblem(url: string, label: string): string | undefined {
+  return required().link_label_problem(url, label);
 }
 
 export interface VocabOption {
@@ -1867,6 +1917,47 @@ export function reachabilityConstantsFromCore(): ReachabilityConstants {
   return JSON.parse(required().reachability_constants_json()) as ReachabilityConstants;
 }
 
+// -- poller (#775) ----------------------------------------------------------
+
+/** This question's subjects — `poller.rs`'s `poller_subjects`: every source
+ * it watches, always, whether or not this device has read a row for it yet. */
+export function pollerSubjectsFromCore(inputs: PaneInputsSource): string[] {
+  return JSON.parse(required().poller_subjects_json(paneInputsPayload(inputs))) as string[];
+}
+
+/** One source's band, from its freshest row's freshness alone —
+ * `poller.rs`'s `poller_band`. */
+export function pollerBandFromCore(freshness: FreshnessDTO): PaneBand {
+  return JSON.parse(required().poller_band_json(JSON.stringify(freshness))) as PaneBand;
+}
+
+export interface PollerFacts {
+  freshness: FreshnessDTO;
+  band: PaneBand;
+}
+
+export type PollerGap = { gap: "notFetched" };
+
+export type PollerResolved = ({ kind: "facts" } & PollerFacts) | { kind: "gap"; gap: PollerGap };
+
+export function pollerFactsFromCore(source: string, inputs: PaneInputsSource): PollerResolved {
+  return JSON.parse(required().poller_facts_json(source, paneInputsPayload(inputs))) as PollerResolved;
+}
+
+export function pollerAnswerFromCore(source: string, inputs: PaneInputsSource): PaneAnswerCore {
+  return JSON.parse(required().poller_answer_json(source, paneInputsPayload(inputs))) as PaneAnswerCore;
+}
+
+export interface PollerConstants {
+  sources: string[];
+  overdueMultiplier: number;
+  floorMs: number;
+}
+
+export function pollerConstantsFromCore(): PollerConstants {
+  return JSON.parse(required().poller_constants_json()) as PollerConstants;
+}
+
 // -- race (#119) -----------------------------------------------------------
 
 export interface RaceSessionCore {
@@ -2270,6 +2361,7 @@ export interface ScpsEventCore {
 
 export type ScpsQuestFactCore =
   | { kind: "none" }
+  | { kind: "malformed"; text: string }
   | { kind: "current"; phrase: string }
   | { kind: "other"; month: string; phrase: string };
 

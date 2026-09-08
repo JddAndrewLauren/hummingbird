@@ -82,6 +82,7 @@ pub enum StandingQuestion {
     Github,
     Uptime,
     Reachability,
+    Poller,
 }
 
 impl StandingQuestion {
@@ -97,6 +98,7 @@ impl StandingQuestion {
             StandingQuestion::Github => "github",
             StandingQuestion::Uptime => "uptime",
             StandingQuestion::Reachability => "reachability",
+            StandingQuestion::Poller => "poller",
         }
     }
 }
@@ -114,7 +116,13 @@ impl StandingQuestion {
 /// `Scps` is declared second, directly after `Homework` and before `Waste`
 /// (#693) — no ranking claim beyond "here", the slot ADR-0032's own
 /// grilling session settled on.
-pub const QUESTION_ORDER: [StandingQuestion; 10] = [
+///
+/// `Poller` (#775) is declared **last**: it is a meta-question over every
+/// other source's own freshness, including several of the infra questions'
+/// (`kimi`, `github`, `uptime`), so it reads naturally as the board's final
+/// word on "is anything not writing" rather than competing with the
+/// content-specific questions ahead of it.
+pub const QUESTION_ORDER: [StandingQuestion; 11] = [
     StandingQuestion::Homework,
     StandingQuestion::Scps,
     StandingQuestion::Waste,
@@ -125,6 +133,7 @@ pub const QUESTION_ORDER: [StandingQuestion; 10] = [
     StandingQuestion::Github,
     StandingQuestion::Uptime,
     StandingQuestion::Reachability,
+    StandingQuestion::Poller,
 ];
 
 /// One question's answer about one subject, **as a decision** — `PaneAnswer`
@@ -215,7 +224,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&QUESTION_ORDER).unwrap(),
-            r#"["homework","scps","waste","weekend","vacation","race","kimi","github","uptime","reachability"]"#,
+            r#"["homework","scps","waste","weekend","vacation","race","kimi","github","uptime","reachability","poller"]"#,
         );
     }
 

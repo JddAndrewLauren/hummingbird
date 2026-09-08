@@ -4,30 +4,17 @@
 # else. Non-matches never touch storage. Also writes the `busy_now` gauge
 # (this issue's own second job), a separate always-run query around "now".
 #
-# **A third Actions `schedule:` on the same reasoning `gmail-poll.yml`'s
-# header already recorded** — see that file for the full argument
-# (hummingbird is public, so only the 60-day auto-disable survives from
-# issue #8's ban, and this lane has no competing clock: ADR-0011 assigns
-# Google Calendar's cadence to nothing else, and nothing else polls it).
-#
-# **Live since 2026-08-15 (#486).** The lane was dormant 2026-08-14→15: its
-# first 78 runs all failed on `HB_INGEST_TOKEN is not set`, because neither
-# `CALENDAR_INGEST_TOKEN` nor the three `GOOGLE_*` secrets had ever been
-# minted, and the `schedule:` was commented out so that red stopped masking
-# real failures. #486 provisioned the credentials, a `workflow_dispatch` run
-# went green end-to-end (both cursor and `busy_now` snapshots verified), and
-# the `schedule:` below is that same block restored — the one owner of this
-# cadence, per gmail-poll.yml's argument.
+# **Moved off Actions `schedule:` at #774, onto the sweeper's supercronic
+# clock** — `gmail-poll.yml`'s header carries the full argument (measured
+# in #773) and this lane follows it verbatim: same always-on container,
+# same shared `GOOGLE_*` credential, a staggered `crontab` entry replacing
+# the `*/15` this workflow's `schedule:` never actually delivered.
+# `workflow_dispatch` stays, for a manual run against a fresh checkout.
 # Note this lane's frozen source string is `google-calendar/v1`, not
 # `calendar/v1`, which is what its ingest token must be bound to.
 name: calendar-poll
 
 on:
-  # Every 15 minutes — `hummingbird_calendar_poll::cursor::POLLED_EVERY_MS`
-  # must match this interval. Change one and you must change the other
-  # (re-checked at the #486 restore: both are 15 minutes).
-  schedule:
-    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 # One poller at a time. Two overlapping runs would race on the same

@@ -19,6 +19,8 @@ const EMPTY_CAPTURE_FIELDS: CaptureFieldsWire = {
   priority: null,
   deadline: null,
   scheduledDate: null,
+  linkUrl: null,
+  linkLabel: null,
 };
 
 // The wire is `structuredClone`-compatible `postMessage` traffic in

@@ -5,6 +5,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import uniffi.hummingbird_ffi_mobile.linkDisplayLabel
+import uniffi.hummingbird_ffi_mobile.linkIsFollowable
 
 // The unified item-detail pane's own gates — the pins that used to live in
 // `TriageScreenStructuralTest` against a second editor implementation, now
@@ -138,10 +140,12 @@ class ItemDetailPanelStructuralTest {
             .findAll(panelSrc)
             .map { it.groupValues[1].replace(Regex("""\s+"""), " ").trim() }
             .toList()
+        // Three: the details disclosure, a section's own open/shut state,
+        // and (#782) the link row's edit toggle.
         assertEquals(
             "every rememberSaveable(...) in the pane must be accounted for here — " +
                 "a new one is a new leak until its key names the item: $calls",
-            2,
+            3,
             calls.size,
         )
         // The one exception, and the only argument-less form allowed: the
@@ -743,6 +747,79 @@ class ItemDetailPanelStructuralTest {
             "the axes line must stay outside it",
             disclosed.contains("""label = "SIZE · ENERGY · PRIORITY","""),
         )
+    }
+
+    /** The item's one Link (#782): always visible when set — outside the
+     * disclosure, before it — followed through `ACTION_VIEW` and never an
+     * in-app WebView, with the edit affordance beside it opening the shared
+     * `LinkField`. Without a link, the `LINK` ghost sits inside the
+     * disclosure with the other reference rows. */
+    @Test
+    fun `the link is always visible, follows through ACTION_VIEW, and edits in place`() {
+        val body = functionBody(panelSrc, "DetailBody")
+        val linkRowAt = body.indexOf("LinkRow(")
+        val disclosureAt = body.indexOf("if (detailsOpen) {")
+        assertTrue("the pane must draw the link row", linkRowAt >= 0)
+        assertTrue(
+            "the link row must stand before the disclosure, not inside it",
+            linkRowAt < disclosureAt,
+        )
+        assertTrue(
+            "the row must be drawn only when the record carries a link",
+            body.contains("if (linkUrl != null && record.isEditable)"),
+        )
+        assertTrue(
+            "what the link is called is the core's answer, never Kotlin's",
+            body.contains("linkDisplayLabel(linkUrl, record.linkLabel)"),
+        )
+        val linkRow = functionBody(panelSrc, "LinkRow")
+        assertTrue(
+            "a tap follows the link through ACTION_VIEW",
+            linkRow.contains("Intent(Intent.ACTION_VIEW, Uri.parse(url))"),
+        )
+        assertFalse("never an in-app WebView", panelSrc.contains("WebView"))
+        assertTrue(
+            "whether a stored URL may be followed is the core's answer, not a Kotlin scheme check",
+            body.contains("linkIsFollowable(") && !panelSrc.contains("startsWith(\"http"),
+        )
+        assertTrue(
+            "the edit affordance opens the shared field under the row",
+            body.contains("if (editingLink) {") && body.contains("LinkField("),
+        )
+        assertTrue(
+            "the edit toggle must be keyed on the item in its registry key",
+            body.replace(Regex("""\s+"""), " ")
+                .contains("var editingLink by rememberSaveable( itemId, key = \"link-open-\$itemId\", )"),
+        )
+        val disclosed = body.substringAfter("if (detailsOpen) {")
+        // Gated on the *followable* value the row above reads, not on the
+        // raw column: a stored URL the core refuses to follow is drawn
+        // nowhere else, and this section is how it gets edited or cleared
+        // (review finding on #782's own PR).
+        assertTrue(
+            "without a followable link, the LINK section sits inside the disclosure",
+            disclosed.contains("if (linkUrl == null)") && disclosed.contains("label = \"LINK\","),
+        )
+        assertFalse(
+            "and never gated on the raw column, which would hide an unfollowable value",
+            disclosed.contains("if (record.linkUrl == null)"),
+        )
+        assertFalse(
+            "and never a pencil for it either",
+            panelSrc.contains("ic_pencil"),
+        )
+    }
+
+    /** The one behavioural companion to the pin above, crossing the real
+     * uniffi seam the way `ZoneBridgeTest` does: the row is gated on
+     * `linkIsFollowable`, and that door refuses a non-http stored link. The
+     * label is asked separately — it still answers the name for the same
+     * URL — so the refusal can only be the door's, never the label's. */
+    @Test
+    fun `a non-http stored link is refused by the door, not by the label`() {
+        assertFalse(linkIsFollowable("javascript:alert(1)"))
+        assertTrue(linkIsFollowable("https://example.test/"))
+        assertEquals("Nope", linkDisplayLabel("javascript:alert(1)", "Nope"))
     }
 
     /** Recall's rule (#478) at both locks: no editor and no submit for an

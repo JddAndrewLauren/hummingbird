@@ -34,7 +34,7 @@ removal, unchanged.
    )
    ```
 
-   `SCHEMA_VERSION` 13 → 14, purely additive. It references `items`, so it
+   `SCHEMA_VERSION` 14 → 15, purely additive (14 was taken by #782's `items.link_url`/`link_label` while this slice was in flight). It references `items`, so it
    joins `FK_CHILDREN` — the tables an `items` rebuild stands aside — where
    `project_links` (which references `projects`) does not.
 

@@ -1,6 +1,7 @@
 import { githubQuestion } from "../github-pane/question";
 import { homeworkQuestion } from "../homework-pane/question";
 import { kimiQuestion } from "../kimi-pane/question";
+import { pollerQuestion } from "../poller-pane/question";
 import { raceQuestion } from "../race-pane/question";
 import { reachabilityQuestion } from "../reachability-pane/question";
 import { scpsQuestion } from "../scps-pane/question";
@@ -40,6 +41,7 @@ export const QUESTIONS: Record<StandingQuestion, QuestionDef> = {
   github: githubQuestion,
   uptime: uptimeQuestion,
   reachability: reachabilityQuestion,
+  poller: pollerQuestion,
 };
 
 /** `QUESTION_ORDER`, filtered to the questions declared for one surface

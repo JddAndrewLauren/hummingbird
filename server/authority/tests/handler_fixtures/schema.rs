@@ -10,8 +10,9 @@
 //! version-leading index on every synced table (#289) — then 11→12, the
 //! first growth that is a pure `DROP`: the five bare version indexes #289
 //! left standing become prefix-subsumed once their `_version_id` compound
-//! sibling exists (#757) — and then 12→13, back to additive:
-//! `items.vault_path` (#771).
+//! sibling exists (#757) — then 12→13, back to additive:
+//! `items.vault_path` (#771) — and then 13→14, additive again: `items`'
+//! Link pair, `link_url` and `link_label` (#782).
 
 use hummingbird_authority::{init_schema, SqlValue, SCHEMA_VERSION};
 
@@ -1540,8 +1541,8 @@ fn the_items_vault_path_migration_is_idempotent() {
 }
 
 /// A genuine v13 store: [`v12_store`] with 12→13's own `ALTER` applied,
-/// exactly how a real v13 store came to be. `file_links` is not yet
-/// created, which is what the 13→14 growth below has to find.
+/// exactly how a real v13 store came to be. `items` still lacks the Link
+/// pair, which is what the 13→14 growth below has to find.
 fn v13_store() -> RusqliteSql {
     let sql = v12_store();
     sql.exec("ALTER TABLE items ADD COLUMN vault_path TEXT", &[])
@@ -1551,18 +1552,103 @@ fn v13_store() -> RusqliteSql {
     sql
 }
 
-/// The 13→14 growth path (ADR-0036): `file_links`, back to the 8→9 shape —
-/// a purely additive new table, not an [`add_missing_columns`] arm.
-/// `CREATE TABLE IF NOT EXISTS` grows a v13 store for free; the byte-
-/// identity assertion is what catches a `CREATE_FILE_LINKS` whose text
-/// drifts from what a fresh store holds.
+/// The 13→14 growth path (#782): `items.link_url` and `items.link_label`,
+/// the seventh and eighth [`add_missing_columns`] arms — the 8→9 shape,
+/// two nullable columns on an existing table.
+///
+/// The byte-identity assertion decides how `CREATE_ITEMS` had to be
+/// *written*: both columns splice immediately before the closing paren,
+/// after `vault_path`, in the order the two `ALTER`s run. Verified against
+/// a real migrated store here, not reasoned out.
 #[test]
 fn init_schema_grows_a_schema_13_database_additively() {
     let migrated = v13_store();
     assert_eq!(schema_version(&migrated), 13, "starts genuinely at v13");
+    for column in ["link_url", "link_label"] {
+        assert!(
+            !column_names(&migrated, "items").contains(&column.to_string()),
+            "the v13 fixture must not already carry items.{column}",
+        );
+    }
+    migrated
+        .exec(
+            "INSERT INTO items (id, title, stage, created_at, updated_at, version) \
+             VALUES ('i', 'Empty the compost', 'ready', 1000, 1000, 1)",
+            &[],
+        )
+        .unwrap();
+
+    init_schema(&migrated, 0).expect("growth init succeeds");
+
+    assert_eq!(schema_version(&migrated), SCHEMA_VERSION, "schema_version moved forward");
+    for column in ["link_url", "link_label"] {
+        assert!(
+            column_names(&migrated, "items").contains(&column.to_string()),
+            "migrated store missing `items.{column}`",
+        );
+    }
+    let rows = migrated.exec("SELECT id, link_url, link_label FROM items", &[]).unwrap();
+    assert_eq!(rows.len(), 1, "the pre-growth row survives");
+    for column in ["link_url", "link_label"] {
+        assert!(
+            matches!(rows[0].get(column), Some(SqlValue::Null) | None),
+            "an item minted before #782 points at no link ({column})",
+        );
+    }
+
+    let fresh = RusqliteSql::new();
+    assert_eq!(
+        schema_ddl(&migrated),
+        schema_ddl(&fresh),
+        "a migrated v13 store and a fresh store end up with byte-identical DDL — which is \
+         why CREATE_ITEMS is written with `, vault_path TEXT, link_url TEXT, link_label TEXT)` \
+         spliced before the closing paren, verified against a real migrated store's \
+         sqlite_master rather than reasoned out",
+    );
+}
+
+#[test]
+fn the_items_link_migration_is_idempotent() {
+    let migrated = v13_store();
+    init_schema(&migrated, 0).expect("first growth succeeds");
+    init_schema(&migrated, 0).expect("second init is a no-op, not a duplicate-column error");
+    for column in ["link_url", "link_label"] {
+        assert_eq!(
+            column_names(&migrated, "items").iter().filter(|name| *name == column).count(),
+            1,
+            "exactly one {column} column",
+        );
+    }
+}
+
+/// A genuine v14 store: [`v13_store`] with 13→14's own `ALTER`s applied,
+/// exactly how a real v14 store came to be. `file_links` is not yet
+/// created, which is what the 14→15 growth below has to find.
+fn v14_store() -> RusqliteSql {
+    let sql = v13_store();
+    for ddl in [
+        "ALTER TABLE items ADD COLUMN link_url TEXT",
+        "ALTER TABLE items ADD COLUMN link_label TEXT",
+    ] {
+        sql.exec(ddl, &[]).expect("13→14's own ALTER applies");
+    }
+    sql.exec("UPDATE meta SET schema_version = 14 WHERE id = 1", &[])
+        .expect("v14 meta row seeds");
+    sql
+}
+
+/// The 14→15 growth path (ADR-0036): `file_links`, back to the 8→9 shape —
+/// a purely additive new table, not an [`add_missing_columns`] arm.
+/// `CREATE TABLE IF NOT EXISTS` grows a v14 store for free; the byte-
+/// identity assertion is what catches a `CREATE_FILE_LINKS` whose text
+/// drifts from what a fresh store holds.
+#[test]
+fn init_schema_grows_a_schema_14_database_additively() {
+    let migrated = v14_store();
+    assert_eq!(schema_version(&migrated), 14, "starts genuinely at v14");
     assert!(
         !table_names(&migrated).contains(&"file_links".to_string()),
-        "the v13 fixture must not already carry file_links"
+        "the v14 fixture must not already carry file_links"
     );
     migrated
         .exec(
@@ -1590,18 +1676,18 @@ fn init_schema_grows_a_schema_13_database_additively() {
     assert_eq!(
         table_names(&migrated),
         table_names(&fresh),
-        "a migrated v13 store and a fresh store end up with identical table sets",
+        "a migrated v14 store and a fresh store end up with identical table sets",
     );
     assert_eq!(
         schema_ddl(&migrated),
         schema_ddl(&fresh),
-        "a migrated v13 store and a fresh store end up with byte-identical DDL",
+        "a migrated v14 store and a fresh store end up with byte-identical DDL",
     );
 }
 
 #[test]
 fn the_file_links_growth_is_idempotent() {
-    let migrated = v13_store();
+    let migrated = v14_store();
     init_schema(&migrated, 0).expect("first growth succeeds");
     init_schema(&migrated, 0).expect("second init is a no-op");
     assert_eq!(schema_version(&migrated), SCHEMA_VERSION);

@@ -80,7 +80,7 @@ pub use busy::{busy_window, live_calendar_events, BusyWindow};
 pub use calendar_event::{parse_calendar_event, CalendarEvent, CalendarEventError, ParsedCalendarEvent};
 pub use cursor::{
     busy_envelope, cursor_envelope, parse_cursor, CursorError, BUSY_KEY, BUSY_SCHEMA, CURSOR_KEY,
-    CURSOR_SCHEMA, SOURCE,
+    CURSOR_SCHEMA, POLLED_EVERY_MS, SOURCE,
 };
 pub use event::calendar_event_to_event;
 pub use evaluate::{evaluate_events, Candidate, Match};

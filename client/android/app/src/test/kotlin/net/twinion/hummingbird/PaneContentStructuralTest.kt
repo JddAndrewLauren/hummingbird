@@ -121,7 +121,7 @@ class PaneContentStructuralTest {
 
     @Test
     fun `the Status dispatcher answers every facts arm and errors on the Now four`() {
-        for (arm in listOf("Kimi", "Github", "Uptime", "Reachability")) {
+        for (arm in listOf("Kimi", "Github", "Uptime", "Reachability", "Poller")) {
             assertTrue(
                 "StatusPaneExpanded must render the $arm arm",
                 statusSrc.contains("is MobilePaneFacts.$arm ->"),

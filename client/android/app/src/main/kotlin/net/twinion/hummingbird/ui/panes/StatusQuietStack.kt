@@ -120,13 +120,17 @@ private val UPTIME_ICONS = mapOf(
 )
 
 /** Which glyph identifies a pane. Exhaustive over [MobileStandingQuestion]
- * with the six Now arms erroring exactly as `paneLabel` does — a tenth
+ * with the six Now arms erroring exactly as `paneLabel` does — an eleventh
  * question is a compile error here, not a blank chip. */
 private fun statusPaneIcon(pane: MobileRankedPane): Int = when (pane.standingQuestion) {
     MobileStandingQuestion.KIMI -> R.drawable.ic_circle_dollar_sign
     MobileStandingQuestion.GITHUB -> R.drawable.ic_git_branch
     MobileStandingQuestion.UPTIME -> UPTIME_ICONS[pane.subjectKey] ?: R.drawable.ic_server
     MobileStandingQuestion.REACHABILITY -> R.drawable.ic_smartphone
+    // A meta-question over every other source's own freshness — `radio`,
+    // the web's own `tile-vocabulary.ts` choice, not `activity` (the
+    // web-side fallback glyph this pane must not share).
+    MobileStandingQuestion.POLLER -> R.drawable.ic_radio
     MobileStandingQuestion.HOMEWORK,
     MobileStandingQuestion.SCPS,
     MobileStandingQuestion.WASTE,

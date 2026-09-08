@@ -30,6 +30,8 @@ describe("isTaskWorkerRequest", () => {
         priority: null,
         deadline: null,
         scheduledDate: null,
+        linkUrl: null,
+        linkLabel: null,
       },
       nowMs: 1,
     },

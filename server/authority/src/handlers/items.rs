@@ -57,6 +57,19 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
     if create.vault_path.as_deref().is_some_and(|path| path.trim().is_empty()) {
         return Ok(error(400, "validation", "vault_path must be non-empty"));
     }
+    // #782's Link: the same blankness rule on each half, and a name is
+    // only meaningful beside a URL. Whether a URL is `http(s)` is a client
+    // drawing decision (`decisions::share::link_display_label`); the
+    // authority stores an opaque operator-chosen string, as for `vault_path`.
+    if create.link_url.as_deref().is_some_and(|url| url.trim().is_empty()) {
+        return Ok(error(400, "validation", "link_url must be non-empty"));
+    }
+    if create.link_label.as_deref().is_some_and(|label| label.trim().is_empty()) {
+        return Ok(error(400, "validation", "link_label must be non-empty"));
+    }
+    if create.link_label.is_some() && create.link_url.is_none() {
+        return Ok(error(400, "validation", "link_label requires link_url"));
+    }
 
     let version = read_meta_version(sql)? + 1;
     let seq = sql
@@ -85,6 +98,8 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
         source_key: create.source_key,
         source_url: create.source_url,
         vault_path: create.vault_path,
+        link_url: create.link_url,
+        link_label: create.link_label,
         archived_at: None,
         agent: create.agent.unwrap_or(false),
         created_at: now_ms,
@@ -94,8 +109,9 @@ pub fn create(body: Option<&str>, now_ms: i64, sql: &dyn Sql) -> Result<ApiRespo
     sql.exec(
         "INSERT INTO items (id, seq, title, description, stage, size, energy, context, \
          priority, project_id, project_pos, deadline, scheduled_date, source, source_key, \
-         source_url, vault_path, archived_at, agent, created_at, updated_at, version) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         source_url, vault_path, link_url, link_label, archived_at, agent, created_at, \
+         updated_at, version) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         &item_params(&item),
     )?;
     write_meta_version(sql, version)?;
@@ -130,6 +146,16 @@ pub fn patch(
             return Ok(error(400, "validation", "vault_path must be non-empty"));
         }
     }
+    if let Some(Some(link_url)) = &patch.link_url {
+        if link_url.trim().is_empty() {
+            return Ok(error(400, "validation", "link_url must be non-empty"));
+        }
+    }
+    if let Some(Some(link_label)) = &patch.link_label {
+        if link_label.trim().is_empty() {
+            return Ok(error(400, "validation", "link_label must be non-empty"));
+        }
+    }
     if let Some(Some(deadline)) = &patch.deadline {
         if !is_valid_deadline(deadline) {
             return Ok(error(400, "validation", "deadline must be YYYY-MM-DD or YYYY-MM-DDTHH:MM"));
@@ -144,6 +170,19 @@ pub fn patch(
         // Disjoint touched fields auto-resend against the carried entity;
         // same-field loses into the client-side dead-letter journal.
         return Ok(conflict(&current));
+    }
+    // #782: name-requires-URL is a rule about the *resulting* row, so it is
+    // computed over the patch applied to the current one — a label sent
+    // alone is fine when a URL is already stored, and a URL cleared alone
+    // takes its label with it rather than stranding one.
+    let next_link_url = patch.link_url.clone().unwrap_or_else(|| current.link_url.clone());
+    let next_link_label = match &patch.link_label {
+        Some(label) => label.clone(),
+        None if next_link_url.is_none() => None,
+        None => current.link_label.clone(),
+    };
+    if next_link_label.is_some() && next_link_url.is_none() {
+        return Ok(error(400, "validation", "link_label requires link_url"));
     }
 
     // Absolute-value sets only: each touched field's entire new value.
@@ -218,6 +257,12 @@ pub fn patch(
         if *vault_path != current.vault_path {
             sets.set("vault_path", SqlValue::from_opt_text(vault_path.as_deref()));
         }
+    }
+    if next_link_url != current.link_url {
+        sets.set("link_url", SqlValue::from_opt_text(next_link_url.as_deref()));
+    }
+    if next_link_label != current.link_label {
+        sets.set("link_label", SqlValue::from_opt_text(next_link_label.as_deref()));
     }
     if let Some(agent) = patch.agent {
         if agent != current.agent {
@@ -342,6 +387,8 @@ fn item_params(item: &Item) -> Vec<SqlValue> {
         SqlValue::from_opt_text(item.source_key.as_deref()),
         SqlValue::from_opt_text(item.source_url.as_deref()),
         SqlValue::from_opt_text(item.vault_path.as_deref()),
+        SqlValue::from_opt_text(item.link_url.as_deref()),
+        SqlValue::from_opt_text(item.link_label.as_deref()),
         SqlValue::from_opt_i64(item.archived_at),
         SqlValue::Integer(i64::from(item.agent)),
         SqlValue::Integer(item.created_at),
@@ -371,6 +418,8 @@ pub(crate) fn item_from_row(row: &Row) -> Result<Item, SqlError> {
         source_key: r.opt_text("source_key"),
         source_url: r.opt_text("source_url"),
         vault_path: r.opt_text("vault_path"),
+        link_url: r.opt_text("link_url"),
+        link_label: r.opt_text("link_label"),
         archived_at: r.opt_int("archived_at"),
         agent: r.bool_int("agent")?,
         created_at: r.int("created_at")?,

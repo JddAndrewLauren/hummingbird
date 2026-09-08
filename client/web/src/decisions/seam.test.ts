@@ -32,6 +32,7 @@ import {
   resolveBackendSelectionFromCore,
   paneBandOrderFromCore,
   paneQuestionOrderFromCore,
+  pollerConstantsFromCore,
   scpsConstantsFromCore,
   SIZES,
   sizeOptionsFromCore,
@@ -40,6 +41,8 @@ import {
   wasteConstantsFromCore,
   weekendConstantsFromCore,
   paneZoneQueries,
+  linkDisplayLabel,
+  parseSharePayload,
 } from "./seam";
 import { priorityRank } from "../screens/priority";
 import { AUTO_SELECTION, BACKEND_REGISTRY, fallbackEntry } from "../skills/backend-registry";
@@ -81,6 +84,11 @@ import {
   STALE_AFTER_MS as UPTIME_STALE_AFTER_MS,
 } from "../screens/uptime-pane/uptime";
 import { REACHABILITY_GRACE_MS, SUBJECT_KEY as REACHABILITY_SUBJECT_KEY } from "../screens/reachability-pane/reachability";
+import {
+  FLOOR_MS as POLLER_FLOOR_MS,
+  OVERDUE_MULTIPLIER as POLLER_OVERDUE_MULTIPLIER,
+  SOURCES as POLLER_SOURCES,
+} from "../screens/poller-pane/poller";
 import {
   BINDING_KEY as RACE_BINDING_KEY,
   SETUP_SUBJECT,
@@ -143,6 +151,34 @@ describe("the decision seam", () => {
     expect(canSubmitCapture(BOM)).toBe(false);
     expect(canSubmitCapture(NEL)).toBe(false);
     expect(canSubmitCapture(`${BOM}buy milk`)).toBe(true);
+  });
+
+  // #782: the share mapping and the Link's display name, pinned against
+  // the same cases `decisions/share.rs` tests so the two clients cannot
+  // title a shared URL differently.
+  it("answers the share-payload mapping out of the core", () => {
+    expect(parseSharePayload("Knee rehab video", "Watch this later https://www.youtube.com/watch?v=abc")).toEqual({
+      title: "Knee rehab video",
+      description: "Watch this later",
+      linkUrl: "https://www.youtube.com/watch?v=abc",
+    });
+    expect(parseSharePayload("", "https://www.youtube.com/watch?v=abc")).toEqual({
+      title: "youtube.com",
+      description: null,
+      linkUrl: "https://www.youtube.com/watch?v=abc",
+    });
+    expect(parseSharePayload("", "Just a thought")).toEqual({
+      title: "Just a thought",
+      description: null,
+      linkUrl: null,
+    });
+  });
+
+  it("names a link by its label, else its host, else the URL", () => {
+    expect(linkDisplayLabel("https://www.youtube.com/watch?v=abc", "Rehab")).toBe("Rehab");
+    expect(linkDisplayLabel("https://www.youtube.com/watch?v=abc", null)).toBe("youtube.com");
+    expect(linkDisplayLabel("https://www.youtube.com/watch?v=abc", "  ")).toBe("youtube.com");
+    expect(linkDisplayLabel("mailto:x@y", null)).toBe("mailto:x@y");
   });
 
   it("crosses a whole frontier's worth of items and back, ordered", () => {
@@ -359,6 +395,14 @@ describe("the seam's literal pane vocabulary, pinned against the core", () => {
     expect(REACHABILITY_GRACE_MS).toBe(constants.graceMs);
   });
 
+  // #775: the poller pane's literal source list and threshold.
+  it("the poller pane's constants match the core's", () => {
+    const constants = pollerConstantsFromCore();
+    expect([...POLLER_SOURCES]).toEqual(constants.sources);
+    expect(POLLER_OVERDUE_MULTIPLIER).toBe(constants.overdueMultiplier);
+    expect(POLLER_FLOOR_MS).toBe(constants.floorMs);
+  });
+
   it("the race pane's constants match the core's", () => {
     const constants = raceConstantsFromCore();
     expect(RACE_SOURCE).toBe(constants.source);
@@ -482,6 +526,8 @@ function syntheticItem(id: string, stage: TaskItemDTO["stage"]): TaskItemDTO {
     sourceKey: null,
     sourceUrl: null,
     vaultPath: null,
+    linkUrl: null,
+    linkLabel: null,
     archivedAt: null,
     createdAt: 1_755_000_000_000,
     updatedAt: 1_755_000_000_000,

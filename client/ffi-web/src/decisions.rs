@@ -98,6 +98,43 @@ pub fn capture_meta_problems(deadline: &str, scheduled_date: &str) -> String {
 /// (`store/worker-client.ts`) is a plain `number` — the wire's `priority`
 /// column is `0..=4`, nowhere near `i32`'s range, so narrowing here loses
 /// nothing and keeps the boundary type the caller already expects.
+/// [`hummingbird_core::decisions::share::parse_share_payload`] (#782), the
+/// share-payload mapping, as JSON `{title, description, linkUrl}` with
+/// `null` for an absent half. No web share target reads it yet; the door
+/// exists so that when one does, the mapping is the phone's, not a copy.
+#[wasm_bindgen]
+pub fn parse_share_payload(subject: &str, text: &str) -> String {
+    let draft = hummingbird_core::decisions::share::parse_share_payload(subject, text);
+    serde_json::json!({
+        "title": draft.title,
+        "description": draft.description,
+        "linkUrl": draft.link_url,
+    })
+    .to_string()
+}
+
+/// [`hummingbird_core::decisions::share::link_display_label`] — what a Link
+/// is called on the item panel: its name, else its host, else the URL.
+#[wasm_bindgen]
+pub fn link_display_label(url: &str, label: Option<String>) -> String {
+    hummingbird_core::decisions::share::link_display_label(url, label.as_deref())
+}
+
+/// [`hummingbird_core::decisions::share::is_followable_link`] — whether the
+/// item panel draws the Link row at all.
+#[wasm_bindgen]
+pub fn link_is_followable(url: &str) -> bool {
+    hummingbird_core::decisions::share::is_followable_link(url)
+}
+
+/// [`hummingbird_core::decisions::share::link_label_problem`] — the one
+/// rule about the pair (a name needs a URL), read by the capture box and
+/// the item panel's edit mode so the message on the field is the core's.
+#[wasm_bindgen]
+pub fn link_label_problem(url: &str, label: &str) -> Option<String> {
+    hummingbird_core::decisions::share::link_label_problem(url, label)
+}
+
 #[wasm_bindgen]
 pub fn priority_from_select(raw: &str) -> Option<i32> {
     capture::priority_from_select(raw).map(|value| value as i32)
@@ -1478,7 +1515,7 @@ pub fn sync_status_summary_json(input_json: &str) -> String {
 // values, never a rendered sentence; each pane's own TS module composes its
 // words from these.
 
-use hummingbird_core::decisions::panes::{kimi, github, homework, scps, uptime, reachability, race, vacation, weekend, zone};
+use hummingbird_core::decisions::panes::{kimi, github, homework, poller, scps, uptime, reachability, race, vacation, weekend, zone};
 
 /// `hummingbird_core::decisions::panes::zone::DEVICE_ZONE` — the sentinel
 /// `zone-bridge.ts`'s `resolveZone` special-cases to mean "the reader's own
@@ -1707,6 +1744,50 @@ pub fn reachability_constants_json() -> String {
     serde_json::json!({
         "subjectKey": reachability::SUBJECT_KEY,
         "graceMs": reachability::REACHABILITY_GRACE_MS,
+    })
+    .to_string()
+}
+
+// -- poller (#775) ---------------------------------------------------------
+
+#[wasm_bindgen]
+pub fn poller_subjects_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&poller::poller_subjects(&inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn poller_band_json(freshness_json: &str) -> String {
+    match serde_json::from_str::<hummingbird_core::decisions::panes::inputs::FreshnessFact>(freshness_json) {
+        Ok(freshness) => serde_json::to_string(&poller::poller_band(freshness)).unwrap(),
+        Err(error) => error_json(error.to_string()),
+    }
+}
+
+#[wasm_bindgen]
+pub fn poller_facts_json(source: &str, inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&poller::poller_facts(source, &inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn poller_answer_json(source: &str, inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&poller::poller_answer(source, &inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn poller_constants_json() -> String {
+    serde_json::json!({
+        "sources": poller::poller_sources(),
+        "overdueMultiplier": poller::OVERDUE_MULTIPLIER,
+        "floorMs": poller::FLOOR_MS,
     })
     .to_string()
 }
@@ -2056,6 +2137,24 @@ pub fn question_roster_json() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The share door's JSON keys are `seam.ts`'s contract (#782): camelCase
+    /// on this wire, `null` for an absent half, and the mapping itself the
+    /// core's verbatim.
+    #[test]
+    fn the_share_door_serializes_with_the_keys_seam_ts_parses() {
+        let json: serde_json::Value =
+            serde_json::from_str(&parse_share_payload("", "https://www.youtube.com/watch?v=abc")).unwrap();
+        assert_eq!(json["title"], serde_json::json!("youtube.com"));
+        assert_eq!(json["description"], serde_json::Value::Null);
+        assert_eq!(json["linkUrl"], serde_json::json!("https://www.youtube.com/watch?v=abc"));
+        assert_eq!(link_display_label("https://www.youtube.com/x", None), "youtube.com");
+        assert_eq!(link_display_label("https://www.youtube.com/x", Some("Rehab".into())), "Rehab");
+        assert!(link_is_followable("https://www.youtube.com/x"));
+        assert!(!link_is_followable("javascript:alert(1)"));
+        assert_eq!(link_label_problem("", "Shop").as_deref(), Some("A link name needs a URL"));
+        assert_eq!(link_label_problem("https://shop.test/", "Shop"), None);
+    }
 
     /// The exposure is a pass-through and nothing more — the rule itself is
     /// tested in `hummingbird_core::decisions::capture`. This pins that the
@@ -2426,10 +2525,14 @@ mod tests {
         let waste = now.iter().find(|pane| pane["question"] == "waste").unwrap();
         assert_eq!(waste["paneKey"], serde_json::json!("waste:collection"));
         // #534 also filled Status with the never-polled sentinel for its
-        // four questions, rather than leaving the surface empty.
+        // four questions, rather than leaving the surface empty; #775 added
+        // poller, one pane per source it watches, always ranked.
         let status: serde_json::Value =
             serde_json::from_str(&rank_panes_json(&inputs, FACTS, "status")).unwrap();
-        assert_eq!(status.as_array().unwrap().len(), 4);
+        assert_eq!(
+            status.as_array().unwrap().len(),
+            4 + hummingbird_core::decisions::panes::poller::poller_sources().len(),
+        );
         assert_eq!(rank_panes_json(&inputs, FACTS, "not-a-surface"), "[]");
         assert_eq!(pane_zone_queries_json(&inputs, "not-a-surface"), "[]");
     }
@@ -2502,7 +2605,7 @@ mod tests {
         assert_eq!(pane_band_order_json(), r#"["live","imminent","near","distant","dormant"]"#);
         assert_eq!(
             pane_question_order_json(),
-            r#"["homework","scps","waste","weekend","vacation","race","kimi","github","uptime","reachability"]"#,
+            r#"["homework","scps","waste","weekend","vacation","race","kimi","github","uptime","reachability","poller"]"#,
         );
         let constants: serde_json::Value =
             serde_json::from_str(&waste_constants_json()).unwrap();
@@ -3044,7 +3147,8 @@ mod tests {
                 "kimi",
                 "github",
                 "uptime",
-                "reachability"
+                "reachability",
+                "poller"
             ]
         );
         // The relation itself, spot-checked at both ends: a bound question

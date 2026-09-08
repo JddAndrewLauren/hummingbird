@@ -14,8 +14,9 @@ use hummingbird_domain::{SnapshotEnvelope, GOOGLE_CALENDAR_V1};
 /// alert source and two different snapshot keys).
 pub const SOURCE: &str = GOOGLE_CALENDAR_V1;
 
-/// How often this poller says it runs — must match
-/// `.github/workflows/calendar-poll.yml`'s cron, the same discipline
+/// How often this poller says it runs — must match `crontab`'s entry for
+/// `hummingbird-calendar-poll` (#774 moved this off `calendar-poll.yml`'s
+/// Actions `schedule:`), the same discipline
 /// `gmail_poll::cursor::POLLED_EVERY_MS` and `city_waste::body::POLLED_EVERY_MS`
 /// document.
 pub const POLLED_EVERY_MS: i64 = 15 * 60 * 1000;
