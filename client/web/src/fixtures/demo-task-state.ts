@@ -156,6 +156,7 @@
 import { TRIPS_CALENDAR_BINDING_KEY } from "../calendar/selection";
 import { LINK_BINDING_KEY } from "../screens/homework-pane/homework";
 import { OBSIDIAN_VAULT_BINDING_KEY } from "../obsidian/vault-uri";
+import { DEFAULT_CONTEXTS } from "../screens/field-vocabulary";
 import { QUESTION_ORDER } from "../screens/questions/contract";
 import type { BindingDTO, LedgerRowDTO, ProjectDTO, RecallRowDTO, TaskItemDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
@@ -918,7 +919,15 @@ export function buildDemoTaskState(): TaskState {
       enabled: true,
       pending: false,
     })),
+    // ADR-0038: the demo's list is the build's defaults, each counted
+    // against nothing — the Contexts section renders, and its removals are
+    // inert like every other demo write.
+    suggestedContexts: {
+      entries: DEFAULT_CONTEXTS.map((name) => ({ name, itemCount: 0 })),
+      pending: false,
+    },
     lastQuestionSwitchWrite: null,
+    lastContextEdit: null,
     // Moved from `demo-data.ts`'s kit-only `DEMO_DATA`, which already typed
     // these as the real `RuleDTO[]`/`KindRegistryDTO` (piece 1's "a move
     // rather than a rewrite") — the kit world keeps its own reference to the

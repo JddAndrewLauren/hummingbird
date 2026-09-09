@@ -271,7 +271,9 @@ fn to_vocab_option(option: hummingbird_core::decisions::vocabulary::VocabOption)
 /// `suggestedContexts` is not a closed vocabulary — CONTEXT.md: "the set of
 /// places a person works is theirs" — so it is offered only as suggestions;
 /// [`CaptureDraft::context`] accepts any string, including one absent from
-/// this list.
+/// this list. **Since ADR-0038 this carries the build's defaults only**: the
+/// operator's live list is [`MobileTaskHost::suggested_contexts`], which
+/// needs the core, so a form reads that door and falls back to these.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct CaptureFormMeta {
     pub sizes: Vec<VocabOption>,
@@ -304,10 +306,7 @@ pub fn capture_form_meta() -> CaptureFormMeta {
             .into_iter()
             .map(to_vocab_option)
             .collect(),
-        suggested_contexts: hummingbird_core::decisions::vocabulary::CONTEXTS
-            .iter()
-            .map(|context| context.to_string())
-            .collect(),
+        suggested_contexts: hummingbird_core::contexts::default_contexts(),
     }
 }
 
@@ -1125,6 +1124,7 @@ fn build_now_board(
     facets: &frontier::FacetSelection,
     now: &str,
     calm_order: frontier::CalmOrder,
+    suggested_contexts: &[String],
 ) -> NowBoardRecord {
     let by_id: HashMap<&str, &Item> = frontier_items
         .iter()
@@ -1148,7 +1148,7 @@ fn build_now_board(
         .filter_map(|id| by_id.get(id.as_str()).map(|item| to_frontier_item(item)))
         .collect();
 
-    let contexts = frontier::contexts_of(&ordered_entries);
+    let contexts = frontier::contexts_of(&ordered_entries, suggested_contexts);
     let live_column_keys: Vec<String> =
         frontier::group_frontier(&ordered_entries, axis, projects, now, calm_order)
         .into_iter()
@@ -4364,6 +4364,18 @@ impl MobileTaskHost {
             .collect()
     }
 
+    /// The suggested-contexts list (ADR-0038), per
+    /// [`Core::suggested_context_names`]: the operator's synced list or the
+    /// build's defaults, in list order — what `ContextField` offers. Read
+    /// per form open, not per keystroke; a second door beside the free
+    /// [`capture_form_meta`], whose `suggested_contexts` is the build's
+    /// defaults and nothing more (its own doc).
+    pub async fn suggested_contexts(&self) -> Vec<String> {
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
+            .core
+            .suggested_context_names()
+    }
+
     /// Switches one standing question on or off (#715), per
     /// [`Core::set_question_enabled`] — which overlays, so a following
     /// [`MobileTaskHost::question_switches`] reports the new state and
@@ -4723,6 +4735,7 @@ impl MobileTaskHost {
             &to_facet_selection(&facets),
             &now,
             map_calm_order(calm_order),
+            &inner.core.suggested_context_names(),
         )
     }
 
@@ -8126,7 +8139,8 @@ mod tests {
             &no_facets(),
             now,
             map_calm_order(MobileCalmOrder::Oldest),
-        );
+                &hummingbird_core::contexts::default_contexts(),
+);
 
         // Severity order, and no no-value column — the two things this axis
         // does that no other one does.
@@ -8147,7 +8161,8 @@ mod tests {
             &no_facets(),
             now,
             map_calm_order(MobileCalmOrder::Newest),
-        );
+                &hummingbird_core::contexts::default_contexts(),
+);
 
         // Only `calm` turns over; `overdue` keeps its place.
         assert_eq!(board_ids(&newest_first), vec!["overdue", "newer", "older"]);
@@ -8177,7 +8192,8 @@ mod tests {
             &no_facets(),
             "2026-08-15T12:00",
             frontier::CalmOrder::Oldest,
-        );
+                &hummingbird_core::contexts::default_contexts(),
+);
         assert_eq!(board_ids(&board), vec!["urgent", "low", "none"]);
 
         let soon = item("soon", 1, Some("2026-08-15"));
@@ -8195,7 +8211,8 @@ mod tests {
             &no_facets(),
             "2026-08-13T12:00",
             frontier::CalmOrder::Oldest,
-        );
+                &hummingbird_core::contexts::default_contexts(),
+);
         assert_eq!(board_ids(&board), vec!["soon", "later", "none-deadline"]);
     }
 
@@ -8214,7 +8231,8 @@ mod tests {
             &no_facets(),
             "2026-08-15T12:00",
             frontier::CalmOrder::Oldest,
-        );
+                &hummingbird_core::contexts::default_contexts(),
+);
 
         assert_eq!(board.columns.len(), 1);
         let record = &board.columns[0].items[0];
@@ -8242,7 +8260,8 @@ mod tests {
                 &no_facets(),
                 "2026-08-15T12:00",
                 frontier::CalmOrder::Oldest,
-            )
+                        &hummingbird_core::contexts::default_contexts(),
+)
         };
         assert_eq!(build(), build());
     }
@@ -8267,7 +8286,8 @@ mod tests {
             &no_facets(),
             "2026-08-15T12:00",
             frontier::CalmOrder::Oldest,
-        );
+                &hummingbird_core::contexts::default_contexts(),
+);
 
         assert_eq!(board.columns[0].value.as_deref(), Some("@phone"));
         assert_eq!(
@@ -8299,7 +8319,8 @@ mod tests {
             &picked,
             "2026-08-15T12:00",
             frontier::CalmOrder::Oldest,
-        );
+                &hummingbird_core::contexts::default_contexts(),
+);
 
         // @computer has no columns left once the filter is applied...
         assert_eq!(board.columns.len(), 1);
@@ -8330,7 +8351,8 @@ mod tests {
             &picked,
             "2026-08-15T12:00",
             frontier::CalmOrder::Oldest,
-        );
+                &hummingbird_core::contexts::default_contexts(),
+);
 
         assert_eq!(board_ids(&board), vec!["a"]);
     }
@@ -8359,7 +8381,8 @@ mod tests {
             &picked,
             "2026-08-15T12:00",
             frontier::CalmOrder::Oldest,
-        );
+                &hummingbird_core::contexts::default_contexts(),
+);
 
         // The board is narrowed to @phone alone, but the chip vocabulary
         // still names every context actually on the (unfiltered) board.
@@ -8392,7 +8415,8 @@ mod tests {
             &picked,
             "2026-08-15T12:00",
             frontier::CalmOrder::Oldest,
-        );
+                &hummingbird_core::contexts::default_contexts(),
+);
 
         assert_eq!(board.shown_count, 1);
         assert_eq!(board.total_count, 3);
@@ -8423,7 +8447,8 @@ mod tests {
             &no_facets(),
             "2026-08-15T12:00",
             frontier::CalmOrder::Oldest,
-        );
+                &hummingbird_core::contexts::default_contexts(),
+);
 
         assert_eq!(
             board.columns[0].items.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
@@ -8449,7 +8474,8 @@ mod tests {
             &no_facets(),
             "2026-08-15T12:00",
             frontier::CalmOrder::Oldest,
-        );
+                &hummingbird_core::contexts::default_contexts(),
+);
 
         assert!(board.columns.is_empty());
         assert_eq!(board.blocked.len(), 1);
@@ -8477,7 +8503,8 @@ mod tests {
                 &no_facets(),
                 "2026-08-15T12:00",
                 frontier::CalmOrder::Oldest,
-            );
+                        &hummingbird_core::contexts::default_contexts(),
+);
 
             assert_eq!(
                 board.blocked[0].item.available_actions,
@@ -8506,7 +8533,8 @@ mod tests {
                 &no_facets(),
                 "2026-08-15T12:00",
                 frontier::CalmOrder::Oldest,
-            );
+                        &hummingbird_core::contexts::default_contexts(),
+);
 
             assert!(board.blocked[0].item.available_actions.is_empty());
         }
@@ -10558,6 +10586,17 @@ mod settings_tests {
     }
 
     // -------------------------------------------------------------- panes (#536)
+
+    /// ADR-0038: the live list door answers the build's defaults until a
+    /// `contexts` row exists, and a form reading it gets the same order
+    /// the free `capture_form_meta` ships — so nothing on the phone changes
+    /// until the operator edits the list on the web.
+    #[tokio::test]
+    async fn the_suggested_contexts_door_answers_the_defaults_on_a_fresh_host() {
+        let host = pane_host("contexts-defaults").await;
+        assert_eq!(host.suggested_contexts().await, capture_form_meta().suggested_contexts);
+        assert_eq!(host.suggested_contexts().await.len(), 6);
+    }
 
     async fn pane_host(namespace: &str) -> Arc<MobileTaskHost> {
         let dir = tempfile::tempdir().unwrap();

@@ -488,6 +488,10 @@ mod wasm_bindings {
     // defaulting that to all-on would state a fact it had not read.
     const BUSY_QUESTION_SWITCHES: &str = r#"{"kind":"busy","switches":[]}"#;
     const BUSY_SET_QUESTION_ENABLED: &str = r#"{"kind":"busy","error":null}"#;
+    // ADR-0038: same contract again — an empty list is not "no answer".
+    const BUSY_SUGGESTED_CONTEXTS: &str =
+        r#"{"kind":"busy","contexts":{"entries":[],"pending":false}}"#;
+    const BUSY_EDIT_CONTEXT: &str = r#"{"kind":"busy","error":null,"cleared":null}"#;
     // #140: same "no answer, never an empty one" contract as BUSY_BINDINGS.
     const BUSY_RULES: &str = r#"{"kind":"busy","rules":[]}"#;
     const BUSY_CREATE_RULE: &str = r#"{"kind":"busy","id":null,"error":null}"#;
@@ -1390,6 +1394,50 @@ mod wasm_bindings {
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response)
                         .expect("SetQuestionEnabledResponse serializes"),
+                ))
+            })
+        }
+
+        /// The suggested-contexts list (ADR-0038), as JSON:
+        /// `{"kind": "ok"|"busy", "contexts": {"entries": [{"name": string,
+        /// "item_count": number}], "pending": bool}}`.
+        #[wasm_bindgen(js_name = suggestedContexts)]
+        pub fn suggested_contexts(&self) -> String {
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_SUGGESTED_CONTEXTS.to_string(), |host| serde_json::to_string(&host.suggested_contexts())
+                    .expect("SuggestedContextsResponse serializes"))
+        }
+
+        /// Appends one context to the suggested list (ADR-0038). Resolves to
+        /// JSON: `{"kind": "ok"|"invalid"|"unknown"|"failed"|"busy", "error":
+        /// string|null, "cleared": null}`.
+        #[wasm_bindgen(js_name = addContext)]
+        pub fn add_context(&self, seed: String, name: String, now_ms: f64) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Settings, now_ms as i64) else {
+                    return Ok(JsValue::from_str(BUSY_EDIT_CONTEXT));
+                };
+                let response = host.add_context(&seed, &name, now_ms as i64).await;
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("EditContextResponse serializes"),
+                ))
+            })
+        }
+
+        /// Removes one context from the suggested list and clears it from
+        /// every live item and project default carrying it (ADR-0038).
+        /// Resolves to the same JSON as `addContext`, with `cleared` the
+        /// number of items cleared on `"ok"`.
+        #[wasm_bindgen(js_name = removeContext)]
+        pub fn remove_context(&self, seed: String, name: String, now_ms: f64) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Settings, now_ms as i64) else {
+                    return Ok(JsValue::from_str(BUSY_EDIT_CONTEXT));
+                };
+                let response = host.remove_context(&seed, &name, now_ms as i64).await;
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("EditContextResponse serializes"),
                 ))
             })
         }

@@ -30,6 +30,7 @@ class ItemDetailViewModelTest {
         promote: suspend (String, ItemEdit, Long) -> Unit = { _, _, _ -> },
         sync: suspend () -> Unit = { },
         hasGrillDraft: suspend (String) -> Boolean = { false },
+        suggestedContexts: suspend () -> List<String>? = { null },
     ) = ItemDetailViewModel(
         fetchFn = fetch,
         actFn = act,
@@ -62,6 +63,7 @@ class ItemDetailViewModelTest {
                 suggestedContexts = listOf("@computer", "@errands"),
             )
         },
+        suggestedContextsFn = suggestedContexts,
     )
 
     @Test
@@ -76,6 +78,21 @@ class ItemDetailViewModelTest {
 
         assertEquals(listOf("fetch"), calls)
         assertEquals("i-1", (model.state.value as ItemDetailState.Loaded).record.id)
+    }
+
+    /** ADR-0038: the live list rides every load, and a door that throws
+     * leaves the defaults (a `null` flow) rather than the item unloaded. */
+    @Test
+    fun `load reads the suggested contexts, and a failing door leaves them null`() = runBlocking {
+        val model = vm(fetch = { id, _ -> itemDetail(id) }, suggestedContexts = { listOf("@calls") })
+        assertEquals(null, model.suggestedContexts.value)
+        model.load("i-1", 1_000)
+        assertEquals(listOf("@calls"), model.suggestedContexts.value)
+
+        val failing = vm(fetch = { id, _ -> itemDetail(id) }, suggestedContexts = { error("no core") })
+        failing.load("i-1", 1_000)
+        assertEquals(null, failing.suggestedContexts.value)
+        assertTrue(failing.state.value is ItemDetailState.Loaded)
     }
 
     /** The deep-link race, item-side: a tap can beat the cycle the push

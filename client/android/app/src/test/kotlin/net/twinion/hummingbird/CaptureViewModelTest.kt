@@ -41,7 +41,16 @@ class CaptureViewModelTest {
         formMetaFn: () -> CaptureFormMeta = { emptyFormMeta },
         projectsFn: suspend () -> List<MobileProject> = { emptyList() },
         captureFn: suspend (CaptureDraft, Long) -> String = { _, _ -> "unused" },
-    ) = CaptureViewModel(canSubmitFn, metaProblemsFn, linkProblemFn, formMetaFn, projectsFn, captureFn)
+        suggestedContextsFn: suspend () -> List<String>? = { null },
+    ) = CaptureViewModel(
+        canSubmitFn,
+        metaProblemsFn,
+        linkProblemFn,
+        formMetaFn,
+        projectsFn,
+        captureFn,
+        suggestedContextsFn,
+    )
 
     private fun draftWithTitle(title: String) = CaptureFormState(title = title)
 
@@ -365,5 +374,13 @@ class CaptureViewModelTest {
 
         assertEquals("https://shop.example.test/", seenDraft?.linkUrl)
         assertEquals("Shop", seenDraft?.linkLabel)
+    }
+
+    @Test
+    fun `the suggested contexts are null until read, then the door's list`() = runBlocking {
+        val vm = viewModel(suggestedContextsFn = { listOf("@calls", "@home") })
+        assertEquals(null, vm.suggestedContexts.value)
+        vm.loadSuggestedContexts()
+        assertEquals(listOf("@calls", "@home"), vm.suggestedContexts.value)
     }
 }

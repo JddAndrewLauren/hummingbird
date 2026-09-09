@@ -13,6 +13,11 @@ import { triageProcessQueue } from "./triage-process-order";
 import { SingleColumn } from "./layout";
 
 export interface TriageScreenProps {
+  /** ADR-0038: what the item editor's Context field offers — the operator's
+   * synced list unioned with the contexts live items carry, built once in
+   * `App.tsx` (`captureContexts`) and threaded down. Optional so a host
+   * that has not been wired still renders, over the build's defaults. */
+  contextSuggestions?: readonly string[];
   /** S12's real triage inbox (issue #110). */
   task: TaskState;
   /** S13/#111's triage mutation — `shell/useTriageWiring.ts`'s `triage`.
@@ -47,6 +52,7 @@ export interface TriageScreenProps {
 // button or the global hotkey from any screen, so this screen is where captures
 // are *sorted*, never where they are typed.
 export function TriageScreen({
+  contextSuggestions,
   task,
   onTriage,
   onComplete,
@@ -156,6 +162,7 @@ export function TriageScreen({
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
             {realTriage.map((item) => (
               <TriageRow
+                contextSuggestions={contextSuggestions}
                 key={item.id}
                 item={item}
                 projects={task.projects ?? []}

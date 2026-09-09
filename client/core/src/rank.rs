@@ -166,7 +166,7 @@ struct SortKey {
     id: String,
 }
 
-fn normalize_context(s: &str) -> String {
+pub(crate) fn normalize_context(s: &str) -> String {
     s.trim().trim_start_matches('@').to_ascii_lowercase()
 }
 

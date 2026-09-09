@@ -546,9 +546,17 @@ class ItemDetailPanelStructuralTest {
             "the level sliders must read the seam's own vocabulary",
             body.contains("options = formMeta.energies") && body.contains("options = formMeta.sizes"),
         )
+        // ADR-0038: the suggestions are the operator's live list, threaded
+        // in beside `formMeta`, with the seam's compiled-in defaults as the
+        // fallback until the list has been read.
         assertTrue(
-            "the context field must read the seam's own suggestions",
-            body.contains("suggestions = formMeta.suggestedContexts"),
+            "the context field must read the threaded live suggestions",
+            body.contains("suggestions = suggestedContexts"),
+        )
+        assertTrue(
+            "the panel must thread the live list with the seam's defaults as fallback",
+            panelSrc.contains("suggestedContexts = viewModel.suggestedContexts.collectAsState().value") &&
+                panelSrc.contains("?: viewModel.formMeta.suggestedContexts"),
         )
         // Read mode's glyph ramp position is the option's index in the
         // core-supplied list, so the seam's order decides it (#558) and no

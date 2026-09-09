@@ -1,6 +1,12 @@
 # ADR-0025: Decisions sink to the core; rendering stays per-client
 
-**Status:** accepted · 2026-08-14 · **amended 2026-08-15 (#499):** M1-1's
+**Status:** accepted · 2026-08-14 · **amended 2026-09-09 by
+[ADR-0038](0038-the-suggested-contexts-are-an-edited-list.md):** the
+suggested contexts are no longer a compile-time canonical — `vocabulary.rs`'s
+array is `DEFAULT_CONTEXTS`, the fallback, and the live list is a synced
+`settings` row every surface reads at render time; `field-vocabulary.ts`'s
+literal stays, for the module-evaluation-order reason below, as the pin of
+that default alone. · **amended 2026-08-15 (#499):** M1-1's
 probe fixed the web-side mechanism — a second, main-thread instantiation of
 the existing `hummingbird_ffi_web` wasm module, exposing free
 `#[wasm_bindgen]` functions — and recorded what does *not* sink in M1. See

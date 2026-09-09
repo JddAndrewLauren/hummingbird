@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mintBindingSeed, mintQuestionSwitchSeed } from "./useBindingsWiring";
+import { mintBindingSeed, mintContextEditSeed, mintQuestionSwitchSeed } from "./useBindingsWiring";
 
 // #223: pins the deterministic half of the sync module's seed-minting rule
 // (client/core/src/sync/mod.rs) for `Core::set_binding` — a binding write
@@ -46,5 +46,18 @@ describe("mintQuestionSwitchSeed", () => {
     // same queue-entry id at the same instant, and one write would silently
     // stand in for the other.
     expect(mintQuestionSwitchSeed("race", 5_000)).not.toEqual(mintBindingSeed("race", 5_000));
+  });
+});
+
+describe("mintContextEditSeed", () => {
+  it("retrying the same list edit (same name, nowMs) mints the same seed", () => {
+    // ADR-0038, on the same rule: the `contexts` row is one entity, so the
+    // seed's hash is only the queue-entry id.
+    expect(mintContextEditSeed("@calls", 5_000)).toEqual(mintContextEditSeed("@calls", 5_000));
+  });
+
+  it("never collides with a binding's or a switch's seed for a same-named key", () => {
+    expect(mintContextEditSeed("race", 5_000)).not.toEqual(mintBindingSeed("race", 5_000));
+    expect(mintContextEditSeed("race", 5_000)).not.toEqual(mintQuestionSwitchSeed("race", 5_000));
   });
 });

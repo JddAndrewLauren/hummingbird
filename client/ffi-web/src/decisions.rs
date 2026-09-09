@@ -165,15 +165,15 @@ fn vocab_json(options: Vec<vocabulary::VocabOption>) -> serde_json::Value {
     )
 }
 
-/// [`vocabulary::CONTEXTS`], JSON-encoded as a plain string array — see
-/// that constant's doc comment for why the web's own `field-vocabulary.ts`
-/// export stays a literal array pinned against this rather than a live
-/// call through this function in M1-2 (a module-evaluation-order
-/// constraint, recorded in #500's PR). M1-5's Android capture surface is
-/// this function's first production caller.
+/// [`vocabulary::DEFAULT_CONTEXTS`], JSON-encoded as a plain string array
+/// — the build's *default* suggested list (ADR-0038: the live list is the
+/// synced `contexts` row, read through `TaskHost::suggestedContexts`).
+/// Pinning-test-only: see that constant's doc comment for why the web's
+/// own `field-vocabulary.ts` export stays a literal array pinned against
+/// this rather than a live call (a module-evaluation-order constraint).
 #[wasm_bindgen]
-pub fn contexts_json() -> String {
-    serde_json::to_string(&vocabulary::CONTEXTS).unwrap()
+pub fn default_contexts_json() -> String {
+    serde_json::to_string(&vocabulary::DEFAULT_CONTEXTS).unwrap()
 }
 
 /// [`vocabulary::FRONTIER_AXES`], JSON-encoded — M1-3's (#501) first
@@ -459,14 +459,20 @@ pub fn apply_facets_ids(items_json: &str, selection_json: &str, now: &str) -> St
 }
 
 /// [`frontier::contexts_of`], JSON-encoded as an array of strings.
+/// `suggested_json` is the live suggested list (ADR-0038) as a JSON string
+/// array — a parameter rather than a read, because this is the main-thread
+/// seam and holds no `Core`; the caller passes what the worker published.
+/// An unreadable `suggested_json` falls back to the build's defaults.
 #[wasm_bindgen]
-pub fn contexts_of_json(items_json: &str) -> String {
+pub fn contexts_of_json(items_json: &str, suggested_json: &str) -> String {
     let items = match parse_items(items_json) {
         Ok(items) => items,
         Err(error) => return serde_json::json!({ "error": error }).to_string(),
     };
+    let suggested: Vec<String> = serde_json::from_str(suggested_json)
+        .unwrap_or_else(|_| hummingbird_core::contexts::default_contexts());
     let entries: Vec<FrontierItem> = items.iter().map(to_frontier_item).collect();
-    serde_json::to_string(&frontier::contexts_of(&entries)).unwrap()
+    serde_json::to_string(&frontier::contexts_of(&entries, &suggested)).unwrap()
 }
 
 /// One item as [`queue::order_triage`]/[`queue::triage_process_queue`] read
@@ -2393,7 +2399,11 @@ mod tests {
     #[test]
     fn contexts_of_json_lists_the_contexts_actually_present() {
         let payload = one_item("a", "ready");
-        assert_eq!(contexts_of_json(&format!("[{payload}]")), r#"["@errands"]"#);
+        assert_eq!(contexts_of_json(&format!("[{payload}]"), "[]"), r#"["@errands"]"#);
+        // The live list decides the order of what is present.
+        let two = format!("[{},{}]", one_item("a", "ready"), one_item("b", "ready").replace("@errands", "@calls"));
+        assert_eq!(contexts_of_json(&two, r#"["@calls","@errands"]"#), r#"["@calls","@errands"]"#);
+        assert_eq!(contexts_of_json(&two, "not json"), r#"["@errands","@calls"]"#);
     }
 
     #[test]

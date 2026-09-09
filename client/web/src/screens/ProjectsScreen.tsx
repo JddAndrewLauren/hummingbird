@@ -101,6 +101,11 @@ const PROJECT_BOARD_AXES = FRONTIER_AXES.filter((axis) => axis !== "project");
 
 export interface ProjectsScreenProps {
   task: TaskState;
+  /** ADR-0038: what the item editor's Context field offers — the operator's
+   * synced list unioned with the contexts live items carry, built once in
+   * `App.tsx` (`captureContexts`) and threaded down. Optional so a host
+   * that has not been wired still renders, over the build's defaults. */
+  contextSuggestions?: readonly string[];
   onCreateProject: (name: string) => void;
   /** #625: the dossier's properties card write, widened by #630's archive
    * card — `patch` carries only the fields the caller actually changed.
@@ -166,6 +171,7 @@ export interface ProjectsScreenProps {
 }
 
 export function ProjectsScreen({
+  contextSuggestions,
   task,
   onCreateProject,
   onPatchProject,
@@ -221,6 +227,7 @@ export function ProjectsScreen({
     />
   ) : (
     <Dossier
+      contextSuggestions={contextSuggestions}
       row={open}
       lastProjectWrite={task.lastProjectWrite}
       onBack={() => setOpenId(null)}
@@ -387,6 +394,7 @@ function NewProjectCard({
 }
 
 function Dossier({
+  contextSuggestions,
   row,
   lastProjectWrite,
   onBack,
@@ -414,6 +422,7 @@ function Dossier({
   fileLinks,
   storage,
 }: {
+  contextSuggestions?: readonly string[];
   row: ProjectRow;
   lastProjectWrite: TaskProjectResult | null;
   onBack: () => void;
@@ -507,6 +516,7 @@ function Dossier({
               queries already exclude archived items upstream, so a filter
               here would be a second, drifting definition of the same thing. */}
           <FrontierBoard
+            contextSuggestions={contextSuggestions}
             task={task}
             frontier={task.frontier.filter((item) => item.projectId === projectId)}
             triage={task.triageInbox.filter((item) => item.projectId === projectId)}

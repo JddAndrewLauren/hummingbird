@@ -11,12 +11,18 @@
 //
 // **The canonical copy moved to Rust at M1-2 (ADR-0025, #141/#500):**
 // `hummingbird_core::decisions::vocabulary` now owns the size/energy option
-// values and the suggested `CONTEXTS` list, reusing `hummingbird_domain::
+// values and the *default* suggested contexts, reusing `hummingbird_domain::
 // {Size, Energy}::ALL` rather than re-deriving them, and `field-vocabulary
 // .test.ts` is ported to Rust there as the canonical suite.
 //
+// **Since ADR-0038 the suggested list is the operator's, not the build's.**
+// `DEFAULT_CONTEXTS` below is only what a form offers before the worker has
+// published `TaskState.suggestedContexts` (the synced `contexts` row, edited
+// in Settings); `contextSuggestions` takes the live list as its second
+// argument and `App.tsx` passes it.
+//
 // **The arrays below stay literal TS, not a live call through the seam.**
-// `SIZE_OPTIONS`/`ENERGY_OPTIONS`/`CONTEXTS` are read directly as values at
+// `SIZE_OPTIONS`/`ENERGY_OPTIONS`/`DEFAULT_CONTEXTS` are read directly as values at
 // React-render time by `ItemPanel.tsx` and `CaptureBox.tsx` — but they are
 // *exported as plain constants*, and a plain `export const` computed by
 // calling into wasm runs at MODULE EVALUATION, which for every file
@@ -26,7 +32,7 @@
 // throw the seam's "used before ready" guard on every page load. So this
 // module keeps hand-written arrays, now pinned against
 // `hummingbird_core::decisions::vocabulary`'s real, seam-exposed functions
-// (`sizeOptionsFromCore`/`energyOptionsFromCore`/`contextsFromCore` in
+// (`sizeOptionsFromCore`/`energyOptionsFromCore`/`defaultContextsFromCore` in
 // `decisions/seam.ts`) by `field-vocabulary.test.ts`'s own pinning cases —
 // the same "held together by a test" mechanism the header below used to
 // warn about, except the other side of the test is now Rust rather than a
@@ -55,7 +61,7 @@
 // One module because two forms offer the same choices — the capture box and
 // the item editor — and a context added to one copy and not the other is a
 // list that quietly disagrees with itself depending on where you sort from.
-// `frontier-facets.ts` reads `CONTEXTS` too, for its chip *order*.
+// `frontier-facets.ts` reads the same live list too, for its chip *order*.
 //
 // **Not the capture box's sliders.** Those are indexed by *position* rather
 // than by value — `capture-meta.ts`'s `CAPTURE_SIZE_NAMES`/
@@ -68,10 +74,11 @@
 import { contextsOf, NO_CONTEXT } from "../decisions/seam";
 import type { TaskItemDTO } from "../store/protocol";
 
-/** The contexts the forms *suggest* and the frontier's chips order by — the
- * places this system's owner actually works. Never a constraint on what
- * `items.context` may hold: see the header. */
-export const CONTEXTS = [
+/** The contexts the forms *suggest* until the operator's own list has been
+ * read — the places this system's owner works, as this build ships them
+ * (ADR-0038). Never a constraint on what `items.context` may hold: see the
+ * header. */
+export const DEFAULT_CONTEXTS = [
   "@home",
   "@computer",
   "@phone",
@@ -85,16 +92,19 @@ export const CONTEXTS = [
   "@homework",
 ] as const;
 
-/** What a capture form should *offer* for context: the suggested `CONTEXTS`
- * first, then every other context the given live items actually carry.
+/** What a capture form should *offer* for context: the `suggested` list
+ * first (the operator's synced list, ADR-0038 — or `DEFAULT_CONTEXTS` until
+ * it has been read), then every other context the given live items actually
+ * carry.
  *
  * The whole point is that a context typed once is a place this person works,
  * and the next capture should offer it rather than making them retype it —
- * `CONTEXTS` alone can never grow, so a `@calls` minted yesterday was invisible
- * to the form that could have reused it. The ordering rule is not decided
- * here: `contextsOf` is `hummingbird_core::decisions::frontier::contexts_of`
- * through the seam (suggested first, extras alphabetically), and this is a
- * composition of two canonical values — pure TS under ADR-0025.
+ * the list alone only grows when edited, so a `@calls` typed into yesterday's
+ * capture would be invisible to the form that could have reused it. The
+ * ordering rule is not decided here: `contextsOf` is
+ * `hummingbird_core::decisions::frontier::contexts_of` through the seam
+ * (suggested first, extras alphabetically), and this is a composition of two
+ * canonical values — pure TS under ADR-0025.
  *
  * `NO_CONTEXT` is dropped: it is `contexts_of`'s label for the *absence* of a
  * context, a facet chip's value and never a string `items.context` may hold.
@@ -106,10 +116,13 @@ export const CONTEXTS = [
  *
  * Freshness follows sync: a context typed on another device is offered here
  * once the next sync cycle has landed the item, not before. */
-export function contextSuggestions(items: readonly TaskItemDTO[]): string[] {
-  const seen = new Set<string>(CONTEXTS);
-  const out: string[] = [...CONTEXTS];
-  for (const context of contextsOf(items)) {
+export function contextSuggestions(
+  items: readonly TaskItemDTO[],
+  suggested: readonly string[] = DEFAULT_CONTEXTS,
+): string[] {
+  const seen = new Set<string>(suggested);
+  const out: string[] = [...suggested];
+  for (const context of contextsOf(items, suggested)) {
     if (context === NO_CONTEXT || seen.has(context)) {
       continue;
     }

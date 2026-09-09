@@ -1,6 +1,11 @@
 # ADR-0034: A standing question can be switched off, and the Settings roster is what makes that legal
 
-**Status:** accepted · 2026-08-23
+**Status:** accepted · 2026-08-23 · **amended 2026-09-09 by
+[ADR-0038](0038-the-suggested-contexts-are-an-edited-list.md):** a third
+typed vocabulary now sits over the `settings` table beside bindings and
+these switches — the suggested-contexts list — and, unlike decision 3
+here, its removal *does* cascade onto live items. ADR-0038 also takes the
+opposite row shape (one ordered row, not one per key) and says why.
 **Context:** the fantasy-football grilling of 2026-08-23, opened on a request
 for a new standing question (Yahoo fantasy football) that is only in season
 17 weeks a year. The question that could not be answered inside the existing

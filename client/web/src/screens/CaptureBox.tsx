@@ -49,8 +49,8 @@ import type { CaptureDestination } from "./capture-destination";
 //
 // The context list is NOT restated here, and is no longer even imported: the
 // suggestions arrive as a prop, built by `field-vocabulary.ts`'s
-// `contextSuggestions` from `CONTEXTS` plus the contexts live items actually
-// carry, because the box has no store of its own to read them from. `CONTEXTS`
+// `contextSuggestions` from the operator's list plus the contexts live items actually
+// carry, because the box has no store of its own to read them from. The list
 // is still the one suggested copy this repo keeps standing, and the triage
 // editor and the frontier's chip order still read it directly. It reaches a
 // `Combobox` rather than a `Select` because context is an open vocabulary —

@@ -1,6 +1,7 @@
 import type {
   BindingDTO,
   QuestionSwitchDTO,
+  SuggestedContextsDTO,
   BindingValueDTO,
   BlockedFrontierEntryDTO,
   ConditionDTO,
@@ -129,6 +130,16 @@ export interface TaskHostLike {
   /** #715's switch read. Mirrors `TaskHost::questionSwitches`, resolved to
    * JSON: `{"kind": "ok"|"busy", "switches": [QuestionSwitch]}`. */
   questionSwitches(): string;
+  /** ADR-0038's list read. Mirrors `TaskHost::suggestedContexts`, resolved
+   * to JSON: `{"kind": "ok"|"busy", "contexts": {"entries": [{"name",
+   * "item_count"}], "pending": bool}}`. */
+  suggestedContexts(): string;
+  /** ADR-0038's two list writes. Mirror `TaskHost::addContext` /
+   * `TaskHost::removeContext`, resolved to JSON: `{"kind": "ok"|"invalid"|
+   * "unknown"|"failed"|"busy", "error": string|null, "cleared":
+   * number|null}`. */
+  addContext(seed: string, name: string, nowMs: number): Promise<string>;
+  removeContext(seed: string, name: string, nowMs: number): Promise<string>;
   /** #140's kind registry export. Mirrors `hummingbird-ffi-web`'s
    * `TaskHost::kindRegistry` — never `"busy"`, so this resolves
    * synchronously to `{"kind":"ok",…}` always. */
@@ -373,6 +384,19 @@ interface RawQuestionSwitch {
 interface RawQuestionSwitchListResponse {
   kind: "ok" | "busy";
   switches: RawQuestionSwitch[];
+}
+
+// -- the suggested-contexts list (ADR-0038) ------------------------------
+
+interface RawSuggestedContextsResponse {
+  kind: "ok" | "busy";
+  contexts: { entries: { name: string; item_count: number }[]; pending: boolean };
+}
+
+interface RawEditContextResponse {
+  kind: "ok" | "invalid" | "unknown" | "failed" | "busy";
+  error: string | null;
+  cleared: number | null;
 }
 
 interface RawSetQuestionEnabledResponse {
@@ -795,6 +819,13 @@ function mapQuestionSwitch(raw: RawQuestionSwitch): QuestionSwitchDTO {
   return { question: raw.question, enabled: raw.enabled, pending: raw.pending };
 }
 
+function mapSuggestedContexts(raw: RawSuggestedContextsResponse["contexts"]): SuggestedContextsDTO {
+  return {
+    entries: raw.entries.map((entry) => ({ name: entry.name, itemCount: entry.item_count })),
+    pending: raw.pending,
+  };
+}
+
 function mapCondition(raw: RawCondition): ConditionDTO {
   return { field: raw.field, op: raw.op, value: raw.value, negate: raw.negate };
 }
@@ -1213,6 +1244,35 @@ export async function handleTaskRequest(
         kind: raw.kind,
         error: raw.error,
       });
+      return;
+    }
+    case "addContext":
+    case "removeContext": {
+      const raw = JSON.parse(
+        request.type === "addContext"
+          ? await host.addContext(request.seed, request.name, request.nowMs)
+          : await host.removeContext(request.seed, request.name, request.nowMs),
+      ) as RawEditContextResponse;
+      post({
+        type: "contextEditResult",
+        seed: request.seed,
+        name: request.name,
+        edit: request.type === "addContext" ? "add" : "remove",
+        kind: raw.kind,
+        error: raw.error,
+        cleared: raw.cleared,
+      });
+      return;
+    }
+    case "getSuggestedContexts": {
+      const raw = JSON.parse(host.suggestedContexts()) as RawSuggestedContextsResponse;
+      if (raw.kind === "busy") {
+        // No answer, not an empty one — `getQuestionSwitches`'s contract: an
+        // empty list would read as "no contexts", and a section drawing that
+        // would offer to rebuild a list it never read.
+        return;
+      }
+      post({ type: "suggestedContexts", contexts: mapSuggestedContexts(raw.contexts) });
       return;
     }
     case "getQuestionSwitches": {

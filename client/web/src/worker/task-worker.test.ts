@@ -24,6 +24,11 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     setBinding: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     bindings: vi.fn().mockReturnValue('{"kind":"ok","bindings":[]}'),
     setQuestionEnabled: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
+    suggestedContexts: vi
+      .fn()
+      .mockReturnValue('{"kind":"ok","contexts":{"entries":[{"name":"@home","item_count":2}],"pending":false}}'),
+    addContext: vi.fn().mockResolvedValue('{"kind":"ok","error":null,"cleared":null}'),
+    removeContext: vi.fn().mockResolvedValue('{"kind":"ok","error":null,"cleared":2}'),
     questionSwitches: vi.fn().mockReturnValue('{"kind":"ok","switches":[]}'),
     kindRegistry: vi
       .fn()
@@ -1408,6 +1413,57 @@ describe("handleTaskRequest", () => {
       type: "setQuestionEnabledResult",
       kind: "unknown_question",
     });
+  });
+
+  // -- ADR-0038's suggested-contexts list ---------------------------------
+
+  it("addContext/removeContext forward the name and post a result keyed by seed", async () => {
+    const host = fakeHost();
+    expect(
+      await run({ type: "addContext", seed: "seed-c-1", name: "@calls", nowMs: 5_000 }, host),
+    ).toEqual([
+      {
+        type: "contextEditResult",
+        seed: "seed-c-1",
+        name: "@calls",
+        edit: "add",
+        kind: "ok",
+        error: null,
+        cleared: null,
+      },
+    ]);
+    expect(host.addContext).toHaveBeenCalledWith("seed-c-1", "@calls", 5_000);
+
+    expect(
+      await run({ type: "removeContext", seed: "seed-c-2", name: "@errands", nowMs: 6_000 }, host),
+    ).toEqual([
+      {
+        type: "contextEditResult",
+        seed: "seed-c-2",
+        name: "@errands",
+        edit: "remove",
+        kind: "ok",
+        error: null,
+        cleared: 2,
+      },
+    ]);
+    expect(host.removeContext).toHaveBeenCalledWith("seed-c-2", "@errands", 6_000);
+  });
+
+  it("getSuggestedContexts posts the list in the store's spelling, and nothing when busy", async () => {
+    const host = fakeHost();
+    expect(await run({ type: "getSuggestedContexts" }, host)).toEqual([
+      {
+        type: "suggestedContexts",
+        contexts: { entries: [{ name: "@home", itemCount: 2 }], pending: false },
+      },
+    ]);
+    const busy = fakeHost({
+      suggestedContexts: vi
+        .fn()
+        .mockReturnValue('{"kind":"busy","contexts":{"entries":[],"pending":false}}'),
+    });
+    expect(await run({ type: "getSuggestedContexts" }, busy)).toEqual([]);
   });
 
   it("getQuestionSwitches posts every question's state", async () => {

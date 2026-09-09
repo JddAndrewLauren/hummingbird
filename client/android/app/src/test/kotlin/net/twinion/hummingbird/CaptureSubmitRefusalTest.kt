@@ -79,6 +79,13 @@ class CaptureSubmitRefusalTest {
             "CaptureViewModel.create must wire projectsFn to the real CoreHolder.projects() read",
             factory.contains("projectsFn = { CoreHolder.get(context.applicationContext).projects() }"),
         )
+        // ADR-0038: the live list is a second door beside the compiled-in
+        // formMeta, so a fresh wiring that dropped it would silently show
+        // the build's defaults forever.
+        assertTrue(
+            "CaptureViewModel.create must wire suggestedContextsFn to CoreHolder.suggestedContexts()",
+            factory.contains("CoreHolder.get(context.applicationContext).suggestedContexts()"),
+        )
     }
 
     /** The item edit form is the second surface to ask the same question
@@ -109,6 +116,10 @@ class CaptureSubmitRefusalTest {
         assertTrue(
             "the production factory must pass ::captureMetaProblems",
             factory.contains("metaProblemsFn = ::captureMetaProblems"),
+        )
+        assertTrue(
+            "the production factory must wire suggestedContextsFn to CoreHolder.suggestedContexts() (ADR-0038)",
+            factory.contains("CoreHolder.get(context.applicationContext).suggestedContexts()"),
         )
         assertTrue(
             "the production factory must pass ::linkLabelProblem",

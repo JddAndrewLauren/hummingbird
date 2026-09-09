@@ -16,7 +16,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { CapturePopover } from "./CapturePopover";
-import { CONTEXTS } from "../screens/field-vocabulary";
+import { DEFAULT_CONTEXTS } from "../screens/field-vocabulary";
 import { VAULT_PATH_PROBLEM } from "../screens/triage-form";
 import { FILE_PATH_PROBLEM } from "../dropbox/file-link";
 import type { ProjectDTO } from "../store/protocol";
@@ -47,7 +47,7 @@ function renderPopover(
     onClose,
     onSubmit,
     projects: options.projects ?? [],
-    contextSuggestions: options.contextSuggestions ?? CONTEXTS,
+    contextSuggestions: options.contextSuggestions ?? DEFAULT_CONTEXTS,
     demo: options.demo ?? false,
     vaultName: options.vaultName ?? null,
     fileLinks: options.fileLinks,
@@ -111,7 +111,7 @@ describe("CapturePopover — the overlay", () => {
         onClose={vi.fn()}
         onSubmit={vi.fn()}
         projects={[]}
-        contextSuggestions={CONTEXTS}
+        contextSuggestions={DEFAULT_CONTEXTS}
         demo={false}
         lastCapture={null}
         cancelDictationRequestId={0}
@@ -462,11 +462,11 @@ describe("CapturePopover — the capture meta (#208)", () => {
   // native `<datalist>` this replaced could not show a full list in
   // (`components/forms/Combobox.tsx`'s header).
   it("offers exactly the contexts it was handed", () => {
-    renderPopover({ contextSuggestions: [...CONTEXTS, "@calls"] });
+    renderPopover({ contextSuggestions: [...DEFAULT_CONTEXTS, "@calls"] });
     fireEvent.change(screen.getByLabelText("Context"), { target: { value: "@errands" } });
     fireEvent.click(screen.getByRole("button", { name: "Show context suggestions" }));
     expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual([
-      ...CONTEXTS,
+      ...DEFAULT_CONTEXTS,
       "@calls",
     ]);
   });

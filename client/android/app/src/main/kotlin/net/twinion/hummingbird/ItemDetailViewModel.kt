@@ -188,11 +188,20 @@ class ItemDetailViewModel(
      * `CaptureViewModel.formMetaFn` is: every size/energy/context word the
      * panel's editors offer comes from here, never a Kotlin literal. */
     private val formMetaFn: () -> CaptureFormMeta,
+    /** ADR-0038: the operator's live suggested-contexts list, injected as
+     * `CaptureViewModel.suggestedContextsFn` is. `null` is "no door", and
+     * the editor falls back to [formMeta]'s compiled-in defaults. */
+    private val suggestedContextsFn: suspend () -> List<String>? = { null },
 ) : ViewModel() {
 
     /** Read once, on first use — the vocabulary does not change
      * mid-session, the same laziness `CaptureViewModel.formMeta` uses. */
     val formMeta: CaptureFormMeta by lazy { formMetaFn() }
+
+    /** The operator's suggested contexts (ADR-0038), read on every [load]
+     * beside the record — `null` until the first read lands. */
+    private val _suggestedContexts = MutableStateFlow<List<String>?>(null)
+    val suggestedContexts: StateFlow<List<String>?> = _suggestedContexts.asStateFlow()
 
     private val _state = MutableStateFlow<ItemDetailState>(ItemDetailState.Loading)
     val state: StateFlow<ItemDetailState> = _state.asStateFlow()
@@ -267,6 +276,9 @@ class ItemDetailViewModel(
      * copy of itself. */
     suspend fun load(itemId: String, nowMs: Long) {
         if (_draft.value == null) _state.value = ItemDetailState.Loading
+        // Outside the record's own try: a list that cannot be read leaves the
+        // defaults in place and says nothing about whether the item loaded.
+        runCatching { suggestedContextsFn() }.getOrNull()?.let { _suggestedContexts.value = it }
         try {
             fetchFn(itemId, nowMs)?.let {
                 _state.value = ItemDetailState.Loaded(it)
@@ -459,6 +471,9 @@ class ItemDetailViewModel(
                 metaProblemsFn = ::captureMetaProblems,
                 linkProblemFn = ::linkLabelProblem,
                 formMetaFn = ::captureFormMeta,
+                suggestedContextsFn = {
+                    CoreHolder.get(context.applicationContext).suggestedContexts()
+                },
             )
 
         fun factory(context: Context): ViewModelProvider.Factory = viewModelFactory {

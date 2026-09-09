@@ -6,6 +6,7 @@
 // here reads a clock.
 
 import { describe, expect, it } from "vitest";
+import { DEFAULT_CONTEXTS } from "./field-vocabulary";
 import type { TaskItemDTO } from "../store/protocol";
 import {
   applyFacets,
@@ -141,18 +142,22 @@ describe("contextsOf", () => {
       item({ context: "@phone" }),
       item({ context: "@computer" }),
       item({ context: "@alpha" }),
-    ]);
+    ], DEFAULT_CONTEXTS);
 
     expect(contexts).toEqual(["@computer", "@phone", "@alpha", "@zeta", NO_CONTEXT]);
+    // ADR-0038: the list given decides the leading order.
+    expect(
+      contextsOf([item({ context: "@phone" }), item({ context: "@computer" })], ["@phone"]),
+    ).toEqual(["@phone", "@computer"]);
   });
 
   it("offers only what is present — the schema's context is free text", () => {
-    expect(contextsOf([item({ context: "@garden" })])).toEqual(["@garden"]);
-    expect(contextsOf([])).toEqual([]);
+    expect(contextsOf([item({ context: "@garden" })], DEFAULT_CONTEXTS)).toEqual(["@garden"]);
+    expect(contextsOf([], DEFAULT_CONTEXTS)).toEqual([]);
   });
 
   it("omits the absent-context chip when every item names one", () => {
-    expect(contextsOf([item({ context: "@computer" })])).toEqual(["@computer"]);
+    expect(contextsOf([item({ context: "@computer" })], DEFAULT_CONTEXTS)).toEqual(["@computer"]);
   });
 });
 

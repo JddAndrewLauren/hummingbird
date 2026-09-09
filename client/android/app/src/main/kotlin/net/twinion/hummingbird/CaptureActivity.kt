@@ -152,6 +152,8 @@ private fun CaptureScreen(
     val viewModel: CaptureViewModel = viewModel(factory = CaptureViewModel.factory(context))
     val draft by viewModel.draft.collectAsState()
     val projects by viewModel.projects.collectAsState()
+    // ADR-0038: the operator's list once read, the build's defaults before.
+    val suggestedContexts by viewModel.suggestedContexts.collectAsState()
     val dictationFailure by viewModel.dictationFailure.collectAsState()
     val submitting by viewModel.submitting.collectAsState()
     val focusRequester = remember { FocusRequester() }
@@ -192,6 +194,7 @@ private fun CaptureScreen(
     // (`client/web/src/screens/CaptureBox.tsx:830-839`) already renders.
     LaunchedEffect(Unit) {
         viewModel.loadProjects()
+        viewModel.loadSuggestedContexts()
     }
 
     // The share's seed (#782), through the core's own mapping and nothing
@@ -321,7 +324,7 @@ private fun CaptureScreen(
                     ContextField(
                         value = draft.context,
                         onValueChange = { viewModel.updateDraft(draft.copy(context = it)) },
-                        suggestions = viewModel.formMeta.suggestedContexts,
+                        suggestions = suggestedContexts ?: viewModel.formMeta.suggestedContexts,
                         modifier = Modifier.weight(1f),
                     )
                     // Everything a mint would ask, behind one disclosure — the web
