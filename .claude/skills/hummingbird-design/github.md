@@ -27,7 +27,29 @@ date: 2026-08-09T20:05:16Z
 
 ## Last push (mirror -> design project)
 
-date: 2026-08-14
+date: 2026-09-09
+direction: this mirror was the source; 1 file written to the design project
+
+- `README.md` -> `readme.md` — the **Motion** paragraph gains the *carried*
+  exception (raised 2026-09-08 by #801, commit `11f9426`): an element the
+  reader is holding under a pointer or a finger (a board card mid-drag) hangs
+  on an under-damped spring, lags, tilts into its travel, overshoots once and
+  settles within ~250ms of release; it never drifts *after* release, and
+  reduced motion places it instantly. Decided by ADR-0021 decision 9, which is
+  where the argument lives: the operator's verdict picked a weighted spring
+  drag over four alternatives, and a settle that overshoots is outside the
+  rule as it stood. **`tokens/motion.css` is untouched** — the spring is not a
+  CSS animation and has no duration or easing token to add.
+
+Upstream `readme.md` was byte-identical to this mirror's copy at `11f9426^`
+(the commit before the amendment) before the write, so nothing authored in the
+design project was overwritten; a `get_file` after the write matches this
+mirror's `README.md` exactly. Pushed from a session authorized on the WORK
+account, one day after the amendment landed in the mirror — the #801 session
+was on the other account and recorded the push as pending here.
+
+### Previous push (2026-08-14)
+
 direction: this mirror and `batch-dictation` were the sources; 7 files written
 to the design project
 

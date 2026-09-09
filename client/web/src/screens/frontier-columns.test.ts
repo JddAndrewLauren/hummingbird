@@ -24,6 +24,7 @@ import {
   CALM_ORDERS,
   DEFAULT_CALM_ORDER,
   DEFAULT_FRONTIER_AXIS,
+  dropEdits,
   FRONTIER_AXES,
   groupFrontier,
 } from "./frontier-columns";
@@ -425,5 +426,41 @@ describe("groupFrontier — purity", () => {
         .sort();
       expect(ids).toEqual(["a", "b", "c", "d"]);
     }
+  });
+});
+
+// The other direction (#801, ADR-0021 decision 9): what a card dropped into
+// a column writes. The rule itself is pinned in Rust — `drop_edits`'s own
+// tests, including the round-trip gate that re-groups an edited item — so
+// what is left to pin here is the wire hop: that `null` means "writes
+// nothing", that an untouched field is an *absent key* rather than a `null`
+// that would clear it, and that the keys are the ones `onTriage` sends.
+describe("dropEdits — the wire hop", () => {
+  it("writes the axis field, and leaves every other key absent", () => {
+    const edits = dropEdits(item({ id: "a" }), "context", "@phone", [], NOW_MS);
+    expect(edits).toEqual({ context: "@phone" });
+    expect(edits && "size" in edits).toBe(false);
+  });
+
+  it("clears the field for the no-value column", () => {
+    expect(dropEdits(item({ context: "@phone" }), "context", null, [], NOW_MS)).toEqual({
+      context: null,
+    });
+  });
+
+  it("writes nothing for the card's own column, or for the refused band", () => {
+    expect(dropEdits(item({ context: "@phone" }), "context", "@phone", [], NOW_MS)).toBeNull();
+    expect(dropEdits(item(), "urgency", "overdue", [], NOW_MS)).toBeNull();
+  });
+
+  it("copies a project's default context onto a context-less item", () => {
+    const projects = [project({ id: "p-1", defaultContext: "@desk" })];
+    expect(dropEdits(item(), "project", "p-1", projects, NOW_MS)).toEqual({
+      projectId: "p-1",
+      context: "@desk",
+    });
+    expect(dropEdits(item({ context: "@phone" }), "project", "p-1", projects, NOW_MS)).toEqual({
+      projectId: "p-1",
+    });
   });
 });

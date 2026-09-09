@@ -1,10 +1,8 @@
 package net.twinion.hummingbird.ui.panes
 
-import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -34,12 +32,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import net.twinion.hummingbird.R
+import net.twinion.hummingbird.ui.theme.DurBase
+import net.twinion.hummingbird.ui.theme.EaseFlit
+import net.twinion.hummingbird.ui.theme.reducedMotion
 import net.twinion.hummingbird.bandColor
 import net.twinion.hummingbird.ui.theme.AccentQuietBorderDark
 import net.twinion.hummingbird.ui.theme.Ember200
@@ -147,20 +147,13 @@ private fun statusPaneIcon(pane: MobileRankedPane): Int = when (pane.standingQue
  * the web's name for. `animateContentSize` is interruptible by
  * construction, so a second tap mid-expansion reverses rather than queues. */
 @Composable
-private fun expandSpec(): FiniteAnimationSpec<IntSize> {
-    val context = LocalContext.current
-    // Remembered: this is a `ContentResolver` read, and unremembered it ran
-    // on every recomposition — every chip tap — for a value that changes
-    // only when the operator changes a system setting.
-    val scale = remember(context) {
-        Settings.Global.getFloat(
-            context.contentResolver,
-            Settings.Global.ANIMATOR_DURATION_SCALE,
-            1f,
-        )
-    }
-    return if (scale == 0f) tween(1) else tween(200, easing = CubicBezierEasing(.2f, .8f, .2f, 1f))
-}
+private fun expandSpec(): FiniteAnimationSpec<IntSize> =
+    // The reduced-motion read and both token values moved to
+    // `ui/theme/Motion.kt` when the board's drag needed the same three
+    // (#801): this was the app's only animator-scale read and its only
+    // hand-written duration, and two of them would be two places to
+    // re-check against the mirror.
+    if (reducedMotion()) tween(1) else tween(DurBase, easing = EaseFlit)
 
 /** "Did this sync work", above everything else on the screen. Every word is
  * the core's: `syncStatusSummary`'s label already carries the queue depth

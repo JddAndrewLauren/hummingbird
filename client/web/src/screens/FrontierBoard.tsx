@@ -545,6 +545,7 @@ export function FrontierBoard({
           storage={storage}
           screen={screen}
           axes={axes}
+          onTriage={onTriage}
         />
       ) : null}
 

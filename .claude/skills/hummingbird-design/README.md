@@ -151,7 +151,13 @@ always interruptible, and nothing drifts or floats. `--ease-flit`
 (`cubic-bezier(.2,.8,.2,1)`) is the default. `--ease-hover`
 (`cubic-bezier(.34,1.4,.64,1)`) carries the whimsy: a small overshoot on
 hover, which is the only place the system is allowed to be playful. Page
-transitions use `--ease-out-soft`. All of it collapses to 1ms under
+transitions use `--ease-out-soft`. The one exception to both the durations and
+the overshoot rule is a **carried** element — something the reader is holding
+under a pointer or a finger, like a board card mid-drag: it hangs on an
+under-damped spring, so it lags behind the hand, tilts into its own travel,
+overshoots once and settles within about 250ms of release. It never drifts
+*after* release — released is settled — and under reduced motion it is placed
+instantly with no spring at all. All of it collapses to 1ms under
 `prefers-reduced-motion`.
 
 **Hover states.** Buttons darken one accent step and lift 1px; ghost buttons
