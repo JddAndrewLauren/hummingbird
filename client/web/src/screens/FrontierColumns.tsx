@@ -38,6 +38,7 @@ import { MarkDoneButton } from "../components/domain/MarkDoneButton";
 import { StageBadge } from "../components/domain/StageBadge";
 import { EmptyState } from "../components/feedback/EmptyState";
 import { ControlButton, SECTION_TOGGLE_HOVER, sectionToggleStyle } from "./ControlButton";
+import type { CardExtra, FrontierPrototype, PrototypeCtx } from "./now-prototype/seam";
 import {
   CALM_ORDERS,
   FRONTIER_AXES,
@@ -265,14 +266,20 @@ function ItemCard({
   selected,
   onOpen,
   onComplete,
+  extra,
 }: {
   item: TaskItemDTO;
   nowMs: number;
   selected: boolean;
   onOpen: () => void;
   onComplete?: () => void;
+  /** THROWAWAY (#801): whatever the drag prototype wants on this card —
+   * `draggable`, pointer handlers, a transform. Empty in every other case,
+   * and the whole seam goes with `now-prototype/`. */
+  extra?: CardExtra;
 }) {
   const urgency = computeUrgency(item.deadline, nowMs);
+  const { style: extraStyle, onKeyDown: extraKeyDown, ...extraRest } = extra ?? {};
   return (
     // `role="button"` on a container rather than `as="button"`, for the reason
     // `ItemRow` does the same: the mark-done checkmark is itself a button, and
@@ -288,7 +295,14 @@ function ItemCard({
       accent={selected}
       onClick={onOpen}
       onKeyDown={(event) => {
-        if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+        // The prototype's key handling runs first and may claim the key (it
+        // binds `m` to pick a card up); Enter/Space keep their meaning.
+        extraKeyDown?.(event);
+        if (
+          !event.defaultPrevented &&
+          event.target === event.currentTarget &&
+          (event.key === "Enter" || event.key === " ")
+        ) {
           event.preventDefault();
           event.currentTarget.click();
         }
@@ -306,7 +320,9 @@ function ItemCard({
         // rule is "the one card that is the answer on screen gets `accent` (an
         // ember-tinted border), not a fill", and ADR-0021 asks only that the
         // card "stays marked" without prescribing how.
+        ...extraStyle,
       }}
+      {...extraRest}
     >
       {/* Urgency, as the card's leading edge. Deliberately an element inside
           the card and NOT `borderLeft` on the card itself: the design system's
@@ -502,6 +518,7 @@ export function FrontierColumns({
   storage,
   screen,
   axes = FRONTIER_AXES,
+  prototype,
 }: {
   frontier: readonly TaskItemDTO[];
   /** `TaskState.triageInbox` — the captured Triage items, grouped into the
@@ -540,6 +557,11 @@ export function FrontierColumns({
    * unchanged, and the stored axis is clamped against this list on read so a
    * value chosen on a wider board cannot group by a button that is not here. */
   axes?: readonly FrontierAxis[];
+  /** THROWAWAY (#801, Phase 1): the drag prototype's five seams, absent in
+   * every real mount and a no-op wherever it is. See
+   * `now-prototype/seam.ts` for why the board is hooked rather than forked;
+   * the whole thing is deleted before the gesture is built for real. */
+  prototype?: FrontierPrototype;
 }) {
   // Seeded from storage on first render, then written on every change. `useState`'s
   // initialiser runs once, which is what makes a reload restore rather than a
@@ -574,7 +596,12 @@ export function FrontierColumns({
   // capture is next.
   const ordered = [...orderFrontier(frontier), ...triageProcessQueue(triage, grilling, draftItemIds).items];
   const shown = applyFacets(ordered, picked, nowMs);
-  const columns = groupFrontier(shown, axis, projects, nowMs, calmOrder);
+  // THROWAWAY (#801): the prototype's stub mutations, applied HERE so a
+  // dropped card moves through the real `groupFrontier` and the real lane
+  // packing rather than through a mock of them. Identity when absent.
+  const grouped = prototype ? prototype.applyOverrides(shown) : shown;
+  const columns = groupFrontier(grouped, axis, projects, nowMs, calmOrder);
+  const protoCtx: PrototypeCtx = { axis, projects, nowMs };
   const activeFacets = facetCount(picked);
 
   const pickAxis = (next: FrontierAxis) => {
@@ -1013,10 +1040,12 @@ export function FrontierColumns({
               // shown the next chunk to the right.
               const hidden = column.items.length - shownIn(columnIndex);
               const runsOn = flow?.column === columnIndex;
+              const proto = prototype?.columnProps(column, 0, protoCtx);
               return (
                 <div
                   key={key}
-                  style={COLUMN_STYLE}
+                  {...proto}
+                  style={{ ...COLUMN_STYLE, ...proto?.style }}
                 >
                   {/* The header is the collapse control. A column you have ruled out
                       (wrong context, wrong energy) should cost one line, not a
@@ -1069,6 +1098,7 @@ export function FrontierColumns({
                           selected={item.id === selectedItemId}
                           onOpen={() => onOpenItem(item.id)}
                           onComplete={canMarkDone(item) ? () => onAct(item.id, "complete") : undefined}
+                          extra={prototype?.cardProps(item, protoCtx)}
                         />
                       ))}
                   {/* A column that runs on hands this to the foot of its last
@@ -1083,6 +1113,7 @@ export function FrontierColumns({
                       onToggle={() => toggleExpanded(key)}
                     />
                   ) : null}
+                  {prototype?.columnFooter(column, 0, protoCtx)}
                 </div>
               );
             })}
@@ -1109,9 +1140,13 @@ export function FrontierColumns({
               const isCollapsed = collapsed.has(key);
               const part = offset + 1;
               const hidden = column.items.length - shownIn(columnIndex);
+              const proto = prototype?.columnProps(column, part, protoCtx);
               return (
                 <div key={`${key}-part-${part}`} style={LANE_STYLE}>
-                  <div style={COLUMN_STYLE}>
+                  <div
+                    {...proto}
+                    style={{ ...COLUMN_STYLE, ...proto?.style }}
+                  >
                     {/* Shut with the rest of the column: a label standing over
                         no cards names nothing, and the heading it continues is
                         two lanes to the left saying the same word. The lane
@@ -1145,6 +1180,7 @@ export function FrontierColumns({
                             onComplete={
                               canMarkDone(item) ? () => onAct(item.id, "complete") : undefined
                             }
+                            extra={prototype?.cardProps(item, protoCtx)}
                           />
                         ))}
                     {!isCollapsed &&
@@ -1157,11 +1193,13 @@ export function FrontierColumns({
                         onToggle={() => toggleExpanded(key)}
                       />
                     ) : null}
+                    {prototype?.columnFooter(column, part, protoCtx)}
                   </div>
                 </div>
               );
             })
           : null}
+        {prototype?.overlay(protoCtx)}
       </div>
     </>
   );

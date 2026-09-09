@@ -21,6 +21,9 @@ import { Card } from "../components/core/Card";
 import { ItemPanel } from "../components/domain/ItemPanel";
 import { ItemRow } from "../components/domain/ItemRow";
 import { EmptyState } from "../components/feedback/EmptyState";
+// THROWAWAY (#801, Phase 1): the drag-gesture prototype. Three lines here and
+// five no-op seams in `FrontierColumns`; `now-prototype/seam.ts` says why.
+import { useNowFrontierPrototype } from "./now-prototype";
 import type { GrillTakeoverWiring } from "../shell/useGrillTakeoverWiring";
 import type { FileLinksWiring } from "../shell/useFileLinksWiring";
 import type { MicrotaskWiring } from "../shell/useMicrotaskWiring";
@@ -227,6 +230,7 @@ export function FrontierBoard({
   // confirms. Cleared whenever `selectedItemId` itself changes (a
   // different item opened, or the panel closed) so a stale optimistic item
   // from a PREVIOUS selection can never leak into a new one.
+  const prototype = useNowFrontierPrototype();
   const [optimisticItem, setOptimisticItem] = useState<TaskItemDTO | null>(null);
   // True from an act click until the live `isPending` read confirms that
   // act queued — see `resolveFallbackPending`'s doc for the stale-`false`
@@ -375,6 +379,7 @@ export function FrontierBoard({
 
   return (
     <>
+      {prototype?.bar}
       {/* Above the slot, not inside it: these lines exist precisely for the
           renders where the slot is empty. Text and nothing else — ADR-0021
           decision 2 keeps colour on a card meaning urgency and nothing else,
@@ -536,6 +541,7 @@ export function FrontierBoard({
           storage={storage}
           screen={screen}
           axes={axes}
+          prototype={prototype}
         />
       ) : null}
 
