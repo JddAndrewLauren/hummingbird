@@ -51,6 +51,7 @@ pub mod bindings;
 pub mod calendar;
 pub mod capture;
 pub mod context;
+pub mod contexts;
 pub mod decisions;
 pub mod diagnostics;
 pub mod freshness;
@@ -64,6 +65,10 @@ pub mod sync;
 pub mod task;
 
 use bindings::{Binding, BindingKey, BindingValue};
+use contexts::{
+    contexts_from_stored, default_contexts, normalise_context_name, same_context, ContextEntry,
+    ContextNameError, SuggestedContexts, CONTEXTS_KEY,
+};
 use decisions::panes::contract::{StandingQuestion, QUESTION_ORDER};
 use question_switch::{
     all_switch_keys, question_enabled_from_stored, question_switch_key, QuestionSwitch,
@@ -695,6 +700,40 @@ impl<E: std::fmt::Debug> std::fmt::Display for ActError<E> {
 }
 
 impl<E: std::fmt::Debug> std::error::Error for ActError<E> {}
+
+/// [`Core::add_context`] / [`Core::remove_context`] failed before ever
+/// reaching the outbound queue, or while durably enqueueing (ADR-0038).
+/// Only [`Debug`](std::fmt::Debug) derives, for [`ActError`]'s reason.
+#[derive(Debug)]
+pub enum ContextEditError<E> {
+    /// The name was nothing but whitespace.
+    EmptyName,
+    /// The name is the frontier's own "no context" label
+    /// ([`decisions::frontier::NO_CONTEXT`]).
+    ReservedName,
+    /// The list already carries this context, under
+    /// [`contexts::same_context`]'s rule — `@Errands` is `@errands`.
+    Duplicate,
+    /// Nothing in the list matches the name asked to be removed.
+    Unknown,
+    /// [`sync::SyncCycle::enqueue`] itself failed to persist the candidate
+    /// queue — on the list write or on one of the cascade's clears.
+    Snapshot(SnapshotError<E>),
+}
+
+impl<E: std::fmt::Debug> std::fmt::Display for ContextEditError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ContextEditError::EmptyName => write!(f, "a context needs a name"),
+            ContextEditError::ReservedName => write!(f, "that name is reserved for items with no context"),
+            ContextEditError::Duplicate => write!(f, "that context is already in the list"),
+            ContextEditError::Unknown => write!(f, "that context is not in the list"),
+            ContextEditError::Snapshot(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl<E: std::fmt::Debug> std::error::Error for ContextEditError<E> {}
 
 /// One reviewed Grill session's outcome, ready to submit as the atomic
 /// completion mutation ([`Core::complete_grill`], #354, ADR-0023).
@@ -2219,6 +2258,10 @@ where
                 .keys()
                 .filter(|key| BindingKey::parse(key).is_none())
                 .filter(|key| !switch_keys.contains(key.as_str()))
+                // ADR-0038: the suggested-contexts list is the third
+                // vocabulary over this table, with a chip editor of its own
+                // — a JSON array in a free-text box is the same wrong control.
+                .filter(|key| key.as_str() != CONTEXTS_KEY)
                 .map(|key| describe(key)),
         );
         bindings
@@ -2281,6 +2324,43 @@ where
             settings.insert(overlay.setting.key.clone(), overlay.setting.clone());
         }
         settings
+    }
+
+    /// The suggested-contexts list (ADR-0038) as the Settings section
+    /// reads it: the operator's synced list, or [`contexts::DEFAULT_CONTEXTS`]
+    /// while no `contexts` row exists (or the row holds something this
+    /// build cannot read — `contexts::contexts_from_stored`'s own rule),
+    /// each entry counted against the live items that carry it under
+    /// [`contexts::same_context`]. Read through the same overlay-over-mirror
+    /// view as [`Core::bindings`], so a list edited offline reads back
+    /// edited and `pending` until a cycle drains it.
+    pub fn suggested_contexts(&self) -> SuggestedContexts {
+        let names = self.suggested_context_names();
+        let items = self.overlaid_items();
+        let entries = names
+            .into_iter()
+            .map(|name| {
+                let item_count = items
+                    .values()
+                    .filter(|item| item.context.as_deref().is_some_and(|c| same_context(&name, c)))
+                    .count();
+                ContextEntry { name, item_count }
+            })
+            .collect();
+        SuggestedContexts {
+            entries,
+            pending: self.binding_overlay.contains_key(CONTEXTS_KEY),
+        }
+    }
+
+    /// [`Core::suggested_contexts`]'s names alone, in list order — what the
+    /// capture forms offer and what [`decisions::frontier::contexts_of`]
+    /// orders the frontier's chips by.
+    pub fn suggested_context_names(&self) -> Vec<String> {
+        self.overlaid_settings()
+            .get(CONTEXTS_KEY)
+            .and_then(|setting| contexts_from_stored(&setting.value))
+            .unwrap_or_else(default_contexts)
     }
 
     /// Sets one binding (#118): enqueues an absolute-value CAS
@@ -2363,6 +2443,145 @@ where
             now_ms,
         )
         .await
+    }
+
+    /// Appends one context to the suggested list (ADR-0038):
+    /// [`Core::set_binding`]'s exact write path over the third `settings`
+    /// vocabulary — the whole list, as a JSON array, absolute-value CAS on
+    /// the one `contexts` row, enqueued through [`sync::SyncCycle::enqueue`]
+    /// and overlaid so the new chip is present the instant this returns.
+    ///
+    /// The name is trimmed; empty, the reserved "no context" label, and a
+    /// name the list already carries under [`contexts::same_context`] are
+    /// refused before anything is enqueued. `@` is not required.
+    ///
+    /// `seed` mints this mutation's queue-entry id
+    /// ([`sync::write::deterministic_id`]) — caller-supplied, the same
+    /// no-clock/no-RNG reasoning as every other mutation entry point here.
+    pub async fn add_context(
+        &mut self,
+        seed: &str,
+        name: &str,
+        now_ms: i64,
+    ) -> Result<(), ContextEditError<QS::Error>> {
+        let name = match normalise_context_name(name) {
+            Ok(name) => name,
+            Err(ContextNameError::Empty) => return Err(ContextEditError::EmptyName),
+            Err(ContextNameError::Reserved) => return Err(ContextEditError::ReservedName),
+        };
+        let mut names = self.suggested_context_names();
+        if names.iter().any(|existing| same_context(existing, &name)) {
+            return Err(ContextEditError::Duplicate);
+        }
+        names.push(name);
+        self.write_context_list(seed, names, now_ms).await
+    }
+
+    /// Removes one context from the suggested list and clears it from
+    /// everything live that carries it (ADR-0038). Returns how many items
+    /// were cleared.
+    ///
+    /// Three kinds of write, all the ordinary CAS the owned schema already
+    /// has, in this queue order: the list itself (one `PUT`, as
+    /// [`Core::add_context`]); then one `PATCH` per live item whose context
+    /// matches under [`contexts::same_context`] — the same single-field
+    /// clear [`Core::triage`] carries, `context: null` on the wire, one
+    /// entry per item so a conflict dead-letters that one item, named,
+    /// never the batch; then one `PATCH` per live project whose
+    /// `default_context` matches, clearing it, so the next item to join
+    /// that project is not re-tagged with a context that no longer exists.
+    /// The list goes first deliberately: should it later dead-letter (two
+    /// devices editing the row at once — the module header's accepted
+    /// cost) the clears still land, and an item with no context is never
+    /// wrong where a surviving chip over cleared items would be.
+    ///
+    /// **Archived items are never touched.** They are not in
+    /// [`Core::overlaid_items`] at all — Recall's rule, history stays
+    /// readable and never editable — so they keep whatever they carried.
+    /// Done-but-not-archived items are cleared like any other live one.
+    ///
+    /// Every clear's seed derives from `seed` and the row it targets, so the
+    /// whole cascade is as deterministic as one write. The `ItemNotFound`
+    /// arm below is defensive only: the ids come from the same overlaid
+    /// read `triage` re-does, with nothing in between.
+    ///
+    /// **Projects are judged on the mirror, not an overlay** — there is
+    /// none for them ([`Core::patch_project`]'s own contract), so a
+    /// `default_context` edit still queued from this device is not seen
+    /// here; it lands, and the next removal sees it. The cost of one
+    /// stale judgement on a field the operator just typed was judged
+    /// smaller than a second overlay for one cascade.
+    pub async fn remove_context(
+        &mut self,
+        seed: &str,
+        name: &str,
+        now_ms: i64,
+    ) -> Result<usize, ContextEditError<QS::Error>> {
+        let names = self.suggested_context_names();
+        if !names.iter().any(|existing| same_context(existing, name)) {
+            return Err(ContextEditError::Unknown);
+        }
+        let remaining: Vec<String> =
+            names.into_iter().filter(|existing| !same_context(existing, name)).collect();
+        self.write_context_list(seed, remaining, now_ms).await?;
+
+        let matching_items: Vec<String> = self
+            .overlaid_items()
+            .values()
+            .filter(|item| item.context.as_deref().is_some_and(|c| same_context(name, c)))
+            .map(|item| item.id.clone())
+            .collect();
+        let mut cleared = 0;
+        for item_id in &matching_items {
+            let patch = TriagePatch {
+                context: Some(None),
+                ..TriagePatch::default()
+            };
+            match self
+                .triage(&format!("{seed}:clear:{item_id}"), item_id, false, patch, now_ms, None)
+                .await
+            {
+                Ok(()) => cleared += 1,
+                Err(ActError::ItemNotFound) => {}
+                Err(ActError::Snapshot(error)) => return Err(ContextEditError::Snapshot(error)),
+            }
+        }
+
+        let matching_projects: Vec<Project> = self
+            .projects()
+            .into_iter()
+            .filter(|project| {
+                project.default_context.as_deref().is_some_and(|c| same_context(name, c))
+            })
+            .collect();
+        for project in &matching_projects {
+            self.patch_project(
+                &format!("{seed}:project:{}", project.id),
+                project,
+                None,
+                None,
+                Some(None),
+                None,
+                now_ms,
+            )
+            .await
+            .map_err(ContextEditError::Snapshot)?;
+        }
+
+        Ok(cleared)
+    }
+
+    async fn write_context_list(
+        &mut self,
+        seed: &str,
+        names: Vec<String>,
+        now_ms: i64,
+    ) -> Result<(), ContextEditError<QS::Error>> {
+        self.enqueue_setting_write(seed, CONTEXTS_KEY, serde_json::Value::Array(
+            names.into_iter().map(serde_json::Value::String).collect(),
+        ), now_ms)
+        .await
+        .map_err(ContextEditError::Snapshot)
     }
 
     /// The one `settings` write path both vocabularies share — the ordinary
@@ -8016,6 +8235,303 @@ mod tests {
         reader.run(&authority, &authority, 3_000, Trigger::User, true, 0.0).await;
         assert_eq!(reader.disabled_questions(), vec!["github".to_string()]);
         assert!(!switch_of(&reader.question_switches(), StandingQuestion::Github).pending);
+    }
+
+    // ------------------------------------------ ADR-0038: suggested contexts
+
+    /// One full-sweep cycle seeding items, projects and settings together —
+    /// the cascade reads all three through the ordinary mirror.
+    async fn core_with_contexts(
+        items: Vec<hummingbird_domain::Item>,
+        projects: Vec<hummingbird_domain::Project>,
+        settings: Vec<hummingbird_domain::Setting>,
+    ) -> Core {
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 1,
+            items,
+            projects,
+            settings,
+            ..hummingbird_domain::ChangesResponse::empty(1)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let outcome = core
+            .run(&read, &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0)
+            .await;
+        assert!(matches!(
+            outcome,
+            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })
+        ));
+        core
+    }
+
+    fn fixture_item_with_context(id: &str, stage: Stage, context: &str) -> hummingbird_domain::Item {
+        hummingbird_domain::Item {
+            context: Some(context.to_string()),
+            ..fixture_item(id, stage)
+        }
+    }
+
+    fn fixture_project_with_default(id: &str, default_context: Option<&str>) -> hummingbird_domain::Project {
+        hummingbird_domain::Project {
+            id: id.to_string(),
+            name: format!("project {id}"),
+            github_repo: None,
+            default_context: default_context.map(str::to_string),
+            archived_at: None,
+            created_at: 1,
+            updated_at: 1,
+            version: 4,
+        }
+    }
+
+    fn context_names<QS: storage::SnapshotStore, MS: storage::SnapshotStore>(
+        core: &Core<QS, MS>,
+    ) -> Vec<String> {
+        core.suggested_contexts().entries.into_iter().map(|e| e.name).collect()
+    }
+
+    /// The queued settings write, if any, as the list it carries.
+    fn queued_context_list(core: &Core) -> Option<Vec<String>> {
+        core.cycle.queue().entries().find_map(|entry| match &entry.intent {
+            MutationIntent::Patch { path, patch_fields, .. } if path == "/api/settings/contexts" => {
+                serde_json::from_value(patch_fields["value"].clone()).ok()
+            }
+            _ => None,
+        })
+    }
+
+    /// Every queued item PATCH, as (path, patch_fields).
+    fn queued_item_patches(core: &Core) -> Vec<(String, serde_json::Value)> {
+        core.cycle
+            .queue()
+            .entries()
+            .filter_map(|entry| match &entry.intent {
+                MutationIntent::Patch { path, patch_fields, .. } if path.starts_with("/api/items/") => {
+                    Some((path.clone(), patch_fields.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_fresh_mirror_suggests_the_defaults_with_nothing_queued() {
+        let core = core_with_contexts(vec![], vec![], vec![]).await;
+        let read = core.suggested_contexts();
+        assert_eq!(
+            context_names(&core),
+            ["@home", "@computer", "@phone", "@errands", "@garden", "@homework"]
+        );
+        assert!(!read.pending);
+        assert!(read.entries.iter().all(|e| e.item_count == 0));
+        assert_eq!(core.cycle.queue().entries().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_stored_list_replaces_the_defaults_and_garbage_does_not() {
+        let core = core_with_contexts(
+            vec![],
+            vec![],
+            vec![fixture_setting("contexts", r#"["@calls","@home"]"#, 2)],
+        )
+        .await;
+        assert_eq!(context_names(&core), ["@calls", "@home"]);
+
+        let core = core_with_contexts(vec![], vec![], vec![fixture_setting("contexts", r#"{"a":1}"#, 2)]).await;
+        assert_eq!(context_names(&core).len(), 6, "an unreadable row never empties the forms");
+    }
+
+    #[tokio::test]
+    async fn entries_count_the_live_items_that_carry_them_under_the_rankers_rule() {
+        let core = core_with_contexts(
+            vec![
+                fixture_item_with_context("i-1", Stage::Ready, "@errands"),
+                fixture_item_with_context("i-2", Stage::Done, "@Errands"),
+                fixture_item_with_context("i-3", Stage::Ready, "errands"),
+                fixture_item_with_context("i-4", Stage::Ready, "@home"),
+                hummingbird_domain::Item {
+                    archived_at: Some(5),
+                    ..fixture_item_with_context("i-5", Stage::Done, "@errands")
+                },
+            ],
+            vec![],
+            vec![],
+        )
+        .await;
+        let read = core.suggested_contexts();
+        let errands = read.entries.iter().find(|e| e.name == "@errands").unwrap();
+        assert_eq!(errands.item_count, 3, "Done counts, archived does not, case and @ do not matter");
+        let home = read.entries.iter().find(|e| e.name == "@home").unwrap();
+        assert_eq!(home.item_count, 1);
+    }
+
+    #[tokio::test]
+    async fn adding_appends_trims_overlays_and_reads_back_pending() {
+        let mut core = core_with_contexts(vec![], vec![], vec![]).await;
+        core.add_context("seed-1", "  @calls ", 2_000).await.unwrap();
+
+        let read = core.suggested_contexts();
+        assert!(read.pending);
+        assert_eq!(context_names(&core).last().map(String::as_str), Some("@calls"));
+        assert_eq!(
+            queued_context_list(&core).unwrap(),
+            ["@home", "@computer", "@phone", "@errands", "@garden", "@homework", "@calls"]
+        );
+        assert!(
+            core.bindings().iter().all(|b| b.key != "contexts"),
+            "the list never shows in the free-text bindings editor"
+        );
+    }
+
+    #[tokio::test]
+    async fn adding_refuses_empty_reserved_and_duplicate_names_without_enqueueing() {
+        let mut core = core_with_contexts(vec![], vec![], vec![]).await;
+        assert!(matches!(
+            core.add_context("s", "   ", 2_000).await,
+            Err(ContextEditError::EmptyName)
+        ));
+        assert!(matches!(
+            core.add_context("s", "no context", 2_000).await,
+            Err(ContextEditError::ReservedName)
+        ));
+        assert!(matches!(
+            core.add_context("s", "@Errands", 2_000).await,
+            Err(ContextEditError::Duplicate)
+        ));
+        assert!(matches!(
+            core.add_context("s", "errands", 2_000).await,
+            Err(ContextEditError::Duplicate)
+        ));
+        assert_eq!(core.cycle.queue().entries().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn removing_an_unknown_context_enqueues_nothing() {
+        let mut core = core_with_contexts(vec![], vec![], vec![]).await;
+        assert!(matches!(
+            core.remove_context("s", "@calls", 2_000).await,
+            Err(ContextEditError::Unknown)
+        ));
+        assert_eq!(core.cycle.queue().entries().count(), 0);
+    }
+
+    /// The acceptance: the chip goes, every live item carrying the context
+    /// (Done included, archived excluded, spelling variants included) is
+    /// cleared with a real `null` on the wire, an unrelated item is not
+    /// touched, and a project default naming it is cleared too.
+    #[tokio::test]
+    async fn removing_clears_the_live_items_and_the_project_default_and_leaves_the_rest() {
+        let mut core = core_with_contexts(
+            vec![
+                fixture_item_with_context("i-1", Stage::Ready, "@errands"),
+                fixture_item_with_context("i-2", Stage::Done, "@Errands"),
+                fixture_item_with_context("i-3", Stage::Triage, "@home"),
+                hummingbird_domain::Item {
+                    archived_at: Some(5),
+                    ..fixture_item_with_context("i-4", Stage::Done, "@errands")
+                },
+            ],
+            vec![
+                fixture_project_with_default("p-1", Some("@errands")),
+                fixture_project_with_default("p-2", Some("@home")),
+            ],
+            vec![],
+        )
+        .await;
+
+        let cleared = core.remove_context("seed-1", "@errands", 2_000).await.unwrap();
+        assert_eq!(cleared, 2);
+
+        assert!(!context_names(&core).iter().any(|n| n == "@errands"));
+        assert_eq!(
+            queued_context_list(&core).unwrap(),
+            ["@home", "@computer", "@phone", "@garden", "@homework"]
+        );
+
+        let mut patches = queued_item_patches(&core);
+        patches.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            patches,
+            vec![
+                ("/api/items/i-1".to_string(), serde_json::json!({"context": null})),
+                ("/api/items/i-2".to_string(), serde_json::json!({"context": null})),
+            ]
+        );
+
+        // The overlay shows the clear immediately.
+        let items = core.overlaid_items();
+        assert_eq!(items["i-1"].context, None);
+        assert_eq!(items["i-2"].context, None);
+        assert_eq!(items["i-3"].context.as_deref(), Some("@home"));
+        assert!(core.is_pending("i-1"));
+
+        let project_patches: Vec<(String, serde_json::Value)> = core
+            .cycle
+            .queue()
+            .entries()
+            .filter_map(|entry| match &entry.intent {
+                MutationIntent::Patch { path, patch_fields, .. } if path.starts_with("/api/projects/") => {
+                    Some((path.clone(), patch_fields.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(project_patches.len(), 1);
+        assert_eq!(project_patches[0].0, "/api/projects/p-1");
+        assert_eq!(project_patches[0].1["default_context"], serde_json::Value::Null);
+        assert!(project_patches[0].1.get("name").is_none_or(|v| v.is_null()));
+
+        // Queue order: the list first, then the clears.
+        let first = core.cycle.queue().entries().next().unwrap();
+        assert!(matches!(&first.intent, MutationIntent::Patch { path, .. } if path == "/api/settings/contexts"));
+    }
+
+    #[tokio::test]
+    async fn adding_over_an_unreadable_row_writes_the_defaults_plus_the_name() {
+        let mut core =
+            core_with_contexts(vec![], vec![], vec![fixture_setting("contexts", "\"garbage\"", 2)]).await;
+        core.add_context("seed-1", "@calls", 2_000).await.unwrap();
+        let list = queued_context_list(&core).unwrap();
+        assert_eq!(list.len(), 7);
+        assert_eq!(list.last().map(String::as_str), Some("@calls"));
+        assert!(list.contains(&"@home".to_string()), "the defaults are what the row replaces");
+    }
+
+    #[tokio::test]
+    async fn removing_clears_a_project_default_spelled_differently() {
+        let mut core = core_with_contexts(
+            vec![],
+            vec![fixture_project_with_default("p-1", Some("Errands"))],
+            vec![],
+        )
+        .await;
+        core.remove_context("seed-1", "@errands", 2_000).await.unwrap();
+        let project_patch = core.cycle.queue().entries().find_map(|entry| match &entry.intent {
+            MutationIntent::Patch { path, patch_fields, .. } if path == "/api/projects/p-1" => {
+                Some(patch_fields.clone())
+            }
+            _ => None,
+        });
+        assert_eq!(project_patch.unwrap()["default_context"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn a_queued_list_survives_a_reload_and_still_reads_as_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-contexts-reload");
+        let ns = namespace.to_str().unwrap();
+
+        let mut first = Core::init(ns, "api-key-1").await.unwrap();
+        first.add_context("seed-1", "@calls", 2_000).await.unwrap();
+        drop(first);
+
+        let second = Core::init(ns, "api-key-2").await.unwrap();
+        let read = second.suggested_contexts();
+        assert!(read.pending, "a reload must not silently drop a still-queued list edit");
+        assert!(context_names(&second).iter().any(|n| n == "@calls"));
     }
 
     // ------------------------------------------------- Actions/Steps (#629)

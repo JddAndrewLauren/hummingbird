@@ -502,6 +502,8 @@ fun ItemDetailPanel(
                     mode = mode,
                     dark = dark,
                     formMeta = viewModel.formMeta,
+                    suggestedContexts = viewModel.suggestedContexts.collectAsState().value
+                        ?: viewModel.formMeta.suggestedContexts,
                     // Plain getters over the draft's `StateFlow.value`, so
                     // reading them subscribes to nothing. They are fresh
                     // anyway — and only because `draft` above is collected
@@ -584,6 +586,9 @@ private fun DetailBody(
     mode: ItemDetailPanelMode,
     dark: Boolean,
     formMeta: CaptureFormMeta,
+    /** ADR-0038: what the Context field offers — the operator's list once
+     * read, [formMeta]'s defaults before. */
+    suggestedContexts: List<String>,
     problems: MetaProblems?,
     canSave: Boolean,
     onDraftChange: (ItemDraft) -> Unit,
@@ -841,7 +846,7 @@ private fun DetailBody(
                 ContextField(
                     value = draft.context,
                     onValueChange = { onDraftChange(draft.copy(context = it)) },
-                    suggestions = formMeta.suggestedContexts,
+                    suggestions = suggestedContexts,
                 )
             }
 

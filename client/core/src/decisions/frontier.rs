@@ -51,7 +51,6 @@ use std::collections::HashSet;
 use hummingbird_domain::deadline_sort_key;
 
 use super::urgency::{compute_urgency, UrgencyBand};
-use super::vocabulary::CONTEXTS;
 
 /// The frontier-relevant slice of one item: what [`by_priority_then_due`],
 /// [`group_frontier`] and the facet functions below all read. `id` is
@@ -492,18 +491,37 @@ pub fn apply_facets(items: &[FrontierItem], picked: &FacetSelection, now: &str) 
         .collect()
 }
 
-/// Contexts actually present in `items`, suggested vocabulary first (in
-/// [`CONTEXTS`]'s own order), then any extra alphabetically, then
-/// [`NO_CONTEXT`] last if anything names no context.
-pub fn contexts_of(items: &[FrontierItem]) -> Vec<String> {
+/// Contexts actually present in `items`, `suggested` first (in its own
+/// order — the operator's list, `crate::contexts`, or the build's
+/// `DEFAULT_CONTEXTS` until it is edited; ADR-0038), then any extra
+/// alphabetically, then [`NO_CONTEXT`] last if anything names no context.
+///
+/// "Present" is judged by [`crate::contexts::same_context`] — the ranker's
+/// rule, and the one the list's item counts and its removal cascade use —
+/// so a list entry `@errands` orders the chip an item spells `@Errands`.
+/// The chip's *value* stays the item's own spelling, because a facet
+/// filters by exact value; two spellings of one context are two chips,
+/// both placed at the entry's slot.
+pub fn contexts_of(items: &[FrontierItem], suggested: &[String]) -> Vec<String> {
     let present: HashSet<&str> =
         items.iter().map(|item| item.context.as_deref().unwrap_or(NO_CONTEXT)).collect();
 
-    let mut ordered: Vec<String> =
-        CONTEXTS.iter().filter(|c| present.contains(*c)).map(|c| c.to_string()).collect();
+    let mut ordered: Vec<String> = Vec::new();
+    for entry in suggested {
+        let mut matching: Vec<&str> = present
+            .iter()
+            .copied()
+            .filter(|c| *c != NO_CONTEXT && crate::contexts::same_context(entry, c))
+            .collect();
+        matching.sort();
+        ordered.extend(matching.into_iter().map(|c| c.to_string()));
+    }
 
-    let mut extra: Vec<&str> =
-        present.iter().copied().filter(|c| *c != NO_CONTEXT && !CONTEXTS.contains(c)).collect();
+    let mut extra: Vec<&str> = present
+        .iter()
+        .copied()
+        .filter(|c| *c != NO_CONTEXT && !ordered.iter().any(|o| o == c))
+        .collect();
     extra.sort();
     ordered.extend(extra.into_iter().map(|c| c.to_string()));
 
@@ -1050,15 +1068,30 @@ mod tests {
         ];
 
         assert_eq!(
-            contexts_of(&items),
+            contexts_of(&items, &crate::contexts::default_contexts()),
             vec!["@computer", "@phone", "@alpha", "@zeta", NO_CONTEXT],
         );
     }
 
     #[test]
+    fn contexts_of_places_a_spelling_variant_at_its_entry_s_slot() {
+        // ADR-0038: the list says `@errands`; an item says `@Errands`. The
+        // chip keeps the item's spelling (a facet filters by exact value)
+        // but sorts where the list puts it, not among the extras.
+        let mut a = item("a");
+        a.context = Some("@Errands".to_string());
+        let mut b = item("b");
+        b.context = Some("@alpha".to_string());
+        let mut c = item("c");
+        c.context = Some("@home".to_string());
+        let suggested = vec!["@home".to_string(), "@errands".to_string()];
+        assert_eq!(contexts_of(&[a, b, c], &suggested), vec!["@home", "@Errands", "@alpha"]);
+    }
+
+    #[test]
     fn contexts_of_omits_the_absent_chip_when_every_item_names_one() {
         let items = vec![FrontierItem { context: Some("@computer".into()), ..item("a") }];
-        assert_eq!(contexts_of(&items), vec!["@computer"]);
+        assert_eq!(contexts_of(&items, &crate::contexts::default_contexts()), vec!["@computer"]);
     }
 
     #[test]

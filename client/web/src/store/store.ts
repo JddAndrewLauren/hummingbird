@@ -6,6 +6,7 @@
 import type {
   BindingDTO,
   QuestionSwitchDTO,
+  SuggestedContextsDTO,
   BlockedFrontierEntryDTO,
   CalendarListEntryDTO,
   CalendarReadDTO,
@@ -152,6 +153,18 @@ export interface TaskQuestionSwitchResult {
   question: string;
   kind: "ok" | "unknown_question" | "failed" | "busy";
   error: string | null;
+}
+
+/** The result of the most recent `addContext`/`removeContext` request this
+ * view issued (ADR-0038), matched back by `seed` — [`TaskQuestionSwitchResult`]
+ * verbatim for the contexts vocabulary, with `name` and `edit` echoed. */
+export interface TaskContextEditResult {
+  seed: string;
+  name: string;
+  edit: "add" | "remove";
+  kind: "ok" | "invalid" | "unknown" | "failed" | "busy";
+  error: string | null;
+  cleared: number | null;
 }
 
 /** The result of the most recent rule create/patch request this view
@@ -315,6 +328,11 @@ export interface TaskState {
    * nobody had read, and the first pane to disappear on the next answer
    * would look like a bug. */
   questionSwitches: QuestionSwitchDTO[] | null;
+  /** The suggested-contexts list (ADR-0038) — the operator's synced list,
+   * or the build's defaults while no row exists. `null` until the first
+   * `suggestedContexts` answer arrives, on [`TaskState.bindings`]' contract;
+   * until then the forms fall back to `DEFAULT_CONTEXTS`. */
+  suggestedContexts: SuggestedContextsDTO | null;
   /** The kind registry export (#133/#140, ADR-0013) — `null` until the
    * first `getKindRegistry` answer arrives. Never answers `"busy"`
    * core-side, but a view can still ask before the worker's port is ready,
@@ -371,6 +389,9 @@ export interface TaskState {
   /** The result of the most recent `setQuestionEnabled` request this view
    * issued (#715) — `null` until the first one resolves. */
   lastQuestionSwitchWrite: TaskQuestionSwitchResult | null;
+  /** The result of the most recent `addContext`/`removeContext` request
+   * this view issued (ADR-0038) — `null` until the first one resolves. */
+  lastContextEdit: TaskContextEditResult | null;
   lastSyncOutcome: TaskSyncOutcome | null;
   /** When the last `Core::run` cycle actually happened (any trigger, any
    * outcome) — S9's "last sweep" readout. Copied by `worker-client.ts`
@@ -485,6 +506,7 @@ const initialTaskState: TaskState = {
   done: null,
   bindings: null,
   questionSwitches: null,
+  suggestedContexts: null,
   kindRegistry: null,
   rules: null,
   lastRuleWrite: null,
@@ -500,6 +522,7 @@ const initialTaskState: TaskState = {
   grillDraftByItem: {},
   lastBindingWrite: null,
   lastQuestionSwitchWrite: null,
+  lastContextEdit: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
   lastSuccessfulSyncAtMs: null,

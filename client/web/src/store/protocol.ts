@@ -431,6 +431,21 @@ export interface QuestionSwitchDTO {
   pending: boolean;
 }
 
+/** The suggested-contexts list (ADR-0038) — the wire shape of
+ * `hummingbird_core::contexts::SuggestedContexts`, the third vocabulary over
+ * the `settings` table. One row, so one `pending` for the whole list rather
+ * than one per entry. `itemCount` is how many live items carry the entry
+ * under the core's matching rule — what removing it will clear. */
+export interface SuggestedContextsDTO {
+  entries: ContextEntryDTO[];
+  pending: boolean;
+}
+
+export interface ContextEntryDTO {
+  name: string;
+  itemCount: number;
+}
+
 // -- rules (#140, ADR-0012/0013) --------------------------------------------
 //
 // The rules screen: condition rows, a per-row "not" toggle, the
@@ -889,6 +904,13 @@ export type TaskWorkerRequest =
       nowMs: number;
     }
   | { type: "getQuestionSwitches" }
+  /** ADR-0038: the suggested-contexts list's read and its two writes. The
+   * name is validated in `client/ffi-web/src/task_host.rs`'s
+   * `add_context`/`remove_context` before it reaches `Core`; same
+   * caller-mints-`seed` contract as `"setBinding"`. */
+  | { type: "getSuggestedContexts" }
+  | { type: "addContext"; seed: string; name: string; nowMs: number }
+  | { type: "removeContext"; seed: string; name: string; nowMs: number }
   /** #140: the kind registry export. Carries no argument and needs no
    * `Core` state — see `TaskHostCore::kind_registry`'s own doc. */
   | { type: "getKindRegistry" }
@@ -1376,6 +1398,20 @@ export type TaskWorkerResponse =
       error: string | null;
     }
   | { type: "questionSwitches"; switches: QuestionSwitchDTO[] }
+  /** ADR-0038's list read, and the result of either list write, matched
+   * back by `seed` with `name`/`edit` echoed so the Contexts section can
+   * word a failure against the chip it came from. `cleared` is the number
+   * of items a removal cleared, `null` otherwise. */
+  | { type: "suggestedContexts"; contexts: SuggestedContextsDTO }
+  | {
+      type: "contextEditResult";
+      seed: string;
+      name: string;
+      edit: "add" | "remove";
+      kind: "ok" | "invalid" | "unknown" | "failed" | "busy";
+      error: string | null;
+      cleared: number | null;
+    }
   /** #140's rule create result, matched back by `seed` — same
    * broadcast-not-reply contract as `captureResult`. `"failed"` covers both
    * a rejected wire vocabulary (an unrecognised `tier`) and a durability

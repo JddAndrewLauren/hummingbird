@@ -22,6 +22,7 @@ use hummingbird_core::diagnostics::{
 /// name it as `task_host::CoreOwner` alongside [`TaskCoreCell`], rather
 /// than importing it from `hummingbird_core` a second way.
 pub use hummingbird_core::diagnostics::CoreOwner;
+use hummingbird_core::contexts::SuggestedContexts;
 use hummingbird_core::question_switch::QuestionSwitch;
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
 use hummingbird_core::sync::write::ReqwestMutationTransport;
@@ -841,6 +842,30 @@ pub struct QuestionSwitchListResponse {
 pub struct SetQuestionEnabledResponse {
     pub kind: &'static str,
     pub error: Option<String>,
+}
+
+/// The wrapper around [`TaskHostCore::suggested_contexts`]'s answer
+/// (ADR-0038). Same `"busy"` contract as [`QuestionSwitchListResponse`]:
+/// a busy core answering an empty list would read as "no contexts", and a
+/// Settings section drawing that would offer to rebuild a list it never
+/// read.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SuggestedContextsResponse {
+    pub kind: &'static str,
+    pub contexts: SuggestedContexts,
+}
+
+/// What [`TaskHostCore::add_context`] / [`TaskHostCore::remove_context`]
+/// resolve to. `"invalid"` (an empty, reserved or duplicate name) and
+/// `"unknown"` (removing a context not in the list) are the seam's own
+/// refusals, answered before anything is enqueued; `"failed"` is a
+/// durability failure. `cleared` is how many items a removal cleared,
+/// `None` on every other outcome and on an add.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct EditContextResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+    pub cleared: Option<usize>,
 }
 
 /// What [`TaskHostCore::set_binding`] resolves to. `"unknown_key"` is
@@ -2067,6 +2092,37 @@ impl TaskHostCore {
                 kind: "failed",
                 error: Some(error.to_string()),
             },
+        }
+    }
+
+    /// The suggested-contexts list (ADR-0038), per
+    /// [`Core::suggested_contexts`] — the operator's synced list or the
+    /// build's defaults, each entry counted against the live items that
+    /// carry it, with one `pending` fact for the row.
+    pub fn suggested_contexts(&self) -> SuggestedContextsResponse {
+        SuggestedContextsResponse {
+            kind: "ok",
+            contexts: self.core.suggested_contexts(),
+        }
+    }
+
+    /// Appends one context to the suggested list (ADR-0038), per
+    /// [`Core::add_context`] — which overlays, so the next
+    /// [`TaskHostCore::suggested_contexts`] lists it `pending`.
+    pub async fn add_context(&mut self, seed: &str, name: &str, now_ms: i64) -> EditContextResponse {
+        match self.core.add_context(seed, name, now_ms).await {
+            Ok(()) => EditContextResponse { kind: "ok", error: None, cleared: None },
+            Err(error) => edit_context_failure(error),
+        }
+    }
+
+    /// Removes one context from the suggested list and clears it from every
+    /// live item and project default carrying it (ADR-0038), per
+    /// [`Core::remove_context`]. `cleared` reports the item count.
+    pub async fn remove_context(&mut self, seed: &str, name: &str, now_ms: i64) -> EditContextResponse {
+        match self.core.remove_context(seed, name, now_ms).await {
+            Ok(cleared) => EditContextResponse { kind: "ok", error: None, cleared: Some(cleared) },
+            Err(error) => edit_context_failure(error),
         }
     }
 
@@ -6051,6 +6107,101 @@ mod binding_tests {
             }
         );
         assert!(trips.pending, "nothing has synced it yet");
+    }
+}
+
+fn edit_context_failure<E: std::fmt::Debug>(error: hummingbird_core::ContextEditError<E>) -> EditContextResponse {
+    use hummingbird_core::ContextEditError;
+    let kind = match &error {
+        ContextEditError::EmptyName | ContextEditError::ReservedName | ContextEditError::Duplicate => "invalid",
+        ContextEditError::Unknown => "unknown",
+        ContextEditError::Snapshot(_) => "failed",
+    };
+    EditContextResponse { kind, error: Some(error.to_string()), cleared: None }
+}
+
+#[cfg(test)]
+mod context_list_tests {
+    use super::*;
+    use hummingbird_core::contexts::ContextEntry;
+
+    #[test]
+    fn context_responses_serialize_with_the_exact_keys_task_worker_ts_parses() {
+        let response = SuggestedContextsResponse {
+            kind: "ok",
+            contexts: SuggestedContexts {
+                entries: vec![ContextEntry { name: "@home".to_string(), item_count: 2 }],
+                pending: true,
+            },
+        };
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"kind":"ok","contexts":{"entries":[{"name":"@home","item_count":2}],"pending":true}}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&EditContextResponse { kind: "ok", error: None, cleared: Some(3) }).unwrap(),
+            r#"{"kind":"ok","error":null,"cleared":3}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fresh_host_reports_the_six_defaults_not_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-contexts-fresh");
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        let response = host.suggested_contexts();
+        assert_eq!(response.kind, "ok");
+        assert_eq!(response.contexts.entries.len(), 6);
+        assert!(!response.contexts.pending);
+    }
+
+    #[tokio::test]
+    async fn an_invalid_name_never_reaches_core_and_a_valid_one_reads_back_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-contexts-add");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        assert_eq!(host.add_context("seed-0", "   ", 1_000).await.kind, "invalid");
+        assert_eq!(host.add_context("seed-0", "@Home", 1_000).await.kind, "invalid");
+        assert!(!host.suggested_contexts().contexts.pending);
+
+        assert_eq!(host.add_context("seed-1", " @calls ", 1_000).await.kind, "ok");
+        let read = host.suggested_contexts().contexts;
+        assert!(read.pending);
+        assert_eq!(read.entries.last().map(|e| e.name.as_str()), Some("@calls"));
+        assert_eq!(host.remove_context("seed-2", "@nowhere", 1_000).await.kind, "unknown");
+    }
+
+    #[tokio::test]
+    async fn removing_clears_a_captured_item_and_reports_the_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-contexts-remove");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        let id = host
+            .core
+            .capture(
+                "seed-cap",
+                "post the parcel",
+                hummingbird_domain::Stage::Triage,
+                1_000,
+                CaptureOptions { context: Some("@errands".to_string()), ..CaptureOptions::default() },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            host.suggested_contexts().contexts.entries.iter().find(|e| e.name == "@errands").unwrap().item_count,
+            1
+        );
+
+        let response = host.remove_context("seed-rm", "@errands", 2_000).await;
+        assert_eq!(response.kind, "ok");
+        assert_eq!(response.cleared, Some(1));
+        assert!(host.suggested_contexts().contexts.entries.iter().all(|e| e.name != "@errands"));
+        let item = host.core.triage_inbox().into_iter().find(|item| item.id == id).unwrap();
+        assert_eq!(item.context, None);
     }
 }
 

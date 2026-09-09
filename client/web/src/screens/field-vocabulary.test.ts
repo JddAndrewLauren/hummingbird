@@ -17,14 +17,14 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  contextsFromCore,
+  defaultContextsFromCore,
   energyOptionsFromCore,
   NO_CONTEXT,
   sizeOptionsFromCore,
 } from "../decisions/seam";
 import type { TaskItemDTO } from "../store/protocol";
 import { CAPTURE_ENERGY_NAMES, CAPTURE_SIZE_NAMES } from "./capture-meta";
-import { CONTEXTS, contextSuggestions, ENERGY_OPTIONS, SIZE_OPTIONS } from "./field-vocabulary";
+import { DEFAULT_CONTEXTS, contextSuggestions, ENERGY_OPTIONS, SIZE_OPTIONS } from "./field-vocabulary";
 
 /** A minimal live item — only `context` is ever read here. Spelled out
  * locally rather than imported from `test/component.tsx`: that helper pulls
@@ -99,7 +99,7 @@ describe("field-vocabulary — the size and energy option lists", () => {
 
 describe("field-vocabulary — the context suggestions", () => {
   it("suggests the places this system's owner works", () => {
-    expect([...CONTEXTS]).toEqual([
+    expect([...DEFAULT_CONTEXTS]).toEqual([
       "@home",
       "@computer",
       "@phone",
@@ -110,24 +110,24 @@ describe("field-vocabulary — the context suggestions", () => {
   });
 
   it("suggests `@homework` last, so no existing chip's order moves", () => {
-    // `frontier-facets.ts` reads `CONTEXTS` for its chip order. #675's entry
+    // `frontier-facets.ts` reads `DEFAULT_CONTEXTS` for its chip order. #675's entry
     // is appended for that reason alone — and it is a topic rather than a
     // place, the exception CONTEXT.md's Context entry now records.
-    expect(CONTEXTS[CONTEXTS.length - 1]).toBe("@homework");
+    expect(DEFAULT_CONTEXTS[DEFAULT_CONTEXTS.length - 1]).toBe("@homework");
   });
 
   it("does not suggest `@waiting`, which was the Blocked stage in disguise", () => {
     // CONTEXT.md: "External wait is the only meaning of the Blocked state."
     // A context named for waiting is a second home for that idea, and it fails
     // Context's own test — *where or with what* the work can be done.
-    expect([...CONTEXTS]).not.toContain("@waiting");
+    expect([...DEFAULT_CONTEXTS]).not.toContain("@waiting");
   });
 
   it("carries no resting entry, because an empty context is not a choice in a list", () => {
     // The `<select>` needed a `""` option to express "not set". A text field
     // expresses it by being empty, so a `""` in here would be an offered
     // suggestion of nothing.
-    expect([...CONTEXTS]).not.toContain("");
+    expect([...DEFAULT_CONTEXTS]).not.toContain("");
   });
 });
 
@@ -138,19 +138,19 @@ describe("field-vocabulary — the context suggestions", () => {
 // that neither duplicates nor `NO_CONTEXT` leak into a list of places.
 describe("field-vocabulary — contextSuggestions", () => {
   it("offers exactly the suggested list when no item carries a context", () => {
-    expect(contextSuggestions([])).toEqual([...CONTEXTS]);
-    expect(contextSuggestions([item(null)])).toEqual([...CONTEXTS]);
+    expect(contextSuggestions([])).toEqual([...DEFAULT_CONTEXTS]);
+    expect(contextSuggestions([item(null)])).toEqual([...DEFAULT_CONTEXTS]);
   });
 
   it("appends a context the suggested list has never heard of", () => {
     // The paper cut itself: `@calls` was mintable and then invisible to the
-    // next capture, because `CONTEXTS` cannot grow.
-    expect(contextSuggestions([item("@calls")])).toEqual([...CONTEXTS, "@calls"]);
+    // next capture, because `DEFAULT_CONTEXTS` cannot grow.
+    expect(contextSuggestions([item("@calls")])).toEqual([...DEFAULT_CONTEXTS, "@calls"]);
   });
 
   it("never offers the same place twice", () => {
     const offered = contextSuggestions([item("@home"), item("@home")]);
-    expect(offered).toEqual([...CONTEXTS]);
+    expect(offered).toEqual([...DEFAULT_CONTEXTS]);
     expect(new Set(offered).size).toBe(offered.length);
   });
 
@@ -163,10 +163,21 @@ describe("field-vocabulary — contextSuggestions", () => {
 
   it("keeps the extras in the core's order, which is alphabetical", () => {
     expect(contextSuggestions([item("@zeta"), item("@alpha")])).toEqual([
-      ...CONTEXTS,
+      ...DEFAULT_CONTEXTS,
       "@alpha",
       "@zeta",
     ]);
+  });
+
+  it("offers the operator's list first when one is given (ADR-0038)", () => {
+    // The synced list replaces the defaults outright — a context removed
+    // from it is not offered, and one added is offered in the list's order.
+    expect(contextSuggestions([item("@zeta")], ["@calls", "@home"])).toEqual([
+      "@calls",
+      "@home",
+      "@zeta",
+    ]);
+    expect(contextSuggestions([], [])).toEqual([]);
   });
 });
 
@@ -187,7 +198,7 @@ describe("field-vocabulary — pinned against hummingbird_core::decisions::vocab
     expect(ENERGY_OPTIONS.slice(1)).toEqual(energyOptionsFromCore());
   });
 
-  it("CONTEXTS matches the core's suggested context list", () => {
-    expect([...CONTEXTS]).toEqual(contextsFromCore());
+  it("DEFAULT_CONTEXTS matches the core's default context list", () => {
+    expect([...DEFAULT_CONTEXTS]).toEqual(defaultContextsFromCore());
   });
 });

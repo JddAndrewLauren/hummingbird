@@ -119,6 +119,11 @@ class CaptureViewModel(
      * function of no state. */
     private val projectsFn: suspend () -> List<MobileProject>,
     private val captureFn: suspend (draft: CaptureDraft, nowMs: Long) -> String,
+    /** ADR-0038: the operator's live suggested-contexts list —
+     * `MobileTaskHost.suggestedContexts`, injected like [projectsFn] and for
+     * the same reason. `null` is "no door" (the JVM tests, and the default),
+     * and the form falls back to [formMeta]'s compiled-in defaults. */
+    private val suggestedContextsFn: suspend () -> List<String>? = { null },
 ) : ViewModel() {
 
     private val _draft = MutableStateFlow(CaptureFormState())
@@ -139,6 +144,19 @@ class CaptureViewModel(
 
     suspend fun loadProjects() {
         _projects.value = projectsFn()
+    }
+
+    /** The operator's suggested contexts (ADR-0038) — `null` until
+     * [loadSuggestedContexts] has read them, which is when the field shows
+     * [formMeta]'s defaults instead. Read per form open, like [projects]. */
+    private val _suggestedContexts = MutableStateFlow<List<String>?>(null)
+    val suggestedContexts: StateFlow<List<String>?> = _suggestedContexts.asStateFlow()
+
+    suspend fun loadSuggestedContexts() {
+        // A list that cannot be read leaves the defaults in place; it must
+        // never take the capture form down with it (`ItemDetailViewModel.load`
+        // makes the same call the same way).
+        runCatching { suggestedContextsFn() }.getOrNull()?.let { _suggestedContexts.value = it }
     }
 
     /** The last dictation attempt's failure, or `null` if the mic is idle
@@ -290,6 +308,9 @@ class CaptureViewModel(
                 projectsFn = { CoreHolder.get(context.applicationContext).projects() },
                 captureFn = { draft, nowMs ->
                     CoreHolder.get(context.applicationContext).capture(draft, nowMs)
+                },
+                suggestedContextsFn = {
+                    CoreHolder.get(context.applicationContext).suggestedContexts()
                 },
             )
 

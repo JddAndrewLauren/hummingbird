@@ -196,6 +196,16 @@ export function attachWorkerClient(
             error: message.error,
           },
         });
+        if (message.kind === "ok") {
+          // `Core::capture`'s overlay already updated synchronously — the
+          // same immediate re-read `actResult` triggers. Without it the
+          // captured item (and so a context typed into it for the first
+          // time, which `App.tsx`'s capture suggestions union from these
+          // lists) waits for the next sync cycle to show up anywhere.
+          // Triage and Ready are the two stages a capture can land in.
+          requestTriageInbox(worker);
+          requestFrontier(worker);
+        }
         return;
       case "actResult":
         store.setTaskState({
@@ -360,6 +370,35 @@ export function attachWorkerClient(
         return;
       case "questionSwitches":
         store.setTaskState({ questionSwitches: message.switches });
+        return;
+      case "contextEditResult":
+        store.setTaskState({
+          lastContextEdit: {
+            seed: message.seed,
+            name: message.name,
+            edit: message.edit,
+            kind: message.kind,
+            error: message.error,
+            cleared: message.cleared,
+          },
+        });
+        if (message.kind === "ok") {
+          // `Core::add_context`/`remove_context` overlay the list, exactly
+          // as `set_binding` does — and a removal also overlays every item
+          // it cleared and every project default, so the same lists a
+          // triage re-reads must refresh, plus the projects.
+          requestSuggestedContexts(worker);
+          if (message.edit === "remove") {
+            requestTriageInbox(worker);
+            requestGrillingItems(worker);
+            requestFrontier(worker);
+            requestBlocked(worker);
+            requestProjects(worker);
+          }
+        }
+        return;
+      case "suggestedContexts":
+        store.setTaskState({ suggestedContexts: message.contexts });
         return;
       case "kindRegistry":
         store.setTaskState({ kindRegistry: message.registry });
@@ -929,6 +968,23 @@ export function setQuestionEnabled(
 /** Every standing question's off switch (#715). */
 export function requestQuestionSwitches(worker: WorkerLike): void {
   worker.postMessage({ type: "getQuestionSwitches" });
+}
+
+/** The suggested-contexts list (ADR-0038). */
+export function requestSuggestedContexts(worker: WorkerLike): void {
+  worker.postMessage({ type: "getSuggestedContexts" });
+}
+
+/** ADR-0038's two list writes: one absolute-value CAS `PUT` on the
+ * `contexts` row (a removal also enqueues one `PATCH` per item and project
+ * it clears). `seed` mints the queue-entry id — same caller-mints contract
+ * as `setBinding`'s. */
+export function addContext(worker: WorkerLike, seed: string, name: string, nowMs: number): void {
+  worker.postMessage({ type: "addContext", seed, name, nowMs });
+}
+
+export function removeContext(worker: WorkerLike, seed: string, name: string, nowMs: number): void {
+  worker.postMessage({ type: "removeContext", seed, name, nowMs });
 }
 
 /** The kind registry export (#133/#140, ADR-0013). */

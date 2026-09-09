@@ -15,13 +15,15 @@
 //! spelling of "what the wire calls the middle size"; it only adds the
 //! *display* pairing (a label) and the ordering a `<select>` renders in.
 //!
-//! **`CONTEXTS` is not a closed vocabulary.** CONTEXT.md: "an open
-//! vocabulary, not a fixed enum … because the set of places a person works
-//! is theirs." The list here is the *suggested* set every client's capture
-//! form offers, which two clients still have to agree on even though
-//! `items.context` itself accepts anything — see `field-vocabulary.ts`'s
-//! header for the fuller argument and #500's PR description for why the
-//! web's own `CONTEXTS` export stays a literal TS array rather than a live
+//! **`DEFAULT_CONTEXTS` is not a closed vocabulary, and since ADR-0038 it
+//! is not the live list either.** CONTEXT.md: "an open vocabulary, not a
+//! fixed enum … because the set of places a person works is theirs." The
+//! list here is the *default* suggested set — what every client offers
+//! until the operator edits the list in Settings, at which point the
+//! synced `contexts` row ([`crate::contexts`]) is what the forms and the
+//! frontier's chips read. `items.context` itself accepts anything either
+//! way. See `field-vocabulary.ts`'s header for why the web's own
+//! `DEFAULT_CONTEXTS` export stays a literal TS array rather than a live
 //! call through the seam (a module-evaluation-order constraint, not a
 //! decision that this list is exempt from being canonical here).
 
@@ -63,10 +65,11 @@ fn capitalize(word: &str) -> String {
     }
 }
 
-/// The contexts the capture and edit forms *suggest* — the places this
-/// system's owner actually works. Never a constraint on what
-/// `items.context` may hold (see the module header): a context outside
-/// this list is not an error, only unsuggested.
+/// The contexts the capture and edit forms *suggest* until the operator
+/// edits the list (ADR-0038, [`crate::contexts`]) — the places this
+/// system's owner actually works, as this build ships them. Never a
+/// constraint on what `items.context` may hold (see the module header): a
+/// context outside this list is not an error, only unsuggested.
 ///
 /// `@waiting` is deliberately absent: CONTEXT.md is flat that "External
 /// wait is the only meaning of the Blocked state", so a context by that
@@ -80,10 +83,10 @@ fn capitalize(word: &str) -> String {
 /// makes that widening explicit rather than silent; read it before adding
 /// a second one.
 ///
-/// Appended rather than inserted: `frontier-facets.ts` reads this array
-/// for its chip *order*, so a new entry anywhere but the end moves chips
-/// that have nothing to do with it.
-pub const CONTEXTS: [&str; 6] =
+/// Appended rather than inserted: `frontier::contexts_of` reads the live
+/// list (this one, until edited) for its chip *order*, so a new entry
+/// anywhere but the end moves chips that have nothing to do with it.
+pub const DEFAULT_CONTEXTS: [&str; 6] =
     ["@home", "@computer", "@phone", "@errands", "@garden", "@homework"];
 
 /// The frontier's *facet* axis names — [`super::frontier::Facet`]'s own
@@ -134,7 +137,7 @@ mod tests {
     #[test]
     fn suggests_the_places_this_systems_owner_works() {
         assert_eq!(
-            CONTEXTS,
+            DEFAULT_CONTEXTS,
             ["@home", "@computer", "@phone", "@errands", "@garden", "@homework"],
         );
     }
@@ -146,19 +149,19 @@ mod tests {
         // the items the form told the operator to file. This is the pin
         // that makes them the same literal.
         assert_eq!(
-            CONTEXTS[CONTEXTS.len() - 1],
+            DEFAULT_CONTEXTS[DEFAULT_CONTEXTS.len() - 1],
             crate::decisions::panes::homework::HOMEWORK_CONTEXT,
         );
     }
 
     #[test]
     fn does_not_suggest_waiting_which_was_the_blocked_stage_in_disguise() {
-        assert!(!CONTEXTS.contains(&"@waiting"));
+        assert!(!DEFAULT_CONTEXTS.contains(&"@waiting"));
     }
 
     #[test]
     fn carries_no_resting_entry() {
-        assert!(!CONTEXTS.contains(&""));
+        assert!(!DEFAULT_CONTEXTS.contains(&""));
     }
 
     #[test]

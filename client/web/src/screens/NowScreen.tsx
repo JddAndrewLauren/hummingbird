@@ -21,6 +21,11 @@ import type { StorageLike } from "./storage";
 
 export interface NowScreenProps {
   onScreen: (screen: Screen) => void;
+  /** ADR-0038: what the item editor's Context field offers — the operator's
+   * synced list unioned with the contexts live items carry, built once in
+   * `App.tsx` (`captureContexts`) and threaded down. Optional so a host
+   * that has not been wired still renders, over the build's defaults. */
+  contextSuggestions?: readonly string[];
   /** S10's real frontier data (issue #108). */
   task: TaskState;
   /** `useSyncWiring.ts`'s unconditional 30s tick — coarse enough for
@@ -147,6 +152,7 @@ export function realQuestionInputs(
 }
 
 export function NowScreen({
+  contextSuggestions,
   onScreen,
   task,
   nowMs,
@@ -179,6 +185,7 @@ export function NowScreen({
             unfiltered — that is the only difference between this call and the
             project board's. */}
         <FrontierBoard
+          contextSuggestions={contextSuggestions}
           task={task}
           frontier={task.frontier}
           triage={task.triageInbox}

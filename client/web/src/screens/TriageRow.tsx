@@ -21,6 +21,11 @@ export function grillMeButtonId(itemId: string): string {
 
 export interface TriageRowProps {
   item: TaskItemDTO;
+  /** ADR-0038: what the item editor's Context field offers — the operator's
+   * synced list unioned with the contexts live items carry, built once in
+   * `App.tsx` (`captureContexts`) and threaded down. Optional so a host
+   * that has not been wired still renders, over the build's defaults. */
+  contextSuggestions?: readonly string[];
   projects: ProjectDTO[];
   /** Whether this row is the selected, expanded one. Selection is the
    * screen's, not the row's: only one row is open at a time. */
@@ -90,6 +95,7 @@ export interface TriageRowProps {
  * wording is `shell/sync-status.ts`'s `relativeAge`. This component threads
  * React state through them. */
 export function TriageRow({
+  contextSuggestions,
   item,
   projects,
   expanded,
@@ -233,6 +239,7 @@ export function TriageRow({
 
       {expanded && onTriage ? (
         <ItemPanel
+          contextSuggestions={contextSuggestions}
           mode="triage"
           id={editorId}
           item={item}

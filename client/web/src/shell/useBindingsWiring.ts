@@ -1,8 +1,11 @@
 import { useEffect } from "react";
 import type { CoreStatus } from "../store/store";
 import {
+  addContext,
+  removeContext,
   requestBindings,
   requestQuestionSwitches,
+  requestSuggestedContexts,
   setBinding,
   setQuestionEnabled,
   type WorkerLike,
@@ -31,6 +34,12 @@ export interface BindingsWiring {
    * `setBindingResult` — `worker-client.ts` re-requests the bindings itself
    * the moment a successful one broadcasts. */
   setBinding: (key: string, value: string) => void;
+  /** ADR-0038: appends one context to the suggested list, or removes one
+   * and clears it from everything live carrying it. Same fire-and-forget
+   * shape as `setQuestionEnabled` — `worker-client.ts` re-requests the
+   * list (and, after a removal, the item lists) behind a successful one. */
+  addContext: (name: string) => void;
+  removeContext: (name: string) => void;
 }
 
 export function useBindingsWiring(
@@ -52,6 +61,9 @@ export function useBindingsWiring(
     // so a completed cycle is exactly when another device's toggle can have
     // arrived and when this device's own write stops being `pending`.
     requestQuestionSwitches(worker);
+    // ADR-0038's list rides it too, for the same reason: one more
+    // `settings` row.
+    requestSuggestedContexts(worker);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, syncOutcomeSeq]);
 
@@ -65,7 +77,23 @@ export function useBindingsWiring(
       const nowMs = Date.now();
       setQuestionEnabled(worker, mintQuestionSwitchSeed(question, nowMs), question, enabled, nowMs);
     },
+    addContext: (name: string) => {
+      const nowMs = Date.now();
+      addContext(worker, mintContextEditSeed(name, nowMs), name, nowMs);
+    },
+    removeContext: (name: string) => {
+      const nowMs = Date.now();
+      removeContext(worker, mintContextEditSeed(name, nowMs), name, nowMs);
+    },
   };
+}
+
+/** Mints a context-list edit's seed — [`mintQuestionSwitchSeed`]'s twin,
+ * deterministic for the same reason, and distinct from both siblings by the
+ * `:context:` infix. A removal's per-item clears derive their own seeds from
+ * this one inside the core (`Core::remove_context`). */
+export function mintContextEditSeed(name: string, nowMs: number): string {
+  return `${name}:context:${nowMs}`;
 }
 
 /** Mints this toggle's seed — [`mintBindingSeed`]'s twin, and deterministic

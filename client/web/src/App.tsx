@@ -11,7 +11,7 @@ import { SettingsScreen } from "./screens/SettingsScreen";
 import { StatusScreen } from "./screens/StatusScreen";
 import { TriageScreen } from "./screens/TriageScreen";
 import type { CaptureDestination } from "./screens/capture-destination";
-import { contextSuggestions } from "./screens/field-vocabulary";
+import { contextSuggestions, DEFAULT_CONTEXTS } from "./screens/field-vocabulary";
 import { liveWriteFailureCount } from "./screens/write-failure";
 import { statusAlarm } from "./decisions/seam";
 import { isCaptureHotkey } from "./shell/capture-hotkey";
@@ -213,8 +213,12 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     onSelectBackend: setBackendSelection,
   });
   const { submitCapture } = useCaptureWiring(worker, status, task.syncOutcomeSeq);
-  const { setBinding: handleSetBinding, setQuestionEnabled: handleSetQuestionEnabled } =
-    useBindingsWiring(worker, status, task.syncOutcomeSeq);
+  const {
+    setBinding: handleSetBinding,
+    setQuestionEnabled: handleSetQuestionEnabled,
+    addContext: handleAddContext,
+    removeContext: handleRemoveContext,
+  } = useBindingsWiring(worker, status, task.syncOutcomeSeq);
   const { createRule: handleCreateRule, patchRule: handlePatchRule } = useRulesWiring(
     worker,
     status,
@@ -270,15 +274,26 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // every keystroke in the field. There is no second world to gate on since
   // #457: under the board world `task` is the fixture, so what this offers is
   // the fixture's own contexts.
+  //
+  // ADR-0038: the suggested half is the operator's synced list once the
+  // worker has published it, and the build's defaults until then — never an
+  // empty list, which would read as "nowhere to work".
+  const suggestedNames = useMemo(
+    () => task.suggestedContexts?.entries.map((entry) => entry.name) ?? DEFAULT_CONTEXTS,
+    [task.suggestedContexts],
+  );
   const captureContexts = useMemo(
     () =>
-      contextSuggestions([
-        ...task.frontier,
-        ...task.triageInbox,
-        ...task.grillingItems,
-        ...task.blocked.map((entry) => entry.item),
-      ]),
-    [task.frontier, task.triageInbox, task.grillingItems, task.blocked],
+      contextSuggestions(
+        [
+          ...task.frontier,
+          ...task.triageInbox,
+          ...task.grillingItems,
+          ...task.blocked.map((entry) => entry.item),
+        ],
+        suggestedNames,
+      ),
+    [task.frontier, task.triageInbox, task.grillingItems, task.blocked, suggestedNames],
   );
   // Whether `CaptureBox` currently has a live dictation session, reported up
   // through `CapturePopover`, and the bumped counter that asks it to cancel
@@ -645,6 +660,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         <div className="hb-scroll">
           {screen === "now" && (
             <NowScreen
+              contextSuggestions={captureContexts}
               onScreen={setScreen}
               task={task}
               nowMs={syncNowMs}
@@ -673,6 +689,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           )}
           {screen === "triage" && (
             <TriageScreen
+              contextSuggestions={captureContexts}
               task={task}
               onTriage={handleTriage}
               onComplete={(itemId) => handleAct(itemId, "complete")}
@@ -691,6 +708,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               worker already (see `demoTask`'s comment above). */}
           {screen === "projects" && (
             <ProjectsScreen
+              contextSuggestions={captureContexts}
               task={task}
               onCreateProject={handleCreateProject}
               onPatchProject={handlePatchProject}
@@ -768,6 +786,8 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               task={task}
               onSetBinding={handleSetBinding}
               onSetQuestionEnabled={handleSetQuestionEnabled}
+              onAddContext={handleAddContext}
+              onRemoveContext={handleRemoveContext}
               online={online}
               syncNowMs={syncNowMs}
               onDownloadMirror={handleDownloadMirror}
@@ -829,6 +849,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
           correctly, and `escape-claimants.ts` explains what now rests on
           it. */}
       <RecallOverlay
+        contextSuggestions={captureContexts}
         open={searchOpen}
         query={searchQuery}
         onQueryChange={setSearchQuery}

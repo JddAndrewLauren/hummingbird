@@ -11,7 +11,7 @@ import { Input } from "../forms/Input";
 import { Select } from "../forms/Select";
 import { Textarea } from "../forms/Textarea";
 import {
-  CONTEXTS,
+  DEFAULT_CONTEXTS,
   ENERGY_OPTIONS,
   SIZE_OPTIONS,
 } from "../../screens/field-vocabulary";
@@ -111,6 +111,11 @@ const PROJECT_WAITING_COPY = "creating — appears when the round trip lands";
 
 export interface ItemPanelProps {
   item: TaskItemDTO;
+  /** ADR-0038: what the item editor's Context field offers — the operator's
+   * synced list unioned with the contexts live items carry, built once in
+   * `App.tsx` (`captureContexts`) and threaded down. Optional so a host
+   * that has not been wired still renders, over the build's defaults. */
+  contextSuggestions?: readonly string[];
   /** The Routes the Project select offers. `[]` is a legitimate value — a
    * device with no projects yet — and renders "No project" alone. */
   projects: ProjectDTO[];
@@ -229,6 +234,7 @@ export interface ItemPanelProps {
 
 export function ItemPanel({
   item,
+  contextSuggestions = DEFAULT_CONTEXTS,
   projects,
   onCreateProject,
   lastProjectWrite = null,
@@ -493,7 +499,7 @@ export function ItemPanel({
           size="sm"
           value={draft.context}
           onChange={(context) => set("context", context)}
-          suggestions={CONTEXTS}
+          suggestions={contextSuggestions}
           placeholder="Not set"
         />
         <DeadlineField
