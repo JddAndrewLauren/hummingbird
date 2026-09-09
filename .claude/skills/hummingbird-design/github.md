@@ -25,43 +25,31 @@ date: 2026-08-09T20:05:16Z
 | `ui_kits/web/*`, `ui_kits/ios/*`, `ui_kits/android/*`, `ui_kits/wear/*` | `CONTEXT.md` glossary (proposed screens — no shipped counterpart) |
 | `tokens/colors.css` | `uploads/*-1024.png` app icons, `client/web/index.html` `theme-color` |
 
-## Pending push (mirror -> design project)
-
-date raised: 2026-09-08 (#801) · **not pushed — see below**
-
-- `README.md` -> `readme.md` — the **Motion** paragraph gains the *carried*
-  exception: an element the reader is holding under a pointer or a finger (a
-  board card mid-drag) hangs on an under-damped spring, lags, tilts into its
-  travel, overshoots once and settles within ~250ms of release; it never
-  drifts *after* release, and reduced motion places it instantly. Decided by
-  ADR-0021 decision 9, which is where the argument lives: the operator's
-  verdict picked a weighted spring drag over four alternatives, and a settle
-  that overshoots is outside the rule as it stood. **`tokens/motion.css` is
-  untouched** — the spring is not a CSS animation and has no duration or
-  easing token to add.
-
-**Why it is still pending.** `DesignSync list_projects` from this session
-answers one project, and it is not this one: as `Local pull` below records,
-the design project is connected to the **WORK** Claude account, and a push
-needs a session authorized on it. `get_project` on the recorded
-`designProjectId` answers `404 not_found` from anywhere else. So the mirror
-and the design project have forked by exactly one paragraph until someone
-runs the push from a work-authorized session:
-
-```
-DesignSync list_projects            # confirm the Hummingbird project is visible
-DesignSync get_project  <id>        # confirm PROJECT_TYPE_DESIGN_SYSTEM
-DesignSync list_files   <id>
-DesignSync finalize_plan <id> writes=[readme.md] localDir=<this directory>
-DesignSync write_files  <planId> path=readme.md localPath=README.md
-```
-
-Then move this section under `Last push` with the date it actually went, the
-way the #446 entry below did with the one before it.
-
 ## Last push (mirror -> design project)
 
-date: 2026-08-14
+date: 2026-09-09
+direction: this mirror was the source; 1 file written to the design project
+
+- `README.md` -> `readme.md` — the **Motion** paragraph gains the *carried*
+  exception (raised 2026-09-08 by #801, commit `11f9426`): an element the
+  reader is holding under a pointer or a finger (a board card mid-drag) hangs
+  on an under-damped spring, lags, tilts into its travel, overshoots once and
+  settles within ~250ms of release; it never drifts *after* release, and
+  reduced motion places it instantly. Decided by ADR-0021 decision 9, which is
+  where the argument lives: the operator's verdict picked a weighted spring
+  drag over four alternatives, and a settle that overshoots is outside the
+  rule as it stood. **`tokens/motion.css` is untouched** — the spring is not a
+  CSS animation and has no duration or easing token to add.
+
+Upstream `readme.md` was byte-identical to this mirror's copy at `11f9426^`
+(the commit before the amendment) before the write, so nothing authored in the
+design project was overwritten; a `get_file` after the write matches this
+mirror's `README.md` exactly. Pushed from a session authorized on the WORK
+account, one day after the amendment landed in the mirror — the #801 session
+was on the other account and recorded the push as pending here.
+
+### Previous push (2026-08-14)
+
 direction: this mirror and `batch-dictation` were the sources; 7 files written
 to the design project
 
