@@ -29,8 +29,25 @@
 // What varies between them is exactly two props — `screen` (whose preference
 // keys to use) and `axes` (which switcher buttons to offer). Nothing here
 // knows which surface it is beyond those two.
+//
+// **The board writes, since #801: a card is dragged into a column and takes
+// that column's value** (ADR-0021 decision 9). This file owns the wiring and
+// nothing else — `frontier-drag.ts` is the gesture (a spring the card hangs
+// from, the frozen column rects it hit-tests against, the edge auto-scroll),
+// and `dropEdits` is the seam onto the core decision about which field a drop
+// writes. What is here is what only the board knows: which column a DOM key
+// names, which item a card draws, and that a drag must not end by opening the
+// item panel.
 
-import { Children, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  Children,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import { Badge } from "../components/core/Badge";
 import { Card } from "../components/core/Card";
 import { Icon } from "../components/core/Icon";
@@ -41,11 +58,20 @@ import { ControlButton, SECTION_TOGGLE_HOVER, sectionToggleStyle } from "./Contr
 import type { CardExtra, FrontierPrototype, PrototypeCtx } from "./now-prototype/seam";
 import {
   CALM_ORDERS,
+  dropEdits,
   FRONTIER_AXES,
   groupFrontier,
   type CalmOrder,
   type FrontierAxis,
+  type FrontierColumn,
 } from "./frontier-columns";
+import {
+  beginDrag,
+  cardAttrs,
+  columnAttrs,
+  settleLanding,
+  type Landing,
+} from "./frontier-drag";
 import {
   applyFacets,
   contextsOf,
@@ -75,7 +101,7 @@ import { hasPriority, priorityLabel } from "./priority";
 import { energyIcon, energyTitle, levelColor, sizeIcon, sizeTitle } from "./size-energy";
 import type { StorageLike } from "./storage";
 import { computeUrgency, type Urgency } from "./urgency";
-import type { ProjectDTO, TaskItemDTO } from "../store/protocol";
+import type { ProjectDTO, TaskItemDTO, TriageEdits } from "../store/protocol";
 
 const AXIS_LABEL: Record<FrontierAxis, string> = {
   context: "Context",
@@ -260,12 +286,80 @@ function CardMeta({ children }: { children: ReactNode }) {
   );
 }
 
+/** The drag gesture's state on the board's side: one mutable box, written
+ * by the gesture and read by the render. A `useState` initialiser rather
+ * than a `useRef` for the reason `frontier-lanes`'s own boxes are —
+ * `react-hooks/refs` refuses a `ref.current` read during render, and what is
+ * wanted here is a stable mutable object that is not ref-shaped. Every write
+ * goes through one of the helpers below for the same reason:
+ * `react-hooks/immutability` reads an assignment to a `useState` value at the
+ * call site as a bug, and it is right about every case but these. */
+interface DragBox {
+  /** Set the moment a gesture arms, cleared at the next `pointerdown`, so
+   * the click a drag ends with can be swallowed before it opens the panel. */
+  moved: boolean;
+  /** The card being held at the slot it landed in, waiting for the board to
+   * re-render under it. See `frontier-drag.ts`'s `Landing`. */
+  landing: Landing | null;
+  /** The live settle animation's canceller. */
+  cancel: (() => void) | null;
+  /** The safety net: a write that never comes back must not leave a card
+   * floating above the board for the rest of the session. */
+  fallback: ReturnType<typeof setTimeout> | null;
+  /** Refilled on every render, so a gesture holding only a column's DOM key
+   * can find the column the drop decision needs. */
+  columns: Map<string, FrontierColumn>;
+}
+
+/** How long a held card waits for the render that moves it. Long enough
+ * that a slow write still animates, short enough that a failed one is not a
+ * card stuck above the board. */
+const LANDING_FALLBACK_MS = 5000;
+
+function rememberColumns(box: DragBox, columns: readonly FrontierColumn[]): void {
+  box.columns = new Map(columns.map((column) => [column.value ?? "", column]));
+}
+
+function startGesture(box: DragBox): void {
+  box.moved = false;
+}
+
+function armGesture(box: DragBox): void {
+  box.moved = true;
+}
+
+function holdLanding(box: DragBox, landing: Landing): void {
+  box.landing = landing;
+  if (box.fallback !== null) clearTimeout(box.fallback);
+  box.fallback = setTimeout(() => releaseLanding(box), LANDING_FALLBACK_MS);
+}
+
+/** Finish whatever is being held, if anything — from the layout effect on
+ * the next render, or from the fallback timer if that render never comes. */
+function releaseLanding(box: DragBox): void {
+  const landing = box.landing;
+  box.landing = null;
+  if (box.fallback !== null) clearTimeout(box.fallback);
+  box.fallback = null;
+  box.cancel?.();
+  box.cancel = landing ? settleLanding(landing) : null;
+}
+
+/** What one card's own handlers are, so `ItemCard` takes one prop rather
+ * than three and a caller with no worker passes nothing at all. */
+interface CardDrag {
+  "data-hb-card": string;
+  onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onClickCapture: (event: ReactMouseEvent<HTMLDivElement>) => void;
+}
+
 function ItemCard({
   item,
   nowMs,
   selected,
   onOpen,
   onComplete,
+  drag,
   extra,
 }: {
   item: TaskItemDTO;
@@ -273,6 +367,10 @@ function ItemCard({
   selected: boolean;
   onOpen: () => void;
   onComplete?: () => void;
+  /** The board's drag handlers for this card (#801), or absent when nothing
+   * can be written — the "no worker, no affordance" rule this file already
+   * keeps for the mark-done checkmark. */
+  drag?: CardDrag;
   /** THROWAWAY (#801): whatever the drag prototype wants on this card —
    * `draggable`, pointer handlers, a transform. Empty in every other case,
    * and the whole seam goes with `now-prototype/`. */
@@ -293,6 +391,7 @@ function ItemCard({
       elevation={0}
       padding="var(--space-4)"
       accent={selected}
+      {...drag}
       onClick={onOpen}
       onKeyDown={(event) => {
         // The prototype's key handling runs first and may claim the key (it
@@ -518,6 +617,7 @@ export function FrontierColumns({
   storage,
   screen,
   axes = FRONTIER_AXES,
+  onTriage,
   prototype,
 }: {
   frontier: readonly TaskItemDTO[];
@@ -557,6 +657,15 @@ export function FrontierColumns({
    * unchanged, and the stored axis is clamped against this list on read so a
    * value chosen on a wider board cannot group by a button that is not here. */
   axes?: readonly FrontierAxis[];
+  /** The board's one write (#801, ADR-0021 decision 9): a card dragged into
+   * a column takes that column's value. `FrontierBoard` passes its own
+   * `onTriage` straight through, and the `destination` is always `null` —
+   * a drag edits fields and never promotes a capture.
+   *
+   * Absent means the surface has no worker behind it, and then nothing
+   * drags at all: the same "no worker, no affordance" rule the mark-done
+   * checkmark already keeps. */
+  onTriage?: (itemId: string, destination: null, edits: TriageEdits) => void;
   /** THROWAWAY (#801, Phase 1): the drag prototype's five seams, absent in
    * every real mount and a no-op wherever it is. See
    * `now-prototype/seam.ts` for why the board is hooked rather than forked;
@@ -599,9 +708,69 @@ export function FrontierColumns({
   // THROWAWAY (#801): the prototype's stub mutations, applied HERE so a
   // dropped card moves through the real `groupFrontier` and the real lane
   // packing rather than through a mock of them. Identity when absent.
+  const [drag] = useState<DragBox>(() => ({
+    moved: false,
+    landing: null,
+    cancel: null,
+    fallback: null,
+    columns: new Map(),
+  }));
+  // No dependency array on purpose: a card held at the slot it landed in is
+  // waiting for whichever render moves it, and the board cannot know which
+  // that is — so it checks every one. `releaseLanding` is a no-op when
+  // nothing is held, which is every render but the one.
+  useLayoutEffect(() => {
+    if (drag.landing !== null) releaseLanding(drag);
+  });
   const grouped = prototype ? prototype.applyOverrides(shown) : shown;
   const columns = groupFrontier(grouped, axis, projects, nowMs, calmOrder);
   const protoCtx: PrototypeCtx = { axis, projects, nowMs };
+  rememberColumns(drag, columns);
+
+  /** One card's gesture (#801). The handlers are built per card because the
+   * item is what a drop decision reads, and a gesture is short enough that
+   * closing over this render's `axis`/`projects`/`nowMs` is exactly right.
+   *
+   * What a drop writes is not decided here: `dropEdits` is the seam onto
+   * `hummingbird_core::decisions::frontier::drop_edits` (ADR-0025), and
+   * `null` from it is both "already in that column" and "that column refuses
+   * this card" — which is all `allows` needs to know to leave a column
+   * unlit. */
+  const cardDrag = (item: TaskItemDTO): CardDrag | undefined => {
+    if (!onTriage) return undefined;
+    const editsFor = (key: string): TriageEdits | null => {
+      const column = drag.columns.get(key);
+      return column ? dropEdits(item, axis, column.value, projects, nowMs) : null;
+    };
+    return {
+      ...cardAttrs(item.id),
+      onPointerDown: (event) => {
+        // A card with a write already in flight has nothing stable to move,
+        // and the mark-done checkmark is a control of its own — a gesture
+        // starting on either would steal a click that means something else.
+        if (item.pending || event.button !== 0) return;
+        if ((event.target as HTMLElement).closest("button")) return;
+        startGesture(drag);
+        beginDrag(event.currentTarget as HTMLElement, item.id, event.nativeEvent, {
+          allows: (key) => editsFor(key) !== null,
+          drop: (key) => {
+            const edits = editsFor(key);
+            if (edits) onTriage(item.id, null, edits);
+          },
+          scroller: () => document.querySelector<HTMLElement>(".hb-scroll"),
+          onArm: () => armGesture(drag),
+          onLand: (landing) => holdLanding(drag, landing),
+        });
+      },
+      onClickCapture: (event) => {
+        // The click a drag ends with would otherwise open the item panel on
+        // top of the board the reader has just rearranged.
+        if (!drag.moved) return;
+        event.preventDefault();
+        event.stopPropagation();
+      },
+    };
+  };
   const activeFacets = facetCount(picked);
 
   const pickAxis = (next: FrontierAxis) => {
@@ -1044,6 +1213,13 @@ export function FrontierColumns({
               return (
                 <div
                   key={key}
+                  // A drop target, and named as one: the gesture finds every
+                  // drawn part of a column by this attribute, and a reader
+                  // moving by structure gets a group whose label is the
+                  // column's own heading rather than an unnamed div.
+                  {...columnAttrs(key, column.value)}
+                  role="group"
+                  aria-label={heading}
                   {...proto}
                   style={{ ...COLUMN_STYLE, ...proto?.style }}
                 >
@@ -1098,6 +1274,7 @@ export function FrontierColumns({
                           selected={item.id === selectedItemId}
                           onOpen={() => onOpenItem(item.id)}
                           onComplete={canMarkDone(item) ? () => onAct(item.id, "complete") : undefined}
+                          drag={cardDrag(item)}
                           extra={prototype?.cardProps(item, protoCtx)}
                         />
                       ))}
@@ -1144,6 +1321,12 @@ export function FrontierColumns({
               return (
                 <div key={`${key}-part-${part}`} style={LANE_STYLE}>
                   <div
+                    // The same column, so the same drop target — a card
+                    // released over a continuation lands in the column it
+                    // continues.
+                    {...columnAttrs(key, column.value)}
+                    role="group"
+                    aria-label={`${heading} continued`}
                     {...proto}
                     style={{ ...COLUMN_STYLE, ...proto?.style }}
                   >
@@ -1180,6 +1363,7 @@ export function FrontierColumns({
                             onComplete={
                               canMarkDone(item) ? () => onAct(item.id, "complete") : undefined
                             }
+                            drag={cardDrag(item)}
                             extra={prototype?.cardProps(item, protoCtx)}
                           />
                         ))}

@@ -57,6 +57,7 @@ import type {
   RuleDTO,
   StepDTO,
   TaskItemDTO,
+  TriageEdits,
 } from "../store/protocol";
 
 export interface DecisionsModule {
@@ -89,6 +90,13 @@ export interface DecisionsModule {
     projectsJson: string,
     now: string,
     calmOrder: string,
+  ): string;
+  frontier_drop_edits_json(
+    itemJson: string,
+    axis: string,
+    targetJson: string,
+    projectsJson: string,
+    now: string,
   ): string;
   facet_count_json(selectionJson: string): number;
   toggle_facet_json(selectionJson: string, facet: string, value: string): string;
@@ -510,18 +518,23 @@ export function priorityRankFromCore(raw: number): number {
  * `createdAt` is the one timestamp among them, and it crosses for one
  * reason: the `urgency` axis's `calm` column is ordered by it. */
 function frontierPayload(items: readonly TaskItemDTO[]): string {
-  return JSON.stringify(
-    items.map((item) => ({
-      id: item.id,
-      priority: item.priority,
-      deadline: item.deadline,
-      context: item.context,
-      size: item.size,
-      energy: item.energy,
-      projectId: item.projectId,
-      createdAt: item.createdAt,
-    })),
-  );
+  return JSON.stringify(items.map(frontierFields));
+}
+
+/** One item's slice of the above — the drop door takes a single item
+ * rather than a list, and this is the one place the eight fields are
+ * named. */
+function frontierFields(item: TaskItemDTO) {
+  return {
+    id: item.id,
+    priority: item.priority,
+    deadline: item.deadline,
+    context: item.context,
+    size: item.size,
+    energy: item.energy,
+    projectId: item.projectId,
+    createdAt: item.createdAt,
+  };
 }
 
 function byIdMap(items: readonly TaskItemDTO[]): Map<string, TaskItemDTO> {
@@ -613,6 +626,39 @@ export function groupFrontier(
     label: column.label,
     items: column.ids.map((id) => byId.get(id)!),
   }));
+}
+
+/** `hummingbird_core::decisions::frontier::drop_edits` — what one card
+ * dropped into one column writes (ADR-0021 decision 9). `target` is the
+ * column's own `value`: `null` is the no-value column, which *clears* the
+ * field rather than refusing. `null` comes back for a drop that writes
+ * nothing — the card's own column, or the refused `overdue` band — and the
+ * gesture springs the card home on it.
+ *
+ * The result is a `TriageEdits` ready for `onTriage(id, null, edits)`: the
+ * core decides which field moves and this is only the wire hop, exactly as
+ * `groupFrontier` above is. `projects` crosses for one reason — a project
+ * drop copies that project's `defaultContext` onto a context-less item
+ * (ADR-0030 decision 3), the one drop that touches two fields. */
+export function dropEdits(
+  item: TaskItemDTO,
+  axis: FrontierAxis,
+  target: string | null,
+  projects: readonly ProjectDTO[],
+  nowMs: number,
+): TriageEdits | null {
+  const projectsJson = JSON.stringify(
+    projects.map((project) => ({ id: project.id, defaultContext: project.defaultContext })),
+  );
+  return JSON.parse(
+    required().frontier_drop_edits_json(
+      JSON.stringify(frontierFields(item)),
+      axis,
+      JSON.stringify(target),
+      projectsJson,
+      localWallClock(nowMs),
+    ),
+  ) as TriageEdits | null;
 }
 
 /** The frontier's facet filter — `hummingbird_core::decisions::frontier

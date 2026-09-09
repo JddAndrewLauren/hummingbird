@@ -260,8 +260,8 @@ pub fn item_grill_button_label(has_draft: bool) -> String {
 // not a second, still-hypothetical one next to it.
 
 use hummingbird_core::decisions::frontier::{
-    self, CalmOrder, FacetSelection, Facet, FrontierAxis, FrontierItem, ProjectName,
-    DEFAULT_CALM_ORDER,
+    self, CalmOrder, FacetSelection, Facet, FrontierAxis, FrontierItem, ProjectDefault,
+    ProjectName, DEFAULT_CALM_ORDER,
 };
 use hummingbird_core::decisions::queue::{self, QueueItem};
 
@@ -388,6 +388,97 @@ pub fn group_frontier_json(
         .map(|c| serde_json::json!({ "value": c.value, "label": c.label, "ids": c.ids }))
         .collect();
     serde_json::to_string(&json).unwrap()
+}
+
+/// One project's id and the context it lends an item dropped into it —
+/// [`frontier::ProjectDefault`]. Separate from [`ProjectNameDTO`] for the
+/// reason the core types are separate: labelling a column and lending a
+/// context are read at different moments.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectDefaultDTO {
+    id: String,
+    default_context: Option<String>,
+}
+
+/// [`frontier::DropEdits`], JSON-encoded as **exactly `protocol.ts`'s
+/// `TriageEdits`**: an untouched field is an absent key, a cleared one is
+/// `null`, a set one carries its value. `skip_serializing_if` is what turns
+/// the outer `None` into an absent key rather than a `null` that would
+/// clear (the same attribute, for the same reason, as
+/// `decisions/skills/args.rs`). The names are camelCase because that is
+/// what the worker's inbound `TriageEdits` parses — `projectId`, not
+/// `project_id` — and a test in this file round-trips this shape through
+/// that deserializer so the two can never drift.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DropEditsDTO {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    energy: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_id: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deadline: Option<Option<String>>,
+}
+
+/// What one card dropped into one column writes
+/// ([`frontier::drop_edits`] — ADR-0021 decision 9), JSON-encoded as a
+/// `TriageEdits` object, or `null` for a drop that writes nothing (the
+/// card's own column, or a refused one — the caller springs the card home
+/// and lights no column).
+///
+/// `item_json` is one [`FrontierItemDTO`]; `axis` one of
+/// [`FrontierAxis`]'s wire names; `target_json` the dropped-into column's
+/// `value` — a JSON string, or `null` for the no-value column, which
+/// *clears* the field; `projects_json` an array of [`ProjectDefaultDTO`];
+/// `now` the caller's own deadline-shaped local wall clock. An
+/// unrecognised axis answers `null`, the same degradation
+/// [`group_frontier_json`] makes for one.
+#[wasm_bindgen]
+pub fn frontier_drop_edits_json(
+    item_json: &str,
+    axis: &str,
+    target_json: &str,
+    projects_json: &str,
+    now: &str,
+) -> String {
+    let Some(axis) = FrontierAxis::parse(axis) else {
+        return "null".to_string();
+    };
+    let item: FrontierItemDTO = match serde_json::from_str(item_json) {
+        Ok(item) => item,
+        Err(error) => return serde_json::json!({ "error": error.to_string() }).to_string(),
+    };
+    let target: Option<String> = match serde_json::from_str(target_json) {
+        Ok(target) => target,
+        Err(error) => return serde_json::json!({ "error": error.to_string() }).to_string(),
+    };
+    let projects: Vec<ProjectDefaultDTO> = match serde_json::from_str(projects_json) {
+        Ok(projects) => projects,
+        Err(error) => return serde_json::json!({ "error": error.to_string() }).to_string(),
+    };
+    let defaults: Vec<ProjectDefault> = projects
+        .into_iter()
+        .map(|p| ProjectDefault { id: p.id, default_context: p.default_context })
+        .collect();
+
+    let Some(edits) =
+        frontier::drop_edits(&to_frontier_item(&item), axis, target.as_deref(), &defaults, now)
+    else {
+        return "null".to_string();
+    };
+    serde_json::to_string(&DropEditsDTO {
+        context: edits.context,
+        size: edits.size,
+        energy: edits.energy,
+        project_id: edits.project_id,
+        deadline: edits.deadline,
+    })
+    .unwrap()
 }
 
 /// One `FacetSelection`, JSON-encoded:
@@ -2157,6 +2248,61 @@ pub fn question_roster_json() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The drop door's JSON is the worker's own `TriageEdits` and not a
+    /// shape that merely looks like it: this parses what the door emits
+    /// with the very deserializer `task_host` uses on the way back in
+    /// (`deny_unknown_fields`, so a wrong key is an error rather than a
+    /// silently dropped edit), and pins all three states — absent means
+    /// untouched, `null` clears, a value sets.
+    #[test]
+    fn the_drop_door_emits_exactly_the_triage_edits_the_worker_parses() {
+        let item = serde_json::json!({
+            "id": "i1", "priority": 0, "deadline": null, "context": "@phone",
+            "size": null, "energy": null, "projectId": null, "createdAt": 0,
+        })
+        .to_string();
+
+        let set = frontier_drop_edits_json(&item, "context", "\"@desk\"", "[]", "2026-08-13T12:00");
+        assert_eq!(set, r#"{"context":"@desk"}"#);
+        let parsed: crate::task_host::TriageEdits = serde_json::from_str(&set).unwrap();
+        assert_eq!(parsed.context, Some(Some("@desk".to_string())));
+        assert_eq!(parsed.size, None, "an untouched field must be an absent key");
+
+        let cleared = frontier_drop_edits_json(&item, "context", "null", "[]", "2026-08-13T12:00");
+        assert_eq!(cleared, r#"{"context":null}"#);
+        let parsed: crate::task_host::TriageEdits = serde_json::from_str(&cleared).unwrap();
+        assert_eq!(parsed.context, Some(None), "the no-value column clears");
+
+        // The project axis's context copy, and the camelCase `projectId`
+        // spelling the worker insists on.
+        let projects = r#"[{"id":"p1","defaultContext":"@desk"}]"#;
+        let contextless = serde_json::json!({
+            "id": "i1", "priority": 0, "deadline": null, "context": null,
+            "size": null, "energy": null, "projectId": null, "createdAt": 0,
+        })
+        .to_string();
+        let copied =
+            frontier_drop_edits_json(&contextless, "project", "\"p1\"", projects, "2026-08-13T12:00");
+        let parsed: crate::task_host::TriageEdits = serde_json::from_str(&copied).unwrap();
+        assert_eq!(parsed.project_id, Some(Some("p1".to_string())));
+        assert_eq!(parsed.context, Some(Some("@desk".to_string())));
+
+        // A drop that writes nothing, and an axis the vocabulary does not
+        // know, are both the same `null` the caller springs home on.
+        assert_eq!(
+            frontier_drop_edits_json(&item, "context", "\"@phone\"", "[]", "2026-08-13T12:00"),
+            "null",
+        );
+        assert_eq!(
+            frontier_drop_edits_json(&item, "urgency", "\"overdue\"", "[]", "2026-08-13T12:00"),
+            "null",
+        );
+        assert_eq!(
+            frontier_drop_edits_json(&item, "colour", "\"red\"", "[]", "2026-08-13T12:00"),
+            "null",
+        );
+    }
 
     /// The share door's JSON keys are `seam.ts`'s contract (#782): camelCase
     /// on this wire, `null` for an absent half, and the mapping itself the

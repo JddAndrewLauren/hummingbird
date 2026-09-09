@@ -44,11 +44,20 @@
 //! reads — keeps the crossing cheap and keeps this module from redefining
 //! `hummingbird_domain::Item`'s shape a second time. The caller maps the
 //! returned ids back onto its own items.
+//!
+//! **The board also writes, since #801.** [`drop_edits`] answers what one
+//! field a card dropped into a column takes from it — the inverse of
+//! [`group_frontier`], and here for that reason: it reads the same axis
+//! vocabulary, folds a blank the same way, and asks the grouping's own
+//! [`axis_value`] whether the card is already in that column. ADR-0021
+//! decision 9 states the rule, ADR-0025 why it is Rust. It decides only
+//! *what to write*; the gesture that carries the card — the physics, the
+//! hit-testing, the auto-scroll — stays per client, over measured boxes.
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
-use hummingbird_domain::deadline_sort_key;
+use hummingbird_domain::{deadline_sort_key, shift, DurationUnit};
 
 use super::urgency::{compute_urgency, UrgencyBand};
 use super::vocabulary::CONTEXTS;
@@ -366,6 +375,123 @@ fn order_urgency_columns(
             .unwrap_or(usize::MAX)
     });
     columns
+}
+
+
+// ------------------------------------------------------------ the drop
+
+/// One project's id and the context it lends to an item dropped into its
+/// column — ADR-0030 decision 3's copy ("a project's default context is
+/// written onto an action that names none"), reached from the board rather
+/// than from `/to-actions`. Deliberately not a widening of [`ProjectName`]:
+/// that type labels a column and is read on every render, this one is read
+/// only when a card lands in a project column, and one type serving both
+/// would make every grouping call carry a field it never looks at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectDefault {
+    pub id: String,
+    pub default_context: Option<String>,
+}
+
+/// What one drop writes, in [`crate::TriagePatch`]'s own shape: the outer
+/// `Option` says whether the field was touched at all, the inner one is the
+/// value, so `Some(None)` clears the field and `None` leaves it alone.
+/// Never more than one field, except the project axis's context copy — see
+/// [`drop_edits`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DropEdits {
+    pub context: Option<Option<String>>,
+    pub size: Option<Option<String>>,
+    pub energy: Option<Option<String>>,
+    pub project_id: Option<Option<String>>,
+    pub deadline: Option<Option<String>>,
+}
+
+/// A card dropped into a column takes that column's value (ADR-0021
+/// decision 9). `target` is the column's `value` — `None` for the no-value
+/// column, which *clears* the field rather than refusing. `None` comes back
+/// for a drop that writes nothing: the item's own column (nothing to do),
+/// or a refused one.
+///
+/// **This is a core decision, not a web one** (ADR-0025). The mapping reads
+/// the same axis vocabulary and the same urgency arithmetic
+/// [`group_frontier`] already owns — the same-column check is literally
+/// [`axis_value`], the grouping's own reader, so "already there" can never
+/// drift from where the board actually drew the card — and both clients
+/// reach it through their seam. What stays per-client is the gesture: the
+/// physics, the hit-testing and the auto-scroll all consume measured boxes,
+/// which is the `frontier-lanes.rs` argument.
+///
+/// **`urgency` is the one axis whose drop writes a field other than the one
+/// it groups by.** The other four group by a field and set that field;
+/// urgency groups by a *reading of* `deadline` against `now`, so a drop
+/// there has to invent a deadline that reads back as the band dropped into:
+///
+/// - `now` → today, which resolves to `T23:59` and so reads inside the
+///   24-hour `now` window from any moment of the day;
+/// - `soon` → today + 2 civil days. **Not +1**: a day-grained deadline
+///   resolves to end-of-day, so tomorrow is under 24 hours away for
+///   anything after `T00:00` and would read back as `now` for most of the
+///   day. +2 is the smallest shift that reads `soon` at every hour.
+/// - `calm` → cleared. Every deadline-less item is calm, and clearing is
+///   the only edit that reads `calm` for certain (a distant deadline would
+///   too, but the board must not invent one).
+/// - `overdue` → refused. It is the one band that is a *fact about the
+///   past*, and the app has no reason to let a reader manufacture one; the
+///   card springs home instead, and no column is ever painted as refusing.
+pub fn drop_edits(
+    item: &FrontierItem,
+    axis: FrontierAxis,
+    target: Option<&str>,
+    projects: &[ProjectDefault],
+    now: &str,
+) -> Option<DropEdits> {
+    // The grouping's own `""`→`None` fold included, so a column drawn from
+    // a blank field is the same column this comparison sees.
+    let target = match target {
+        Some("") | None => None,
+        Some(v) => Some(v),
+    };
+    if axis_value(item, axis, now).as_deref() == target {
+        return None;
+    }
+
+    let value = || Some(target.map(str::to_string));
+    let edits = match axis {
+        FrontierAxis::Context => DropEdits { context: value(), ..DropEdits::default() },
+        FrontierAxis::Size => DropEdits { size: value(), ..DropEdits::default() },
+        FrontierAxis::Energy => DropEdits { energy: value(), ..DropEdits::default() },
+        FrontierAxis::Project => {
+            let mut edits = DropEdits { project_id: value(), ..DropEdits::default() };
+            // The one exception to "a drop writes one field", and the first
+            // time ADR-0030 decision 3's copy exists in Rust: an item with
+            // no context of its own takes the project's, so an action
+            // dragged into a project is as complete as one `/to-actions`
+            // minted there. An item that already names a context keeps it —
+            // the reader's own answer outranks the project's default.
+            if item.context.as_deref().unwrap_or("").is_empty() {
+                if let Some(default) = target
+                    .and_then(|id| projects.iter().find(|p| p.id == id))
+                    .and_then(|p| p.default_context.as_deref())
+                    .filter(|c| !c.is_empty())
+                {
+                    edits.context = Some(Some(default.to_string()));
+                }
+            }
+            edits
+        }
+        FrontierAxis::Urgency => {
+            let band = URGENCY_COLUMN_ORDER.into_iter().find(|b| Some(b.as_str()) == target)?;
+            let deadline = match band {
+                UrgencyBand::Overdue => return None,
+                UrgencyBand::Calm => None,
+                UrgencyBand::Now => Some(now.get(..10)?.to_string()),
+                UrgencyBand::Soon => Some(shift(now.get(..10)?, 2, DurationUnit::Days)?),
+            };
+            DropEdits { deadline: Some(deadline), ..DropEdits::default() }
+        }
+    };
+    Some(edits)
 }
 
 // --------------------------------------------------------------- facets
@@ -937,6 +1063,262 @@ mod tests {
         assert_eq!(FrontierAxis::Urgency.as_str(), "urgency");
         assert!(FRONTIER_GROUP_AXES.contains(&FrontierAxis::Urgency));
     }
+
+    // ----------------------------------------------------------- drop_edits
+    // ADR-0021 decision 9: a card dropped into a column takes its value.
+
+    fn projects_with(id: &str, default_context: Option<&str>) -> Vec<ProjectDefault> {
+        vec![ProjectDefault {
+            id: id.to_string(),
+            default_context: default_context.map(str::to_string),
+        }]
+    }
+
+    #[test]
+    fn a_drop_sets_the_axis_field_to_the_column_it_landed_in() {
+        let edits = drop_edits(&item("a"), FrontierAxis::Context, Some("@phone"), &[], NOW);
+        assert_eq!(
+            edits,
+            Some(DropEdits { context: Some(Some("@phone".to_string())), ..Default::default() }),
+        );
+
+        let sized = FrontierItem { size: Some("deep".to_string()), ..item("a") };
+        assert_eq!(
+            drop_edits(&sized, FrontierAxis::Size, Some("quick"), &[], NOW),
+            Some(DropEdits { size: Some(Some("quick".to_string())), ..Default::default() }),
+        );
+
+        let tired = FrontierItem { energy: Some("low".to_string()), ..item("a") };
+        assert_eq!(
+            drop_edits(&tired, FrontierAxis::Energy, Some("high"), &[], NOW),
+            Some(DropEdits { energy: Some(Some("high".to_string())), ..Default::default() }),
+        );
+    }
+
+    #[test]
+    fn the_no_value_column_clears_the_field_rather_than_refusing_the_drop() {
+        let carried = FrontierItem {
+            context: Some("@phone".to_string()),
+            size: Some("quick".to_string()),
+            energy: Some("high".to_string()),
+            project_id: Some("p1".to_string()),
+            ..item("a")
+        };
+
+        assert_eq!(
+            drop_edits(&carried, FrontierAxis::Context, None, &[], NOW),
+            Some(DropEdits { context: Some(None), ..Default::default() }),
+        );
+        assert_eq!(
+            drop_edits(&carried, FrontierAxis::Size, None, &[], NOW),
+            Some(DropEdits { size: Some(None), ..Default::default() }),
+        );
+        assert_eq!(
+            drop_edits(&carried, FrontierAxis::Energy, None, &[], NOW),
+            Some(DropEdits { energy: Some(None), ..Default::default() }),
+        );
+        assert_eq!(
+            drop_edits(&carried, FrontierAxis::Project, None, &[], NOW),
+            Some(DropEdits { project_id: Some(None), ..Default::default() }),
+        );
+    }
+
+    #[test]
+    fn a_card_dropped_back_into_its_own_column_writes_nothing() {
+        let carried = FrontierItem {
+            context: Some("@phone".to_string()),
+            size: Some("quick".to_string()),
+            energy: Some("high".to_string()),
+            project_id: Some("p1".to_string()),
+            ..item("a")
+        };
+
+        assert_eq!(drop_edits(&carried, FrontierAxis::Context, Some("@phone"), &[], NOW), None);
+        assert_eq!(drop_edits(&carried, FrontierAxis::Size, Some("quick"), &[], NOW), None);
+        assert_eq!(drop_edits(&carried, FrontierAxis::Energy, Some("high"), &[], NOW), None);
+        assert_eq!(drop_edits(&carried, FrontierAxis::Project, Some("p1"), &[], NOW), None);
+        // The no-value column is a column too, and an item already in it is
+        // already there — the `""`→`None` fold on both sides included.
+        assert_eq!(drop_edits(&item("a"), FrontierAxis::Context, None, &[], NOW), None);
+        let blank = FrontierItem { context: Some(String::new()), ..item("a") };
+        assert_eq!(drop_edits(&blank, FrontierAxis::Context, Some(""), &[], NOW), None);
+    }
+
+    #[test]
+    fn a_project_drop_copies_the_projects_default_context_onto_a_contextless_item() {
+        assert_eq!(
+            drop_edits(
+                &item("a"),
+                FrontierAxis::Project,
+                Some("p1"),
+                &projects_with("p1", Some("@desk")),
+                NOW,
+            ),
+            Some(DropEdits {
+                project_id: Some(Some("p1".to_string())),
+                context: Some(Some("@desk".to_string())),
+                ..Default::default()
+            }),
+        );
+    }
+
+    #[test]
+    fn the_default_context_copy_never_overwrites_a_context_the_item_already_names() {
+        let placed = FrontierItem { context: Some("@phone".to_string()), ..item("a") };
+        assert_eq!(
+            drop_edits(
+                &placed,
+                FrontierAxis::Project,
+                Some("p1"),
+                &projects_with("p1", Some("@desk")),
+                NOW,
+            ),
+            Some(DropEdits { project_id: Some(Some("p1".to_string())), ..Default::default() }),
+        );
+    }
+
+    #[test]
+    fn the_default_context_copy_needs_a_project_that_names_one() {
+        // No default on the project it landed in, an unknown project, and
+        // the no-project column: the project id moves, nothing else does.
+        for projects in [projects_with("p1", None), projects_with("other", Some("@desk")), vec![]] {
+            assert_eq!(
+                drop_edits(&item("a"), FrontierAxis::Project, Some("p1"), &projects, NOW),
+                Some(DropEdits { project_id: Some(Some("p1".to_string())), ..Default::default() }),
+            );
+        }
+        let placed = FrontierItem { project_id: Some("p1".to_string()), ..item("a") };
+        assert_eq!(
+            drop_edits(&placed, FrontierAxis::Project, None, &projects_with("p1", Some("@desk")), NOW),
+            Some(DropEdits { project_id: Some(None), ..Default::default() }),
+        );
+    }
+
+    #[test]
+    fn overdue_is_the_one_column_no_drop_may_land_in() {
+        assert_eq!(drop_edits(&item("a"), FrontierAxis::Urgency, Some("overdue"), &[], NOW), None);
+        // And a band the vocabulary does not know is refused the same way,
+        // rather than writing a deadline of that word.
+        assert_eq!(drop_edits(&item("a"), FrontierAxis::Urgency, Some("later"), &[], NOW), None);
+    }
+
+    #[test]
+    fn an_urgency_drop_writes_a_deadline_that_reads_back_as_the_band_dropped_into() {
+        // Every hour of the day, not just noon: the +2 for `soon` exists
+        // precisely because a day-grained deadline resolves to `T23:59`.
+        for now in ["2026-08-13T00:01", "2026-08-13T12:00", "2026-08-13T23:58"] {
+            for band in [UrgencyBand::Now, UrgencyBand::Soon] {
+                let edits = drop_edits(&item("a"), FrontierAxis::Urgency, Some(band.as_str()), &[], now)
+                    .expect("a legal band writes a deadline");
+                let deadline = edits.deadline.clone().expect("the deadline is touched");
+                assert_eq!(
+                    compute_urgency(deadline.as_deref(), now),
+                    band,
+                    "{band:?} at {now} wrote {deadline:?}",
+                );
+            }
+        }
+
+        assert_eq!(
+            drop_edits(&item("a"), FrontierAxis::Urgency, Some("now"), &[], NOW),
+            Some(DropEdits {
+                deadline: Some(Some("2026-08-13".to_string())),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(
+            drop_edits(&item("a"), FrontierAxis::Urgency, Some("soon"), &[], NOW),
+            Some(DropEdits {
+                deadline: Some(Some("2026-08-15".to_string())),
+                ..Default::default()
+            }),
+        );
+    }
+
+    #[test]
+    fn the_two_day_shift_rolls_over_a_month_end() {
+        assert_eq!(
+            drop_edits(&item("a"), FrontierAxis::Urgency, Some("soon"), &[], "2026-08-30T09:00"),
+            Some(DropEdits {
+                deadline: Some(Some("2026-09-01".to_string())),
+                ..Default::default()
+            }),
+        );
+    }
+
+    #[test]
+    fn dropping_into_calm_clears_the_deadline_and_a_calm_item_stays_put() {
+        let dated = dated("a", "2026-08-13T18:00");
+        assert_eq!(
+            drop_edits(&dated, FrontierAxis::Urgency, Some("calm"), &[], NOW),
+            Some(DropEdits { deadline: Some(None), ..Default::default() }),
+        );
+        assert_eq!(drop_edits(&item("a"), FrontierAxis::Urgency, Some("calm"), &[], NOW), None);
+    }
+
+    /// The gate that keeps [`drop_edits`] and [`group_frontier`] from
+    /// drifting apart: for every axis and every column the board can draw,
+    /// apply the edits and re-group — the item must land in exactly the
+    /// column it was dropped into. A rule stated twice would pass every
+    /// test above and still put the card back where it came from.
+    #[test]
+    fn an_edited_item_regroups_into_the_column_it_was_dropped_into() {
+        let projects = projects_with("p1", Some("@desk"));
+        let names = vec![ProjectName { id: "p1".to_string(), name: "Kitchen".to_string() }];
+        let source = FrontierItem {
+            context: Some("@phone".to_string()),
+            size: Some("deep".to_string()),
+            energy: Some("low".to_string()),
+            project_id: Some("p0".to_string()),
+            deadline: Some("2026-08-12T12:00".to_string()),
+            ..item("a")
+        };
+
+        for axis in FRONTIER_GROUP_AXES {
+            let targets: Vec<Option<&str>> = match axis {
+                FrontierAxis::Context => vec![Some("@desk"), Some("@errand"), None],
+                FrontierAxis::Project => vec![Some("p1"), None],
+                FrontierAxis::Size => vec![Some("quick"), Some("normal"), None],
+                FrontierAxis::Energy => vec![Some("high"), Some("medium"), None],
+                // `overdue` is refused, and the source is already overdue,
+                // so the three writable bands are the whole set here.
+                FrontierAxis::Urgency => vec![Some("now"), Some("soon"), Some("calm")],
+            };
+
+            for target in targets {
+                let Some(edits) = drop_edits(&source, axis, target, &projects, NOW) else {
+                    panic!("{axis:?} refused a drop into {target:?}");
+                };
+                let mut patched = source.clone();
+                if let Some(v) = edits.context {
+                    patched.context = v;
+                }
+                if let Some(v) = edits.size {
+                    patched.size = v;
+                }
+                if let Some(v) = edits.energy {
+                    patched.energy = v;
+                }
+                if let Some(v) = edits.project_id {
+                    patched.project_id = v;
+                }
+                if let Some(v) = edits.deadline {
+                    patched.deadline = v;
+                }
+
+                let columns =
+                    group_frontier(&[patched], axis, &names, NOW, DEFAULT_CALM_ORDER);
+                assert_eq!(columns.len(), 1, "{axis:?} → {target:?}");
+                assert_eq!(
+                    columns[0].value.as_deref(),
+                    target,
+                    "{axis:?} → {target:?} landed in {:?}",
+                    columns[0].value,
+                );
+            }
+        }
+    }
+
 
     // -------------------------------------------------------------------- facets
     // Ported from `frontier-facets.test.ts`.

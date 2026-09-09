@@ -39,7 +39,7 @@ import {
   within,
 } from "../test/component";
 import { BINDING_KEY, SOURCE } from "./waste-pane/waste";
-import type { CalendarReadDTO } from "../store/protocol";
+import type { CalendarReadDTO, ProjectDTO } from "../store/protocol";
 import type { TaskState } from "../store/store";
 
 const NOW_MS = 1_700_000_000_000;
@@ -2097,5 +2097,285 @@ describe("NowScreen — a question switched off (#715, ADR-0034)", () => {
       }),
     );
     expect(screen.queryByText("Nothing is being asked")).toBeNull();
+  });
+});
+
+// A card is dragged into a column and takes that column's value (#801,
+// ADR-0021 decision 9). The mapping itself is Rust and tested there; what is
+// pinned here is the thread — that the gesture arms when it should, refuses
+// when it should, calls `onTriage` with what the core decided, and never ends
+// by opening the item panel.
+describe("NowScreen — dragging a card between columns", () => {
+  /** jsdom lays nothing out: every `getBoundingClientRect` is zeros, so a
+   * gesture that hit-tests against real geometry would find every column
+   * stacked on the origin. Each column drawn gets its own 200x400 box in a
+   * row, in document order, and every other element keeps the zeros. */
+  function layOut(): () => void {
+    const columns = [...document.querySelectorAll<HTMLElement>("[data-hb-column]")];
+    const boxes = new Map<HTMLElement, DOMRect>();
+    columns.forEach((el, index) => {
+      const left = index * 220;
+      boxes.set(el, {
+        left,
+        top: 0,
+        right: left + 200,
+        bottom: 400,
+        width: 200,
+        height: 400,
+        x: left,
+        y: 0,
+        toJSON: () => ({}),
+      } as DOMRect);
+    });
+    const original = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function stub(this: Element) {
+      return boxes.get(this as HTMLElement) ?? original.call(this);
+    };
+    return () => {
+      Element.prototype.getBoundingClientRect = original;
+    };
+  }
+
+  /** The centre of the column whose heading reads `heading`, in the frame
+   * `layOut` put it in. */
+  function columnCentre(heading: string): { clientX: number; clientY: number } {
+    const columns = [...document.querySelectorAll<HTMLElement>("[data-hb-column]")];
+    const index = columns.findIndex((el) => el.getAttribute("aria-label") === heading);
+    expect(index, `no column headed ${heading}`).toBeGreaterThanOrEqual(0);
+    return { clientX: index * 220 + 100, clientY: 200 };
+  }
+
+  function cardFor(id: string): HTMLElement {
+    const card = document.querySelector<HTMLElement>(`[data-hb-card="${id}"]`);
+    expect(card, `no draggable card for ${id}`).not.toBeNull();
+    return card!;
+  }
+
+  /** The board is rendered with a worker behind it, and the engine is turned
+   * off: under reduced motion the gesture places the card instantly rather
+   * than running a rAF spring, which is the only way jsdom can see the whole
+   * of it inside one synchronous test. */
+  function renderBoard(task: TaskState, projects: ProjectDTO[] = []) {
+    const onTriage = vi.fn();
+    const onOpenItem = vi.fn();
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes("prefers-reduced-motion"),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      onchange: null,
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+    render(
+      <NowScreen
+        onScreen={() => {}}
+        task={{ ...task, projects }}
+        nowMs={NOW_MS}
+        selectedItemId={null}
+        onOpenItem={onOpenItem}
+        onCloseItemDetail={() => {}}
+        onAct={() => {}}
+        calendarReads={{}}
+        calendarConnected={false}
+        onTriage={onTriage}
+        storage={memoryStorage()}
+      />,
+    );
+    return { onTriage, onOpenItem, restore: layOut() };
+  }
+
+  /** One whole gesture with a mouse: press on the card, move onto `onto`,
+   * release there. `onto` is `null` for a release over nothing. */
+  function dragTo(card: HTMLElement, onto: string | null, pointerType = "mouse") {
+    fireEvent.pointerDown(card, { button: 0, pointerId: 1, pointerType, clientX: 0, clientY: 0 });
+    const at = onto === null ? { clientX: 5_000, clientY: 5_000 } : columnCentre(onto);
+    fireEvent.pointerMove(card, { pointerId: 1, pointerType, ...at });
+    fireEvent.pointerUp(card, { pointerId: 1, pointerType, ...at });
+  }
+
+  const boardState = () =>
+    taskState({
+      frontier: [
+        itemDTO({ id: "i1", title: "Nowhere yet", context: null }),
+        itemDTO({ id: "i2", title: "Already placed", context: "@phone" }),
+      ],
+    });
+
+  it("writes the column's value onto the card released over it", () => {
+    const { onTriage, restore } = renderBoard(boardState());
+    try {
+      dragTo(cardFor("i1"), "@phone");
+      expect(onTriage).toHaveBeenCalledTimes(1);
+      expect(onTriage.mock.calls[0]).toEqual(["i1", null, { context: "@phone" }]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("clears the field for the no-value column", () => {
+    const { onTriage, restore } = renderBoard(boardState());
+    try {
+      dragTo(cardFor("i2"), "No context");
+      expect(onTriage.mock.calls[0]).toEqual(["i2", null, { context: null }]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("writes nothing for a card released over its own column, or over nothing", () => {
+    const { onTriage, restore } = renderBoard(boardState());
+    try {
+      dragTo(cardFor("i2"), "@phone");
+      dragTo(cardFor("i1"), null);
+      expect(onTriage).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it("carries the axis: size, and urgency's per-band deadline", () => {
+    const local = new Date(NOW_MS);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const today = `${local.getFullYear()}-${pad(local.getMonth() + 1)}-${pad(local.getDate())}`;
+    const { onTriage, restore } = renderBoard(
+      taskState({
+        frontier: [
+          itemDTO({ id: "i1", title: "Nowhere yet", context: null, size: null }),
+          itemDTO({ id: "i2", title: "Quick one", context: "@phone", size: "quick" }),
+          // An empty band draws no column, so the `now` band needs an item of
+          // its own for there to be anything to drop into.
+          itemDTO({ id: "i3", title: "Pressing", context: "@phone", deadline: today }),
+        ],
+      }),
+    );
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Size" }));
+      restore();
+      const restoreSize = layOut();
+      dragTo(cardFor("i1"), "quick");
+      expect(onTriage.mock.calls[0]).toEqual(["i1", null, { size: "quick" }]);
+      restoreSize();
+
+      onTriage.mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "Urgency" }));
+      const restoreUrgency = layOut();
+      dragTo(cardFor("i1"), "now");
+      expect(onTriage.mock.calls[0]).toEqual(["i1", null, { deadline: today }]);
+      restoreUrgency();
+    } finally {
+      restore();
+    }
+  });
+
+  it("copies a project's default context onto a context-less card", () => {
+    const { onTriage, restore } = renderBoard(
+      taskState({
+        frontier: [
+          itemDTO({ id: "i1", title: "Nowhere yet", context: null, projectId: null }),
+          itemDTO({ id: "i2", title: "In the project", context: "@phone", projectId: "p1" }),
+        ],
+      }),
+      [projectDTO({ id: "p1", name: "Kitchen", defaultContext: "@desk" })],
+    );
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Project" }));
+      restore();
+      const restoreProject = layOut();
+      dragTo(cardFor("i1"), "Kitchen");
+      expect(onTriage.mock.calls[0]).toEqual([
+        "i1",
+        null,
+        { projectId: "p1", context: "@desk" },
+      ]);
+      restoreProject();
+    } finally {
+      restore();
+    }
+  });
+
+  it("lights the column it would land in, and puts it out on release", () => {
+    const { restore } = renderBoard(boardState());
+    try {
+      const card = cardFor("i1");
+      const column = [...document.querySelectorAll<HTMLElement>("[data-hb-column]")].find(
+        (el) => el.getAttribute("aria-label") === "@phone",
+      )!;
+      fireEvent.pointerDown(card, { button: 0, pointerId: 1, clientX: 0, clientY: 0 });
+      fireEvent.pointerMove(card, { pointerId: 1, ...columnCentre("@phone") });
+      expect(column.style.background).toBe("var(--surface-quiet)");
+      fireEvent.pointerUp(card, { pointerId: 1, ...columnCentre("@phone") });
+      expect(column.style.background).toBe("");
+    } finally {
+      restore();
+    }
+  });
+
+  it("swallows the click a drag ends with, so the panel does not open over it", () => {
+    const { onOpenItem, restore } = renderBoard(boardState());
+    try {
+      const card = cardFor("i1");
+      dragTo(card, "@phone");
+      fireEvent.click(card);
+      expect(onOpenItem).not.toHaveBeenCalled();
+      // A press that never became a drag still opens the item.
+      fireEvent.pointerDown(card, { button: 0, pointerId: 2, clientX: 0, clientY: 0 });
+      fireEvent.pointerUp(card, { pointerId: 2, clientX: 0, clientY: 0 });
+      fireEvent.click(card);
+      expect(onOpenItem).toHaveBeenCalledWith("i1");
+    } finally {
+      restore();
+    }
+  });
+
+  it("lets a finger that moves before the hold scroll the board instead", () => {
+    const { onTriage, restore } = renderBoard(boardState());
+    try {
+      // No fake timers: the hold has not elapsed, so this movement is a
+      // scroll and the gesture must get out of its way for good.
+      dragTo(cardFor("i1"), "@phone", "touch");
+      expect(onTriage).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it("does not carry a card whose own write is still in flight", () => {
+    const { onTriage, restore } = renderBoard(
+      taskState({
+        frontier: [
+          itemDTO({ id: "i1", title: "Nowhere yet", context: null, pending: true }),
+          itemDTO({ id: "i2", title: "Already placed", context: "@phone" }),
+        ],
+      }),
+    );
+    try {
+      dragTo(cardFor("i1"), "@phone");
+      expect(onTriage).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it("offers no gesture at all on a board with no worker behind it", () => {
+    render(
+      <NowScreen
+        onScreen={() => {}}
+        task={boardState()}
+        nowMs={NOW_MS}
+        selectedItemId={null}
+        onOpenItem={() => {}}
+        onCloseItemDetail={() => {}}
+        onAct={() => {}}
+        calendarReads={{}}
+        calendarConnected={false}
+        storage={memoryStorage()}
+      />,
+    );
+    expect(document.querySelectorAll("[data-hb-card]")).toHaveLength(0);
+    // The columns still name themselves — the grouping is a read, and it is
+    // the *write* that the missing worker removes.
+    expect(document.querySelectorAll("[data-hb-column]").length).toBeGreaterThan(0);
   });
 });

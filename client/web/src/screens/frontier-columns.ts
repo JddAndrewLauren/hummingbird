@@ -15,6 +15,7 @@ export {
   CALM_ORDERS,
   DEFAULT_CALM_ORDER,
   DEFAULT_FRONTIER_AXIS,
+  dropEdits,
   FRONTIER_AXES,
   groupFrontier,
   type CalmOrder,
