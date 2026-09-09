@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { Badge } from "../components/core/Badge";
 import { Button } from "../components/core/Button";
 import { Card } from "../components/core/Card";
@@ -24,6 +24,7 @@ import {
   sameBindingValue,
 } from "./bindings";
 import { ControlButton, SECTION_TOGGLE_HOVER, sectionToggleStyle } from "./ControlButton";
+import { contextAddProblem, contextEditError, removalCopy } from "./contexts";
 import {
   readExpandedQuestions,
   toggleExpandedQuestion,
@@ -43,7 +44,12 @@ import {
   syncStatusTone,
   syncStatusToneWord,
 } from "../shell/sync-status";
-import type { BindingDTO, DeadLetterEntryDTO, LedgerRowDTO } from "../store/protocol";
+import type {
+  BindingDTO,
+  ContextEntryDTO,
+  DeadLetterEntryDTO,
+  LedgerRowDTO,
+} from "../store/protocol";
 import type { StorageLike } from "./storage";
 import type { CalendarState, CoreStatus, TaskState } from "../store/store";
 import type { TaskTokenSubmitOutcome } from "../task/token";
@@ -207,6 +213,243 @@ function TokenEntryForm({
  * A row for a key this build cannot write renders the value and stops: no
  * field, no button. `settings` has no DELETE, so a key this build cannot
  * name is one it must not overwrite either. */
+/** The Contexts section's body (ADR-0038): the suggested list as chips,
+ * each with its own two-step remove, and one field to add to it. The list is
+ * a workspace fact like a binding — one synced row — so the queued badge is
+ * one badge for the whole card, not one per chip. */
+function ContextsCard({
+  entries,
+  pending,
+  lastEdit,
+  onAddContext,
+  onRemoveContext,
+}: {
+  entries: readonly ContextEntryDTO[];
+  pending: boolean;
+  lastEdit: TaskState["lastContextEdit"];
+  onAddContext?: (name: string) => void;
+  onRemoveContext?: (name: string) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const [confirmingName, setConfirming] = useState<string | null>(null);
+  // Derived, not stored: a chip that another device removed while its
+  // confirm was open must not hand its open state to a same-named chip
+  // added later.
+  const confirming = entries.some((entry) => entry.name === confirmingName)
+    ? confirmingName
+    : null;
+  const problem = contextAddProblem(draft, entries);
+  const canAdd = problem === null && onAddContext !== undefined;
+  const draftError = draft.trim().length === 0 ? null : problem;
+  const submit = () => {
+    if (!canAdd) {
+      return;
+    }
+    onAddContext(draft.trim());
+    setDraft("");
+  };
+  // A failure on the name just typed belongs under the field; one on a chip
+  // belongs to that chip.
+  const addError =
+    lastEdit !== null && lastEdit.edit === "add" ? contextEditError(lastEdit, lastEdit.name) : null;
+
+  return (
+    <Card
+      padding="var(--space-6)"
+      style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}
+    >
+      <div style={{ display: "flex", alignItems: "baseline", gap: "var(--space-4)" }}>
+        <p style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)", flex: 1 }}>
+          What the capture and edit forms offer for context, in this order. A workspace fact
+          — a change here reaches every device on its next sync. Removing one clears it from
+          every live item that carries it; an item can still be given any context by typing
+          it.
+        </p>
+        {pending ? (
+          <Badge dot mono tone="warn">
+            queued
+          </Badge>
+        ) : null}
+      </div>
+      {entries.length === 0 ? (
+        <Note>No contexts are suggested. The forms still accept any context typed.</Note>
+      ) : (
+        <ul
+          aria-label="Suggested contexts"
+          style={{
+            listStyle: "none",
+            margin: 0,
+            padding: 0,
+            display: "flex",
+            flexWrap: "wrap",
+            gap: "var(--space-3)",
+          }}
+        >
+          {entries.map((entry) => (
+            <ContextChip
+              key={entry.name}
+              entry={entry}
+              confirming={confirming === entry.name}
+              error={lastEdit?.edit === "remove" ? contextEditError(lastEdit, entry.name) : null}
+              onConfirm={onRemoveContext === undefined ? undefined : () => setConfirming(entry.name)}
+              onCancel={() => setConfirming(null)}
+              onRemove={
+                onRemoveContext === undefined
+                  ? undefined
+                  : () => {
+                      setConfirming(null);
+                      onRemoveContext(entry.name);
+                    }
+              }
+            />
+          ))}
+        </ul>
+      )}
+      {onAddContext === undefined ? null : (
+        <div style={{ display: "flex", alignItems: "flex-end", gap: "var(--space-4)" }}>
+          <Input
+            label="Add a context"
+            value={draft}
+            placeholder="@calls"
+            style={{ flex: 1, minWidth: 0 }}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                submit();
+              }
+            }}
+          />
+          <Button variant="secondary" disabled={!canAdd} onClick={submit}>
+            Add
+          </Button>
+        </div>
+      )}
+      {/* Two lines, two registers. The draft check is advisory and changes
+          per keystroke, so it lives in an always-mounted polite region
+          rather than an alert that would announce every character; a
+          worker's refusal is an alert, and is never hidden behind the
+          draft check. */}
+      {onAddContext === undefined ? null : (
+        <p
+          aria-live="polite"
+          style={{
+            font: "var(--type-body-sm)",
+            color: "var(--status-danger-fg)",
+            margin: 0,
+            minHeight: draftError === null ? 0 : undefined,
+          }}
+        >
+          {draftError ?? ""}
+        </p>
+      )}
+      {addError !== null ? (
+        <p
+          role="alert"
+          style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)", margin: 0 }}
+        >
+          {addError}
+        </p>
+      ) : null}
+    </Card>
+  );
+}
+
+/** One suggested context. Its remove control is two clicks: the first turns
+ * the chip into the sentence saying what the removal will clear, the second
+ * does it. A removal reaches every live item carrying the context, so it is
+ * said before it is done rather than discovered after. */
+function ContextChip({
+  entry,
+  confirming,
+  error,
+  onConfirm,
+  onCancel,
+  onRemove,
+}: {
+  entry: ContextEntryDTO;
+  confirming: boolean;
+  error: string | null;
+  onConfirm?: () => void;
+  onCancel: () => void;
+  onRemove?: () => void;
+}) {
+  // The remove control unmounts when the confirm sentence replaces it, and
+  // Confirm/Cancel unmount themselves — so focus is carried across each
+  // step by hand, or a keyboard user lands on the body twice per removal.
+  // Neither shared button forwards a ref, so the item is the anchor: its
+  // first button is Confirm while confirming and the remove control after.
+  const itemRef = useRef<HTMLLIElement>(null);
+  const wasConfirming = useRef(false);
+  useEffect(() => {
+    if (confirming || wasConfirming.current) {
+      itemRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    }
+    wasConfirming.current = confirming;
+  }, [confirming]);
+  const chip: CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "var(--space-3)",
+    padding: "0 var(--space-2) 0 var(--space-4)",
+    height: 30,
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-pill)",
+    background: "var(--surface)",
+    font: "var(--type-body-sm)",
+    color: "var(--text-primary)",
+  };
+  if (confirming) {
+    return (
+      <li
+        ref={itemRef}
+        style={{ ...chip, gap: "var(--space-4)", padding: "0 var(--space-2) 0 var(--space-4)" }}
+      >
+        <span>{removalCopy(entry)}</span>
+        <Button variant="danger" size="sm" onClick={onRemove}>
+          Confirm
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onCancel}>
+          Cancel
+        </Button>
+      </li>
+    );
+  }
+  return (
+    <li ref={itemRef} style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
+      <span style={chip}>
+        <span>{entry.name}</span>
+        {entry.itemCount > 0 ? <span className="hb-meta">{entry.itemCount}</span> : null}
+        {onConfirm === undefined ? null : (
+          <ControlButton
+            aria-label={`Remove ${entry.name}`}
+            title={removalCopy(entry)}
+            onClick={onConfirm}
+            baseStyle={{
+              ...sectionToggleStyle(false),
+              width: 22,
+              height: 22,
+              padding: 0,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: "var(--radius-pill)",
+            }}
+            hoverStyle={SECTION_TOGGLE_HOVER}
+          >
+            <Icon name="x" size={14} />
+          </ControlButton>
+        )}
+      </span>
+      {error !== null ? (
+        <span role="alert" style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>
+          {error}
+        </span>
+      ) : null}
+    </li>
+  );
+}
+
 function BindingRow({
   binding,
   writeError,
@@ -578,6 +821,11 @@ export interface SettingsScreenProps {
   /** #715's toggle write. Absent (a core that never came up) draws every
    * question's switch read-only, `onSetBinding`'s own contract. */
   onSetQuestionEnabled?: (question: string, enabled: boolean) => void;
+  /** ADR-0038: the Contexts section's two writes — `useBindingsWiring.ts`'s
+   * `addContext`/`removeContext`. Absent renders the list read-only,
+   * `onSetBinding`'s own contract. */
+  onAddContext?: (name: string) => void;
+  onRemoveContext?: (name: string) => void;
   /** Injected storage for this screen's one device-local view preference —
    * which question rows are open (`question-prefs.ts`). Defaults to
    * `localStorage` when the environment has one, so a caller that passes
@@ -619,6 +867,8 @@ export function SettingsScreen({
   task,
   onSetBinding,
   onSetQuestionEnabled,
+  onAddContext,
+  onRemoveContext,
   storage,
   online,
   syncNowMs,
@@ -786,6 +1036,22 @@ export function SettingsScreen({
                 />
               )}
             </Card>
+          )}
+        </Section>
+
+        <Section title="Contexts" id="contexts">
+          {status !== "ready" ? (
+            <Note>Contexts are unavailable until the local core loads.</Note>
+          ) : task.suggestedContexts === null ? (
+            <Note>Reading the contexts.</Note>
+          ) : (
+            <ContextsCard
+              entries={task.suggestedContexts.entries}
+              pending={task.suggestedContexts.pending}
+              lastEdit={task.lastContextEdit}
+              onAddContext={onAddContext}
+              onRemoveContext={onRemoveContext}
+            />
           )}
         </Section>
 

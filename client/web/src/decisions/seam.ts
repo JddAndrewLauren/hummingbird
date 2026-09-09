@@ -78,7 +78,7 @@ export interface DecisionsModule {
   link_label_problem(url: string, label: string): string | undefined;
   size_options_json(): string;
   energy_options_json(): string;
-  contexts_json(): string;
+  default_contexts_json(): string;
   frontier_axes_json(): string;
   // M1-3 (#501): the frontier's ordering/grouping/faceting and the
   // combined Now/Triage queue.
@@ -101,7 +101,7 @@ export interface DecisionsModule {
   facet_count_json(selectionJson: string): number;
   toggle_facet_json(selectionJson: string, facet: string, value: string): string;
   apply_facets_ids(itemsJson: string, selectionJson: string, now: string): string;
-  contexts_of_json(itemsJson: string): string;
+  contexts_of_json(itemsJson: string, suggestedJson: string): string;
   order_triage_ids(itemsJson: string): string;
   triage_process_queue_json(triageJson: string, grillingJson: string, draftIdsJson: string): string;
   // M3 (#532): Done's ordering and the Ledger's ordering + row-state read.
@@ -471,10 +471,12 @@ export function energyOptionsFromCore(): VocabOption[] {
   return JSON.parse(required().energy_options_json()) as VocabOption[];
 }
 
-/** `hummingbird_core::decisions::vocabulary::CONTEXTS` — pinning-test-only
- * in M1-2 for the same reason as the two functions above. */
-export function contextsFromCore(): string[] {
-  return JSON.parse(required().contexts_json()) as string[];
+/** `hummingbird_core::decisions::vocabulary::DEFAULT_CONTEXTS` — the
+ * build's default suggested list (ADR-0038: the live list is the synced
+ * `contexts` row, published by the worker as `TaskState.suggestedContexts`).
+ * Pinning-test-only, for the same reason as the two functions above. */
+export function defaultContextsFromCore(): string[] {
+  return JSON.parse(required().default_contexts_json()) as string[];
 }
 
 /** `hummingbird_core::decisions::vocabulary::FRONTIER_AXES` — M1-3's
@@ -767,10 +769,13 @@ export function applyFacets(
 }
 
 /** `hummingbird_core::decisions::frontier::contexts_of` — contexts actually
- * present in the given items, suggested vocabulary first, extras sorted,
- * `NO_CONTEXT` last. */
-export function contextsOf(items: readonly TaskItemDTO[]): string[] {
-  return JSON.parse(required().contexts_of_json(frontierPayload(items))) as string[];
+ * present in the given items, `suggested` first in its own order, extras
+ * sorted, `NO_CONTEXT` last. `suggested` is the live list (ADR-0038) the
+ * caller already holds; this seam has no core to read it from. */
+export function contextsOf(items: readonly TaskItemDTO[], suggested: readonly string[]): string[] {
+  return JSON.parse(
+    required().contexts_of_json(frontierPayload(items), JSON.stringify(suggested)),
+  ) as string[];
 }
 
 function queuePayload(items: readonly TaskItemDTO[]): string {

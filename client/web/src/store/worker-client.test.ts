@@ -69,6 +69,7 @@ const initialTask: TaskState = {
   done: null,
   bindings: null,
   questionSwitches: null,
+  suggestedContexts: null,
   kindRegistry: null,
   rules: null,
   lastRuleWrite: null,
@@ -90,6 +91,7 @@ const initialTask: TaskState = {
   grillDraftByItem: {},
   lastBindingWrite: null,
   lastQuestionSwitchWrite: null,
+  lastContextEdit: null,
   lastSyncOutcome: null,
   lastSyncAtMs: null,
   lastSuccessfulSyncAtMs: null,
@@ -338,6 +340,37 @@ describe("attachWorkerClient", () => {
     // `isPending` — the task worker's serial queue guarantees the act was
     // applied first, so this reads back `true` until a sync cycle drains it.
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "isPending", itemId: "item-1" });
+  });
+
+  it("re-reads the triage inbox and the frontier behind an ok captureResult", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: { type: "captureResult", seed: "seed-cap-1", kind: "ok", id: "item-9", error: null },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastCapture?.id).toBe("item-9");
+    // `Core::capture` overlays synchronously; without this re-read the new
+    // item — and a context typed into it for the first time, which the
+    // capture form's suggestions union from these lists — waited for the
+    // next sync cycle to appear anywhere.
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getTriageInbox" });
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getFrontier" });
+  });
+
+  it("records a failed captureResult without re-requesting anything", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: { type: "captureResult", seed: "seed-cap-2", kind: "failed", id: null, error: "no" },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.lastCapture?.kind).toBe("failed");
+    expect(worker.postMessage).not.toHaveBeenCalled();
   });
 
   it("records a failed actResult without re-requesting anything", () => {
@@ -637,6 +670,87 @@ describe("attachWorkerClient", () => {
 
     expect(store.getSnapshot().task.lastQuestionSwitchWrite?.kind).toBe("unknown_question");
     expect(worker.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("records an ok contextEditResult and re-reads the list — plus the item lists after a removal", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "contextEditResult",
+        seed: "seed-c-1",
+        name: "@calls",
+        edit: "add",
+        kind: "ok",
+        error: null,
+        cleared: null,
+      },
+    } as MessageEvent);
+    expect(store.getSnapshot().task.lastContextEdit?.name).toBe("@calls");
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getSuggestedContexts" });
+    expect(worker.postMessage).not.toHaveBeenCalledWith({ type: "getFrontier" });
+
+    worker.onmessage?.({
+      data: {
+        type: "contextEditResult",
+        seed: "seed-c-2",
+        name: "@errands",
+        edit: "remove",
+        kind: "ok",
+        error: null,
+        cleared: 2,
+      },
+    } as MessageEvent);
+    // A removal overlays every item and project default it cleared.
+    for (const type of [
+      "getTriageInbox",
+      "getGrillingItems",
+      "getFrontier",
+      "getBlocked",
+      "getProjects",
+    ]) {
+      expect(worker.postMessage).toHaveBeenCalledWith({ type });
+    }
+  });
+
+  it("records a refused contextEditResult without re-requesting anything", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "contextEditResult",
+        seed: "seed-c-3",
+        name: " ",
+        edit: "add",
+        kind: "invalid",
+        error: "a context needs a name",
+        cleared: null,
+      },
+    } as MessageEvent);
+    expect(store.getSnapshot().task.lastContextEdit?.kind).toBe("invalid");
+    expect(worker.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("lands the suggested contexts, distinguishing them from never having read any", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+    expect(store.getSnapshot().task.suggestedContexts).toBeNull();
+
+    worker.onmessage?.({
+      data: {
+        type: "suggestedContexts",
+        contexts: { entries: [{ name: "@home", itemCount: 2 }], pending: true },
+      },
+    } as MessageEvent);
+    expect(store.getSnapshot().task.suggestedContexts).toEqual({
+      entries: [{ name: "@home", itemCount: 2 }],
+      pending: true,
+    });
   });
 
   it("lands the question switches, distinguishing them from never having read any", () => {

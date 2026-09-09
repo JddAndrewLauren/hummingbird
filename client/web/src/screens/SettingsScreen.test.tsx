@@ -17,7 +17,7 @@ import { describe, expect, it, vi } from "vitest";
 import { OTHER_ROWS_KEY, SettingsScreen } from "./SettingsScreen";
 import { connectErrorCopy } from "../calendar/connect-error";
 import { questionRoster } from "./questions/roster";
-import { bindingDTO, fireEvent, itemDTO, render, screen, taskState } from "../test/component";
+import { bindingDTO, fireEvent, itemDTO, render, screen, taskState, within } from "../test/component";
 import type { BindingDTO, DeadLetterEntryDTO, LedgerRowDTO } from "../store/protocol";
 import type { CalendarState, CoreStatus, TaskState } from "../store/store";
 import type { TaskTokenUiState } from "../task/token-ui";
@@ -92,6 +92,8 @@ function renderSettings(options: SettingsOptions = {}) {
   const onConnect = vi.fn();
   const onSetBinding = vi.fn();
   const onSetQuestionEnabled = vi.fn();
+  const onAddContext = vi.fn();
+  const onRemoveContext = vi.fn();
   const storage = stubStorage({
     "hb.settings.questions-expanded": JSON.stringify(
       options.expanded ?? [...questionRoster().map((entry) => entry.question), OTHER_ROWS_KEY],
@@ -129,6 +131,8 @@ function renderSettings(options: SettingsOptions = {}) {
       onSetQuestionEnabled={
         current.withSetBinding === false ? undefined : onSetQuestionEnabled
       }
+      onAddContext={current.withSetBinding === false ? undefined : onAddContext}
+      onRemoveContext={current.withSetBinding === false ? undefined : onRemoveContext}
       storage={storage}
       online
       syncNowMs={10_000}
@@ -143,7 +147,7 @@ function renderSettings(options: SettingsOptions = {}) {
   return {
     onConnect,
     onSetBinding,
-    onSetQuestionEnabled,
+    onAddContext, onRemoveContext, onSetQuestionEnabled,
     onSelectionChange,
     onBackendSelection,
     onDropboxLocalRoot,
@@ -1033,5 +1037,138 @@ describe("SettingsScreen — #707's diagnostics journal controls", () => {
       renderSettings({ status: "loading" });
       expect(screen.queryByRole("button", { name: "Download mirror" })).toBeNull();
     });
+  });
+});
+
+describe("SettingsScreen — the contexts list (ADR-0038)", () => {
+  const contexts = {
+    entries: [
+      { name: "@home", itemCount: 0 },
+      { name: "@errands", itemCount: 3 },
+      { name: "@calls", itemCount: 1 },
+    ],
+    pending: false,
+  };
+
+  it("says the list is unavailable while the core loads, and 'reading' before the first answer", () => {
+    const first = renderSettings({ status: "loading" });
+    expect(screen.getByText("Contexts are unavailable until the local core loads.")).toBeDefined();
+    first.unmount();
+    renderSettings({ task: { suggestedContexts: null } });
+    expect(screen.getByText("Reading the contexts.")).toBeDefined();
+  });
+
+  it("lists every context in the core's order, with the count of items carrying it", () => {
+    renderSettings({ task: { suggestedContexts: contexts } });
+    const list = screen.getByRole("list", { name: "Suggested contexts" });
+    const names = within(list)
+      .getAllByRole("listitem")
+      .map((item) => item.textContent);
+    expect(names).toEqual(["@home", "@errands3", "@calls1"]);
+  });
+
+  it("refuses a blank or duplicate draft and sends a trimmed new one", () => {
+    const { onAddContext } = renderSettings({ task: { suggestedContexts: contexts } });
+    const add = screen.getByRole("button", { name: "Add" }) as HTMLButtonElement;
+    expect(add.disabled).toBe(true);
+
+    const field = screen.getByLabelText("Add a context");
+    fireEvent.change(field, { target: { value: "@Errands" } });
+    expect(add.disabled).toBe(true);
+    // Advisory, per keystroke — a polite line, never an alert.
+    expect(screen.getByText(/already in the list/)).toBeDefined();
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    fireEvent.change(field, { target: { value: "  @bank " } });
+    expect(add.disabled).toBe(false);
+    fireEvent.click(add);
+    expect(onAddContext).toHaveBeenCalledWith("@bank");
+    expect((field as HTMLInputElement).value).toBe("");
+  });
+
+  it("adds on Enter too", () => {
+    const { onAddContext } = renderSettings({ task: { suggestedContexts: contexts } });
+    const field = screen.getByLabelText("Add a context");
+    fireEvent.change(field, { target: { value: "@bank" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(onAddContext).toHaveBeenCalledWith("@bank");
+  });
+
+  it("removes in two clicks, naming what the removal clears, and can be cancelled", () => {
+    const { onRemoveContext } = renderSettings({ task: { suggestedContexts: contexts } });
+    fireEvent.click(screen.getByRole("button", { name: "Remove @errands" }));
+    expect(onRemoveContext).not.toHaveBeenCalled();
+    expect(screen.getByText("Remove @errands — clears it from 3 items")).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByText(/clears it from 3 items/)).toBeNull();
+    expect(onRemoveContext).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove @calls" }));
+    expect(screen.getByText("Remove @calls — clears it from 1 item")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    expect(onRemoveContext).toHaveBeenCalledWith("@calls");
+  });
+
+  it("marks the whole list queued while an edit is unconfirmed", () => {
+    renderSettings({ task: { suggestedContexts: { ...contexts, pending: true } } });
+    expect(screen.getByText("queued")).toBeDefined();
+  });
+
+  it("says so when an edit failed, against the name it came from", () => {
+    renderSettings({
+      task: {
+        suggestedContexts: contexts,
+        lastContextEdit: {
+          seed: "s",
+          name: "@errands",
+          edit: "remove",
+          kind: "failed",
+          error: "the queue could not be written",
+          cleared: null,
+        },
+      },
+    });
+    expect(screen.getByRole("alert").textContent).toBe("the queue could not be written");
+  });
+
+  it("says so under the field when an add failed, even while a draft is typed", () => {
+    renderSettings({
+      task: {
+        suggestedContexts: contexts,
+        lastContextEdit: {
+          seed: "s",
+          name: "@bank",
+          edit: "add",
+          kind: "failed",
+          error: "the queue could not be written",
+          cleared: null,
+        },
+      },
+    });
+    fireEvent.change(screen.getByLabelText("Add a context"), { target: { value: "@Errands" } });
+    expect(screen.getByRole("alert").textContent).toBe("the queue could not be written");
+    expect(screen.getByText(/already in the list/)).toBeDefined();
+  });
+
+  it("says the list is empty rather than drawing nothing", () => {
+    renderSettings({ task: { suggestedContexts: { entries: [], pending: false } } });
+    expect(screen.getByText(/No contexts are suggested/)).toBeDefined();
+    expect(screen.queryByRole("list", { name: "Suggested contexts" })).toBeNull();
+  });
+
+  it("carries focus onto Confirm and back onto the remove control", () => {
+    renderSettings({ task: { suggestedContexts: contexts } });
+    fireEvent.click(screen.getByRole("button", { name: "Remove @errands" }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Confirm" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Remove @errands" }));
+  });
+
+  it("draws no add field and no remove controls when the host cannot write", () => {
+    renderSettings({ task: { suggestedContexts: contexts }, withSetBinding: false });
+    expect(screen.queryByLabelText("Add a context")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove @errands" })).toBeNull();
+    expect(screen.getByText("@errands")).toBeDefined();
   });
 });

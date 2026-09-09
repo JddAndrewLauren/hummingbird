@@ -32,6 +32,11 @@ const BOTTOM_ROOM = 24;
 
 export interface RecallOverlayProps {
   open: boolean;
+  /** ADR-0038: what the item editor's Context field offers — the operator's
+   * synced list unioned with the contexts live items carry, built once in
+   * `App.tsx` (`captureContexts`) and threaded down. Optional so a host
+   * that has not been wired still renders, over the build's defaults. */
+  contextSuggestions?: readonly string[];
   /** The query as currently typed. Controlled here rather than held inside
    * this component: `App.tsx` owns it so the wiring hook that requests
    * `Core::search` can key its effect on the same value without a second,
@@ -91,6 +96,7 @@ const GROUP_LABEL: Record<RecallRowDTO["group"], string> = {
  * `expanded`/`onToggle` are owned by `RecallOverlay`, keyed on `row.id`, so
  * at most one result is open at a time. */
 function RecallRow({
+  contextSuggestions,
   row,
   expanded,
   onToggle,
@@ -100,6 +106,7 @@ function RecallRow({
   vaultName,
   nowMs,
 }: {
+  contextSuggestions?: readonly string[];
   row: RecallRowDTO;
   expanded: boolean;
   onToggle: () => void;
@@ -191,6 +198,7 @@ function RecallRow({
               onTriage" rule) rather than a second read-only mode invented
               here. */}
           <ItemPanel
+            contextSuggestions={contextSuggestions}
             key={row.id}
             mode="detail"
             item={row}
@@ -245,6 +253,7 @@ function RecallRow({
  * — the same "own it or reset it" rule `CapturePopover`'s focus restoration
  * follows. */
 export function RecallOverlay({
+  contextSuggestions,
   open,
   query,
   onQueryChange,
@@ -393,6 +402,7 @@ export function RecallOverlay({
             <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
               {rows.map((row) => (
                 <RecallRow
+                  contextSuggestions={contextSuggestions}
                   key={row.id}
                   row={row}
                   expanded={row.id === selectedId}

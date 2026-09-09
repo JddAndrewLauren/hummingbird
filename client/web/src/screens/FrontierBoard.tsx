@@ -106,6 +106,7 @@ function SelectedItemSection({ children }: { children: ReactNode }) {
  * `stepsByItem`, `grillDraftItemIds`, `projects`, `lastGrillCompletion`,
  * `lastProjectWrite`) — app-wide facts, correct on either surface. */
 export function FrontierBoard({
+  contextSuggestions,
   task,
   frontier,
   triage,
@@ -126,6 +127,11 @@ export function FrontierBoard({
   axes,
   emptyState = DEFAULT_EMPTY_STATE,
 }: {
+  /** ADR-0038: what the item editor's Context field offers — the operator's
+   * synced list unioned with the contexts live items carry, built once in
+   * `App.tsx` (`captureContexts`) and threaded down. Optional so a host
+   * that has not been wired still renders, over the build's defaults. */
+  contextSuggestions?: readonly string[];
   /** The store's broadcast slots — never the four queries, which are the
    * props below so a caller can filter them. */
   task: TaskState;
@@ -431,6 +437,7 @@ export function FrontierBoard({
               header is the row's own close control, so the slot needs no
               chrome of its own. */}
           <TriageRow
+            contextSuggestions={contextSuggestions}
             key={selectedCapture.id}
             item={selectedCapture}
             projects={task.projects ?? []}
@@ -448,6 +455,7 @@ export function FrontierBoard({
       ) : selectedItem ? (
         <SelectedItemSection key={selectedItem.id}>
           <ItemPanel
+            contextSuggestions={contextSuggestions}
             // Remounts per item so the grain select and the Edit state reset
             // with it — a grain chosen for one item says nothing about the
             // next, and neither does a half-typed edit.
@@ -524,6 +532,7 @@ export function FrontierBoard({
           empty frontier still renders the board. */}
       {frontier.length > 0 || triage.length > 0 || grilling.length > 0 ? (
         <FrontierColumns
+          suggestedContexts={contextSuggestions}
           frontier={frontier}
           triage={triage}
           grilling={grilling}

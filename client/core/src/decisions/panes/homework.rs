@@ -18,7 +18,7 @@
 //! It is a [`HOMEWORK_CONTEXT`] — `@homework` — and nothing else. Not a
 //! project, not a tag, not a source: a Context, hardcoded here and
 //! suggested by both capture forms
-//! ([`crate::decisions::vocabulary::CONTEXTS`], whose last entry this
+//! ([`crate::decisions::vocabulary::DEFAULT_CONTEXTS`], whose last entry this
 //! constant must equal — that module's own test pins the pair, so the pane
 //! and the form can never disagree about the spelling).
 //!
@@ -120,7 +120,7 @@ pub const SUBJECT_KEY: &str = "homework";
 /// The single literal, matched here and suggested by the capture forms.
 ///
 /// Spelled once on purpose:
-/// [`crate::decisions::vocabulary::CONTEXTS`] references *this* constant in
+/// [`crate::decisions::vocabulary::DEFAULT_CONTEXTS`] references *this* constant in
 /// its own test rather than repeating the string, so a pane that quietly
 /// stopped finding the items the form told the operator to file is a test
 /// failure rather than a silent one.

@@ -61,7 +61,7 @@ vi.mock("../speech/local-dictation", () => ({
 }));
 
 const { CaptureBox } = await import("./CaptureBox");
-const { CONTEXTS } = await import("./field-vocabulary");
+const { DEFAULT_CONTEXTS } = await import("./field-vocabulary");
 
 beforeEach(() => {
   seam.capability = { kind: "ready" };
@@ -99,7 +99,7 @@ function renderBox(options: { onDictatingChange?: (dictating: boolean) => void }
     <CaptureBox
       onSubmit={onSubmit}
       projects={[]}
-      contextSuggestions={CONTEXTS}
+      contextSuggestions={DEFAULT_CONTEXTS}
       demo={false}
       focusRequestId={1}
       lastCapture={null}
@@ -112,7 +112,7 @@ function renderBox(options: { onDictatingChange?: (dictating: boolean) => void }
       <CaptureBox
         onSubmit={onSubmit}
         projects={[]}
-        contextSuggestions={CONTEXTS}
+        contextSuggestions={DEFAULT_CONTEXTS}
         demo={false}
         focusRequestId={1}
         lastCapture={null}
@@ -345,7 +345,7 @@ describe("CaptureBox — dictation", () => {
       <CaptureBox
         onSubmit={onSubmit}
         projects={[]}
-        contextSuggestions={CONTEXTS}
+        contextSuggestions={DEFAULT_CONTEXTS}
         demo={false}
         focusRequestId={1}
         lastCapture={{ kind: "ok", seed: "seed-1", id: "item-1", error: null }}
@@ -370,7 +370,7 @@ describe("CaptureBox — dictation", () => {
       <CaptureBox
         onSubmit={onSubmit}
         projects={[]}
-        contextSuggestions={CONTEXTS}
+        contextSuggestions={DEFAULT_CONTEXTS}
         demo={false}
         focusRequestId={1}
         lastCapture={{ kind: "ok", seed: "seed-1", id: "item-1", error: null }}
@@ -400,7 +400,7 @@ describe("CaptureBox — dictation", () => {
       <CaptureBox
         onSubmit={onSubmit}
         projects={[]}
-        contextSuggestions={CONTEXTS}
+        contextSuggestions={DEFAULT_CONTEXTS}
         demo={false}
         focusRequestId={1}
         lastCapture={{ kind: "ok", seed: "seed-1", id: "item-1", error: null }}
@@ -438,7 +438,7 @@ describe("CaptureBox — dictation", () => {
       <CaptureBox
         onSubmit={onSubmit}
         projects={[]}
-        contextSuggestions={CONTEXTS}
+        contextSuggestions={DEFAULT_CONTEXTS}
         demo={false}
         focusRequestId={1}
         lastCapture={{ kind: "failed", seed: "seed-1", id: null, error: "Offline." }}

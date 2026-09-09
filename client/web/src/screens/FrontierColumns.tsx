@@ -65,6 +65,7 @@ import {
   type FrontierAxis,
   type FrontierColumn,
 } from "./frontier-columns";
+import { DEFAULT_CONTEXTS } from "./field-vocabulary";
 import {
   beginDrag,
   cardAttrs,
@@ -642,9 +643,15 @@ export function FrontierColumns({
   storage,
   screen,
   axes = FRONTIER_AXES,
+  suggestedContexts = DEFAULT_CONTEXTS,
   onTriage,
 }: {
   frontier: readonly TaskItemDTO[];
+  /** ADR-0038: the list the context chips order by — the operator's synced
+   * list (or the capture suggestions union built over it, which orders
+   * identically). Defaults to the build's list so an unwired host still
+   * renders. */
+  suggestedContexts?: readonly string[];
   /** `TaskState.triageInbox` — the captured Triage items, grouped into the
    * same columns as the frontier rather than into a section of their own.
    * They carry no axis value until somebody triages them, so on every axis
@@ -1122,7 +1129,7 @@ export function FrontierColumns({
         >
           <FacetRow
             facet="context"
-            values={contextsOf(ordered)}
+            values={contextsOf(ordered, suggestedContexts)}
             selected={picked.context}
             onToggle={(value) => setPicked(toggleFacet(picked, "context", value))}
           />
