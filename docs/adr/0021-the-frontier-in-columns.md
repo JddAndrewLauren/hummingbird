@@ -721,6 +721,26 @@ a scroll through the board rather than a movement across it — there is no
 second column on screen to aim at. The phone keeps the item detail panel,
 which is where it already edits these fields.
 
+The tablet reaches the same core rule through **two** seam doors rather than
+one, and the second is what keeps "a refused column never lights" true on a
+surface that cannot ask per frame: `droppable_columns` answers, once when a
+press becomes a drag, which of the board's columns this card could land in,
+and `move_item_to_column` commits once when the finger lifts. The alternative
+— letting every column but the card's own light, and refusing on release —
+was rejected: it would make `overdue` invite a drop it always declines, which
+is the affordance lying about itself. The web asks the same question per frame
+because it can (`dropEdits` is a synchronous wasm call); Android cannot, and
+buys the same behaviour with one crossing per gesture instead of a rule
+restated in Kotlin.
+
+Two differences from the web are accepted rather than overlooked. Android
+**does not FLIP**: the write and the board's re-read happen on the gesture the
+finger just ended, so the recomposed card is simply drawn at rest in its new
+column — the web's held-card FLIP exists to pay for a re-read that arrives
+several renders later, and there is nothing here to pay for. And there is **no
+edge auto-scroll**: four axes against a cap of six columns means the tablet's
+board fits, so there is no edge to drag toward.
+
 ## Consequences
 
 - `screens/frontier-groups.ts` and its test are deleted with the project

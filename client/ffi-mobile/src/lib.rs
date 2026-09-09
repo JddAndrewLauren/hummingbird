@@ -1720,6 +1720,29 @@ fn to_triage_patch(edit: &ItemEdit) -> Result<hummingbird_core::TriagePatch, Str
     })
 }
 
+/// One [`frontier::DropEdits`] field over a closed vocabulary, in
+/// [`FieldPatch::to_vocabulary`]'s shape but reading the core's own
+/// double-`Option` rather than a Kotlin enum — the board's drag
+/// ([`MobileTaskHost::move_item_to_column`]) is decided in Rust, so there is
+/// no `FieldPatch` on that path to ask. `Err` is a word the vocabulary does
+/// not know, which a drop cannot actually produce — the column it landed in
+/// was drawn from `items.size`/`items.energy` in the first place — but the
+/// seam refuses it rather than assuming.
+fn to_vocabulary_patch<T>(
+    field: Option<Option<String>>,
+    parse: impl Fn(&str) -> Option<T>,
+) -> Result<Option<Option<T>>, MobileEditError> {
+    match field {
+        None => Ok(None),
+        Some(None) => Ok(Some(None)),
+        Some(Some(value)) => {
+            parse(&value).map(|parsed| Some(Some(parsed))).ok_or(MobileEditError::EditFailed {
+                detail: format!("unrecognised value: {value}"),
+            })
+        }
+    }
+}
+
 /// [`MobileTaskHost::edit_item`] failed. `ItemNotFound` covers the archived
 /// case too, and deliberately: the core's edit path reads the *live* view,
 /// so history is unreachable from here by construction rather than by a
@@ -4992,6 +5015,155 @@ impl MobileTaskHost {
             .core
             .triage(&seed, &item_id, false, patch, now_ms, None)
             .await
+            .map_err(|error| match error {
+                hummingbird_core::ActError::ItemNotFound => MobileEditError::ItemNotFound,
+                other => MobileEditError::EditFailed {
+                    detail: other.to_string(),
+                },
+            })
+    }
+
+    /// Which of `columns` this card could actually land in (#801, ADR-0021
+    /// decision 9) — the subset for which [`frontier::drop_edits`] answers
+    /// anything at all, so a refused column can be left unlit rather than
+    /// lit and then refused on release. `columns` are the board's own keys,
+    /// exactly as [`NowColumnRecord::value`] carries them (the empty string
+    /// for the no-value column).
+    ///
+    /// A second door rather than a boolean on
+    /// [`MobileTaskHost::move_item_to_column`] because the two are asked at
+    /// different moments: this once, when a gesture starts, and that once,
+    /// when it ends. It exists so **Kotlin decides nothing** — the board
+    /// would otherwise have to know that `overdue` is refused and that a
+    /// card is already in its own column, which is the duplication the
+    /// carve-out (ADR-0025) exists to prevent. Asking per frame is what a
+    /// list rather than a predicate avoids: one crossing per gesture.
+    ///
+    /// An item this device does not hold answers an empty list — nothing
+    /// lights, which is the same "spring it home" the gesture already draws
+    /// for a release over nothing.
+    pub async fn droppable_columns(
+        &self,
+        item_id: String,
+        axis: MobileFrontierAxis,
+        columns: Vec<String>,
+        now: String,
+    ) -> Vec<String> {
+        let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await;
+        let Some(entry) = inner
+            .core
+            .frontier()
+            .into_iter()
+            .chain(inner.core.triage_inbox())
+            .chain(inner.core.grilling_items())
+            .find(|item| item.id == item_id)
+            .map(|item| to_frontier_item(&item))
+        else {
+            return Vec::new();
+        };
+        let projects: Vec<frontier::ProjectDefault> = inner
+            .core
+            .projects()
+            .into_iter()
+            .map(|project| frontier::ProjectDefault {
+                id: project.id,
+                default_context: project.default_context,
+            })
+            .collect();
+        let axis = map_frontier_axis(axis);
+        columns
+            .into_iter()
+            .filter(|key| {
+                let target = if key.is_empty() { None } else { Some(key.as_str()) };
+                frontier::drop_edits(&entry, axis, target, &projects, &now).is_some()
+            })
+            .collect()
+    }
+
+    /// The tablet board's drag (#801, ADR-0021 decision 9): a card carried
+    /// into a column takes that column's value. `target` is the column's own
+    /// key — `None`, or the empty string Kotlin sends for it, is the
+    /// no-value column, which *clears* the field rather than refusing.
+    ///
+    /// One seam mutation wrapping [`hummingbird_core::Core::triage`] with
+    /// `promote_to_ready: false`, on exactly
+    /// [`MobileTaskHost::set_scheduled_date`]'s pattern and for its stated
+    /// reason: wrap the entry point, not the whole editor. An [`ItemEdit`]
+    /// with eleven `Untouched` fields would make the board build a whole
+    /// record for a write the core has already reduced to one field.
+    ///
+    /// **Kotlin never sees the edit.** Which field a drop writes is
+    /// [`frontier::drop_edits`]'s answer, and it stays behind this door so
+    /// the phone cannot grow a second opinion about it — the same carve-out
+    /// [`MobileTaskHost::now_board`] keeps for the grouping this inverts
+    /// (ADR-0025). What crosses is a column key and a boolean.
+    ///
+    /// `false` means the drop wrote nothing and nothing was queued: the card
+    /// is already in that column, or the column refuses it (`overdue`, the
+    /// one band no drop may land in). Both are the board's own "spring the
+    /// card home", and neither is an error.
+    ///
+    /// The item is looked for across the same three reads `now_board` draws
+    /// from — the frontier, the triage inbox and the grilling items — because
+    /// captures share the board's columns and drag exactly like actions.
+    pub async fn move_item_to_column(
+        &self,
+        item_id: String,
+        axis: MobileFrontierAxis,
+        target: Option<String>,
+        now: String,
+        now_ms: i64,
+    ) -> Result<bool, MobileEditError> {
+        let (entry, projects) = {
+            let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await;
+            let entry = inner
+                .core
+                .frontier()
+                .into_iter()
+                .chain(inner.core.triage_inbox())
+                .chain(inner.core.grilling_items())
+                .find(|item| item.id == item_id)
+                .map(|item| to_frontier_item(&item));
+            let projects: Vec<frontier::ProjectDefault> = inner
+                .core
+                .projects()
+                .into_iter()
+                .map(|project| frontier::ProjectDefault {
+                    id: project.id,
+                    default_context: project.default_context,
+                })
+                .collect();
+            (entry, projects)
+        };
+        let Some(entry) = entry else {
+            return Err(MobileEditError::ItemNotFound);
+        };
+
+        // The empty string Kotlin sends for the no-value column needs no fold
+        // here: `drop_edits` does it, on both sides of its own same-column
+        // test, and a second fold at the seam would be the duplication the
+        // carve-out exists to prevent.
+        let Some(edits) =
+            frontier::drop_edits(&entry, map_frontier_axis(axis), target.as_deref(), &projects, &now)
+        else {
+            return Ok(false);
+        };
+
+        let patch = hummingbird_core::TriagePatch {
+            context: edits.context,
+            project_id: edits.project_id,
+            deadline: edits.deadline,
+            size: to_vocabulary_patch(edits.size, Size::parse)?,
+            energy: to_vocabulary_patch(edits.energy, Energy::parse)?,
+            ..hummingbird_core::TriagePatch::default()
+        };
+        let seed = mint_mutation_seed("board-drag", now_ms);
+        let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Triage).await;
+        inner
+            .core
+            .triage(&seed, &item_id, false, patch, now_ms, None)
+            .await
+            .map(|_| true)
             .map_err(|error| match error {
                 hummingbird_core::ActError::ItemNotFound => MobileEditError::ItemNotFound,
                 other => MobileEditError::EditFailed {
@@ -11099,6 +11271,206 @@ mod settings_tests {
         let host = pane_host("panes-now-schedule-missing").await;
         assert!(matches!(
             host.set_scheduled_date("nope".to_string(), Some("2026-08-15".to_string()), 1_000).await,
+            Err(MobileEditError::ItemNotFound)
+        ));
+    }
+
+    // -------------------------------------------- move_item_to_column (#801)
+    // The tablet board's drag. What a drop *writes* is `frontier::drop_edits`
+    // and is tested there, round-trip gate included; what these pin is the
+    // door — that a legal drop reaches the item, that a refused one queues
+    // nothing at all, and that the answer says which happened.
+
+    #[tokio::test]
+    async fn a_drop_into_a_column_writes_that_column_onto_the_item() {
+        let host = pane_host("board-drag-context").await;
+        let id = host.capture(title_only_draft("call the plumber"), 1_000).await.unwrap();
+
+        let wrote = host
+            .move_item_to_column(
+                id.clone(),
+                MobileFrontierAxis::Context,
+                Some("@phone".to_string()),
+                "2026-08-13T12:00".to_string(),
+                2_000,
+            )
+            .await
+            .unwrap();
+
+        assert!(wrote);
+        let detail = host.item_detail(id, 2_000).await.expect("captured item");
+        assert_eq!(detail.context.as_deref(), Some("@phone"));
+        assert_eq!(detail.stage, "triage", "a drag is not a promotion");
+    }
+
+    #[tokio::test]
+    async fn the_no_value_column_clears_the_field_through_the_seam() {
+        let host = pane_host("board-drag-clear").await;
+        let id = host.capture(title_only_draft("call the plumber"), 1_000).await.unwrap();
+        let now = "2026-08-13T12:00".to_string();
+        host.move_item_to_column(
+            id.clone(),
+            MobileFrontierAxis::Size,
+            Some("quick".to_string()),
+            now.clone(),
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        // Kotlin sends the empty string for the no-value column, and the seam
+        // folds it the same way the board's own grouping does.
+        let wrote = host
+            .move_item_to_column(
+                id.clone(),
+                MobileFrontierAxis::Size,
+                Some(String::new()),
+                now,
+                3_000,
+            )
+            .await
+            .unwrap();
+
+        assert!(wrote);
+        assert_eq!(host.item_detail(id, 3_000).await.expect("captured item").size, None);
+    }
+
+    #[tokio::test]
+    async fn a_drop_that_writes_nothing_queues_nothing_and_says_so() {
+        let host = pane_host("board-drag-noop").await;
+        let id = host.capture(title_only_draft("call the plumber"), 1_000).await.unwrap();
+        let now = "2026-08-13T12:00".to_string();
+        host.move_item_to_column(
+            id.clone(),
+            MobileFrontierAxis::Context,
+            Some("@phone".to_string()),
+            now.clone(),
+            2_000,
+        )
+        .await
+        .unwrap();
+        let after_write = host.item_detail(id.clone(), 2_000).await.expect("captured item");
+
+        // Its own column, and the one band no drop may land in.
+        let same = host
+            .move_item_to_column(
+                id.clone(),
+                MobileFrontierAxis::Context,
+                Some("@phone".to_string()),
+                now.clone(),
+                3_000,
+            )
+            .await
+            .unwrap();
+        let refused = host
+            .move_item_to_column(
+                id.clone(),
+                MobileFrontierAxis::Urgency,
+                Some("overdue".to_string()),
+                now,
+                4_000,
+            )
+            .await
+            .unwrap();
+
+        assert!(!same);
+        assert!(!refused);
+        let after = host.item_detail(id, 4_000).await.expect("captured item");
+        assert_eq!(after.version, after_write.version, "a refused drop wrote nothing");
+        assert_eq!(after.deadline, None);
+    }
+
+    #[tokio::test]
+    async fn an_urgency_drop_writes_the_deadline_the_core_decided() {
+        let host = pane_host("board-drag-urgency").await;
+        let id = host.capture(title_only_draft("call the plumber"), 1_000).await.unwrap();
+
+        host.move_item_to_column(
+            id.clone(),
+            MobileFrontierAxis::Urgency,
+            Some("soon".to_string()),
+            "2026-08-13T12:00".to_string(),
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        // today + 2, not today + 1 — the seam carries the core's arithmetic
+        // rather than restating it.
+        assert_eq!(
+            host.item_detail(id, 2_000).await.expect("captured item").deadline.as_deref(),
+            Some("2026-08-15"),
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_columns_a_card_could_land_in_are_offered() {
+        let host = pane_host("board-drag-allows").await;
+        let id = host.capture(title_only_draft("call the plumber"), 1_000).await.unwrap();
+        let now = "2026-08-13T12:00".to_string();
+        host.move_item_to_column(
+            id.clone(),
+            MobileFrontierAxis::Context,
+            Some("@phone".to_string()),
+            now.clone(),
+            2_000,
+        )
+        .await
+        .unwrap();
+
+        // Its own column is not offered; the others, including the no-value
+        // column's empty key, are.
+        assert_eq!(
+            host.droppable_columns(
+                id.clone(),
+                MobileFrontierAxis::Context,
+                vec!["@phone".to_string(), "@desk".to_string(), String::new()],
+                now.clone(),
+            )
+            .await,
+            vec!["@desk".to_string(), String::new()],
+        );
+
+        // `overdue` is the one band no drop may land in, so the board can
+        // leave it unlit rather than lighting it and refusing on release.
+        assert_eq!(
+            host.droppable_columns(
+                id,
+                MobileFrontierAxis::Urgency,
+                vec!["overdue".to_string(), "now".to_string(), "soon".to_string()],
+                now.clone(),
+            )
+            .await,
+            vec!["now".to_string(), "soon".to_string()],
+        );
+    }
+
+    #[tokio::test]
+    async fn an_item_this_device_does_not_hold_offers_no_column_at_all() {
+        let host = pane_host("board-drag-allows-missing").await;
+        assert!(host
+            .droppable_columns(
+                "nope".to_string(),
+                MobileFrontierAxis::Context,
+                vec!["@phone".to_string()],
+                "2026-08-13T12:00".to_string(),
+            )
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn moving_an_unknown_item_is_item_not_found() {
+        let host = pane_host("board-drag-missing").await;
+        assert!(matches!(
+            host.move_item_to_column(
+                "nope".to_string(),
+                MobileFrontierAxis::Context,
+                Some("@phone".to_string()),
+                "2026-08-13T12:00".to_string(),
+                1_000,
+            )
+            .await,
             Err(MobileEditError::ItemNotFound)
         ));
     }

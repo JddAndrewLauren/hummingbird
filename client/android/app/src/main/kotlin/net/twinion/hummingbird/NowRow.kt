@@ -145,6 +145,10 @@ internal fun NowRow(
     selected: Boolean,
     onOpen: () -> Unit,
     onComplete: () -> Unit,
+    /** What the caller wants on the card itself. The wide board's drag
+     * (#801) passes its gesture and its transform here; every other call
+     * site passes nothing, and the row is what it always was. */
+    modifier: Modifier = Modifier,
 ) {
     // The card is the door to the item's expanded panel, in place above
     // the board (#521's tap target, retargeted from the full-screen route
@@ -166,7 +170,7 @@ internal fun NowRow(
     // the opened item renders it.
     Card(
         onClick = onOpen,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .semantics { this.selected = selected },
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),

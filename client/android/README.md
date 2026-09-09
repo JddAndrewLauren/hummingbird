@@ -224,6 +224,48 @@ rig: `@GraphicsMode(NATIVE)`, width qualifiers, a 320dp control case);
 JVM green is still not UI evidence here — the Fold AVD/hardware pass with
 `adb shell cmd device_state 2|0` is (operator rule a717c13).
 
+### The tablet drag (#801, ADR-0021 decision 9)
+
+On a wide window a card is **carried between the board's columns**, and
+takes the column it lands in. The phone gets no gesture: it stacks the same
+columns down one list, where a drag between them would be a scroll through
+the board rather than a movement across it, and the item detail panel
+already edits every field a drop writes.
+
+Long press, drag, lift. The card hangs off the finger on an under-damped
+spring (`ui/theme/Motion.kt`'s `carrySpring()` — damping ratio 0.7 at
+stiffness 520, which is the web integrator's `k = 520, c = 32` in Compose's
+own terms), lags, tilts into its travel, overshoots once and settles. The
+column under it lights — `--surface-quiet` plus `--border-strong`, the
+design system's "a surface being pointed at gets more solid" rule — and a
+release over nothing, or over a column that would refuse the card, springs
+it home. **Nothing is ever painted red**: colour on this board means
+urgency (ADR-0021 decision 2), and refusal is physical instead.
+
+**Kotlin decides nothing about what a drop writes.** Two seam doors over
+`hummingbird_core::decisions::frontier::drop_edits`, asked at the two
+moments the gesture has: `droppableColumns` once when a press becomes a
+drag, so a column that would refuse the card is never lit, and
+`moveItemToColumn` once when the finger lifts. `BoardDragStructuralTest`
+pins that — no other Kotlin file carries a drag gesture, and `NowLaneBoard`
+names no band, no field and no default-context rule.
+
+`ui/theme/Motion.kt` is the third hand-ported token file (ADR-0026), under
+`MotionTokenDriftTest` beside the colour and type gates. It also took over
+the app's **only** reduced-motion read, which was `StatusQuietStack`'s
+alone; the drift test refuses a second `ANIMATOR_DURATION_SCALE` anywhere in
+`main/`. The carry spring itself is deliberately **not** pinned: the mirror
+has no token for a spring, and `motion.css` gains none — a spring is not a
+duration, and its numbers live in ADR-0021 decision 9.
+
+`BoardDragGestureTest` drives a whole gesture under Robolectric
+(`AxisRowWrappingTest`'s rig: NATIVE graphics, a `w1024dp` qualifier, the
+stock `Application` since `HummingbirdApp.onCreate` wants a WorkManager a
+JVM suite has not initialized) and asserts the commit and the refusal.
+**It is not UI evidence**, by this file's own rule above: the spring is a
+physical quality, and the Fold/tablet hardware pass is the only place to
+judge whether the card feels carried rather than dragged.
+
 ### The Done and Ledger screens (M3, #532)
 
 `DoneScreen.kt`/`DoneViewModel.kt` and `LedgerScreen.kt`/`LedgerViewModel.kt`

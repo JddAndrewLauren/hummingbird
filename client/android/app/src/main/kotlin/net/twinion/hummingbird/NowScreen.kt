@@ -615,6 +615,19 @@ fun NowScreen(
                                         },
                                         onCloseItem = { viewModel.closeItem() },
                                         onGrill = onGrill,
+                                        onDroppableColumns = { id, keys ->
+                                            viewModel.droppableColumns(id, keys, nowDeadlineShaped())
+                                        },
+                                        onMoveItem = { id, key ->
+                                            scope.launch {
+                                                viewModel.moveItem(
+                                                    id,
+                                                    key,
+                                                    nowDeadlineShaped(),
+                                                    System.currentTimeMillis(),
+                                                )
+                                            }
+                                        },
                                         onMutated = { scope.launch { reload() } },
                                         onSubmitted = {
                                             viewModel.closeItem()

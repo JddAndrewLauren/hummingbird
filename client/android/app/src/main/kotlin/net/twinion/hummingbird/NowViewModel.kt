@@ -106,6 +106,25 @@ class NowViewModel(
     private val rankPanesFn: suspend (nowMs: Long, zoneFacts: List<MobileZoneFact>) -> List<MobileRankedPane>,
     private val setScheduledDateFn: suspend (itemId: String, date: String?, nowMs: Long) -> Unit,
     private val completeFn: suspend (itemId: String, nowMs: Long) -> Unit,
+    // #801's board drag, on the wide window alone. Two doors because they
+    // are asked at different moments — `droppableColumnsFn` once when a
+    // gesture starts, so a column that would refuse the card is never lit,
+    // and `moveItemFn` once when it ends. Both are `MobileTaskHost` calls
+    // over `frontier::drop_edits`: nothing here decides which field a drop
+    // writes, and nothing here may.
+    private val droppableColumnsFn: suspend (
+        itemId: String,
+        axis: MobileFrontierAxis,
+        columnKeys: List<String>,
+        now: String,
+    ) -> List<String> = { _, _, _, _ -> emptyList() },
+    private val moveItemFn: suspend (
+        itemId: String,
+        axis: MobileFrontierAxis,
+        target: String?,
+        now: String,
+        nowMs: Long,
+    ) -> Boolean = { _, _, _, _, _ -> false },
     /** The pane collapse's device-local store (`PanePrefs`, surface-keyed
      * to [MobileSurface.NOW]) — injected like every other door so a JVM
      * test needs no DataStore. */
@@ -383,6 +402,37 @@ class NowViewModel(
         loadPanes(nowMs)
     }
 
+    /** Which columns the card being carried could land in (#801) — the
+     * core's answer, asked once per gesture. An empty list is a card this
+     * device does not hold, and lights nothing. */
+    suspend fun droppableColumns(itemId: String, columnKeys: List<String>, now: String): List<String> =
+        droppableColumnsFn(itemId, _axis.value, columnKeys, now)
+
+    /** Commit a drop (#801): the card takes the column it landed in, then
+     * the board re-reads so it is drawn where it now belongs. `""` is the
+     * no-value column, which clears the field — mapped to `null` here
+     * because that is the empty the seam speaks, and the ONLY thing about
+     * the drop this file decides.
+     *
+     * A write the core declines — the card's own column, or the `overdue`
+     * band no drop may land in — is not a failure and says nothing: the
+     * gesture has already sprung the card home, which is the whole of what
+     * a refusal means here. Failure wording follows [complete]'s pattern,
+     * cancellation rethrown rather than worded. */
+    suspend fun moveItem(itemId: String, columnKey: String, now: String, nowMs: Long) {
+        _statusLine.value = null
+        val failure = try {
+            moveItemFn(itemId, _axis.value, columnKey.ifEmpty { null }, now, nowMs)
+            null
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            "Couldn't move — ${error.message}"
+        }
+        refresh(now)
+        failure?.let { _statusLine.value = it }
+    }
+
     companion object {
         /** The production wiring: every fn closes over the app's one
          * durable [CoreHolder] handle or the one [FrontierPrefs] DataStore
@@ -429,6 +479,14 @@ class NowViewModel(
                 },
                 completeFn = { itemId, nowMs ->
                     CoreHolder.get(context.applicationContext).act(itemId, "complete", nowMs)
+                },
+                droppableColumnsFn = { itemId, axis, columnKeys, now ->
+                    CoreHolder.get(context.applicationContext)
+                        .droppableColumns(itemId, axis, columnKeys, now)
+                },
+                moveItemFn = { itemId, axis, target, now, nowMs ->
+                    CoreHolder.get(context.applicationContext)
+                        .moveItemToColumn(itemId, axis, target, now, nowMs)
                 },
             )
 
