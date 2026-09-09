@@ -41,6 +41,7 @@
 
 import {
   Children,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -70,6 +71,7 @@ import {
   columnAttrs,
   settleLanding,
   type Landing,
+  type LiveDrag,
 } from "./frontier-drag";
 import {
   applyFacets,
@@ -294,9 +296,16 @@ function CardMeta({ children }: { children: ReactNode }) {
  * `react-hooks/immutability` reads an assignment to a `useState` value at the
  * call site as a bug, and it is right about every case but these. */
 interface DragBox {
-  /** Set the moment a gesture arms, cleared at the next `pointerdown`, so
-   * the click a drag ends with can be swallowed before it opens the panel. */
+  /** Set the moment a gesture arms, cleared at every `pointerdown`, so the
+   * click a drag ends with can be swallowed before it opens the panel.
+   * Cleared unconditionally — including on the presses this file refuses to
+   * carry — because a `moved` left standing swallows the NEXT click, and
+   * the next click is usually the mark-done checkmark. */
   moved: boolean;
+  /** The gesture in flight, so a second press on the same card can put the
+   * first down rather than running two rAF loops over one element, and so
+   * an unmount can end it at all. */
+  live: LiveDrag | null;
   /** The card being held at the slot it landed in, waiting for the board to
    * re-render under it. See `frontier-drag.ts`'s `Landing`. */
   landing: Landing | null;
@@ -319,8 +328,18 @@ function rememberColumns(box: DragBox, columns: readonly FrontierColumn[]): void
   box.columns = new Map(columns.map((column) => [column.value ?? "", column]));
 }
 
+/** A press begins. Whatever the last one left behind goes now: the swallow
+ * flag, the gesture still in flight, and any card still being held at the
+ * slot it landed in. Two gestures writing one element is the failure this
+ * prevents — the older one keeps its own springs and would still commit,
+ * against a column the hand has since left. */
 function startGesture(box: DragBox): void {
   box.moved = false;
+  abandonDrag(box);
+}
+
+function holdGesture(box: DragBox, live: LiveDrag): void {
+  box.live = live;
 }
 
 function armGesture(box: DragBox): void {
@@ -330,18 +349,40 @@ function armGesture(box: DragBox): void {
 function holdLanding(box: DragBox, landing: Landing): void {
   box.landing = landing;
   if (box.fallback !== null) clearTimeout(box.fallback);
-  box.fallback = setTimeout(() => releaseLanding(box), LANDING_FALLBACK_MS);
+  box.fallback = setTimeout(() => releaseLanding(box, true), LANDING_FALLBACK_MS);
 }
 
-/** Finish whatever is being held, if anything — from the layout effect on
- * the next render, or from the fallback timer if that render never comes. */
-function releaseLanding(box: DragBox): void {
+/** Finish whatever is being held, if the board has moved it — from the
+ * layout effect on every render, since the board cannot know which render
+ * carries the write. A card the board has not moved yet keeps its hold and
+ * its timer; only the fallback ends that wait unconditionally. */
+function releaseLanding(box: DragBox, force = false): void {
   const landing = box.landing;
+  if (!landing) return;
+  const settled = settleLanding(landing, force);
+  if (settled.status === "waiting") return;
   box.landing = null;
   if (box.fallback !== null) clearTimeout(box.fallback);
   box.fallback = null;
+  // The outgoing settle resets its own element as it stops — a cancelled
+  // FLIP that left its transform behind would strand that card offset, and
+  // React never rewrites an inline style it did not set.
   box.cancel?.();
-  box.cancel = landing ? settleLanding(landing) : null;
+  box.cancel = settled.status === "done" ? settled.cancel : null;
+}
+
+/** Everything this board is still holding, on the way out: a gesture in
+ * flight, a settle mid-animation, and the fallback timer. `loop`'s canceller
+ * exists for exactly this, and until #801's review nothing stored it. */
+function abandonDrag(box: DragBox): void {
+  box.live?.abort();
+  box.live = null;
+  // A held card is put DOWN rather than forgotten: `releaseLanding` is what
+  // takes the carried styling and the transform off it, and forgetting the
+  // landing would strand it floating above the board.
+  releaseLanding(box, true);
+  box.cancel?.();
+  box.cancel = null;
 }
 
 /** What one card's own handlers are, so `ItemCard` takes one prop rather
@@ -685,6 +726,7 @@ export function FrontierColumns({
   const shown = applyFacets(ordered, picked, nowMs);
   const [drag] = useState<DragBox>(() => ({
     moved: false,
+    live: null,
     landing: null,
     cancel: null,
     fallback: null,
@@ -692,11 +734,16 @@ export function FrontierColumns({
   }));
   // No dependency array on purpose: a card held at the slot it landed in is
   // waiting for whichever render moves it, and the board cannot know which
-  // that is — so it checks every one. `releaseLanding` is a no-op when
-  // nothing is held, which is every render but the one.
+  // that is — so it checks every one, and `releaseLanding` answers "not
+  // this one" for all but the render that carries the write.
   useLayoutEffect(() => {
     if (drag.landing !== null) releaseLanding(drag);
   });
+  // A drag interrupted by an unmount — the reader navigates away, or opens
+  // the Recall overlay, with the pointer still down — never gets its own
+  // `pointerup`, so nothing else would ever stop its rAF loop or take the
+  // tint off the column it lit.
+  useEffect(() => () => abandonDrag(drag), [drag]);
   const columns = groupFrontier(shown, axis, projects, nowMs, calmOrder);
   rememberColumns(drag, columns);
 
@@ -718,22 +765,39 @@ export function FrontierColumns({
     return {
       ...cardAttrs(item.id),
       onPointerDown: (event) => {
+        // FIRST, and on every press including the ones refused below: a
+        // `moved` left standing from the last drag swallows this click, and
+        // this click is as likely as not the mark-done checkmark.
+        startGesture(drag);
         // A card with a write already in flight has nothing stable to move,
         // and the mark-done checkmark is a control of its own — a gesture
         // starting on either would steal a click that means something else.
         if (item.pending || event.button !== 0) return;
         if ((event.target as HTMLElement).closest("button")) return;
-        startGesture(drag);
-        beginDrag(event.currentTarget as HTMLElement, item.id, event.nativeEvent, {
-          allows: (key) => editsFor(key) !== null,
-          drop: (key) => {
-            const edits = editsFor(key);
-            if (edits) onTriage(item.id, null, edits);
+        const live = beginDrag(
+          event.currentTarget as HTMLElement,
+          item.id,
+          event.nativeEvent,
+          {
+            // Resolved once, when the gesture arms: `dropEdits` is a wasm
+            // crossing plus two `JSON.stringify`s over the whole project
+            // list, and `frontier-drag.ts`'s rule 1 is that a gesture does
+            // not do that sixty times a second. The mobile seam's
+            // `droppable_columns` is the same answer, for the same reason.
+            allowed: () =>
+              new Set(
+                [...drag.columns.keys()].filter((key) => editsFor(key) !== null),
+              ),
+            drop: (key) => {
+              const edits = editsFor(key);
+              if (edits) onTriage(item.id, null, edits);
+            },
+            scroller: () => document.querySelector<HTMLElement>(".hb-scroll"),
+            onArm: () => armGesture(drag),
+            onLand: (landing) => holdLanding(drag, landing),
           },
-          scroller: () => document.querySelector<HTMLElement>(".hb-scroll"),
-          onArm: () => armGesture(drag),
-          onLand: (landing) => holdLanding(drag, landing),
-        });
+        );
+        holdGesture(drag, live);
       },
       onClickCapture: (event) => {
         // The click a drag ends with would otherwise open the item panel on

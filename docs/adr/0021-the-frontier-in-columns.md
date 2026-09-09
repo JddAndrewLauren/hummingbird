@@ -728,10 +728,14 @@ press becomes a drag, which of the board's columns this card could land in,
 and `move_item_to_column` commits once when the finger lifts. The alternative
 — letting every column but the card's own light, and refusing on release —
 was rejected: it would make `overdue` invite a drop it always declines, which
-is the affordance lying about itself. The web asks the same question per frame
-because it can (`dropEdits` is a synchronous wasm call); Android cannot, and
-buys the same behaviour with one crossing per gesture instead of a rule
-restated in Kotlin.
+is the affordance lying about itself. Neither client asks it per frame — the web's
+`dropEdits` is a synchronous wasm call but still a crossing plus two
+serializations of the whole project list, so it resolves the same set once
+when the gesture arms. A finger that lifts before the phone's answer comes
+back is **not** a refusal: the release is held and the answer completes it,
+because a `lock_inner` read contending with a running sync is easily slower
+than a flick into the next column, and "nothing happened, silently" is the
+worst reading a gesture can have.
 
 Two differences from the web are accepted rather than overlooked. Android
 **does not FLIP**: the write and the board's re-read happen on the gesture the

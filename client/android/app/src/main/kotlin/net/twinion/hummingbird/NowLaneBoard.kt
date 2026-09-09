@@ -225,7 +225,11 @@ private class BoardDrag(
      * so starting a gesture has to recompose the board once. */
     var carrying: String? by mutableStateOf(null)
     private var carriedFrom: Rect? = null
-    private var sourceKey: String? = null
+
+    /** The column the carried card was picked up from. Observable because
+     * that column is raised with it — see `LaneColumn`'s own note on why
+     * `zIndex` on the card alone is not enough. */
+    var sourceKey: String? by mutableStateOf(null)
 
     /** Where each card was last laid out, so a gesture that starts on one
      * knows what it is moving. Read at the long press and never after. */
@@ -241,9 +245,24 @@ private class BoardDrag(
     var over: String? by mutableStateOf(null)
 
     /** The columns the core says this card may land in — empty until the
-     * one crossing per gesture returns, so nothing lights for a frame or
-     * two rather than lighting something that would then refuse. */
-    var allowed: List<String> = emptyList()
+     * one crossing per gesture returns. */
+    private var allowed: List<String> = emptyList()
+
+    /** Whether that crossing has come back, and whether the finger lifted
+     * before it did. A release inside that window is not a refusal — it is
+     * remembered here and finished by the answer. */
+    private var answered = false
+    private var releasedEarly = false
+
+    /** Where the finger has travelled since the long press — **the sum of
+     * the deltas, not the animated offset**. `Animatable.value` is the
+     * spring's current, lagging position; re-basing each delta on it feeds
+     * the integrator its own output, and the target then drifts backwards
+     * as fast as the card chases it. The card ends up tracking the finger
+     * at a fraction of its speed and never reaches the column being aimed
+     * at. Found in review on #801; the gesture test now drags in steps
+     * because a single `moveBy` cannot see it. */
+    private var travel: Offset = Offset.Zero
 
     fun start(itemId: String, columnKey: String, from: Rect) {
         carrying = itemId
@@ -251,42 +270,87 @@ private class BoardDrag(
         sourceKey = columnKey
         over = null
         allowed = emptyList()
+        answered = false
+        releasedEarly = false
+        travel = Offset.Zero
         frozen.clear()
         frozen.putAll(bounds)
         launch {
             val answer = onDroppableColumns(itemId, columnKeys)
             // A gesture that ended while the crossing was in flight must
             // not have its answer applied to the next one.
-            if (carrying == itemId) allowed = answer
+            if (carrying == itemId) {
+                allowed = answer
+                answered = true
+                // The finger may already be over a column that turned out
+                // to be legal, so the tint owes it a re-read — and if the
+                // finger has since lifted, this is the release finishing.
+                over = columnUnder(travel)
+                if (releasedEarly) {
+                    releasedEarly = false
+                    finish(itemId)
+                }
+            }
         }
     }
 
     fun drag(amount: Offset) {
-        val target = offset.value + amount
+        travel += amount
+        val target = travel
         over = columnUnder(target)
         launch { if (gentle) offset.snapTo(target) else offset.animateTo(target, carrySpring()) }
     }
 
     fun end() {
-        val itemId = carrying
-        val landing = over
+        val itemId = carrying ?: return
+        // A release before the core has answered is not a refusal. The
+        // crossing is a `lock_inner` read that can contend with a running
+        // sync, and a flick into the next column is easily quicker — so the
+        // release is REMEMBERED and the answer finishes it, rather than the
+        // gesture spinning on the answer or writing nothing.
+        if (!answered) {
+            releasedEarly = true
+            return
+        }
+        finish(itemId)
+    }
+
+    private fun finish(itemId: String) {
+        val landing = columnUnder(travel)
+        if (landing != null) {
+            // The board reloads on the write, and the recomposed card is
+            // drawn in its new column at rest — so the hold is dropped here
+            // rather than animated into a slot. No FLIP on Android: the
+            // web's is what pays for holding a card above an asynchronous
+            // re-read, and this board re-reads on the same gesture the
+            // finger ended.
+            letGo()
+            launch { offset.snapTo(Offset.Zero) }
+            onMoveItem(itemId, landing)
+            return
+        }
+        // Refused, or released over nothing: the card springs home, and
+        // stays carried until it lands so the motion is visible — clearing
+        // `carrying` first would take the transform off the card and
+        // teleport it back instead.
+        launch {
+            if (gentle) offset.snapTo(Offset.Zero) else offset.animateTo(Offset.Zero, carrySpring())
+            if (carrying == itemId) letGo()
+        }
+    }
+
+    /** Put the carried card down — the visual half of ending a gesture,
+     * separate from [end] because a refusal keeps carrying it until the
+     * spring has finished bringing it home. */
+    fun letGo() {
         carrying = null
         carriedFrom = null
         sourceKey = null
         over = null
         allowed = emptyList()
-        if (itemId != null && landing != null) {
-            // The board reloads on the write, and the recomposed card is
-            // drawn in its new column at rest — so the offset is dropped
-            // here rather than animated into a slot. No FLIP on Android:
-            // the web's is what pays for holding a card above an
-            // asynchronous re-read, and this board re-reads on the same
-            // gesture the finger ended.
-            onMoveItem(itemId, landing)
-        }
-        // Refused, or released over nothing: the card springs home, which
-        // is the same motion as landing and needs no separate branch.
-        launch { if (gentle) offset.snapTo(Offset.Zero) else offset.animateTo(Offset.Zero, carrySpring()) }
+        answered = false
+        releasedEarly = false
+        travel = Offset.Zero
     }
 
     private fun columnUnder(at: Offset): String? {
@@ -375,8 +439,16 @@ private fun rememberBoardDrag(
     }
     drag.columnKeys = columnKeys
     LaunchedEffect(board) {
-        drag.carrying = null
-        drag.over = null
+        // A reload re-reads every column, so a card left holding an offset
+        // from a previous board has nothing to hold it against. A LIVE
+        // gesture is exempt: a background sync landing mid-drag used to
+        // clear `carrying` and leave the finger dragging a card that had
+        // stopped drawing itself as dragged, and then write nothing on
+        // release. The frozen geometry is what a mid-drag reload would
+        // invalidate, and the lane packing cannot move a column under the
+        // finger anyway — the weights are resting heights.
+        if (drag.carrying != null) return@LaunchedEffect
+        drag.letGo()
         if (abs(offset.value.x) > 0f || abs(offset.value.y) > 0f) offset.snapTo(Offset.Zero)
     }
     return drag
@@ -407,21 +479,34 @@ private fun LaneColumn(
     onSubmitted: () -> Unit,
 ) {
     val lit = drag.over == plan.key
+    // `zIndex` orders siblings only, so a card raised inside its own column
+    // is still drawn under the next lane's content. The column it is being
+    // carried out of is raised with it — the lanes are this column's own
+    // siblings, and raising them both is what actually puts the card over
+    // the board rather than over its column alone.
+    val carryingFromHere = drag.carrying != null && drag.sourceKey == plan.key
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .zIndex(if (carryingFromHere) 1f else 0f)
             .onGloballyPositioned { drag.bounds[plan.key] = it.boundsInWindow() }
             // A lit column gets more solid, never less: `--surface-quiet`
             // and `--border-strong`, the design system's own hover rule,
             // and the same treatment the web board paints. A column that
             // would REFUSE the card is simply never lit — no red anywhere,
             // since colour on this board means urgency.
+            // The tint is drawn UNDER the column's own padding, never as
+            // extra padding of its own: a lit column that grew by 4dp would
+            // shift every card in it as the finger crossed a lane and shift
+            // them back on the way out. The web avoids the same jitter with
+            // `outline` plus `outlineOffset`, which do not participate in
+            // layout either.
+            .padding(4.dp)
             .then(
                 if (lit) {
                     Modifier
                         .background(MaterialTheme.colorScheme.surfaceVariant, COLUMN_SHAPE)
                         .border(1.dp, MaterialTheme.colorScheme.outline, COLUMN_SHAPE)
-                        .padding(4.dp)
                 } else {
                     Modifier
                 },

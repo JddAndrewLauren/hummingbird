@@ -246,9 +246,22 @@ urgency (ADR-0021 decision 2), and refusal is physical instead.
 `hummingbird_core::decisions::frontier::drop_edits`, asked at the two
 moments the gesture has: `droppableColumns` once when a press becomes a
 drag, so a column that would refuse the card is never lit, and
-`moveItemToColumn` once when the finger lifts. `BoardDragStructuralTest`
-pins that — no other Kotlin file carries a drag gesture, and `NowLaneBoard`
-names no band, no field and no default-context rule.
+`moveItemToColumn` once when the finger lifts. A release that arrives before
+the first answer does is held and finished by it — that crossing is a
+`lock_inner` read that can contend with a running sync, and a flick into the
+next column is quicker. `BoardDragStructuralTest` pins the carve-out: no
+other Kotlin file carries a drag gesture, and `NowLaneBoard` names no band,
+no field and no default-context rule.
+
+**The card is carried by the sum of the finger's deltas, never by the
+spring's own position.** `Animatable.value` lags by construction; re-basing
+each delta on it feeds the integrator its own output, and the target drifts
+backwards about as fast as the card chases it — the card tracks the finger
+at roughly a quarter speed and never reaches the column being aimed at. That
+shipped in the first cut of this slice and survived CI, because
+`BoardDragGestureTest` issued the whole travel as one `moveBy` and one event
+makes the bug invisible. It drags in twelve steps now, and that is the
+reason.
 
 `ui/theme/Motion.kt` is the third hand-ported token file (ADR-0026), under
 `MotionTokenDriftTest` beside the colour and type gates. It also took over

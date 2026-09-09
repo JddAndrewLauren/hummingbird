@@ -3,6 +3,7 @@ package net.twinion.hummingbird
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performTouchInput
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 import org.junit.Assert.assertEquals
@@ -77,7 +78,18 @@ class BoardDragGestureTest {
         totalCount = 2u,
     )
 
-    private fun mount(droppable: List<String>, moved: MutableList<Pair<String, String>>) {
+    /** [mount], with the core's answer held behind `gate`. */
+    private fun mountAsync(
+        droppable: List<String>,
+        gate: CompletableDeferred<Unit>,
+        moved: MutableList<Pair<String, String>>,
+    ) = mount(droppable, moved, gate)
+
+    private fun mount(
+        droppable: List<String>,
+        moved: MutableList<Pair<String, String>>,
+        gate: CompletableDeferred<Unit>? = null,
+    ) {
         rule.setContent {
             HummingbirdTheme(darkTheme = false) {
                 FrontierLaneBoard(
@@ -97,7 +109,10 @@ class BoardDragGestureTest {
                     onGrill = {},
                     onMutated = {},
                     onSubmitted = {},
-                    onDroppableColumns = { _, _ -> droppable },
+                    onDroppableColumns = { _, _ ->
+                        gate?.await()
+                        droppable
+                    },
                     onMoveItem = { id, key -> moved += id to key },
                 )
             }
@@ -107,15 +122,27 @@ class BoardDragGestureTest {
 
     /** A long press on `title`'s card, a drag onto `onto`'s column, a lift.
      * The target is taken from the heading's own box, which is inside the
-     * column it names. */
-    private fun dragOnto(title: String, onto: String) {
+     * column it names.
+     *
+     * **The travel arrives in `steps` deltas, not one jump**, because that
+     * is how a finger arrives and because a single `moveBy` cannot see the
+     * failure this test exists for: a gesture that accumulates each delta
+     * onto its own animated (lagging) position tracks the finger at a
+     * fraction of its speed and never reaches the column being aimed at,
+     * yet passes a one-event drag perfectly. Found in review on #801. */
+    private fun dragOnto(title: String, onto: String, steps: Int = 12) {
         val from = rule.onNodeWithText(title).fetchSemanticsNode().boundsInRoot
         val to = rule.onNodeWithText(onto).fetchSemanticsNode().boundsInRoot
+        val dx = (to.center.x - from.center.x) / steps
+        val dy = (to.center.y - from.center.y) / steps
         rule.onNodeWithText(title).performTouchInput {
             down(center)
             // Past the long-press threshold, then across the board.
             advanceEventTime(1_000)
-            moveBy(androidx.compose.ui.geometry.Offset(to.center.x - from.center.x, to.center.y - from.center.y))
+            repeat(steps) {
+                moveBy(androidx.compose.ui.geometry.Offset(dx, dy))
+                advanceEventTime(16)
+            }
             advanceEventTime(64)
             up()
         }
@@ -128,6 +155,25 @@ class BoardDragGestureTest {
         mount(droppable = listOf("@desk"), moved = moved)
 
         dragOnto("Call the plumber", "@desk")
+
+        assertEquals(listOf("i1" to "@desk"), moved)
+    }
+
+    @Test
+    fun `a card released before the core answers still lands`() = runBlocking {
+        val moved = mutableListOf<Pair<String, String>>()
+        // The crossing is a suspend call over a lock that can contend with a
+        // running sync; a flick into the next column is easily quicker. A
+        // release inside that window must wait for the answer, not read as a
+        // refusal and silently write nothing.
+        val gate = CompletableDeferred<Unit>()
+        mountAsync(droppable = listOf("@desk"), gate = gate, moved = moved)
+
+        dragOnto("Call the plumber", "@desk")
+        assertTrue("nothing may be written before the core answers", moved.isEmpty())
+
+        gate.complete(Unit)
+        rule.waitForIdle()
 
         assertEquals(listOf("i1" to "@desk"), moved)
     }

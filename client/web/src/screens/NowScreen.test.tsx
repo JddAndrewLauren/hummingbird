@@ -2155,11 +2155,16 @@ describe("NowScreen — dragging a card between columns", () => {
    * off: under reduced motion the gesture places the card instantly rather
    * than running a rAF spring, which is the only way jsdom can see the whole
    * of it inside one synchronous test. */
-  function renderBoard(task: TaskState, projects: ProjectDTO[] = []) {
+  function renderBoard(
+    task: TaskState,
+    projects: ProjectDTO[] = [],
+    options: { reducedMotion?: boolean } = {},
+  ) {
+    const gentle = options.reducedMotion ?? true;
     const onTriage = vi.fn();
     const onOpenItem = vi.fn();
     window.matchMedia = ((query: string) => ({
-      matches: query.includes("prefers-reduced-motion"),
+      matches: gentle && query.includes("prefers-reduced-motion"),
       media: query,
       addEventListener: () => {},
       removeEventListener: () => {},
@@ -2168,10 +2173,11 @@ describe("NowScreen — dragging a card between columns", () => {
       onchange: null,
       dispatchEvent: () => false,
     })) as unknown as typeof window.matchMedia;
-    render(
+    const storage = memoryStorage();
+    const screenFor = (next: TaskState) => (
       <NowScreen
         onScreen={() => {}}
-        task={{ ...task, projects }}
+        task={{ ...next, projects }}
         nowMs={NOW_MS}
         selectedItemId={null}
         onOpenItem={onOpenItem}
@@ -2180,10 +2186,16 @@ describe("NowScreen — dragging a card between columns", () => {
         calendarReads={{}}
         calendarConnected={false}
         onTriage={onTriage}
-        storage={memoryStorage()}
-      />,
+        storage={storage}
+      />
     );
-    return { onTriage, onOpenItem, restore: layOut() };
+    const view = render(screenFor(task));
+    return {
+      onTriage,
+      onOpenItem,
+      restore: layOut(),
+      rerender: (next: TaskState = task) => view.rerender(screenFor(next)),
+    };
   }
 
   /** One whole gesture with a mouse: press on the card, move onto `onto`,
@@ -2353,6 +2365,147 @@ describe("NowScreen — dragging a card between columns", () => {
     try {
       dragTo(cardFor("i1"), "@phone");
       expect(onTriage).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it("a gesture taken away writes nothing, whatever it was over", () => {
+    const { onTriage, restore } = renderBoard(boardState());
+    try {
+      // `pointercancel` is the OS, a palm, the notification shade — not a
+      // release. A board with no undo must never record a move the hand did
+      // not finish.
+      const card = cardFor("i1");
+      fireEvent.pointerDown(card, { button: 0, pointerId: 1, clientX: 0, clientY: 0 });
+      fireEvent.pointerMove(card, { pointerId: 1, ...columnCentre("@phone") });
+      fireEvent.pointerCancel(card, { pointerId: 1, ...columnCentre("@phone") });
+      expect(onTriage).not.toHaveBeenCalled();
+      // And the column it was over does not stay lit.
+      const column = [...document.querySelectorAll<HTMLElement>("[data-hb-column]")].find(
+        (el) => el.getAttribute("aria-label") === "@phone",
+      )!;
+      expect(column.style.background).toBe("");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a press refused as a gesture still clears the swallow from the last one", () => {
+    const { onOpenItem, restore } = renderBoard(
+      taskState({
+        frontier: [
+          itemDTO({ id: "i1", title: "Nowhere yet", context: null }),
+          itemDTO({ id: "i2", title: "Already placed", context: "@phone" }),
+          itemDTO({ id: "i3", title: "In flight", context: null, pending: true }),
+        ],
+      }),
+    );
+    try {
+      // A drag arms the swallow...
+      dragTo(cardFor("i1"), "@phone");
+      // ...and the next press is one the board refuses to carry (this card's
+      // own write is in flight). It must still clear the flag, or the click
+      // it belongs to is eaten — which is how the mark-done checkmark ends
+      // up silently doing nothing on its first press after any drag.
+      const pendingCard = cardFor("i3");
+      fireEvent.pointerDown(pendingCard, { button: 0, pointerId: 2, clientX: 0, clientY: 0 });
+      fireEvent.pointerUp(pendingCard, { pointerId: 2, clientX: 0, clientY: 0 });
+      fireEvent.click(pendingCard);
+      expect(onOpenItem).toHaveBeenCalledWith("i3");
+    } finally {
+      restore();
+    }
+  });
+
+  it("puts the previous gesture down before starting another on the same card", () => {
+    const { onTriage, restore } = renderBoard(boardState());
+    try {
+      const card = cardFor("i1");
+      dragTo(card, "@phone");
+      expect(onTriage).toHaveBeenCalledTimes(1);
+      // The first gesture is still holding the card at its slot. A second
+      // press on it must abort that hold rather than leaving two gestures
+      // writing one element — and the abort itself must not write.
+      fireEvent.pointerDown(card, { button: 0, pointerId: 2, clientX: 0, clientY: 0 });
+      expect(onTriage).toHaveBeenCalledTimes(1);
+      expect(card.style.transform).toBe("");
+      expect(card.style.zIndex).toBe("");
+    } finally {
+      restore();
+    }
+  });
+
+  it("stops its animation loop when the board unmounts under a live gesture", () => {
+    // The one case that needs the engine actually running, so the reduced
+    // -motion stub every other case leans on is off here.
+    const frames: number[] = [];
+    const realRaf = window.requestAnimationFrame;
+    const realCancel = window.cancelAnimationFrame;
+    const cancelled: number[] = [];
+    let nextHandle = 1;
+    window.requestAnimationFrame = ((_cb: FrameRequestCallback) => {
+      // Never fires: this test is about the canceller, not the physics.
+      const handle = nextHandle++;
+      frames.push(handle);
+      return handle;
+    }) as typeof window.requestAnimationFrame;
+    window.cancelAnimationFrame = ((handle: number) => {
+      cancelled.push(handle);
+    }) as typeof window.cancelAnimationFrame;
+
+    const { onTriage, restore } = renderBoard(boardState(), [], { reducedMotion: false });
+    try {
+      const card = cardFor("i1");
+      fireEvent.pointerDown(card, { button: 0, pointerId: 1, clientX: 0, clientY: 0 });
+      fireEvent.pointerMove(card, { pointerId: 1, ...columnCentre("@phone") });
+      expect(frames.length).toBeGreaterThan(0);
+
+      // Navigating away with the pointer still down: no `pointerup` ever
+      // reaches the card, so nothing but the unmount can end this. Left
+      // alone the loop runs for the life of the tab, writing transforms on
+      // a detached node.
+      cleanup();
+
+      expect(cancelled).toContain(frames[frames.length - 1]);
+      expect(onTriage).not.toHaveBeenCalled();
+    } finally {
+      window.requestAnimationFrame = realRaf;
+      window.cancelAnimationFrame = realCancel;
+      restore();
+    }
+  });
+
+  it("keeps holding the card until the render that actually moves it", () => {
+    // The write is asynchronous, and renders arrive for reasons that have
+    // nothing to do with it — a sync tick, a queue-depth broadcast. If the
+    // hold were consumed by "a render happened", the FLIP would animate an
+    // unmoved card and the real move would arrive as a teleport.
+    const { onTriage, restore, rerender } = renderBoard(boardState());
+    try {
+      const card = cardFor("i1");
+      dragTo(card, "@phone");
+      expect(onTriage).toHaveBeenCalledTimes(1);
+      const held = card.style.transform;
+      expect(held).not.toBe("");
+
+      // A render with the board unchanged: the write has not come back yet.
+      rerender();
+      expect(cardFor("i1").style.transform).toBe(held);
+
+      // And the render that carries it lets the card go. `none` rather
+      // than `""` because a card that changes column is reconciled under a
+      // new parent: React mounts a fresh node wearing `Card`'s own resting
+      // transform, and the hold is gone with the old one.
+      rerender(
+        taskState({
+          frontier: [
+            itemDTO({ id: "i1", title: "Nowhere yet", context: "@phone" }),
+            itemDTO({ id: "i2", title: "Already placed", context: "@phone" }),
+          ],
+        }),
+      );
+      expect(cardFor("i1").style.transform).not.toBe(held);
     } finally {
       restore();
     }

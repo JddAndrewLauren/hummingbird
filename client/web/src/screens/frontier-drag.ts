@@ -267,15 +267,28 @@ const HEADER_BAND = 56;
  * worker applies it, and the re-read arrives some renders later — so the
  * gesture cannot FLIP synchronously the way the prototype could. It holds
  * the card where the hand left it and hands the board this record instead;
- * `settleLanding` finishes the motion on the next render. */
+ * `settleLanding` finishes the motion once the board has actually moved it.
+ *
+ * `offset` is the transform the card is being held BY, which is what makes
+ * "has the board moved it yet" answerable without disturbing the hold: the
+ * card's own layout box is its drawn box minus this. Without it the board
+ * could only ask "has a render happened", and the answer is yes long before
+ * the write lands — a sync tick, a queue-depth broadcast, a hover — so the
+ * FLIP would consume itself against an unmoved card every time and the card
+ * would teleport when the real move arrived. */
 export interface Landing {
   itemId: string;
   fromRect: DOMRect;
+  offset: Point;
 }
 
 export interface DragHost {
-  /** Would the column keyed `key` accept this card? It lights if so. */
-  allows(key: string): boolean;
+  /** Every column this card could land in, resolved ONCE when the gesture
+   * arms. A predicate asked per frame is what the mobile seam's
+   * `droppable_columns` exists to avoid, and this file's own rule 1 says
+   * the same thing about wasm crossings — `dropEdits` is one, plus two
+   * `JSON.stringify`s over the whole project list. */
+  allowed(): ReadonlySet<string>;
   /** Commit a drop into `key`. */
   drop(key: string): void;
   /** The scroll container to auto-scroll near the edges of, and to correct
@@ -288,6 +301,13 @@ export interface DragHost {
   onLand(landing: Landing): void;
 }
 
+/** A gesture in flight, so whatever outlives it can put it down: the board
+ * on unmount, and a second `beginDrag` on the same card before the first
+ * has finished settling. `abort` is idempotent and never writes. */
+export interface LiveDrag {
+  abort(): void;
+}
+
 /** Carry one card. Called from the card's own `pointerdown`; everything
  * after that is listeners on the card itself, so the gesture survives the
  * pointer leaving the board. A gesture owns itself and reports through
@@ -297,7 +317,7 @@ export function beginDrag(
   itemId: string,
   event: PointerEvent,
   host: DragHost,
-): void {
+): LiveDrag {
   const gentle = reducedMotion();
   const touch = event.pointerType === "touch";
   const frozen = freeze();
@@ -311,8 +331,10 @@ export function beginDrag(
   let pointer: Point = { ...origin };
   let armed = false;
   let flying = false;
+  let done = false;
   let lit: string | null = null;
   let landing: FrozenPart | null = null;
+  let allowed: ReadonlySet<string> = new Set();
   let cancelLoop: (() => void) | null = null;
   let holdTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -333,7 +355,7 @@ export function beginDrag(
 
   const target = (): FrozenPart | null => {
     const part = hitPart(frozen, frozenPointer());
-    return part && host.allows(part.key) ? part : null;
+    return part && allowed.has(part.key) ? part : null;
   };
 
   /** The slot a column would put the card in, as a translate offset from
@@ -345,8 +367,11 @@ export function beginDrag(
 
   const paintFrame = () => {
     // Tilt reads velocity, so the card leans into its own travel and rights
-    // itself as it settles. Capped so it never reads as spin.
-    const tilt = clamp(sx.v / 90, -8, 8);
+    // itself as it settles. Capped so it never reads as spin — and dropped
+    // entirely once the card is flying to its slot, so the box `settle`
+    // measures is the card's own rather than a rotated element's
+    // axis-aligned bounding box.
+    const tilt = flying ? 0 : clamp(sx.v / 90, -8, 8);
     card.style.transform = `translate(${sx.x}px, ${sy.x}px) rotate(${tilt}deg)`;
   };
 
@@ -382,32 +407,48 @@ export function beginDrag(
    * that type for why this cannot finish the motion itself. */
   const settle = () => {
     light(null);
+    done = true;
     card.style.cursor = "";
     card.style.willChange = "";
     const key = landing?.key;
     landing = null;
     if (key === undefined) {
-      // Refused, or released over nothing: the card has already sprung back
-      // to where the layout puts it and nothing was written, so there is no
-      // render to wait for — hand it straight back.
+      // Refused, released over nothing, or taken away: the card has already
+      // sprung back to where the layout puts it and nothing was written, so
+      // there is no render to wait for — hand it straight back.
       Object.assign(card.style, DROPPED);
       return;
     }
-    host.onLand({ itemId, fromRect: card.getBoundingClientRect() });
+    host.onLand({
+      itemId,
+      fromRect: card.getBoundingClientRect(),
+      offset: { x: sx.x, y: sy.x },
+    });
     host.drop(key);
   };
 
-  function end() {
+  /** Stop listening, whatever else happens next. */
+  const unlisten = () => {
     card.removeEventListener("pointermove", move);
-    card.removeEventListener("pointerup", end);
-    card.removeEventListener("pointercancel", end);
+    card.removeEventListener("pointerup", release);
+    card.removeEventListener("pointercancel", cancelled);
     card.removeEventListener("touchmove", swallowTouch);
     if (holdTimer !== null) clearTimeout(holdTimer);
+    holdTimer = null;
+  };
+
+  /** The gesture is over. `commit` is false when it was taken away rather
+   * than finished — see `cancelled` and `abort` — and then the card springs
+   * home and writes nothing, whatever it happened to be over. */
+  function end(commit: boolean) {
+    if (done) return;
+    unlisten();
     if (!armed) {
+      done = true;
       Object.assign(card.style, DROPPED);
       return;
     }
-    landing = target();
+    landing = commit ? target() : null;
     if (gentle) {
       cancelLoop?.();
       settle();
@@ -422,15 +463,30 @@ export function beginDrag(
       sx.target = sx.x + slot.x;
       sy.target = sy.x + slot.y;
     } else {
-      // Refused, or released over nothing: the card springs home.
+      // Refused, released over nothing, or taken away: the card springs home.
       sx.target = 0;
       sy.target = 0;
     }
   }
 
+  function release() {
+    end(true);
+  }
+
+  /** `pointercancel` is the gesture being TAKEN AWAY — palm rejection, a
+   * system gesture, the notification shade, the browser deciding the touch
+   * was a scroll after all. It is not a release, and it must not write: a
+   * board with no undo must never record a move the hand did not finish. */
+  function cancelled() {
+    end(false);
+  }
+
   function arm() {
-    if (armed) return;
+    if (armed || done) return;
     armed = true;
+    // Once, here: see `DragHost.allowed`. Every later frame hit-tests
+    // against this set rather than re-asking the core.
+    allowed = host.allowed();
     host.onArm();
     Object.assign(card.style, CARRIED);
     // jsdom has no pointer capture, and a browser that has lost the pointer
@@ -459,7 +515,7 @@ export function beginDrag(
       // A finger that moves before the hold is over is scrolling, not
       // dragging, and the gesture gets out of its way for good.
       if (touch) {
-        end();
+        end(false);
         return;
       }
       arm();
@@ -474,31 +530,78 @@ export function beginDrag(
   }
 
   card.addEventListener("pointermove", move);
-  card.addEventListener("pointerup", end);
-  card.addEventListener("pointercancel", end);
+  card.addEventListener("pointerup", release);
+  card.addEventListener("pointercancel", cancelled);
   if (touch) holdTimer = setTimeout(arm, HOLD_MS);
+
+  return {
+    abort: () => {
+      if (done) return;
+      done = true;
+      unlisten();
+      cancelLoop?.();
+      cancelLoop = null;
+      // Everything this gesture touched goes back: the tint it left on a
+      // column, and the card's own carried styling. Nothing is written —
+      // an aborted gesture is one the board took away, not one the hand
+      // finished.
+      light(null);
+      Object.assign(card.style, DROPPED);
+    },
+  };
 }
 
-/** Finish a `Landing`: the board has re-rendered, so the card is wherever
- * the new grouping put it — the target column after a write lands, its own
- * column after one fails. Either way the motion is the same, and it is a
- * plain FLIP: put the card back where the hand left it, then spring it to
- * where it now belongs.
+/** What a render can say about a held card. `waiting` means the board has
+ * not moved it yet and the hold must stand; `done` hands back a canceller
+ * for the motion that is now running (or `null` when there was none to
+ * run). */
+export type SettleResult =
+  | { status: "waiting" }
+  | { status: "done"; cancel: (() => void) | null };
+
+/** Finish a `Landing` if the board has moved the card, and say so if it has
+ * not.
  *
- * Returns a canceller, or `null` when there is nothing to animate. */
-export function settleLanding(landing: Landing): (() => void) | null {
+ * The write is asynchronous, and renders arrive for reasons that have
+ * nothing to do with it — a sync tick, a queue-depth broadcast, a hover. So
+ * "a render happened" is not the question; "is this card laid out somewhere
+ * new" is, and `Landing.offset` is what makes it answerable while the card
+ * is still being held: the card's own layout box is its drawn box minus the
+ * transform holding it there.
+ *
+ * When it has moved, the motion is a plain FLIP — put the card back where
+ * the hand left it, then spring it to where it now belongs. That covers the
+ * failed write too, where "where it now belongs" is the column it started
+ * in, so a refusal and a success are one code path.
+ *
+ * The canceller resets the element rather than merely stopping the loop: a
+ * cancelled FLIP that left its `transform` in place would strand the card
+ * visibly offset, and React never rewrites an inline style it did not set.
+ *
+ * `force` ends the wait instead of answering it, and always hands the card
+ * back: an unmoved card simply lands where it already is. */
+export function settleLanding(landing: Landing, force = false): SettleResult {
   const el = cardElement(landing.itemId);
-  if (!el) return null;
+  if (!el) return { status: "done", cancel: null };
+
+  // Still laid out where it was picked up from: this render is not the one
+  // carrying the write, and the hold must stand — unless the caller is
+  // ending the wait rather than answering it (the fallback timer, a second
+  // press, an unmount), in which case the card is put down where it is.
+  if (!force && !laidOutElsewhere(el, landing)) return { status: "waiting" };
+
   Object.assign(el.style, DROPPED);
   const to = el.getBoundingClientRect();
   const dx = landing.fromRect.left - to.left;
   const dy = landing.fromRect.top - to.top;
-  if (reducedMotion() || (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5)) return null;
+  if (reducedMotion() || (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5)) {
+    return { status: "done", cancel: null };
+  }
 
   const fx = new Spring(dx);
   const fy = new Spring(dy);
   el.style.transition = "none";
-  return loop((dt) => {
+  const stop = loop((dt) => {
     fx.step(dt);
     fy.step(dt);
     el.style.transform = `translate(${fx.x}px, ${fy.x}px)`;
@@ -509,4 +612,32 @@ export function settleLanding(landing: Landing): (() => void) | null {
     }
     return true;
   });
+  return {
+    status: "done",
+    cancel: () => {
+      stop();
+      el.style.transform = "";
+      el.style.transition = "";
+    },
+  };
+}
+
+/** Whether the board has laid the held card out somewhere other than where
+ * it was picked up from — the question that decides whether a render is the
+ * one carrying the write.
+ *
+ * The subtlety is that **the element may not be the one that was carried**.
+ * A card that changes column is reconciled under a different parent, so
+ * React unmounts the held node and mounts a fresh one with no transform on
+ * it, while a card the board has not moved keeps the very node the gesture
+ * was writing. Both cases have to answer correctly, so the hold is
+ * subtracted only when the element is still wearing it. */
+function laidOutElsewhere(el: HTMLElement, landing: Landing): boolean {
+  const drawn = el.getBoundingClientRect();
+  const carried = el.style.transform !== "" && el.style.transform !== "none";
+  const layoutLeft = carried ? drawn.left - landing.offset.x : drawn.left;
+  const layoutTop = carried ? drawn.top - landing.offset.y : drawn.top;
+  const homeLeft = landing.fromRect.left - landing.offset.x;
+  const homeTop = landing.fromRect.top - landing.offset.y;
+  return Math.abs(layoutLeft - homeLeft) >= 0.5 || Math.abs(layoutTop - homeTop) >= 0.5;
 }

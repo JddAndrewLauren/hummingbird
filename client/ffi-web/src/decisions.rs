@@ -449,17 +449,20 @@ pub fn frontier_drop_edits_json(
     let Some(axis) = FrontierAxis::parse(axis) else {
         return "null".to_string();
     };
-    let item: FrontierItemDTO = match serde_json::from_str(item_json) {
-        Ok(item) => item,
-        Err(error) => return serde_json::json!({ "error": error.to_string() }).to_string(),
+    // Every degradation on this door answers `null`, never the
+    // `{"error": …}` object the read doors answer with. The caller casts
+    // this result straight to `TriageEdits | null`, so an object would be
+    // *truthy* — every column would light, and a drop would send a patch
+    // with no fields the worker knows. "Writes nothing" is the only safe
+    // answer a write door can degrade to.
+    let Ok(item) = serde_json::from_str::<FrontierItemDTO>(item_json) else {
+        return "null".to_string();
     };
-    let target: Option<String> = match serde_json::from_str(target_json) {
-        Ok(target) => target,
-        Err(error) => return serde_json::json!({ "error": error.to_string() }).to_string(),
+    let Ok(target) = serde_json::from_str::<Option<String>>(target_json) else {
+        return "null".to_string();
     };
-    let projects: Vec<ProjectDefaultDTO> = match serde_json::from_str(projects_json) {
-        Ok(projects) => projects,
-        Err(error) => return serde_json::json!({ "error": error.to_string() }).to_string(),
+    let Ok(projects) = serde_json::from_str::<Vec<ProjectDefaultDTO>>(projects_json) else {
+        return "null".to_string();
     };
     let defaults: Vec<ProjectDefault> = projects
         .into_iter()
@@ -2302,6 +2305,21 @@ mod tests {
             frontier_drop_edits_json(&item, "colour", "\"red\"", "[]", "2026-08-13T12:00"),
             "null",
         );
+
+        // A write door degrades to "writes nothing", never to an object:
+        // the seam casts the answer to `TriageEdits | null`, and a truthy
+        // `{"error": …}` would light every column and then send a patch
+        // carrying no field the worker knows.
+        for (item_json, target, projects) in [
+            ("not json", "\"@desk\"", "[]"),
+            (item.as_str(), "not json", "[]"),
+            (item.as_str(), "\"@desk\"", "not json"),
+        ] {
+            assert_eq!(
+                frontier_drop_edits_json(item_json, "context", target, projects, "2026-08-13T12:00"),
+                "null",
+            );
+        }
     }
 
     /// The share door's JSON keys are `seam.ts`'s contract (#782): camelCase
