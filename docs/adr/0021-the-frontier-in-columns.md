@@ -25,6 +25,14 @@ decision puts three existing columns on screen as controls. `Core::frontier`
 and `Core::blocked` are untouched, and no mutation entry point is added — the
 whole of #399 is a read-time presentation change over the same queries.
 
+*Amended 2026-09-08 (#801): **the board writes now.** A card is dragged into a
+column and takes that column's value — decision 9 below, which is the one part
+of this ADR that is not a read. Still no schema change and no new mutation
+entry point: a drop calls the `triage` write the item panel and the Triage
+screen already call, with the fields the core decides. What moves is that the
+columns are no longer only a way of reading the frontier; they are also the
+control that sets the field they group by.*
+
 ## Where this decision came from
 
 The answer was not reasoned to; it was **tried**. A throwaway prototype — once
@@ -576,6 +584,142 @@ reachable only at `?demo=kit`, unchanged from the amendment above. What #457
 actually added was `RoutesScreen.test.tsx` and `AlertsScreen.test.tsx`,
 closing the component-test gap the board-world flip left open
 (`docs/SURFACES.md`).*
+
+## Decision 9 — a card dropped into a column takes that column's value
+
+*Added 2026-09-08 (#801). This is the decision the rest of the ADR is not: the
+board's first write.*
+
+Dragging a card from one column to another **sets the field the board is
+grouped by**, to the value of the column it lands in. One gesture, one field,
+on every axis:
+
+| Axis | A drop into a column writes | Into the no-value column |
+| --- | --- | --- |
+| Context | `items.context` = the column | clears it |
+| Project | `items.project_id` = the column | clears it |
+| Size | `items.size` = the column | clears it |
+| Energy | `items.energy` = the column | clears it |
+| Urgency | `items.deadline`, per band — see below | *(no such column; urgency is total)* |
+
+A card released over its **own** column writes nothing — the same-column test
+is the grouping's own reader, so "already there" cannot drift from where the
+board actually drew the card. Captures (`triage` and `grilling` cards, which
+share these columns since decision 1's amendment) drag exactly like actions,
+and the write's `destination` is always `null`: a drag edits a field and never
+promotes a capture into `ready`.
+
+**The one exception to "one field": a drop into a project column also copies
+that project's `default_context` onto an item that names no context** —
+[ADR-0030](0030-the-project-lane.md) decision 3's rule, reached from the board
+rather than from `/to-actions`. An item that already names a context keeps it;
+the reader's own answer outranks the project's default.
+
+### Urgency writes a deadline, because it groups by a reading of one
+
+The other four axes group by a field and set that field. `urgency` groups by a
+*reading of* `items.deadline` against the clock, so a drop there has to invent
+a deadline that reads back as the band it landed in:
+
+- **`now` → today.** A day-grained deadline resolves to `23:59`, so today is
+  inside the 24-hour `now` window from any moment of the day.
+- **`soon` → today + 2 civil days.** *Not* today + 1: by the same end-of-day
+  resolution, tomorrow is under 24 hours away for anything after midnight and
+  would read back as `now` for most of the day. +2 is the smallest shift that
+  reads `soon` at every hour.
+- **`calm` → the deadline is cleared.** Every deadline-less item is calm, and
+  clearing is the only edit that reads `calm` for certain — a distant deadline
+  would too, but the board must not invent one.
+- **`overdue` → refused.** It is the one band that is a fact about the *past*,
+  and there is no reason to let a reader manufacture one.
+
+Refusal is **physical, not chromatic**: the `overdue` column simply never
+lights, and a card released over it springs home. Nothing is painted red —
+decision 2 keeps status colour on this board meaning urgency, and a second
+meaning for it would cost more than the refusal is worth.
+
+### Where the rule lives
+
+**In the core** (`hummingbird_core::decisions::frontier::drop_edits`), reached
+through both seams — [ADR-0025](0025-the-decisions-carve-out.md). It is the
+inverse of `group_frontier` and belongs beside it: same axis vocabulary, same
+blank-folding, same urgency arithmetic, and the same-column test *is*
+`group_frontier`'s own `axis_value`. A round-trip gate applies a drop's edits
+and re-groups the item, on every axis and every column the board can draw; a
+rule stated twice would pass every other test and still put the card back
+where it came from.
+
+What stays per client is the **gesture** — the physics, the hit-testing and
+the edge auto-scroll all consume measured boxes, which is `frontier-lanes`'s
+own argument for staying TS.
+
+### The gesture: a weighted spring drag on pointer events
+
+The card is not attached to the pointer; it is attached to the pointer **by a
+spring**. It lags, it tilts into its own travel, it overshoots and settles.
+The **whole column** is the target and tints (`--surface-quiet` fill,
+`--border-strong` outline — the highlight is on the column, never on the card,
+decision 2 again). The card is released *over* its target.
+
+That shape was **tried, not reasoned to** — the same method decision 1 and
+[the "Where this decision came from" section](#where-this-decision-came-from)
+record for the board itself. A second throwaway prototype
+(`client/web/src/screens/now-prototype/`, again deleted once this ADR carried
+its verdict) mounted four affordances inside the real Now screen behind
+`?demo&variant=`, and the operator flipped between them. **The four rejected
+shapes, which are the expensive part of what was learned:**
+
+- **Native HTML5 drag-and-drop.** The cheap baseline, and what this issue's
+  own plan assumed before the prototype ran. It gives the ghost image, the
+  drop cursor and edge auto-scroll for free — and it **does not fire for a
+  finger at all**. Rejected on touch alone; everything it gave away had to be
+  rebuilt by hand.
+- **A pointer drag whose target is the column's header strip, previewing the
+  landing with an opening slot.** Two disagreements with the winner, both
+  rejected: a header-strip target is a small target for a gesture whose whole
+  point is that a column is a place, and the opening slot promises a *position*
+  the board does not honour — `orderFrontier` decides where the card actually
+  lands, so the preview would be a lie about everything but the column.
+- **Pick, then place** — a key or a long press picks the card up, every column
+  that would accept it grows a `Move here` button. The only variant native to
+  every input the product has, and the only one a screen reader gets for free.
+  Rejected as the *primary* affordance because it is two decisions where the
+  reader has one intention; its accessibility argument is answered instead by
+  leaving the item panel exactly where it is (below).
+- **The same spring, thrown.** Release with speed and the card flies,
+  decelerates under friction, and lands in whichever column its *projected*
+  resting point falls in. Rejected: the aim is taken before the flight starts,
+  so the reader is committing to a column they are not yet pointing at. The
+  magnetic variant — columns pulling the card off the cursor — was rejected
+  with it, and for the same reason.
+
+So the winner keeps the **weight** and drops the **ballistics**.
+
+### What the gesture must not cost
+
+- **Touch scrolling.** The prototype set `touch-action: none` on every card,
+  which would trade the board's own scrolling for the gesture. A finger
+  therefore **arms on a 350ms hold**; movement before that scrolls the board
+  as it always did, and only once armed does the gesture swallow `touchmove`.
+  A mouse or pen arms on 5px of travel, as it always would.
+- **The item panel.** A drag never opens it — the click a gesture ends with is
+  swallowed — which is decision 7's "selecting a card is not a takeover" seen
+  from the other side. A **keyboard reader keeps the panel and gets no
+  gesture**: the panel already edits every one of these fields, so the drag is
+  a faster path to an existing write rather than the only path to it.
+- **The board's layout.** The column rects are frozen at gesture start and
+  hit-tested against that snapshot, for the same reason decision 4 freezes the
+  lanes' resting room: anything that reflowed mid-drag would move the target
+  out from under the pointer. The one thing that legitimately moves is the
+  scroll container, and the gesture corrects for exactly that.
+
+### The tablet, and not the phone
+
+The gesture ports to Android's **wide-window** lane board and to nothing else.
+The phone stacks the columns down one list, where a drag between them would be
+a scroll through the board rather than a movement across it — there is no
+second column on screen to aim at. The phone keeps the item detail panel,
+which is where it already edits these fields.
 
 ## Consequences
 
