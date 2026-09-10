@@ -107,6 +107,32 @@ class ManifestAliasTest {
     /** The share seeds through the core's mapping (`parseSharePayload`,
      * ADR-0025) and nothing of Kotlin's own: no regex, no scanning the
      * text for `http`. */
+    /** The third alias, over MainActivity (the Wear capture design handoff,
+     * 2026-09-10): the watch's "Open on phone" fires `hummingbird://item/<id>`
+     * through `RemoteActivityHelper`, which requires VIEW + BROWSABLE. The
+     * scheme and host are `ItemLink`'s, once, in `:core-binding`. */
+    @Test
+    fun `the item link is a third alias, over MainActivity, VIEW on hummingbird item only`() {
+        val alias = alias(".ItemLink")
+        assertEquals(".MainActivity", alias.attr("targetActivity"))
+        assertEquals("true", alias.attr("exported"))
+        val filters = alias.children("intent-filter")
+        assertEquals("exactly one filter — one door", 1, filters.size)
+        val filter = filters.single()
+        assertEquals(listOf("android.intent.action.VIEW"), filter.children("action").map { it.attr("name") })
+        assertEquals(
+            setOf("android.intent.category.DEFAULT", "android.intent.category.BROWSABLE"),
+            filter.children("category").map { it.attr("name") }.toSet(),
+        )
+        val data = filter.children("data").single()
+        assertEquals(net.twinion.hummingbird.core.ItemLink.SCHEME, data.attr("scheme"))
+        assertEquals(net.twinion.hummingbird.core.ItemLink.HOST, data.attr("host"))
+        assertTrue(
+            "the item link must not be a launcher entry",
+            filter.children("category").none { it.attr("name") == "android.intent.category.LAUNCHER" },
+        )
+    }
+
     @Test
     fun `the share payload is parsed by the seam, never by Kotlin`() {
         val root = System.getProperty("hummingbird.repoRoot")!!

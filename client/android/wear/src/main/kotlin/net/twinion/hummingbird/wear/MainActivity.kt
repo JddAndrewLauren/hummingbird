@@ -25,33 +25,64 @@ import kotlinx.coroutines.launch
 import net.twinion.hummingbird.core.CoreHolder
 import net.twinion.hummingbird.core.SyncHistoryStore
 import net.twinion.hummingbird.wear.capture.CaptureActivity
+import net.twinion.hummingbird.wear.items.ItemsScreen
 import net.twinion.hummingbird.wear.questions.QuestionsScreen
 import net.twinion.hummingbird.wear.token.TokenPresence
 import net.twinion.hummingbird.wear.ui.theme.WearTheme
 import uniffi.hummingbird_ffi_mobile.MobileTaskHost
 import uniffi.hummingbird_ffi_mobile.isInformativeSyncOutcome
 
-// The watch's one activity (ADR-0039). Two routes — the home screen (the
-// capture button, the questions button, the one honest line) and the
-// standing-questions list — inside Wear's swipe-to-dismiss NavHost, under
+// The watch's one activity (ADR-0039). Three routes — the home screen (the
+// capture button, the items and questions buttons, the one honest line),
+// the items by urgency, and the standing-questions list — inside Wear's
+// swipe-to-dismiss NavHost, under
 // the foreground sync leg this root owns exactly as the phone's `AppRoot`
 // does: one deliberate cycle on every resume, then the 60-second cadence
 // tick while resumed (ADR-0007's foreground timer). Hoisted here so it runs
 // whichever route is showing, and so `syncTick` — this root's only hand-off
 // to the screens — bumps once per completed cycle for them to re-read the
 // mirror after each one.
+//
+// The capture tile's two glyph rounds land here with [EXTRA_ROUTE] naming
+// the list they want (`Routes.ITEMS`/`Routes.QUESTIONS`): the graph still
+// starts at home, so a swipe from either list dismisses onto it rather
+// than out of the app, and the extra is consumed once — a rotation must not
+// re-navigate.
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { WearTheme { WearAppRoot() } }
+        val requested = intent?.getStringExtra(EXTRA_ROUTE)?.takeIf { it in Routes.TILE_TARGETS }
+        setContent { WearTheme { WearAppRoot(initialRoute = requested) } }
+    }
+
+    companion object {
+        /** The tile's ask: which list to open over home. Package-qualified,
+         * because the `LaunchAction` crosses a process boundary. */
+        const val EXTRA_ROUTE = "net.twinion.hummingbird.wear.extra.ROUTE"
     }
 }
 
+/** The three routes, as `SwipeDismissableNavHost` takes them. */
+internal object Routes {
+    const val HOME = "home"
+    const val ITEMS = "items"
+    const val QUESTIONS = "questions"
+
+    /** What a tile may ask for over home — never home itself, never a
+     * string the tile made up. */
+    val TILE_TARGETS: Set<String> = setOf(ITEMS, QUESTIONS)
+}
+
 @Composable
-private fun WearAppRoot() {
+private fun WearAppRoot(initialRoute: String?) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val navController = rememberSwipeDismissableNavController()
+    // The tile's route, once: `rememberSaveable` would replay it after a
+    // process death, which is the same re-navigation a rotation must not do.
+    LaunchedEffect(initialRoute) {
+        if (initialRoute != null) navController.navigate(initialRoute)
+    }
 
     var core by remember { mutableStateOf<MobileTaskHost?>(null) }
     var syncTick by remember { mutableIntStateOf(0) }
@@ -109,16 +140,20 @@ private fun WearAppRoot() {
     val nowMs = remember(syncTick) { System.currentTimeMillis() }
 
     AppScaffold {
-        SwipeDismissableNavHost(navController = navController, startDestination = "home") {
-            composable("home") {
+        SwipeDismissableNavHost(navController = navController, startDestination = Routes.HOME) {
+            composable(Routes.HOME) {
                 HomeScreen(
                     needsToken = !tokenPresent || credentialRefused,
                     syncAgeLine = syncAgeLine(lastInformativeSyncMs, nowMs),
                     onCapture = { context.startActivity(Intent(context, CaptureActivity::class.java)) },
-                    onQuestions = { navController.navigate("questions") },
+                    onItems = { navController.navigate(Routes.ITEMS) },
+                    onQuestions = { navController.navigate(Routes.QUESTIONS) },
                 )
             }
-            composable("questions") {
+            composable(Routes.ITEMS) {
+                ItemsScreen(syncTick = syncTick)
+            }
+            composable(Routes.QUESTIONS) {
                 QuestionsScreen(syncTick = syncTick)
             }
         }

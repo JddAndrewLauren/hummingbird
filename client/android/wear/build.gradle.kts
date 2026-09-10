@@ -118,6 +118,9 @@ dependencies {
     implementation(libs.wear.compose.navigation)
     // The system input chooser capture hands its one line to.
     implementation(libs.wear.input)
+    // "Open on phone" from an Items row: `RemoteActivityHelper` carries the
+    // item link (`ItemLink`, `:core-binding`) to the paired phone.
+    implementation(libs.wear.remote.interactions)
     implementation(libs.activity.compose)
     implementation(libs.lifecycle.runtime.compose)
     implementation(libs.androidx.core.ktx)

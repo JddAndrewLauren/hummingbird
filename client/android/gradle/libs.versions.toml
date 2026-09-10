@@ -63,6 +63,9 @@ wearInput = "1.2.0"
 wearTiles = "1.6.2"
 wearProtolayout = "1.4.2"
 playServicesWearable = "20.0.1"
+# `RemoteActivityHelper`: the watch's "Open on phone" (an item link the phone's
+# `.ItemLink` alias claims). Stable 1.2.0; nothing here needs the 1.3 alphas.
+wearRemoteInteractions = "1.2.0"
 # `CallbackToFutureAdapter`, the tile service's way to answer a
 # `ListenableFuture` without Guava. `tiles` already pulls it at runtime.
 concurrentFutures = "1.3.0"
@@ -124,6 +127,7 @@ wear-compose-navigation = { group = "androidx.wear.compose", name = "compose-nav
 # `RemoteInputIntentHelper` — the system input chooser the watch's capture
 # hands the title to (voice first, keyboard behind it).
 wear-input = { group = "androidx.wear", name = "wear-input", version.ref = "wearInput" }
+wear-remote-interactions = { group = "androidx.wear", name = "wear-remote-interactions", version.ref = "wearRemoteInteractions" }
 # The capture tile: `TileService` plus the ProtoLayout builders it renders.
 wear-tiles = { group = "androidx.wear.tiles", name = "tiles", version.ref = "wearTiles" }
 wear-protolayout = { group = "androidx.wear.protolayout", name = "protolayout", version.ref = "wearProtolayout" }

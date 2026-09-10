@@ -20,16 +20,17 @@ import androidx.wear.compose.material3.ScreenScaffold
 import androidx.wear.compose.material3.Text
 import net.twinion.hummingbird.brand.R
 
-// The watch's home (ADR-0039): one large ember button that captures, one
-// smaller tonal button that opens the standing questions, and beneath them
-// at most one line — either the token is missing or refused ("Send a token
+// The watch's home (ADR-0039): one large ember button that captures, two
+// smaller tonal buttons that open the items by urgency and the standing
+// questions (the tile's two glyph rounds, as words — the 2026-09-10 design
+// handoff), and beneath them at most one line — either the token is missing or refused ("Send a token
 // from the phone"), or the mirror is old enough to say so. The line is the
 // design README's honesty rule on a 1.2-inch display: when data is stale
 // the product says so and keeps showing it; when nothing needs saying, the
 // screen is the two buttons and nothing else.
 //
 // Ember is the one accent and the capture button is its one use here; the
-// questions button is tonal on purpose. `feather` is the brand's own verb
+// other two are tonal on purpose. `feather` is the brand's own verb
 // for capture (the design README's icon vocabulary).
 
 @Composable
@@ -37,6 +38,7 @@ internal fun HomeScreen(
     needsToken: Boolean,
     syncAgeLine: String?,
     onCapture: () -> Unit,
+    onItems: () -> Unit,
     onQuestions: () -> Unit,
 ) {
     ScreenScaffold { padding ->
@@ -57,8 +59,15 @@ internal fun HomeScreen(
                 label = { Text("Capture") },
             )
             FilledTonalButton(
+                onClick = onItems,
+                modifier = Modifier.fillMaxWidth(),
+                icon = { Icon(painterResource(R.drawable.ic_zap), contentDescription = null) },
+                label = { Text("Items") },
+            )
+            FilledTonalButton(
                 onClick = onQuestions,
                 modifier = Modifier.fillMaxWidth(),
+                icon = { Icon(painterResource(R.drawable.ic_help_circle), contentDescription = null) },
                 label = { Text("Questions") },
             )
             val line = if (needsToken) "Send a token from the phone" else syncAgeLine
