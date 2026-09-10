@@ -69,7 +69,12 @@ renders one engine's published state; the watch has an engine of its own).
    one such rule on Android, shared with the phone's third button) — and
    the confirmation names where it landed (`TRIAGE`, `READY`, `READY · DUE
    TODAY`). Still title-only otherwise; deciding is still mint-time work,
-   and the two extra facts are the tap's, not a form's.
+   and the two extra facts are the tap's, not a form's. **Voice is the
+   first door** (operator, 2026-09-10): the activity opens the system
+   speech recogniser already listening, and the input chooser — keyboard,
+   emoji, voice again — is the second, reached only when the recogniser
+   hands nothing back. Both are the OS's UI; Wear's chooser has no setting
+   that picks a method, so zero-taps-to-listening is a recogniser intent.
 
 4. **The questions list is the Now surface's `rank_panes`, rendered on Wear,
    in the order the core returns it.** The six Now questions, in salience

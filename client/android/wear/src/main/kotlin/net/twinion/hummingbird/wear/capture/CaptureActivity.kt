@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.RemoteInput
 import android.content.Intent
 import android.os.Bundle
+import android.speech.RecognizerIntent
 import android.view.inputmethod.EditorInfo
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -34,9 +35,15 @@ import net.twinion.hummingbird.wear.ui.theme.WearTheme
 import uniffi.hummingbird_ffi_mobile.CaptureDestination
 
 // Capture on the wrist (ADR-0039, redrawn by the 2026-09-10 design
-// handoff): this activity opens the system's own input chooser at once —
-// voice first, with the keyboard and the rest behind it — asks the core's
-// gate whether what came back is a title, draws `DestinationScreen` over it
+// handoff): this activity opens the system's own speech recogniser at once
+// — already listening, zero taps — and, if that hands nothing back (a
+// cancel, no recogniser, silence), the system input chooser as the second
+// door, keyboard and emoji included. Neither UI is ours: Wear's own input
+// chooser has no extra that picks a method or skips itself
+// (`RemoteInputIntentHelper` offers labels and smart-reply context, nothing
+// more), so "voice first" is a recogniser intent, not a chooser setting.
+// Whatever comes back, it asks the core's gate whether the text is a
+// title, draws `DestinationScreen` over it
 // (the web capture box's three squares: Triage, Mint action, Mint for
 // today), hands the tapped destination to `CaptureViewModel.submit`, shows a
 // confirmation naming where it landed for about a second and a half, and
@@ -73,18 +80,26 @@ private fun CaptureFlow(onDone: () -> Unit) {
     var pendingText by remember { mutableStateOf<String?>(null) }
     var outcome by remember { mutableStateOf<CaptureOutcome?>(null) }
 
+    // The core's gate, before any choice is offered: a line it would refuse
+    // gets its refusal now, not after a tap that could not matter.
+    fun arrived(text: String) {
+        if (viewModel.canSubmit(text)) pendingText = text else outcome = CaptureOutcome.Refused
+    }
     val chooser = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val text = result.data?.let { spokenText(it) }
-        when {
-            result.resultCode != Activity.RESULT_OK || text == null -> onDone()
-            // The core's gate, before any choice is offered: a line it would
-            // refuse gets its refusal now, not after a tap that could not
-            // matter.
-            !viewModel.canSubmit(text) -> outcome = CaptureOutcome.Refused
-            else -> pendingText = text
-        }
+        if (result.resultCode != Activity.RESULT_OK || text == null) onDone() else arrived(text)
     }
-    LaunchedEffect(Unit) { chooser.launch(captureInputIntent()) }
+    val recogniser = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val text = result.data?.let { recognisedText(it) }
+        // Nothing heard is not "nothing to say": the chooser is the second
+        // door, and only its cancel finishes silently.
+        if (result.resultCode != Activity.RESULT_OK || text == null) chooser.launch(captureInputIntent()) else arrived(text)
+    }
+    LaunchedEffect(Unit) {
+        val context = context
+        val intent = speechIntent()
+        if (intent.resolveActivity(context.packageManager) != null) recogniser.launch(intent) else chooser.launch(captureInputIntent())
+    }
 
     fun land(destination: CaptureDestination, deadline: String) {
         val text = pendingText ?: return
@@ -141,6 +156,19 @@ private fun CaptureFlow(onDone: () -> Unit) {
  * enough to read two short lines, short enough that the wrist is free
  * again (the handoff's "~1.6s then finish"). */
 private const val CONFIRMATION_MS = 1_600L
+
+/** The first door: the system speech recogniser, free-form, one result,
+ * already listening when it appears. */
+internal fun speechIntent(): Intent =
+    Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+        .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+        .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        .putExtra(RecognizerIntent.EXTRA_PROMPT, "Capture")
+
+/** The recogniser's answer, or `null` when it carried none. Passed on as
+ * given — whether it is a title is the core's call. */
+internal fun recognisedText(data: Intent): String? =
+    data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
 
 /** The one `RemoteInput` result key. */
 internal const val KEY_TEXT = "net.twinion.hummingbird.wear.capture.TEXT"

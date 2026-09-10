@@ -172,7 +172,9 @@ keyboard path (unchanged from the first pass), and **"Open on phone"** —
 `RemoteActivityHelper` needs a paired phone.
 
 **Proving the lane on hardware — the watch.** *Owed by the first device
-pass:* the phone reports `Sent to Pixel Watch.`, the home line clears, a
+pass:* the phone reports `Sent to Pixel Watch.`, the home line clears, the
+capture button opens the recogniser already listening (and a cancelled
+recogniser falls back to the chooser), a
 dictated line reaches the destination screen and lands where it was sent
 (Triage; Ready; Ready with today's date) on the phone within a minute, the
 Items list matches the phone's frontier on the urgency axis and **"Open on
