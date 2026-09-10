@@ -78,6 +78,40 @@ val generateUniffiBindings = tasks.register<Exec>("generateUniffiBindings") {
     )
 }
 
+// ---------------------------------------------------------------------------
+// The build version (see `defaultConfig` for the scheme). `git` is run at
+// configure time, twice, against the repo root two levels up; a non-zero
+// exit or a shallow clone yields the fallback rather than a truncated count.
+// ---------------------------------------------------------------------------
+fun git(vararg args: String): String? =
+    runCatching {
+        val proc = ProcessBuilder("git", *args)
+            .directory(rootProject.projectDir)
+            .redirectErrorStream(true)
+            .start()
+        val out = proc.inputStream.bufferedReader().readText().trim()
+        if (proc.waitFor() == 0) out else null
+    }.getOrNull()
+
+val gitIsShallow: Boolean = git("rev-parse", "--is-shallow-repository") != "false"
+
+fun buildVersionCode(): Int =
+    if (gitIsShallow) 1 else git("rev-list", "--count", "HEAD")?.toIntOrNull() ?: 1
+
+fun buildVersionName(): String {
+    val versionFile = rootProject.projectDir.parentFile.parentFile.resolve("VERSION")
+    val base = Regex("""^\s*(\d+)\.(\d+)\.(\d+)\s*$""")
+        .find(runCatching { versionFile.readText() }.getOrDefault(""))
+        ?: return "0.0.0+unknown"
+    val (major, minor, patch) = base.destructured
+    if (gitIsShallow) return "$major.$minor.$patch+unknown"
+    val touched = git("log", "-1", "--format=%H", "--", versionFile.absolutePath)
+        ?.takeIf { it.isNotEmpty() } ?: return "$major.$minor.$patch+unknown"
+    val since = git("rev-list", "--count", "$touched..HEAD")?.toIntOrNull()
+        ?: return "$major.$minor.$patch+unknown"
+    return "$major.$minor.${patch.toInt() + since}"
+}
+
 android {
     namespace = "net.twinion.hummingbird"
     compileSdk = 36
@@ -88,8 +122,17 @@ android {
         // (grilling 2026-08-14 on #141); nothing older is ever sideloaded.
         minSdk = 35
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0-m0"
+        // The build version, on the web's scheme (`client/web/src/shell/
+        // build-version.ts`): `VERSION` at the repo root plus the commits
+        // since it was last touched, as the patch. `versionCode` is the
+        // total commit count, so it only ever climbs -- Android refuses a
+        // downgrade, and a stable, climbing code is what lets the phone
+        // install a new APK over the old one in place (`deploy.sh`). Both
+        // fall back when git cannot say (CI's checkout is shallow, and an
+        // export has no history at all): `1` and `+unknown`, never a number
+        // nobody wrote.
+        versionCode = buildVersionCode()
+        versionName = buildVersionName()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // The authority's origin (ADR-0008), host-supplied to the core at
@@ -155,6 +198,21 @@ kotlin {
 
 tasks.named("preBuild") {
     dependsOn(cargoNdkBuild, generateUniffiBindings)
+}
+
+// Without `keystore.properties` the release build type has no signing config
+// and AGP quietly emits an *unsigned* APK, which no phone will install and
+// which `deploy.sh` would then ship. Refuse at packaging time instead; the
+// debug lane (CI's whole lane) never reaches this task.
+tasks.matching { it.name == "packageRelease" }.configureEach {
+    doFirst {
+        if (!rootProject.file("keystore.properties").exists()) {
+            throw GradleException(
+                "client/android/keystore.properties is missing: a release APK would be unsigned. " +
+                    "Run client/android/deploy.sh, which writes it from 1Password for the build."
+            )
+        }
+    }
 }
 
 dependencies {

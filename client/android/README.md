@@ -27,11 +27,34 @@ an NDK (Studio's SDK manager, or `sdkmanager "ndk;<version>"`).
 
 ## Running it
 
-- Debug on the device/emulator: `./gradlew installDebug`.
-- Release: sideload-only, signed with the operator-local keystore
-  (`keystore.properties`, never committed, never in Actions — see
-  `app/build.gradle.kts`). There is no store channel and no CI-signed
-  release, deliberately.
+- **On the phone: `./deploy.sh`, then open the APK from the Dropbox app.**
+  The script signs a release build with the one release key (1Password
+  `hummingbird-android-keystore`, fetched for the length of the build and
+  deleted after; `keystore.properties` is written and removed the same way)
+  and copies it to `~/Dropbox/hummingbird/apk/` as
+  `hummingbird-<version>.apk` plus `hummingbird-latest.apk`. On the phone,
+  open the file in Dropbox and tap Install; the first time, Android asks to
+  let Dropbox install unknown apps, and Play Protect may ask to scan — allow
+  both. **Developer options can stay off**: nothing in this path needs USB
+  debugging. Each later APK installs over the previous one in place, token
+  and outbound queue intact, because the key never changes and
+  `versionCode` (the commit count, `app/build.gradle.kts`) only climbs.
+  **Deploy from `main`**: the version code is the commit count of the
+  checked-out HEAD, and a branch that forked before a few merges to `main`
+  counts lower than the APK already on the phone, which Android refuses as
+  a downgrade. There is no store channel and no CI-signed release,
+  deliberately — the key follows the ADMIN_SECRET handling rule, and
+  `android.yml`'s header says why CI stays debug-only.
+- **The key must never be rotated.** A different key means Android refuses
+  the update and the only way forward is an uninstall — which costs the
+  device token and anything in the outbound queue.
+- Debug on the device/emulator: `./gradlew installDebug`. **This conflicts
+  with the release install**: a debug key is not the release key, so
+  installing debug over release (or the reverse, the one-time migration to
+  this path) means uninstalling first and re-pasting the device token from
+  `hummingbird-device-pixel-fold` into Settings' DEVICE TOKEN card. The
+  emulator is the place for debug builds; `connectedDebugAndroidTest` has
+  the same cost (see "Proving the lane on hardware").
 - On device, the app asks once for a `device` token (minted by the
   operator against the authority); it rests in the Android Keystore.
 
