@@ -35,10 +35,13 @@ val cargoPath: String =
 
 // ---------------------------------------------------------------------------
 // Seam task 1: cross-compile hummingbird-ffi-mobile into jniLibs.
-// arm64-v8a is every device (Pixel 10 Pro Fold, Pixel Watch); x86_64 is the
-// phone emulator. Both are built here once; an application module that
-// wants fewer (`:wear`) narrows with `abiFilters` at packaging time rather
-// than with a second cargo task.
+// arm64-v8a is the phone (Pixel 10 Pro Fold); armeabi-v7a is the watch —
+// the Pixel Watch 4's userspace is 32-bit (`ro.product.cpu.abilist` is
+// `armeabi-v7a,armeabi`, found on the first hardware install, 2026-09-10,
+// when the arm64-only APK answered INSTALL_FAILED_NO_MATCHING_ABIS); x86_64
+// is the phone emulator. All three are built here once; an application
+// module that wants fewer narrows with `abiFilters` at packaging time
+// rather than with a second cargo task.
 // ---------------------------------------------------------------------------
 val cargoNdkBuild = tasks.register<Exec>("cargoNdkBuild") {
     group = "rust"
@@ -48,6 +51,7 @@ val cargoNdkBuild = tasks.register<Exec>("cargoNdkBuild") {
     commandLine(
         "cargo", "ndk",
         "-t", "arm64-v8a",
+        "-t", "armeabi-v7a",
         "-t", "x86_64",
         "-o", layout.projectDirectory.dir("src/main/jniLibs").asFile.absolutePath,
         "build", "--release", "-p", "hummingbird-ffi-mobile",

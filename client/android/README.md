@@ -16,7 +16,8 @@ both running cargo against the `client/` workspace one level up:
 
 - **`cargoNdkBuild`** — `cargo ndk` cross-compiles `hummingbird-ffi-mobile`
   into `core-binding/src/main/jniLibs/` (gitignored; arm64-v8a for the
-  device, x86_64 for the emulator).
+  phone, armeabi-v7a for the watch — the Pixel Watch 4's userspace is
+  32-bit — and x86_64 for the phone emulator).
 - **`generateUniffiBindings`** — builds the host cdylib and runs UniFFI in
   library mode: the Kotlin binding under `core-binding/build/generated/uniffi/`
   is derived from the exported surface in `client/ffi-mobile/src/lib.rs`,
@@ -48,7 +49,8 @@ and every screen stay in `:app`. The colour and type drift gates moved with
 their subjects and run as `:brand:testDebugUnitTest`.
 
 Prerequisites beyond Android Studio: `rustup target add
-aarch64-linux-android x86_64-linux-android`, `cargo install cargo-ndk`, and
+aarch64-linux-android armv7-linux-androideabi x86_64-linux-android`,
+`cargo install cargo-ndk`, and
 an NDK (Studio's SDK manager, or `sdkmanager "ndk;<version>"`).
 
 ## Running it
@@ -95,7 +97,7 @@ It shares two libraries with `:app` and nothing else:
 | `:core-binding` | The two cargo tasks, the UniFFI binding, `AUTHORITY_BASE_URL`, and the host core package (`CoreHolder`, `TokenStore`, `TokenValidation`, `TokenMessage`, `ZoneBridge`, `SyncHistoryStore`, `WallClock` — with `todayDeadline`, the one "Mint for today" date rule both clients read — `ItemLink`, the one spelling of `hummingbird://item/<id>`, the diagnostics recorder and journal, `SyncWorker` with its `onRunFinished` host hook). minSdk 34. |
 | `:brand` | `Color.kt`, `Font.kt` + `res/font/`, every Lucide `ic_*` drawable (`net.twinion.hummingbird.brand.R`), and the pane words: `PaneAnswers`, `PaneGlyph`, `PaneCollapse`, `PaneBand`, `NowPaneWords`. minSdk 34. |
 | `:app` | The phone — everything that draws or that only the phone does. minSdk 35. |
-| `:wear` | The watch — home, items by urgency, questions, capture with its destination screen, the data-bearing capture tile, the token listener. minSdk 34, arm64-v8a only. |
+| `:wear` | The watch — home, items by urgency, questions, capture with its destination screen, the data-bearing capture tile, the token listener. minSdk 34, armeabi-v7a (the Pixel Watch 4 is 32-bit) plus arm64-v8a. |
 
 **The Data Layer coupling.** The phone sends the watch its token over the
 Wearable `MessageClient` (Settings → Watch → "Send to watch"), and the Data
@@ -124,15 +126,28 @@ adb -s <watch-ip>:<port> install -r ~/Dropbox/hummingbird/apk/hummingbird-wear-l
 ```
 
 `versionCode` is the commit count, shared with the phone, so later installs
-go over the previous one in place with the token intact.
+go over the previous one in place with the token intact. Two traps from the
+first hardware pairing (2026-09-10): **the watch may be unreachable on the
+home Wi-Fi** even while the router lists it — neither the Mac nor the phone
+could resolve it, nor the Mac the phone; the phone's hotspot, with the Mac
+and the watch both joined to it, worked at once. And **platform-tools
+37.0.0's `adb pair` crashes the adb server** (`protocol fault (couldn't read
+status message)` on the client, an `abort()` in `adb_server_main` in the
+crash report) whatever the network; platform-tools 35.0.2, unzipped anywhere
+and run by path, paired first try, after which the watch appears under its
+mDNS name and every later `adb` command works from either version.
 
 **The compile rule is the same.** `android.yml` is the only mandated gate,
 and it runs `:wear:testDebugUnitTest` and `:wear:assembleDebug` (artifact
 `hummingbird-wear-debug-apk`). The Mac's Wear AVD (`Pixel_Watch`, Wear OS
-7.0, arm64) runs this APK as it is; a Wear emulator on an Intel host is
-x86_64 and this APK is arm64-only by decision — widening `abiFilters` behind
-a `-PwearEmulator` property is the documented route there and is deliberately
-not built until someone needs it.
+7.0, arm64) runs this APK as it is, and so does the Pixel Watch 4, whose
+userspace is **32-bit** (`ro.product.cpu.abilist` = `armeabi-v7a,armeabi`;
+the first hardware install, 2026-09-10, answered
+`INSTALL_FAILED_NO_MATCHING_ABIS` to the arm64-only APK this shipped as, and
+ADR-0039 decision 8 is amended). A Wear emulator on an Intel host is x86_64
+and is still filtered out — widening `abiFilters` behind a `-PwearEmulator`
+property is the documented route there and is deliberately not built until
+someone needs it.
 
 **Emulator pass (2026-09-10, debug APK on the `Pixel_Watch` AVD, API 37).**
 Installed and launched clean; `libhummingbird_ffi_mobile.so` loaded and the
@@ -170,6 +185,36 @@ then (they ship inline as PNG), and two layouts clipped on the round face.
 `tile_preview.png` is this pass's tile. Not exercisable here: voice, the
 keyboard path (unchanged from the first pass), and **"Open on phone"** —
 `RemoteActivityHelper` needs a paired phone.
+
+**Hardware pass (2026-09-10, Pixel Watch 4 — Wear OS 6 / API 37, 213dp
+face — release APK `0.3.41-284`, paired over the phone's hotspot with
+platform-tools 35.0.2; see the two traps above).** The arm64-only APK did not
+install (`INSTALL_FAILED_NO_MATCHING_ABIS`: the watch's userspace is 32-bit),
+so this pass began by adding armeabi-v7a — ADR-0039 decision 8 is amended.
+The 32-bit core loaded and home drew the three buttons. **Capture opened
+Gboard's recogniser already listening** (logcat `Microphone = listening`); a
+dictated line reached the destination screen and **Mint for today** put it on
+the authority as `ready` with deadline `2026-09-10` — *after* the token
+arrived, because the watch had none yet: the capture sat in the core's
+outbound queue, drawn in Items as `DUE TODAY`, and flushed on the first sync.
+Cancelling the recogniser fell back to the input chooser (emoji, voice,
+keyboard). The phone's Settings → Watch card reported `Sent to Pixel Watch.`;
+GMS woke the watch app, `SyncWorker` ran within the minute, and the mirror
+landed. **Items by urgency** drew the overdue frontier in the core's order
+(`OVERDUE · WED`, `@COMPUTER · SIZE: …`), a tap expanded the card with its
+description, and **"Open on phone" fired `hummingbird://item/<id>`** through
+`RemoteIntentSender` and **landed on the phone's item detail** (the VIEW
+intent resolved to the `.ItemLink` alias; the operator confirmed the
+screen). **The tile**, eleventh in the
+carousel, drew the arc (overdue in the alarm colour, then the soon segment)
+over `3 OVERDUE · 5 SOON` — exactly the authority's count for the same
+instant — with the feather disc opening the recogniser and the two rounds opening
+Items and Standing questions. **Questions** matched the phone's Now panes in
+order (operator comparison). **Found and fixed
+here:** the home's honesty line was clipped below the three buttons on this
+face (the AVD is larger); the column scrolls now, and with a fresh mirror
+the line is rightly absent. Not exercised tonight: `SYNCED nH AGO` (needs an
+hour-old mirror) and the keyboard path.
 
 **Proving the lane on hardware — the watch.** *Owed by the first device
 pass:* the phone reports `Sent to Pixel Watch.`, the home line clears, the

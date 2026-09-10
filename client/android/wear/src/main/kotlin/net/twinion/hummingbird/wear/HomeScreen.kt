@@ -1,6 +1,9 @@
 package net.twinion.hummingbird.wear
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -29,6 +32,13 @@ import net.twinion.hummingbird.brand.R
 // the product says so and keeps showing it; when nothing needs saying, the
 // screen is the two buttons and nothing else.
 //
+// The column scrolls: on the Pixel Watch 4 (213dp across, smaller than the
+// Wear AVD) the three buttons fill the face and the line sat clipped below
+// it, invisible, on the first hardware pass (2026-09-10). Centred when it
+// fits, reachable by a swipe when it does not — `verticalScroll` alone gives
+// the column an unbounded height and so no centre, hence the measured
+// `heightIn(min = viewport)` that restores it.
+//
 // Ember is the one accent and the capture button is its one use here; the
 // other two are tonal on purpose. `feather` is the brand's own verb
 // for capture (the design README's icon vocabulary).
@@ -42,14 +52,17 @@ internal fun HomeScreen(
     onQuestions: () -> Unit,
 ) {
     ScreenScaffold { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(padding)) {
+            val viewport = maxHeight
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .heightIn(min = viewport)
+                    .padding(horizontal = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
             Button(
                 onClick = onCapture,
                 modifier = Modifier
@@ -79,6 +92,7 @@ internal fun HomeScreen(
                     textAlign = TextAlign.Center,
                     modifier = Modifier.padding(top = 4.dp),
                 )
+            }
             }
         }
     }
