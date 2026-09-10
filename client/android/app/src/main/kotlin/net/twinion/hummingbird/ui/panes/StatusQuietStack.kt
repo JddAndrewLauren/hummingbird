@@ -40,7 +40,6 @@ import net.twinion.hummingbird.brand.R
 import net.twinion.hummingbird.ui.theme.DurBase
 import net.twinion.hummingbird.ui.theme.EaseFlit
 import net.twinion.hummingbird.ui.theme.reducedMotion
-import net.twinion.hummingbird.bandColor
 import net.twinion.hummingbird.ui.theme.AccentQuietBorderDark
 import net.twinion.hummingbird.ui.theme.Ember200
 import net.twinion.hummingbird.ui.theme.LocalHbDark
