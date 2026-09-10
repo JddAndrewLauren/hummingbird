@@ -128,6 +128,21 @@ class SyncWorker(context: Context, params: WorkerParameters) :
                 .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
                 .build()
 
+        /** A deliberate one-shot: the trigger a user gesture sends. Any
+         * non-`"timer"` string is `Trigger::User` to the core — not
+         * backoff-gated — and this is the one the watch's token listener
+         * and capture enqueue (ADR-0039). */
+        const val TRIGGER_USER = "user"
+
+        /** One ordinary (non-expedited) run with [trigger] as its input —
+         * the shape the watch enqueues after a token arrives or a capture
+         * lands (ADR-0039), where "soon" is right and the expedited quota
+         * is not worth spending. Schedules nothing itself: still one clock. */
+        fun oneShot(trigger: String): OneTimeWorkRequest =
+            OneTimeWorkRequestBuilder<SyncWorker>()
+                .setInputData(Data.Builder().putString(KEY_TRIGGER, trigger).build())
+                .build()
+
         /** [KEY_TRIGGER]'s raw string, resolved to #710's closed
          * `worker.started`/`worker.finished` vocabulary — any value other
          * than [TRIGGER_PUSH] reads as [MobileWorkerTrigger.TIMER], the

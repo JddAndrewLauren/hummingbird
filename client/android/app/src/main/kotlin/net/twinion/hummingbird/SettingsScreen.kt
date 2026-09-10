@@ -47,6 +47,7 @@ import kotlinx.coroutines.withContext
 import net.twinion.hummingbird.core.NetworkStatus
 import net.twinion.hummingbird.skills.BackendPreference
 import net.twinion.hummingbird.theme.ThemePreference
+import net.twinion.hummingbird.watch.SendOutcome
 import net.twinion.hummingbird.ui.theme.Amber600
 import net.twinion.hummingbird.ui.theme.LocalHbDark
 import net.twinion.hummingbird.ui.theme.Moss600
@@ -128,6 +129,7 @@ fun SettingsScreen(
     val bindingError by viewModel.bindingError.collectAsState()
     val calendars by viewModel.calendars.collectAsState()
     val calendarSelections by viewModel.calendarSelections.collectAsState()
+    val watchSend by viewModel.watchSend.collectAsState()
 
     suspend fun reload() = viewModel.load()
 
@@ -317,6 +319,22 @@ fun SettingsScreen(
                         )
                         OutlinedButton(onClick = onForgetToken) { Text("Forget token") }
                     }
+                }
+            }
+
+            SectionTitle("Watch")
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    WatchTokenEntry(
+                        outcome = watchSend,
+                        onSend = { raw -> scope.launch { viewModel.sendWatchToken(raw) } },
+                    )
                 }
             }
 
@@ -565,6 +583,56 @@ private fun TokenEntry(onSave: (String) -> Unit) {
             Text("Save token")
         }
     }
+}
+
+/** The Watch card (ADR-0039): the watch's own `device-watch` token, typed
+ * here once and sent over the Data Layer. The field is cleared on a
+ * successful send and the raw string is retained nowhere else — this
+ * composable's `remember` is the only place it lives on the phone. */
+@Composable
+private fun WatchTokenEntry(outcome: SendOutcome?, onSend: (String) -> Unit) {
+    var raw by remember { mutableStateOf("") }
+    LaunchedEffect(outcome) {
+        if (outcome is SendOutcome.Sent) raw = ""
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "Paste the watch's token. It is sent once to the paired watch " +
+                "over Bluetooth and kept there, not here.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedTextField(
+            value = raw,
+            onValueChange = { raw = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Watch token") },
+            singleLine = true,
+        )
+        val normalized = net.twinion.hummingbird.core.TokenValidation.normalize(raw)
+        Button(onClick = { normalized?.let(onSend) }, enabled = normalized != null) {
+            Text("Send to watch")
+        }
+        val line = watchSendLine(outcome)
+        if (line != null) {
+            Text(
+                line,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** The Watch card's one outcome line; `null` before the first send. Words
+ * are this client's (ADR-0025: transport reads stay per-client). */
+internal fun watchSendLine(outcome: SendOutcome?): String? = when (outcome) {
+    null -> null
+    SendOutcome.Empty -> "Nothing to send."
+    SendOutcome.NoWatch -> "No watch is connected — check Bluetooth and the Watch app."
+    is SendOutcome.Sent -> "Sent to ${outcome.nodeNames.joinToString()}."
+    is SendOutcome.Unavailable -> "Watch link unavailable on this phone."
+    is SendOutcome.Failed -> "Couldn't send: ${outcome.message}"
 }
 
 // -- rendering, and only rendering -------------------------------------

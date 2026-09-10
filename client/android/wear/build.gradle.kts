@@ -119,6 +119,8 @@ dependencies {
     implementation(libs.activity.compose)
     implementation(libs.lifecycle.runtime.compose)
     implementation(libs.androidx.core.ktx)
+    // The token hand-off's receiving end: `WearableListenerService`.
+    implementation(libs.play.services.wearable)
 
     debugImplementation(libs.compose.ui.tooling)
 

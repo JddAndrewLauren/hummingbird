@@ -143,6 +143,12 @@ dependencies {
     // is a fact the user already decided.
     implementation(libs.okhttp)
 
+    // ADR-0039: the watch's token hand-off. Settings' Watch card sends the
+    // `device-watch` token over the Wearable Data Layer (`WatchTokenSender`);
+    // `Task.await()` is the coroutines bridge for those calls.
+    implementation(libs.play.services.wearable)
+    implementation(libs.coroutines.play.services)
+
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.coroutines.test)

@@ -50,6 +50,19 @@ class WearManifestStructuralTest {
         assertTrue("no POST_NOTIFICATIONS", "android.permission.POST_NOTIFICATIONS" !in permissions)
     }
 
+    @Test
+    fun `the token listener is bound to the Data Layer on the hummingbird prefix`() {
+        val application = manifest().children("application").single()
+        val listener = application.children("service").single { it.attr("name") == ".token.TokenListenerService" }
+        assertEquals("true", listener.attr("exported"))
+        val filter = listener.children("intent-filter").single()
+        assertEquals("com.google.android.gms.wearable.MESSAGE_RECEIVED", filter.children("action").single().attr("name"))
+        val data = filter.children("data").single()
+        assertEquals("wear", data.attr("scheme"))
+        assertEquals("*", data.attr("host"))
+        assertEquals("/hummingbird", data.attr("pathPrefix"))
+    }
+
     // -- Parsing ----------------------------------------------------------
 
     private fun manifest(): Element {

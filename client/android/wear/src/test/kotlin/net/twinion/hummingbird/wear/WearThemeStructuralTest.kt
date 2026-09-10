@@ -19,7 +19,8 @@ class WearThemeStructuralTest {
         val offenders = wearMain()
             .walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
-            .filter { Regex("""Color\(\s*0x""").containsMatchIn(it.readText()) }
+            // Comments stripped first: the rule may be *stated* in a header.
+            .filter { Regex("""Color\(\s*0x""").containsMatchIn(withoutComments(it.readText())) }
             .map { it.relativeTo(wearMain()).path }
             .toList()
         assertEquals(emptyList<String>(), offenders)
@@ -48,6 +49,9 @@ class WearThemeStructuralTest {
         assertEquals(phone?.groupValues?.get(1), watch?.groupValues?.get(1))
         assertTrue("both files must declare ic_launcher_background", phone != null && watch != null)
     }
+
+    private fun withoutComments(src: String): String =
+        src.replace(Regex("""/\*[\s\S]*?\*/"""), "").replace(Regex("""(?m)^\s*//.*$"""), "")
 
     private fun repoRoot(): File =
         File(

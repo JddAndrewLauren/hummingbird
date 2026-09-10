@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import net.twinion.hummingbird.core.CoreHolder
 import net.twinion.hummingbird.diagnostics.DiagnosticsRecorder
+import net.twinion.hummingbird.watch.SendOutcome
+import net.twinion.hummingbird.watch.WatchTokenSender
 import uniffi.hummingbird_ffi_mobile.MobileBindingRecord
 import uniffi.hummingbird_ffi_mobile.MobileCalendarList
 import uniffi.hummingbird_ffi_mobile.MobileCalendarSelection
@@ -70,7 +72,18 @@ class SettingsViewModel(
      * `SettingsViewModelTest` never actually reaches `DiagnosticsRecorder`. */
     private val exportDiagnosticsFn: suspend () -> ByteArray = { ByteArray(0) },
     private val clearDiagnosticsFn: suspend () -> Unit = {},
+    /** ADR-0039's watch token hand-off — `WatchTokenSender.send` in
+     * production. The raw string passes straight through to it and is
+     * held by nothing on this class: the field is the screen's, the token
+     * is the watch's, and the phone keeps neither (`SettingsScreenStructuralTest`
+     * pins that no `String`-typed flow exists here). */
+    private val sendWatchTokenFn: suspend (String) -> SendOutcome = { SendOutcome.Unavailable("no sender wired") },
 ) : ViewModel() {
+
+    private val _watchSend = MutableStateFlow<SendOutcome?>(null)
+    /** The last send's outcome, for the Watch card's one line; `null` until
+     * the first attempt. */
+    val watchSend: StateFlow<SendOutcome?> = _watchSend.asStateFlow()
 
     private val _bindings = MutableStateFlow<List<MobileBindingRecord>?>(null)
     val bindings: StateFlow<List<MobileBindingRecord>?> = _bindings.asStateFlow()
@@ -161,6 +174,12 @@ class SettingsViewModel(
      * as [exportDiagnostics]. */
     suspend fun clearDiagnostics() = clearDiagnosticsFn()
 
+    /** Sends [raw] to the paired watch (ADR-0039) and records the outcome.
+     * Normalisation and the empty case are the sender's. */
+    suspend fun sendWatchToken(raw: String) {
+        _watchSend.value = sendWatchTokenFn(raw)
+    }
+
     /** Sets one binding. The draft's worth-sending check is the screen's —
      * this trusts it and enqueues, `useBindingsWiring.ts`'s own split. */
     suspend fun setBinding(key: String, value: String, nowMs: Long) {
@@ -219,6 +238,7 @@ class SettingsViewModel(
                     recorder.export()
                 },
                 clearDiagnosticsFn = { DiagnosticsRecorder.get(context.applicationContext).clear() },
+                sendWatchTokenFn = WatchTokenSender.create(context)::send,
             )
         }
 
