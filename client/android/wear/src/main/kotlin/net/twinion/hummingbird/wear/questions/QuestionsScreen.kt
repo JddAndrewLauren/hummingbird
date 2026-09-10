@@ -29,12 +29,14 @@ import androidx.wear.compose.material3.ScreenScaffold
 import androidx.wear.compose.material3.Text
 import net.twinion.hummingbird.ui.panes.bandColor
 import net.twinion.hummingbird.ui.panes.paneHeadline
+import net.twinion.hummingbird.wear.items.ListHeaderLine
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 
 // The standing-questions list (ADR-0039): one row per Now question, in the
-// core's salience order, each a band dot, the roster's label and the pane's
-// one-line headline (`paneHeadline`, `:brand`'s words — the phone's row
-// says the same). Tap expands the facts in place (`WearPaneExpanded`); a
+// core's salience order, each a band dot, the roster's label in the mono
+// meta register and the pane's one-line headline (`paneHeadline`, `:brand`'s
+// words — the phone's row says the same) — the same card `ItemsScreen`
+// draws, under the same kind of heading (the 2026-09-10 design handoff). Tap expands the facts in place (`WearPaneExpanded`); a
 // second tap folds them. Reloaded on every `syncTick`, so the rows re-read
 // the mirror after each completed cycle and never on their own clock — the
 // clock the words age against is the one the rank was taken at
@@ -64,7 +66,9 @@ internal fun QuestionsScreen(syncTick: Int) {
             modifier = Modifier.fillMaxSize(),
             state = listState,
             contentPadding = padding,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
+            item { ListHeaderLine("STANDING QUESTIONS") }
             if (current.panes.isEmpty()) {
                 item {
                     Text(
@@ -96,20 +100,20 @@ private fun QuestionRow(
     onToggle: () -> Unit,
 ) {
     Card(onClick = onToggle, modifier = Modifier.fillMaxWidth()) {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
                 // The watch is always dark, so the dark arm is the only one.
                 Box(
                     Modifier
                         .size(8.dp)
                         .background(bandColor(pane.answer.band, dark = true), CircleShape),
                 )
+                // The roster's labels are short and must not truncate: an
+                // ellipsised label is a question the reader cannot name.
                 Text(
-                    label,
+                    label.uppercase(),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
             }
             Text(
