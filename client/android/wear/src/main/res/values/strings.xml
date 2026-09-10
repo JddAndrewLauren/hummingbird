@@ -2,4 +2,7 @@
     <!-- The product name is lowercase everywhere (design system, content
          fundamentals) — the same string the phone shows. -->
     <string name="app_name">hummingbird</string>
+    <!-- The tile picker's label for the capture tile — the verb, the one
+         exception content fundamentals carries for an action name. -->
+    <string name="tile_capture_label">Capture</string>
 </resources>

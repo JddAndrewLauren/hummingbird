@@ -53,6 +53,22 @@
             android:taskAffinity="net.twinion.hummingbird.wear.capture"
             android:theme="@style/Theme.Hummingbird.Wear" />
 
+        <!-- The capture tile (ADR-0039): a static tile whose one button
+             launches CaptureActivity. The permission and action are the
+             Tiles contract; PREVIEW is what the tile picker shows. -->
+        <service
+            android:name=".tile.CaptureTileService"
+            android:exported="true"
+            android:label="@string/tile_capture_label"
+            android:permission="com.google.android.wearable.permission.BIND_TILE_PROVIDER">
+            <intent-filter>
+                <action android:name="androidx.wear.tiles.action.BIND_TILE_PROVIDER" />
+            </intent-filter>
+            <meta-data
+                android:name="androidx.wear.tiles.PREVIEW"
+                android:resource="@drawable/tile_preview" />
+        </service>
+
         <!-- The token hand-off's receiving end (ADR-0039): the system starts
              this service for a Data Layer message on the `/hummingbird`
              prefix from the phone running this package under this key.

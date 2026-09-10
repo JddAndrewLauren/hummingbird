@@ -63,6 +63,9 @@ wearInput = "1.2.0"
 wearTiles = "1.6.2"
 wearProtolayout = "1.4.2"
 playServicesWearable = "20.0.1"
+# `CallbackToFutureAdapter`, the tile service's way to answer a
+# `ListenableFuture` without Guava. `tiles` already pulls it at runtime.
+concurrentFutures = "1.3.0"
 
 [libraries]
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
@@ -130,6 +133,7 @@ wear-protolayout-material3 = { group = "androidx.wear.protolayout", name = "prot
 play-services-wearable = { group = "com.google.android.gms", name = "play-services-wearable", version.ref = "playServicesWearable" }
 # `Task.await()` for the Data Layer calls, versioned with `coroutines`.
 coroutines-play-services = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-play-services", version.ref = "coroutines" }
+androidx-concurrent-futures = { group = "androidx.concurrent", name = "concurrent-futures", version.ref = "concurrentFutures" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

@@ -61,6 +61,18 @@ class WearManifestStructuralTest {
     }
 
     @Test
+    fun `the capture tile is a tile provider with a preview`() {
+        val application = manifest().children("application").single()
+        val tile = application.children("service").single { it.attr("name") == ".tile.CaptureTileService" }
+        assertEquals("true", tile.attr("exported"))
+        assertEquals("com.google.android.wearable.permission.BIND_TILE_PROVIDER", tile.attr("permission"))
+        val filter = tile.children("intent-filter").single()
+        assertEquals("androidx.wear.tiles.action.BIND_TILE_PROVIDER", filter.children("action").single().attr("name"))
+        val preview = tile.children("meta-data").single { it.attr("name") == "androidx.wear.tiles.PREVIEW" }
+        assertEquals("@drawable/tile_preview", preview.attr("resource"))
+    }
+
+    @Test
     fun `the token listener is bound to the Data Layer on the hummingbird prefix`() {
         val application = manifest().children("application").single()
         val listener = application.children("service").single { it.attr("name") == ".token.TokenListenerService" }

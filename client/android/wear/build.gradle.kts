@@ -123,6 +123,12 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     // The token hand-off's receiving end: `WearableListenerService`.
     implementation(libs.play.services.wearable)
+    // The capture tile: `TileService`, the ProtoLayout builders it renders
+    // with, and the future adapter it answers through.
+    implementation(libs.wear.tiles)
+    implementation(libs.wear.protolayout)
+    implementation(libs.wear.protolayout.material3)
+    implementation(libs.androidx.concurrent.futures)
 
     debugImplementation(libs.compose.ui.tooling)
 
