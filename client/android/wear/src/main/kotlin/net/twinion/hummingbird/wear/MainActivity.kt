@@ -119,7 +119,7 @@ private fun WearAppRoot() {
                 )
             }
             composable("questions") {
-                QuestionsScreen(core = core, syncTick = syncTick)
+                QuestionsScreen(syncTick = syncTick)
             }
         }
     }
