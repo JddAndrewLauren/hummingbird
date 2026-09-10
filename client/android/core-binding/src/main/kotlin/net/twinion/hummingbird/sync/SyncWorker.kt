@@ -51,8 +51,9 @@ class SyncWorker(context: Context, params: WorkerParameters) :
         // this run started. The drain after `run` (below) still catches
         // this run's own spans on every ordinary, non-hung completion.
         core.takeDiagnosticEvents().forEach { line -> recorder.appendRaw(line.json, line.wallClockMs) }
+        val nowMs = System.currentTimeMillis()
         val outcome = core.run(
-            System.currentTimeMillis(),
+            nowMs,
             inputData.getString(KEY_TRIGGER) ?: TRIGGER_TIMER,
             false,
             Random.nextDouble(),
@@ -79,11 +80,24 @@ class SyncWorker(context: Context, params: WorkerParameters) :
         // `mintEventJsonFn` entirely, it never re-serializes what Rust
         // already built.
         core.takeDiagnosticEvents().forEach { line -> recorder.appendRaw(line.json, line.wallClockMs) }
+        onRunFinished?.invoke(applicationContext, outcome.kind, nowMs)
         return if (retryable) Result.retry() else Result.success()
     }
 
     companion object {
         const val KEY_TRIGGER = "trigger"
+
+        /** What a host does when a background run has finished — the
+         * outcome kind and the clock the run was started on. `null` by
+         * default, and the phone leaves it so: the watch's `WearApp` sets
+         * it to record the cycle in `SyncHistoryStore` and ask its capture
+         * tile to redraw (ADR-0039 as amended 2026-09-10), because a tile
+         * drawn from the mirror has to learn the mirror moved and this
+         * worker is the one place a background move is known. A hook rather
+         * than a `:wear` dependency here: `:core-binding` is the phone's
+         * too, and knows no tile. Schedules nothing — still one clock. */
+        @Volatile
+        var onRunFinished: ((context: Context, outcomeKind: String, nowMs: Long) -> Unit)? = null
 
         /** The outcomes WorkManager retries (its own backoff, above) —
          * everything else counts as `worker.finished { success: true }`

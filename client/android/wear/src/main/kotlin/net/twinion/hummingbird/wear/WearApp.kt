@@ -7,8 +7,11 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import java.util.concurrent.TimeUnit
+import net.twinion.hummingbird.core.SyncHistoryStore
 import net.twinion.hummingbird.diagnostics.DiagnosticsRecorder
 import net.twinion.hummingbird.sync.SyncWorker
+import net.twinion.hummingbird.wear.tile.TileRefresh
+import uniffi.hummingbird_ffi_mobile.isInformativeSyncOutcome
 
 // The watch's Application (ADR-0039): the phone's `HummingbirdApp` minus
 // everything the watch does not have — no notification channels, no push
@@ -19,6 +22,17 @@ class WearApp : Application() {
     override fun onCreate() {
         super.onCreate()
         DiagnosticsRecorder.get(this)
+        // The background leg's aftermath (the 2026-09-10 design handoff):
+        // the cycle goes into the sync history the tile's count line is
+        // judged against — the worker itself writes no history, the phone's
+        // foreground root does that there — and the tile is asked to
+        // redraw. Set once, at process start, before any worker can run.
+        SyncWorker.onRunFinished = { context, outcomeKind, nowMs ->
+            if (isInformativeSyncOutcome(outcomeKind)) {
+                SyncHistoryStore.recordInformative(context, outcomeKind, nowMs)
+            }
+            TileRefresh.request(context)
+        }
         scheduleHourlySync()
     }
 

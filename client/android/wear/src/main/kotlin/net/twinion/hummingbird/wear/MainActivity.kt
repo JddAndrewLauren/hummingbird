@@ -27,6 +27,7 @@ import net.twinion.hummingbird.core.SyncHistoryStore
 import net.twinion.hummingbird.wear.capture.CaptureActivity
 import net.twinion.hummingbird.wear.items.ItemsScreen
 import net.twinion.hummingbird.wear.questions.QuestionsScreen
+import net.twinion.hummingbird.wear.tile.TileRefresh
 import net.twinion.hummingbird.wear.token.TokenPresence
 import net.twinion.hummingbird.wear.ui.theme.WearTheme
 import uniffi.hummingbird_ffi_mobile.MobileTaskHost
@@ -120,6 +121,8 @@ private fun WearAppRoot(initialRoute: String?) {
             SyncHistoryStore.recordInformative(context, outcome.kind, nowMs)
         }
         syncTick += 1
+        // The tile draws from the same mirror this cycle just moved.
+        TileRefresh.request(context)
     }
 
     LifecycleResumeEffect(core) {
