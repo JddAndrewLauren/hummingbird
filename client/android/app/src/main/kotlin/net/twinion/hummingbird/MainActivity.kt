@@ -97,6 +97,7 @@ import uniffi.hummingbird_ffi_mobile.MobileTaskHost
 import uniffi.hummingbird_ffi_mobile.calendarPollIntervalMs
 import uniffi.hummingbird_ffi_mobile.isInformativeSyncOutcome
 import uniffi.hummingbird_ffi_mobile.notificationTapTarget
+import net.twinion.hummingbird.brand.R
 
 // `NowScreen` (M1-6/#504) is this activity's start destination — the
 // frontier, decided core-side and rendered verbatim (`NowScreen.kt`'s own
@@ -995,7 +996,7 @@ private fun AppTopBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Image(
-            painterResource(if (dark) R.drawable.app_icon_dark else R.drawable.app_icon_light),
+            painterResource(if (dark) net.twinion.hummingbird.R.drawable.app_icon_dark else net.twinion.hummingbird.R.drawable.app_icon_light),
             contentDescription = null,
             modifier = Modifier
                 .size(24.dp)

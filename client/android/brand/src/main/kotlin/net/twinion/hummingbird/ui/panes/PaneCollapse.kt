@@ -29,7 +29,7 @@ import uniffi.hummingbird_ffi_mobile.MobilePaneBand
  * rule), and the band, because that is the scope. */
 data class CollapseOverride(val band: MobilePaneBand, val collapsed: Boolean)
 
-internal object PaneCollapse {
+object PaneCollapse {
 
     /** The shell's default when nobody has said otherwise: collapsed when
      * the pane is dormant, or when it has no answer to show — collapsed is

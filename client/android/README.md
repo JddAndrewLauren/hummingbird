@@ -5,7 +5,8 @@ the 2026-08-14 grilling: full web parity is the destination, reached one
 screen at a time, each screen's decision modules sinking into
 `hummingbird-core` first (ADR-0025) — no Kotlin copy of a decision function
 is ever created. Rendering is native: Jetpack Compose + Material 3, themed
-from the design system's tokens (`app/src/main/kotlin/.../ui/theme/`).
+from the design system's tokens (`brand/src/main/kotlin/.../ui/theme/`, the
+`:brand` module below).
 
 ## The build's two seams
 
@@ -33,6 +34,18 @@ unit-test configuration every module shares (`hummingbird.repoRoot`,
 `build.gradle.kts`'s `subprojects` block. CI runs each module's suite by
 name (`android.yml`); a module left off that line is a module whose tests
 never run.
+
+`:brand` is the second library (ADR-0039): the design tokens (`Color.kt`),
+the bundled typefaces (`Font.kt`, `res/font/`, licences under
+`brand/licenses/fonts/`), every Lucide drawable (`res/drawable/ic_*.xml` —
+reached from `:app` as `net.twinion.hummingbird.brand.R`, since R classes
+are non-transitive here; the launcher art stays in `:app`), and the pane
+words every device says identically: `PaneAnswers.kt`, `PaneGlyph.kt`,
+`PaneCollapse.kt`, `PaneBand.kt` (`bandColor`, cut from `PaneShell.kt`) and
+`NowPaneWords.kt` (the pure half of `NowPanesExpanded.kt`). Nothing in it
+is a composable; the Material3 theme (`Theme.kt`, `Type.kt`, `Motion.kt`)
+and every screen stay in `:app`. The colour and type drift gates moved with
+their subjects and run as `:brand:testDebugUnitTest`.
 
 Prerequisites beyond Android Studio: `rustup target add
 aarch64-linux-android x86_64-linux-android`, `cargo install cargo-ndk`, and

@@ -208,7 +208,7 @@ class ColorTokenDriftTest {
     // -- Color.kt parsing -------------------------------------------------
 
     private fun parseColorKt(): Map<String, Long> {
-        val lines = repoFile("client/android/app/src/main/kotlin/net/twinion/hummingbird/ui/theme/Color.kt").readLines()
+        val lines = repoFile("client/android/brand/src/main/kotlin/net/twinion/hummingbird/ui/theme/Color.kt").readLines()
         val decl = Regex("""^val (\w+) = Color\(0x([0-9A-Fa-f]{8})\)""")
         val constants = lines.mapNotNull { decl.find(it) }
             .associate { it.groupValues[1] to it.groupValues[2].toLong(16) }

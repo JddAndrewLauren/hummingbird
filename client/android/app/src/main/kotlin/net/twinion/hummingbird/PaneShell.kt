@@ -22,7 +22,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -31,22 +30,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import net.twinion.hummingbird.ui.panes.MAX_GLYPHS
 import net.twinion.hummingbird.ui.panes.PaneGlyph
+import net.twinion.hummingbird.ui.panes.bandColor
 import net.twinion.hummingbird.ui.panes.paneGlyphs
 import net.twinion.hummingbird.ui.panes.paneHeadline
-import net.twinion.hummingbird.ui.theme.Amber500
-import net.twinion.hummingbird.ui.theme.Crimson500
-import net.twinion.hummingbird.ui.theme.Ember400
-import net.twinion.hummingbird.ui.theme.Ember500
-import net.twinion.hummingbird.ui.theme.Ink300
-import net.twinion.hummingbird.ui.theme.Ink400
 import net.twinion.hummingbird.ui.theme.LocalHbDark
-import net.twinion.hummingbird.ui.theme.Moss600
-import net.twinion.hummingbird.ui.theme.StatusDoneFgDark
-import net.twinion.hummingbird.ui.theme.UrgencyOverdueDark
-import net.twinion.hummingbird.ui.theme.UrgencySoonDark
 import uniffi.hummingbird_ffi_mobile.MobilePaneAnswerState
 import uniffi.hummingbird_ffi_mobile.MobilePaneBand
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
+import net.twinion.hummingbird.brand.R
 
 // The ranked-region shell (#536/M4, #537/M4, ADR-0017; two-form since the
 // pane-parity slice): the web `RankedRegion.tsx`'s own contract, ported —
@@ -68,19 +59,6 @@ import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 // argument: which words name a pane's row is a per-surface rendering
 // choice (Status's four questions vs. Now's four), never a decision this
 // shell makes.
-
-/** [MobilePaneBand]'s dot colour — design-mirror tokens
- * (`.claude/skills/hummingbird-design/tokens/colors.css`), light/dark split
- * exactly [NowRow.kt]'s own `urgencyColor` mapping notes state the
- * pattern for. Exhaustive, no `else` arm: the compile-time drift gate a
- * `uniffi::Enum` crossing gets everywhere else in this app. */
-internal fun bandColor(band: MobilePaneBand, dark: Boolean): Color = when (band) {
-    MobilePaneBand.LIVE -> if (dark) UrgencyOverdueDark else Crimson500
-    MobilePaneBand.IMMINENT -> if (dark) Ember400 else Ember500
-    MobilePaneBand.NEAR -> if (dark) UrgencySoonDark else Amber500
-    MobilePaneBand.DISTANT -> if (dark) Ink300 else Ink400
-    MobilePaneBand.DORMANT -> if (dark) StatusDoneFgDark else Moss600
-}
 
 @Composable
 internal fun BandDot(band: MobilePaneBand) {

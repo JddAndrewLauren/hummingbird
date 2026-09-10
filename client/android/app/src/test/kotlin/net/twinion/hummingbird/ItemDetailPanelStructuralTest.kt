@@ -675,7 +675,8 @@ class ItemDetailPanelStructuralTest {
             "and the drawable must not come back with one",
             File(
                 System.getProperty("hummingbird.repoRoot")!!,
-                "client/android/app/src/main/res/drawable/ic_pencil.xml",
+                // The Lucide drawables live in `:brand` since ADR-0039.
+                "client/android/brand/src/main/res/drawable/ic_pencil.xml",
             ).exists(),
         )
         assertEquals(

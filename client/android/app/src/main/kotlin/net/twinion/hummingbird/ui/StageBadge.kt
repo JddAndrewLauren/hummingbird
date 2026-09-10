@@ -23,7 +23,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import net.twinion.hummingbird.R
+import net.twinion.hummingbird.brand.R
 import net.twinion.hummingbird.ui.theme.Amber100
 import net.twinion.hummingbird.ui.theme.Amber600
 import net.twinion.hummingbird.ui.theme.Crimson100

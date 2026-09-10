@@ -140,6 +140,10 @@ dependencies {
     // device app (ADR-0039). JNA, coroutines and WorkManager arrive
     // transitively as that module's `api`.
     implementation(project(":core-binding"))
+    // The brand: design tokens, the bundled typefaces, the Lucide drawables
+    // (`net.twinion.hummingbird.brand.R`), and the pane words every device
+    // says identically (ADR-0039).
+    implementation(project(":brand"))
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
     implementation(libs.compose.ui.tooling.preview)

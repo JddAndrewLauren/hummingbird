@@ -411,7 +411,7 @@ class CaptureFieldSetStructuralTest {
     @Test
     fun `the picker's millis are read in UTC, never the device zone`() {
         val src = repoFile(
-            "client/android/app/src/main/kotlin/net/twinion/hummingbird/core/WallClock.kt",
+            "client/android/core-binding/src/main/kotlin/net/twinion/hummingbird/core/WallClock.kt",
         )
         // Bounded to the two conversions that claim it, not to the file:
         // `local` and `currentHourMinute` read the device zone on purpose,

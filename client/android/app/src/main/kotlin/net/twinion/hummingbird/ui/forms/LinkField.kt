@@ -20,7 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import net.twinion.hummingbird.R
+import net.twinion.hummingbird.brand.R
 
 /** The item's one Link (#782): a chain-glyph row that discloses the two
  * fields behind it — the URL, and the optional name it is shown by. Shared

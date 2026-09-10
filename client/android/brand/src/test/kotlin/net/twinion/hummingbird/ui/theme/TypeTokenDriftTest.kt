@@ -35,7 +35,7 @@ class TypeTokenDriftTest {
         val referenced = parseFontKtResourceNames()
         assertTrue("Font.kt referenced no font resources — parser or file drifted", referenced.isNotEmpty())
 
-        val dir = repoFile("client/android/app/src/main/res/font")
+        val dir = repoFile("client/android/brand/src/main/res/font")
         val onDisk = dir.listFiles { f -> f.isFile }
             ?.map { it.nameWithoutExtension }
             ?.toSet()
@@ -125,7 +125,7 @@ class TypeTokenDriftTest {
     // -- Font.kt parsing ------------------------------------------------------
 
     private fun fontKtText(): String =
-        repoFile("client/android/app/src/main/kotlin/net/twinion/hummingbird/ui/theme/Font.kt").readText()
+        repoFile("client/android/brand/src/main/kotlin/net/twinion/hummingbird/ui/theme/Font.kt").readText()
 
     private fun parseFontKtResourceNames(): Set<String> =
         Regex("""R\.font\.(\w+)""").findAll(fontKtText()).map { it.groupValues[1] }.toSet()

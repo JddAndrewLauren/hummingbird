@@ -71,6 +71,7 @@ import uniffi.hummingbird_ffi_mobile.NowBlockedEntryRecord
 import uniffi.hummingbird_ffi_mobile.NowBoardRecord
 import uniffi.hummingbird_ffi_mobile.NowColumnRecord
 import uniffi.hummingbird_ffi_mobile.NowItemRecord
+import net.twinion.hummingbird.brand.R
 
 // M1-6's whole surface (#141/#504), widened to the frontier board by
 // M3/#530: the board, decided by `hummingbird-ffi-mobile::MobileTaskHost.

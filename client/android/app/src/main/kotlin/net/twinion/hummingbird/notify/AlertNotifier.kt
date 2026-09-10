@@ -6,7 +6,7 @@ import android.content.Intent
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import net.twinion.hummingbird.MainActivity
-import net.twinion.hummingbird.R
+import net.twinion.hummingbird.brand.R
 import net.twinion.hummingbird.push.AckReceiver
 
 // Posting and cancelling one alert's notification (M2/#141, ADR-0012).
