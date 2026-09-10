@@ -87,8 +87,9 @@ class SyncWorker(context: Context, params: WorkerParameters) :
     companion object {
         const val KEY_TRIGGER = "trigger"
 
-        /** What a host does when a background run has finished — the
-         * outcome kind and the clock the run was started on. `null` by
+        /** What a host does when a background run has finished, whatever
+         * its outcome (a retryable one included — the host reads the kind)
+         * — the outcome kind and the clock the run was started on. `null` by
          * default, and the phone leaves it so: the watch's `WearApp` sets
          * it to record the cycle in `SyncHistoryStore` and ask its capture
          * tile to redraw (ADR-0039 as amended 2026-09-10), because a tile

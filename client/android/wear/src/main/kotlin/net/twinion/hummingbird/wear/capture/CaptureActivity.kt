@@ -5,6 +5,7 @@ import android.app.RemoteInput
 import android.content.Intent
 import android.os.Bundle
 import android.speech.RecognizerIntent
+import android.util.Log
 import android.view.inputmethod.EditorInfo
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -68,6 +69,8 @@ class CaptureActivity : ComponentActivity() {
 private sealed interface CaptureOutcome {
     data class Captured(val landed: String) : CaptureOutcome
     data object Refused : CaptureOutcome
+    /** The core threw on the way in — not a refusal, and not silence. */
+    data object Failed : CaptureOutcome
 }
 
 @Composable
@@ -79,6 +82,10 @@ private fun CaptureFlow(onDone: () -> Unit) {
     // destination is tapped — the one piece of state between the two.
     var pendingText by remember { mutableStateOf<String?>(null) }
     var outcome by remember { mutableStateOf<CaptureOutcome?>(null) }
+    // Three rounds onto one `submit`: a second tap inside the first's
+    // suspension would mint the same words twice (the phone's `submitting`
+    // flag, for the same reason).
+    var submitting by remember { mutableStateOf(false) }
 
     // The core's gate, before any choice is offered: a line it would refuse
     // gets its refusal now, not after a tap that could not matter.
@@ -103,11 +110,18 @@ private fun CaptureFlow(onDone: () -> Unit) {
 
     fun land(destination: CaptureDestination, deadline: String) {
         val text = pendingText ?: return
+        if (submitting) return
+        submitting = true
         scope.launch {
-            outcome = if (viewModel.submit(text, destination, deadline, System.currentTimeMillis())) {
-                CaptureOutcome.Captured(landedLine(destination, deadline))
-            } else {
-                CaptureOutcome.Refused
+            outcome = try {
+                if (viewModel.submit(text, destination, deadline, System.currentTimeMillis())) {
+                    CaptureOutcome.Captured(landedLine(destination, deadline))
+                } else {
+                    CaptureOutcome.Refused
+                }
+            } catch (failed: Exception) {
+                Log.w("hummingbird.wear", "capture failed", failed)
+                CaptureOutcome.Failed
             }
         }
     }
@@ -150,6 +164,14 @@ private fun CaptureFlow(onDone: () -> Unit) {
     ) {
         Icon(painterResource(R.drawable.ic_x), contentDescription = null)
     }
+    ConfirmationDialog(
+        visible = outcome == CaptureOutcome.Failed,
+        onDismissRequest = onDone,
+        text = { Text("Couldn't capture") },
+        durationMillis = CONFIRMATION_MS,
+    ) {
+        Icon(painterResource(R.drawable.ic_x), contentDescription = null)
+    }
 }
 
 /** How long either confirmation stays before the activity finishes: long
@@ -165,10 +187,12 @@ internal fun speechIntent(): Intent =
         .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
         .putExtra(RecognizerIntent.EXTRA_PROMPT, "Capture")
 
-/** The recogniser's answer, or `null` when it carried none. Passed on as
- * given — whether it is a title is the core's call. */
+/** The recogniser's answer, or `null` when it carried none — no results,
+ * or an empty first result, which is "nothing heard" and sends the flow to
+ * the chooser rather than to the core's gate. Otherwise passed on as
+ * given: whether it is a title is the core's call. */
 internal fun recognisedText(data: Intent): String? =
-    data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
+    data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.takeUnless { it.isEmpty() }
 
 /** The one `RemoteInput` result key. */
 internal const val KEY_TEXT = "net.twinion.hummingbird.wear.capture.TEXT"

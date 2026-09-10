@@ -18,9 +18,14 @@ import uniffi.hummingbird_ffi_mobile.MobileUrgencyBand
 // the phone's `NowRow.kt` draws the same band as one word and the raw
 // deadline beside it; the watch, with less room, folds the two into one
 // mono line — `OVERDUE · THU`, `DUE TODAY`, `DUE FRI`, `DUE OCT 3`,
-// `NO DEADLINE`. The weekday is a calendar fact of the `YYYY-MM-DD` string
-// itself, so no zone is read here; the one clock is the board's `today`,
-// passed in. Pure, and pinned by `ItemRowLabelTest`.
+// `NO DEADLINE` (and the bare band word — `OVERDUE`, `DUE NOW`, `SOON` —
+// for the legacy free-text deadline `split_deadline` passes through). The
+// weekday is a calendar fact of the `YYYY-MM-DD` string itself, so no zone
+// is read here; the one clock is the board's `today`, passed in. The
+// weekday names the day, not the week: an item ten days overdue reads
+// `OVERDUE · TUE` like one two days overdue — the design's call; the arc
+// and the order carry the severity, the label the day. Pure, and pinned by
+// `ItemRowLabelTest`.
 
 /** The row's first line. [today] is the board's own date (`YYYY-MM-DD`),
  * so "today" is the day the rank was taken on and nothing here reads a
@@ -30,7 +35,7 @@ fun urgencyRowLabel(band: MobileUrgencyBand, deadline: String?, today: String): 
     return when (band) {
         MobileUrgencyBand.OVERDUE -> date?.let { "OVERDUE · ${weekday(it)}" } ?: "OVERDUE"
         MobileUrgencyBand.NOW ->
-            if (date == null || date.toString() == today) "DUE TODAY" else "DUE ${weekday(date)}"
+            if (date == null) "DUE NOW" else if (date.toString() == today) "DUE TODAY" else "DUE ${weekday(date)}"
         MobileUrgencyBand.SOON -> date?.let { "DUE ${weekday(it)}" } ?: "SOON"
         MobileUrgencyBand.CALM -> date?.let { "DUE ${monthDay(it)}" } ?: "NO DEADLINE"
     }

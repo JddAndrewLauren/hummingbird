@@ -58,11 +58,30 @@ class TileFactsTest {
     }
 
     @Test
+    fun `the arc yields with the count line once the mirror is stale`() {
+        assertEquals(TileCounts(2, 3), arcCounts(TileCounts(2, 3), 0L, hour - 1))
+        assertNull(arcCounts(TileCounts(2, 3), 0L, hour))
+        assertNull(arcCounts(TileCounts(2, 3), null, hour))
+        assertNull(arcCounts(null, 0L, 0L))
+    }
+
+    @Test
+    fun `a zero-length segment is not drawn, and the gap only between two`() {
+        assertEquals(1, urgencyArc(ArcDegrees(50f, 0f)).contents.size)
+        assertEquals(1, urgencyArc(ArcDegrees(0f, 75f)).contents.size)
+        assertEquals(3, urgencyArc(ArcDegrees(50f, 75f)).contents.size)
+        assertEquals(0, urgencyArc(ArcDegrees(0f, 0f)).contents.size)
+    }
+
+    @Test
     fun `the arcs are twenty-five degrees an item, scaled together past the cap`() {
         assertEquals(ArcDegrees(50f, 75f), arcDegrees(TileCounts(2, 3)))
         assertEquals(ArcDegrees(0f, 0f), arcDegrees(null))
         val capped = arcDegrees(TileCounts(10, 10))
         assertEquals(MAX_ARC_DEGREES, capped.overdue + capped.soon, 0.001f)
         assertEquals(capped.overdue, capped.soon, 0.001f)
+        val oneBand = arcDegrees(TileCounts(12, 0))
+        assertEquals(MAX_ARC_DEGREES, oneBand.overdue, 0.001f)
+        assertEquals(0f, oneBand.soon, 0.001f)
     }
 }

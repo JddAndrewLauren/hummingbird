@@ -27,6 +27,8 @@ class ItemRowLabelTest {
         assertEquals("DUE TODAY", urgencyRowLabel(MobileUrgencyBand.NOW, "2026-09-10", today))
         assertEquals("DUE TODAY", urgencyRowLabel(MobileUrgencyBand.NOW, "2026-09-10T18:00", today))
         assertEquals("DUE FRI", urgencyRowLabel(MobileUrgencyBand.NOW, "2026-09-11T09:00", today))
+        assertEquals("DUE NOW", urgencyRowLabel(MobileUrgencyBand.NOW, "next tuesday", today))
+        assertEquals("SOON", urgencyRowLabel(MobileUrgencyBand.SOON, "later", today))
     }
 
     @Test

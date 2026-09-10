@@ -32,8 +32,8 @@ class ItemsViewModel(
     private val descriptionFn: suspend (itemId: String, nowMs: Long) -> String?,
 ) {
     /** The rows, the clock they were read at, and that clock's civil day
-     * (`YYYY-MM-DD`, the board's `now` shape cut to its date) — one reading,
-     * so every row's "today" is the same day. */
+     * (`WallClock.todayDeadline`, the one date-of-today rule on Android) —
+     * one reading, so every row's "today" is the same day. */
     data class Loaded(val rows: List<NowItemRecord>, val nowMs: Long, val today: String)
 
     /** The one open row: its id, and its description once fetched
@@ -49,9 +49,8 @@ class ItemsViewModel(
     val open: StateFlow<Open?> = _open.asStateFlow()
 
     suspend fun load(nowMs: Long) {
-        val now = WallClock.local(nowMs)
-        val board = boardFn(now)
-        _loaded.value = Loaded(board.columns.flatMap { it.items }, nowMs, now.take(DATE_LENGTH))
+        val board = boardFn(WallClock.local(nowMs))
+        _loaded.value = Loaded(board.columns.flatMap { it.items }, nowMs, WallClock.todayDeadline(nowMs))
     }
 
     /** Opens [itemId] (closing whichever row was open) and fetches its
@@ -71,8 +70,6 @@ class ItemsViewModel(
     }
 
     companion object {
-        private const val DATE_LENGTH = "YYYY-MM-DD".length
-
         fun create(context: Context): ItemsViewModel {
             val app = context.applicationContext
             return ItemsViewModel(

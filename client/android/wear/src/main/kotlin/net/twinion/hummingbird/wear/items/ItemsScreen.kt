@@ -62,7 +62,17 @@ internal fun ItemsScreen(syncTick: Int) {
     val viewModel = remember { ItemsViewModel.create(context) }
     val loaded by viewModel.loaded.collectAsStateWithLifecycle()
     val open by viewModel.open.collectAsStateWithLifecycle()
-    LaunchedEffect(syncTick) { viewModel.load(System.currentTimeMillis()) }
+    // A core that throws must not take the list down: the row stays as it
+    // was and the failure is a logcat line, as the tile service treats the
+    // same read.
+    LaunchedEffect(syncTick) {
+        try {
+            viewModel.load(System.currentTimeMillis())
+        } catch (failed: Exception) {
+            Log.w(TAG, "items could not read the mirror", failed)
+        }
+    }
+    val remote = remember { RemoteActivityHelper(context) }
 
     val listState = rememberScalingLazyListState()
     ScreenScaffold(scrollState = listState) { padding ->
@@ -96,8 +106,16 @@ internal fun ItemsScreen(syncTick: Int) {
                     row = row,
                     today = current.today,
                     open = openRow,
-                    onToggle = { scope.launch { viewModel.toggle(row.id, current.nowMs) } },
-                    onOpenOnPhone = { openOnPhone(context, row.id) },
+                    onToggle = {
+                        scope.launch {
+                            try {
+                                viewModel.toggle(row.id, current.nowMs)
+                            } catch (failed: Exception) {
+                                Log.w(TAG, "item detail could not be read", failed)
+                            }
+                        }
+                    },
+                    onOpenOnPhone = { openOnPhone(remote, context, row.id) },
                 )
             }
         }
@@ -173,21 +191,24 @@ private fun ItemRow(
 }
 
 /** Hands the item to the paired phone: `ItemLink`'s VIEW intent, carried by
- * the Wear remote-interactions helper to whichever node is paired. Fire and
+ * the Wear remote-interactions helper (one per screen — each instance owns
+ * an executor thread) to whichever node is paired. Fire and
  * log — the helper's future resolves on the phone's side of the Data Layer
  * and there is nothing for the watch to draw about it; a failure (no phone
  * in reach, the app not installed there) is a line in logcat, not a dialog
  * the wrist has room for. */
-private fun openOnPhone(context: android.content.Context, itemId: String) {
-    val future = RemoteActivityHelper(context).startRemoteActivity(ItemLink.intent(itemId))
+private fun openOnPhone(remote: RemoteActivityHelper, context: android.content.Context, itemId: String) {
+    val future = remote.startRemoteActivity(ItemLink.intent(itemId))
     future.addListener(
         {
             try {
                 future.get()
             } catch (failed: Exception) {
-                Log.w("hummingbird.wear", "open on phone failed for item $itemId", failed)
+                Log.w(TAG, "open on phone failed for item $itemId", failed)
             }
         },
         context.mainExecutor,
     )
 }
+
+private const val TAG = "hummingbird.wear"

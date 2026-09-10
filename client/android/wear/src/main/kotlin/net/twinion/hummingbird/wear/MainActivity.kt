@@ -52,7 +52,14 @@ import uniffi.hummingbird_ffi_mobile.isInformativeSyncOutcome
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val requested = intent?.getStringExtra(EXTRA_ROUTE)?.takeIf { it in Routes.TILE_TARGETS }
+        // Read on a fresh start only: a recreation (rotation, process-death
+        // restore) carries the same intent, and the restored back stack
+        // already holds the route — reading it again would push a second.
+        val requested = if (savedInstanceState == null) {
+            intent?.getStringExtra(EXTRA_ROUTE)?.takeIf { it in Routes.TILE_TARGETS }
+        } else {
+            null
+        }
         setContent { WearTheme { WearAppRoot(initialRoute = requested) } }
     }
 
@@ -79,8 +86,8 @@ private fun WearAppRoot(initialRoute: String?) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val navController = rememberSwipeDismissableNavController()
-    // The tile's route, once: `rememberSaveable` would replay it after a
-    // process death, which is the same re-navigation a rotation must not do.
+    // The tile's route, once — `onCreate` hands it over on a fresh start
+    // only, and `LaunchedEffect` runs once per composition of this root.
     LaunchedEffect(initialRoute) {
         if (initialRoute != null) navController.navigate(initialRoute)
     }

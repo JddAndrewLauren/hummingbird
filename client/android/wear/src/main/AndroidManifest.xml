@@ -5,6 +5,17 @@
          refuses this APK on anything that is not a Wear device. -->
     <uses-feature android:name="android.hardware.type.watch" />
 
+    <!-- Package visibility (API 30+): `CaptureActivity` asks whether a
+         speech recogniser exists before opening it, and `resolveActivity`
+         answers null for any package not declared here. On the emulator the
+         recogniser happens to be the current IME, which is always visible;
+         on a watch it need not be. -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
+    </queries>
+
     <!-- The sync cycle and nothing else reaches the network (the core owns
          HTTP per ADR-0003; this is its permission). No RECORD_AUDIO: capture
          dictates through the system's own input chooser, never a
@@ -42,7 +53,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Capture (ADR-0039): opens the system input chooser at once and
+        <!-- Capture (ADR-0039): opens the system speech recogniser at once, the input chooser behind it and
              finishes on the answer. Exported so the capture tile can launch
              it directly; its own task and out of Recents so a half-finished
              capture is never what "the app" reopens to. -->
@@ -53,7 +64,7 @@
             android:taskAffinity="net.twinion.hummingbird.wear.capture"
             android:theme="@style/Theme.Hummingbird.Wear" />
 
-        <!-- The capture tile (ADR-0039): a static tile whose one button
+        <!-- The capture tile (ADR-0039): a capture tile whose one button
              launches CaptureActivity. The permission and action are the
              Tiles contract; PREVIEW is what the tile picker shows. -->
         <service

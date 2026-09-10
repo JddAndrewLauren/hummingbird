@@ -1,5 +1,7 @@
 package net.twinion.hummingbird.wear.tile
 
+import java.util.Locale
+import net.twinion.hummingbird.wear.syncAgeLine
 import uniffi.hummingbird_ffi_mobile.MobileUrgencyBand
 import uniffi.hummingbird_ffi_mobile.NowBoardRecord
 
@@ -16,6 +18,10 @@ import uniffi.hummingbird_ffi_mobile.NowBoardRecord
 // read at a glance and three do not (operator decision, 2026-09-10). The
 // bands themselves stay the core's: this file counts rows by the band the
 // board already put them in, and decides no band of its own.
+
+/** What the tile draws from: the counts (or none), and the sync age the
+ * count line and the arc are judged against. */
+data class TileFacts(val counts: TileCounts?, val lastInformativeAtMs: Long?, val nowMs: Long)
 
 /** The counts the arc and the count line draw. `null` at the caller means
  * there is nothing to count from — no token yet, or a core that could not
@@ -47,15 +53,21 @@ fun tileCounts(board: NowBoardRecord): TileCounts {
  * nothing. */
 fun tileCountLine(counts: TileCounts?, lastInformativeAtMs: Long?, nowMs: Long): String? {
     if (counts == null) return null
-    if (lastInformativeAtMs == null) return "NOT SYNCED YET"
-    val age = nowMs - lastInformativeAtMs
-    if (age >= HOUR_MS) return "SYNCED ${age / HOUR_MS}H AGO"
+    // The home screen's honesty rule, in this register: one spelling of
+    // "an hour is stale", not two.
+    syncAgeLine(lastInformativeAtMs, nowMs)?.let { return it.uppercase(Locale.ROOT) }
     val parts = buildList {
         if (counts.overdue > 0) add("${counts.overdue} OVERDUE")
         if (counts.soon > 0) add("${counts.soon} SOON")
     }
     return if (parts.isEmpty()) "NOTHING DUE" else parts.joinToString(" · ")
 }
+
+/** The counts the arc may draw: the same ones the count line names, and
+ * `null` once the line has yielded to `SYNCED nH AGO` — a stale number
+ * hidden behind a current-looking picture of it would be the same lie. */
+fun arcCounts(counts: TileCounts?, lastInformativeAtMs: Long?, nowMs: Long): TileCounts? =
+    if (counts == null || syncAgeLine(lastInformativeAtMs, nowMs) != null) null else counts
 
 /** The two arc lengths, in degrees: [DEGREES_PER_ITEM] each, overdue first,
  * the pair scaled down together once they would pass [MAX_ARC_DEGREES] so
@@ -86,4 +98,3 @@ const val MAX_ARC_DEGREES = 250f
 /** The gap between the overdue and soon segments, when both are drawn. */
 const val ARC_GAP_DEGREES = 6f
 
-private const val HOUR_MS = 60L * 60L * 1000L

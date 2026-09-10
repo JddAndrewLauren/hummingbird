@@ -13,6 +13,7 @@ import androidx.wear.tiles.TileService
 import com.google.common.util.concurrent.ListenableFuture
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -56,17 +57,28 @@ class CaptureTileService : TileService() {
 
     override fun onTileRequest(requestParams: RequestBuilders.TileRequest): ListenableFuture<TileBuilders.Tile> =
         CallbackToFutureAdapter.getFuture { completer ->
-            scope.launch {
-                val facts = readTileFacts(this@CaptureTileService, System.currentTimeMillis())
-                val layout = captureTileLayout(this@CaptureTileService, requestParams.deviceConfiguration, facts)
-                completer.set(
-                    TileBuilders.Tile.Builder()
-                        .setResourcesVersion(RESOURCES_VERSION)
-                        .setFreshnessIntervalMillis(FRESHNESS_MS)
-                        .setTileTimeline(TimelineBuilders.Timeline.fromLayoutElement(layout))
-                        .build(),
-                )
+            // The future always resolves: a throw fails it, a destroyed
+            // service (the scope cancelled) fails it, a cancelled future
+            // stops the read. The system must never wait on a tile that
+            // hangs.
+            val job = scope.launch {
+                try {
+                    val facts = readTileFacts(this@CaptureTileService, System.currentTimeMillis())
+                    val layout = captureTileLayout(this@CaptureTileService, requestParams.deviceConfiguration, facts)
+                    completer.set(
+                        TileBuilders.Tile.Builder()
+                            .setResourcesVersion(RESOURCES_VERSION)
+                            .setFreshnessIntervalMillis(FRESHNESS_MS)
+                            .setTileTimeline(TimelineBuilders.Timeline.fromLayoutElement(layout))
+                            .build(),
+                    )
+                } catch (failed: Exception) {
+                    Log.w("hummingbird.wear", "capture tile could not be built", failed)
+                    completer.setException(failed)
+                }
             }
+            job.invokeOnCompletion { cause -> if (cause is CancellationException) completer.setCancelled() }
+            completer.addCancellationListener({ job.cancel() }, mainExecutor)
             "capture tile"
         }
 
@@ -125,10 +137,10 @@ class CaptureTileService : TileService() {
  * throws is logged and read as no counts; a tile must never crash the
  * launcher's carousel. */
 internal suspend fun readTileFacts(context: Context, nowMs: Long): TileFacts {
-    val counts = if (TokenStore.load(context) == null) {
-        null
-    } else {
-        try {
+    val counts = try {
+        if (TokenStore.load(context) == null) {
+            null
+        } else {
             val board = CoreHolder.get(context).nowBoard(
                 MobileFrontierAxis.URGENCY,
                 NowFacetSelectionRecord(emptyList(), emptyList(), emptyList(), emptyList()),
@@ -136,10 +148,16 @@ internal suspend fun readTileFacts(context: Context, nowMs: Long): TileFacts {
                 MobileCalmOrder.OLDEST,
             )
             tileCounts(board)
-        } catch (failed: Exception) {
-            Log.w("hummingbird.wear", "capture tile could not read the mirror", failed)
-            null
         }
+    } catch (failed: Exception) {
+        Log.w("hummingbird.wear", "capture tile could not read the mirror", failed)
+        null
     }
-    return TileFacts(counts, SyncHistoryStore.load(context).latestInformativeAtMs, nowMs)
+    val lastInformativeAtMs = try {
+        SyncHistoryStore.load(context).latestInformativeAtMs
+    } catch (failed: Exception) {
+        Log.w("hummingbird.wear", "capture tile could not read the sync history", failed)
+        null
+    }
+    return TileFacts(counts, lastInformativeAtMs, nowMs)
 }

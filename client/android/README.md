@@ -183,7 +183,7 @@ phone" lands on the phone's item detail** (the `.ItemLink` alias, over
 in order with a switched-off question absent, a tap expands in place, the
 tile is added from the face and shows the arc and counts after the first
 sync and `SYNCED nH AGO` once the mirror is an hour old, and its disc opens
-the chooser while its rounds open the two lists. Record the run here with
+the recogniser while its rounds open the two lists. Record the run here with
 its date and the APK's version.
 
 ## Sync model (grilling 2026-08-14)

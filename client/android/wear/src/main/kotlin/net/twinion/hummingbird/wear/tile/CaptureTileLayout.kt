@@ -117,10 +117,6 @@ const val RES_FEATHER = "feather"
 const val RES_ZAP = "zap"
 const val RES_HELP_CIRCLE = "help-circle"
 
-/** What the layout draws from: the counts (or none), and the sync age the
- * count line is judged against. */
-data class TileFacts(val counts: TileCounts?, val lastInformativeAtMs: Long?, val nowMs: Long)
-
 fun captureTileLayout(context: Context, deviceParameters: DeviceParameters, facts: TileFacts): LayoutElement =
     materialScope(context, deviceParameters, allowDynamicTheme = false, defaultColorScheme = tileColorScheme()) {
         val face = deviceParameters.screenWidthDp.toFloat()
@@ -130,7 +126,7 @@ fun captureTileLayout(context: Context, deviceParameters: DeviceParameters, fact
             .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
             .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
             .addContent(arcTrack())
-            .addContent(urgencyArc(arcDegrees(facts.counts)))
+            .addContent(urgencyArc(arcDegrees(arcCounts(facts.counts, facts.lastInformativeAtMs, facts.nowMs))))
             .addContent(centreColumn(face, facts))
             .build()
     }
@@ -189,7 +185,7 @@ private fun arcTrack(): LayoutElement =
 /** The two segments, from ten o'clock clockwise: overdue, a gap, soon. A
  * zero-length segment is not drawn at all — a round cap on nothing would
  * still leave a dot. */
-private fun urgencyArc(lengths: ArcDegrees): LayoutElement {
+internal fun urgencyArc(lengths: ArcDegrees): LayoutElementBuilders.Arc {
     val arc = LayoutElementBuilders.Arc.Builder()
         .setAnchorAngle(degrees(ARC_START_DEGREES))
         .setAnchorType(LayoutElementBuilders.ARC_ANCHOR_START)

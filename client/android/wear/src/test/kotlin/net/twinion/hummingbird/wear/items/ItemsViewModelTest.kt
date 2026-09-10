@@ -1,6 +1,9 @@
 package net.twinion.hummingbird.wear.items
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -53,5 +56,21 @@ class ItemsViewModelTest {
         vm.toggle("b", 1L)
         assertNull(vm.open.value)
         assertEquals(listOf("a", "b"), fetched)
+    }
+
+    /** The fold that lands while the description is still on its way must
+     * win: a fetch that completes afterwards may not reopen the card. */
+    @Test
+    fun `a fold during the fetch is not undone when the fetch lands`() = runBlocking {
+        val parked = CompletableDeferred<String?>()
+        val vm = ItemsViewModel(boardFn = { board(emptyList()) }, descriptionFn = { _, _ -> parked.await() })
+        val opening = launch { vm.toggle("a", 1L) }
+        // Let the toggle reach the fetch and park there.
+        while (vm.open.value == null) yield()
+        vm.toggle("a", 1L)
+        assertNull(vm.open.value)
+        parked.complete("about a")
+        opening.join()
+        assertNull("the landed fetch must not resurrect the folded card", vm.open.value)
     }
 }
