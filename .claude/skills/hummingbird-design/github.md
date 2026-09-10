@@ -25,6 +25,18 @@ date: 2026-08-09T20:05:16Z
 | `ui_kits/web/*`, `ui_kits/ios/*`, `ui_kits/android/*`, `ui_kits/wear/*` | `CONTEXT.md` glossary (proposed screens — no shipped counterpart) |
 | `tokens/colors.css` | `uploads/*-1024.png` app icons, `client/web/index.html` `theme-color` |
 
+## Pending push (mirror -> design project)
+
+- `README.md` -> `readme.md` — the **ICONOGRAPHY** vocabulary gains
+  `calendar-check` for the capture box's "Mint for today" square, on
+  `ember-700` (the Wear capture design handoff of 2026-09-10, implemented on
+  the `:wear` branch with #807): `flag` stays the deadline glyph in item
+  metadata; the square that *writes* today's deadline now reads as the
+  accent's family with more heat under the calendar-check. No token changes —
+  `--ember-700`/`--ember-800` already exist. Amended in the mirror first; push
+  from a session authorized on the WORK account, after checking upstream
+  `readme.md` is byte-identical to this mirror's copy at the commit before.
+
 ## Last push (mirror -> design project)
 
 date: 2026-09-09

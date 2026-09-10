@@ -51,6 +51,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import net.twinion.hummingbird.core.WallClock
 import net.twinion.hummingbird.speech.DictationFailure
 import net.twinion.hummingbird.speech.DictationHost
 import net.twinion.hummingbird.ui.LevelGlyphFamily
@@ -62,6 +63,7 @@ import net.twinion.hummingbird.ui.forms.LinkField
 import net.twinion.hummingbird.ui.forms.PriorityRow
 import net.twinion.hummingbird.ui.forms.ProjectField
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
+import net.twinion.hummingbird.ui.theme.Ember700
 import net.twinion.hummingbird.ui.theme.Sky600
 import uniffi.hummingbird_ffi_mobile.CaptureDestination
 import uniffi.hummingbird_ffi_mobile.parseSharePayload
@@ -208,9 +210,9 @@ private fun CaptureScreen(
         }
     }
 
-    fun submit(destination: CaptureDestination) {
+    fun submit(destination: CaptureDestination, deadlineOverride: String? = null) {
         scope.launch {
-            if (viewModel.submit(destination, System.currentTimeMillis())) {
+            if (viewModel.submit(destination, System.currentTimeMillis(), deadlineOverride)) {
                 onFinished()
             }
         }
@@ -417,9 +419,17 @@ private fun CaptureScreen(
             // `contentDescription` is the only place its gesture is named.
             // `Sky600` is named directly rather than taken from the scheme
             // because `tertiary` is only the light scheme's blue and one
-            // fill has to carry white content in both themes. Both are
-            // gated on the in-flight flag as well as the draft: two doors
-            // to one `captureFn` is two ways to mint the same words twice
+            // fill has to carry white content in both themes. The third
+            // square is the web's "Mint for today" (the Wear capture design
+            // handoff, 2026-09-10, brought it to the phone): the mint again
+            // with today's date stamped as the deadline, on `Ember700` — the
+            // same family as the mint with more heat, named directly for the
+            // same reason as `Sky600` — under the `calendar-check` glyph. The
+            // date is `WallClock.todayDeadline`'s, the one such rule on
+            // Android, and it travels as a submit override rather than form
+            // state ([CaptureViewModel.submit]'s doc). All three are gated
+            // on the in-flight flag as well as the draft: three doors to one
+            // `captureFn` is three ways to mint the same words twice
             // ([CaptureViewModel.submitting]).
             val canSubmit = viewModel.canSubmitDraft() && !submitting
             Row(
@@ -451,6 +461,26 @@ private fun CaptureScreen(
                     Icon(
                         painter = painterResource(R.drawable.ic_plus),
                         contentDescription = "Add",
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+                Button(
+                    onClick = {
+                        submit(
+                            CaptureDestination.READY,
+                            deadlineOverride = WallClock.todayDeadline(System.currentTimeMillis()),
+                        )
+                    },
+                    enabled = canSubmit,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Ember700,
+                        contentColor = Color.White,
+                    ),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_calendar_check),
+                        contentDescription = "Mint for today",
                         modifier = Modifier.size(20.dp),
                     )
                 }

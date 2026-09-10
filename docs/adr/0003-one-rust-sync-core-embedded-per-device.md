@@ -11,7 +11,12 @@ standalone crate the server shares. · **amended 2026-08-09 by
 [ADR-0010](0010-one-core-per-origin.md):** on the web host the core is embedded
 once per *origin*, not once per document — it lives in a `SharedWorker`, and
 every tab and installed-PWA window is a view holding a `MessagePort`.
-Per-device embedding stands everywhere else.
+Per-device embedding stands everywhere else. · **amended 2026-09-10 by
+[ADR-0039](0039-the-watch-is-a-device-with-its-own-core.md):** the Wear
+consumer this table anticipated exists — the watch embeds its own core with
+its own `device` token, and the Gradle seam every Android-family app shares is
+the `:core-binding` library module (the two cargo tasks and the UniFFI binding
+run once, for `:app` and `:wear` alike).
 **Context:** the stack grilling of 2026-08-07, wayfinder map
 [#35](https://github.com/JddAndrewLauren/hummingbird/issues/35) ticket
 [#40](https://github.com/JddAndrewLauren/hummingbird/issues/40). Implements

@@ -83,14 +83,21 @@ jobs:
       # with its tests never run.
       - name: Unit tests
         working-directory: client/android
-        run: ./gradlew --no-daemon :core-binding:testDebugUnitTest :brand:testDebugUnitTest :app:testDebugUnitTest
+        run: ./gradlew --no-daemon :core-binding:testDebugUnitTest :brand:testDebugUnitTest :app:testDebugUnitTest :wear:testDebugUnitTest
 
-      - name: Assemble debug APK
+      # Both application modules (ADR-0039): the phone and the watch.
+      - name: Assemble debug APKs
         working-directory: client/android
-        run: ./gradlew --no-daemon :app:assembleDebug
+        run: ./gradlew --no-daemon :app:assembleDebug :wear:assembleDebug
 
       - uses: actions/upload-artifact@v4
         with:
           name: hummingbird-debug-apk
           path: client/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hummingbird-wear-debug-apk
+          path: client/android/wear/build/outputs/apk/debug/wear-debug.apk
           retention-days: 14

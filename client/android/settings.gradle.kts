@@ -4,7 +4,7 @@
 // core-binding/build.gradle.kts wires (cargo-ndk for the .so, uniffi-bindgen
 // for the Kotlin binding), both running against the `client/` cargo workspace
 // one directory up. `:core-binding` and `:brand` are the libraries every device
-// app here consumes (ADR-0039); `:app` is the phone.
+// app here consumes (ADR-0039); `:app` is the phone, `:wear` the watch.
 pluginManagement {
     repositories {
         google {
@@ -31,3 +31,4 @@ rootProject.name = "hummingbird-android"
 include(":core-binding")
 include(":brand")
 include(":app")
+include(":wear")

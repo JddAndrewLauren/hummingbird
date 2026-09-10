@@ -5,6 +5,12 @@
 Android's frontier board offers four grouping axes; the web offers five. Close
 that gap — or decide deliberately that it stays open and record why.
 
+> **2026-09-10:** the watch now consumes this axis — `client/android/wear/`'s
+> Items screen and capture tile both read `nowBoard(MobileFrontierAxis.URGENCY,
+> …, MobileCalmOrder.OLDEST)` (ADR-0039 as amended). The seam is proven from
+> Kotlin; what is still open is only the phone's fifth chip and its layout
+> budget below.
+
 ## Why it was left open (2026-09-08)
 
 The web slice that added `FrontierAxis::Urgency` deliberately stopped at the

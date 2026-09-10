@@ -52,6 +52,23 @@ androidxTestRunner = "1.6.2"
 # `ChoiceRowWrappingTest` keeps it off an SDK level it has no android-all jar
 # for (this module compiles against 36).
 robolectric = "4.14.1"
+# The watch (ADR-0039, `:wear`). Every pin below was read off Google's Maven
+# index on 2026-09-10. Wear Compose stays on the 1.5 line deliberately:
+# 1.5.6 is built against Compose 1.8.x, which `composeBom` above already
+# resolves to, while 1.6.x requires Compose 1.9.0 and would force a BoM bump
+# on the phone for a watch-only need. `wearTiles` and `wearProtolayout` are
+# a matched pair — `tiles:1.6.2`'s own POM depends on `protolayout:1.4.2`.
+wearCompose = "1.5.6"
+wearInput = "1.2.0"
+wearTiles = "1.6.2"
+wearProtolayout = "1.4.2"
+playServicesWearable = "20.0.1"
+# `RemoteActivityHelper`: the watch's "Open on phone" (an item link the phone's
+# `.ItemLink` alias claims). Stable 1.2.0; nothing here needs the 1.3 alphas.
+wearRemoteInteractions = "1.2.0"
+# `CallbackToFutureAdapter`, the tile service's way to answer a
+# `ListenableFuture` without Guava. `tiles` already pulls it at runtime.
+concurrentFutures = "1.3.0"
 
 [libraries]
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
@@ -102,6 +119,25 @@ robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "
 compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
 compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
+# The watch's UI (`:wear`, ADR-0039): Wear Compose Material 3, its foundation
+# (`ScalingLazyColumn`), and the swipe-to-dismiss NavHost.
+wear-compose-material3 = { group = "androidx.wear.compose", name = "compose-material3", version.ref = "wearCompose" }
+wear-compose-foundation = { group = "androidx.wear.compose", name = "compose-foundation", version.ref = "wearCompose" }
+wear-compose-navigation = { group = "androidx.wear.compose", name = "compose-navigation", version.ref = "wearCompose" }
+# `RemoteInputIntentHelper` — the system input chooser the watch's capture
+# hands the title to (voice first, keyboard behind it).
+wear-input = { group = "androidx.wear", name = "wear-input", version.ref = "wearInput" }
+wear-remote-interactions = { group = "androidx.wear", name = "wear-remote-interactions", version.ref = "wearRemoteInteractions" }
+# The capture tile: `TileService` plus the ProtoLayout builders it renders.
+wear-tiles = { group = "androidx.wear.tiles", name = "tiles", version.ref = "wearTiles" }
+wear-protolayout = { group = "androidx.wear.protolayout", name = "protolayout", version.ref = "wearProtolayout" }
+wear-protolayout-material3 = { group = "androidx.wear.protolayout", name = "protolayout-material3", version.ref = "wearProtolayout" }
+# The Data Layer (`MessageClient`/`NodeClient`), on both ends of the token
+# hand-off: the phone sends, the watch's `WearableListenerService` receives.
+play-services-wearable = { group = "com.google.android.gms", name = "play-services-wearable", version.ref = "playServicesWearable" }
+# `Task.await()` for the Data Layer calls, versioned with `coroutines`.
+coroutines-play-services = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-play-services", version.ref = "coroutines" }
+androidx-concurrent-futures = { group = "androidx.concurrent", name = "concurrent-futures", version.ref = "concurrentFutures" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

@@ -19,8 +19,15 @@ export interface IconButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonEle
    * `info` pins `--sky-600` rather than `--stage-triage`, whose dark-mode
    * value is the light `#5cb6d8` and cannot carry white content — one blue
    * across both themes, the way Compose keeps `primary = Ember500`.
+   *
+   * `ember-deep` rests on `--ember-700` — the accent's own family with more
+   * heat, the bird's deep throat — for the one gesture that is the mint
+   * *plus* a claim about the date ("Mint for today"); its hover and press
+   * step to `--ember-800`, the only darker rung the ramp has. A tone rather
+   * than a `style` background because the border is derived from the fill:
+   * an override would leave a 1px accent seam around a deeper square.
    */
-  tone?: "neutral" | "info" | "accent";
+  tone?: "neutral" | "info" | "accent" | "ember-deep";
   disabled?: boolean;
   style?: CSSProperties;
 }
@@ -30,8 +37,9 @@ type IconButtonSize = NonNullable<IconButtonProps["size"]>;
 const BOX: Record<IconButtonSize, number> = { sm: 28, md: 34, lg: 44 };
 
 /** Rest / hover / press fill for each non-neutral tone. */
-const TONE_FILL: Record<"info" | "accent", [string, string, string]> = {
+const TONE_FILL: Record<"info" | "accent" | "ember-deep", [string, string, string]> = {
   accent: ["var(--accent)", "var(--accent-hover)", "var(--accent-press)"],
+  "ember-deep": ["var(--ember-700)", "var(--ember-800)", "var(--ember-800)"],
   info: ["var(--sky-600)", "var(--sky-900)", "var(--sky-900)"],
 };
 

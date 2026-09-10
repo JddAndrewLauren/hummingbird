@@ -12,40 +12,6 @@ plugins {
     alias(libs.plugins.google.services)
 }
 
-// ---------------------------------------------------------------------------
-// The build version (see `defaultConfig` for the scheme). `git` is run at
-// configure time, twice, against the repo root two levels up; a non-zero
-// exit or a shallow clone yields the fallback rather than a truncated count.
-// ---------------------------------------------------------------------------
-fun git(vararg args: String): String? =
-    runCatching {
-        val proc = ProcessBuilder("git", *args)
-            .directory(rootProject.projectDir)
-            .redirectErrorStream(true)
-            .start()
-        val out = proc.inputStream.bufferedReader().readText().trim()
-        if (proc.waitFor() == 0) out else null
-    }.getOrNull()
-
-val gitIsShallow: Boolean = git("rev-parse", "--is-shallow-repository") != "false"
-
-fun buildVersionCode(): Int =
-    if (gitIsShallow) 1 else git("rev-list", "--count", "HEAD")?.toIntOrNull() ?: 1
-
-fun buildVersionName(): String {
-    val versionFile = rootProject.projectDir.parentFile.parentFile.resolve("VERSION")
-    val base = Regex("""^\s*(\d+)\.(\d+)\.(\d+)\s*$""")
-        .find(runCatching { versionFile.readText() }.getOrDefault(""))
-        ?: return "0.0.0+unknown"
-    val (major, minor, patch) = base.destructured
-    if (gitIsShallow) return "$major.$minor.$patch+unknown"
-    val touched = git("log", "-1", "--format=%H", "--", versionFile.absolutePath)
-        ?.takeIf { it.isNotEmpty() } ?: return "$major.$minor.$patch+unknown"
-    val since = git("rev-list", "--count", "$touched..HEAD")?.toIntOrNull()
-        ?: return "$major.$minor.$patch+unknown"
-    return "$major.$minor.${patch.toInt() + since}"
-}
-
 android {
     namespace = "net.twinion.hummingbird"
     compileSdk = 36
@@ -56,17 +22,11 @@ android {
         // (grilling 2026-08-14 on #141); nothing older is ever sideloaded.
         minSdk = 35
         targetSdk = 36
-        // The build version, on the web's scheme (`client/web/src/shell/
-        // build-version.ts`): `VERSION` at the repo root plus the commits
-        // since it was last touched, as the patch. `versionCode` is the
-        // total commit count, so it only ever climbs -- Android refuses a
-        // downgrade, and a stable, climbing code is what lets the phone
-        // install a new APK over the old one in place (`deploy.sh`). Both
-        // fall back when git cannot say (CI's checkout is shallow, and an
-        // export has no history at all): `1` and `+unknown`, never a number
-        // nobody wrote.
-        versionCode = buildVersionCode()
-        versionName = buildVersionName()
+        // The build version: computed once in the root build file (its
+        // header has the scheme) and shared with `:wear`, so both APKs a
+        // deploy produces carry the same stamp.
+        versionCode = rootProject.extra["hbVersionCode"] as Int
+        versionName = rootProject.extra["hbVersionName"] as String
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -182,6 +142,12 @@ dependencies {
     // request is a question, and questions go stale (#269); a sync mutation
     // is a fact the user already decided.
     implementation(libs.okhttp)
+
+    // ADR-0039: the watch's token hand-off. Settings' Watch card sends the
+    // `device-watch` token over the Wearable Data Layer (`WatchTokenSender`);
+    // `Task.await()` is the coroutines bridge for those calls.
+    implementation(libs.play.services.wearable)
+    implementation(libs.coroutines.play.services)
 
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)

@@ -143,6 +143,27 @@ class CaptureViewModelTest {
         assertEquals(listOf(CaptureDestination.TRIAGE, CaptureDestination.READY), seen)
     }
 
+    /** The third button, "Mint for today": the override wins over a day
+     * picked under the details disclosure (the button's name is a promise
+     * about the date), and it is an override — the form keeps its own
+     * deadline, so a refused or repeated capture does not carry today
+     * along silently. Without an override the form's deadline goes as is. */
+    @Test
+    fun `a deadline override reaches the draft sent and never the form`() = runBlocking {
+        val seen = mutableListOf<String>()
+        val vm = viewModel(
+            canSubmitFn = { true },
+            captureFn = { draft, _ -> seen.add(draft.deadline); "minted-id" },
+        )
+        vm.updateDraft(draftWithTitle("buy milk").copy(deadline = "2026-12-24"))
+
+        assertTrue(vm.submit(CaptureDestination.READY, 1_000L, deadlineOverride = "2026-09-10"))
+        assertEquals("2026-12-24", vm.draft.value.deadline)
+        assertTrue(vm.submit(CaptureDestination.READY, 2_000L))
+
+        assertEquals(listOf("2026-09-10", "2026-12-24"), seen)
+    }
+
     /** Two submit buttons plus the title field's IME action are three doors
      * onto one `captureFn`, so a second tap inside the first's suspension
      * would mint the same words twice — and the duplicate is

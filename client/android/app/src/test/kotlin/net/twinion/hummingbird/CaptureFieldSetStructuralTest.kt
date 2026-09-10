@@ -118,7 +118,10 @@ class CaptureFieldSetStructuralTest {
     @Test
     fun `submit gates on both canSubmitDraft and its own two injected predicates`() {
         val viewModelSrc = captureFieldSrcByName.getValue("CaptureViewModel.kt")
-        val submitBody = Regex("""suspend fun submit\(destination: CaptureDestination, nowMs: Long\)[\s\S]*?\n {4}}""")
+        // The signature is matched loosely past `destination`: the third
+        // submit button added a `deadlineOverride` parameter (2026-09-10),
+        // and the control flow being pinned is the same either way.
+        val submitBody = Regex("""suspend fun submit\(\s*destination: CaptureDestination,[\s\S]*?\n {4}}""")
             .find(viewModelSrc)
             ?.value
             ?: error("could not locate CaptureViewModel.submit in the source")
@@ -224,7 +227,7 @@ class CaptureFieldSetStructuralTest {
      * are editable now, and `canSubmit(draft.title)` would pass a
      * malformed deadline to the authority's dead-letter journal. */
     @Test
-    fun `both capture surfaces submit through two destination-carrying buttons`() {
+    fun `both capture surfaces submit through three destination-carrying buttons`() {
         for (name in listOf("CaptureActivity.kt", "CaptureSheet.kt")) {
             // Comments stripped, unlike the bans above: every assertion
             // here is about what the code does, and both files explain in
@@ -239,6 +242,26 @@ class CaptureFieldSetStructuralTest {
             assertTrue(
                 "$name must offer an Add submit carrying its own destination",
                 src.contains("submit(CaptureDestination.READY"),
+            )
+            // The third square (the Wear capture handoff, 2026-09-10): the
+            // mint with today's date stamped, and the date is the one shared
+            // rule in `:core-binding` — never a second local-date rule that
+            // can drift from the web's `todayDeadline`.
+            assertTrue(
+                "$name must offer a Mint-for-today submit stamping WallClock.todayDeadline",
+                src.contains("deadlineOverride = WallClock.todayDeadline("),
+            )
+            assertTrue(
+                "$name must draw the Mint-for-today square under the calendar-check glyph",
+                src.contains("R.drawable.ic_calendar_check"),
+            )
+            assertTrue(
+                "$name must fill the Mint-for-today square with Ember700",
+                src.contains("containerColor = Ember700"),
+            )
+            assertFalse(
+                "$name must not re-derive today's date itself — WallClock.todayDeadline is the rule",
+                src.contains("LocalDate.now("),
             )
             assertFalse(
                 "$name must not keep a FilterChip destination switch — the buttons are the choice",

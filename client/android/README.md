@@ -84,6 +84,108 @@ an NDK (Studio's SDK manager, or `sdkmanager "ndk;<version>"`).
 - On device, the app asks once for a `device` token (minted by the
   operator against the authority); it rests in the Android Keystore.
 
+## The watch (ADR-0039)
+
+The Pixel Watch client is the `:wear` module — a device with its own Rust
+core and its own `device` token, `device-watch`, not a view over the phone's.
+It shares two libraries with `:app` and nothing else:
+
+| Module | What it holds |
+| --- | --- |
+| `:core-binding` | The two cargo tasks, the UniFFI binding, `AUTHORITY_BASE_URL`, and the host core package (`CoreHolder`, `TokenStore`, `TokenValidation`, `TokenMessage`, `ZoneBridge`, `SyncHistoryStore`, `WallClock` — with `todayDeadline`, the one "Mint for today" date rule both clients read — `ItemLink`, the one spelling of `hummingbird://item/<id>`, the diagnostics recorder and journal, `SyncWorker` with its `onRunFinished` host hook). minSdk 34. |
+| `:brand` | `Color.kt`, `Font.kt` + `res/font/`, every Lucide `ic_*` drawable (`net.twinion.hummingbird.brand.R`), and the pane words: `PaneAnswers`, `PaneGlyph`, `PaneCollapse`, `PaneBand`, `NowPaneWords`. minSdk 34. |
+| `:app` | The phone — everything that draws or that only the phone does. minSdk 35. |
+| `:wear` | The watch — home, items by urgency, questions, capture with its destination screen, the data-bearing capture tile, the token listener. minSdk 34, arm64-v8a only. |
+
+**The Data Layer coupling.** The phone sends the watch its token over the
+Wearable `MessageClient` (Settings → Watch → "Send to watch"), and the Data
+Layer delivers only between apps with the **same package name and the same
+signing certificate** on paired nodes. So `:wear` ships under the phone's
+`applicationId` and the phone's release key, `deploy.sh` builds both APKs in
+one go and prints both certificate lines (they must match), and a watch
+running a debug build while the phone runs release receives nothing — with
+no error anywhere. Install the watch with the release key from the first
+install.
+
+**Provisioning.** Mint the watch's token once:
+`./scripts/mint-device-token.sh device-watch "Pixel Watch" hummingbird-device-watch`,
+then paste it from 1Password into the phone's Settings → Watch card and tap
+"Send to watch". The phone reports `Sent to Pixel Watch.`; the watch's home
+line "Send a token from the phone" disappears and a sync lands within the
+minute. The raw token is retained nowhere on the phone.
+
+**Deploy, over adb over Wi-Fi.** Developer options on the watch → Wireless
+debugging → Pair new device; then on the Mac:
+
+```
+adb pair <watch-ip>:<pairing-port>     # once, with the code the watch shows
+adb connect <watch-ip>:<port>
+adb -s <watch-ip>:<port> install -r ~/Dropbox/hummingbird/apk/hummingbird-wear-latest.apk
+```
+
+`versionCode` is the commit count, shared with the phone, so later installs
+go over the previous one in place with the token intact.
+
+**The compile rule is the same.** `android.yml` is the only mandated gate,
+and it runs `:wear:testDebugUnitTest` and `:wear:assembleDebug` (artifact
+`hummingbird-wear-debug-apk`). The Mac's Wear AVD (`Pixel_Watch`, Wear OS
+7.0, arm64) runs this APK as it is; a Wear emulator on an Intel host is
+x86_64 and this APK is arm64-only by decision — widening `abiFilters` behind
+a `-PwearEmulator` property is the documented route there and is deliberately
+not built until someone needs it.
+
+**Emulator pass (2026-09-10, debug APK on the `Pixel_Watch` AVD, API 37).**
+Installed and launched clean; `libhummingbird_ffi_mobile.so` loaded and the
+hourly `SyncWorker` ran at start. Home drew the ember Capture button with
+the feather glyph, the tonal Questions button and the mono line "Send a
+token from the phone". Questions listed the Now panes with the roster's
+labels, band dots and headlines ("No open homework", "Waiting for the first
+calendar sync", "Not set up"), and a tap expanded the SCPS row in place.
+Capture opened the system chooser (emoji, voice, keyboard); the **emoji
+path captured end to end** — the one-shot sync worker started, the
+"Captured" confirmation drew, the activity finished back to home. The
+**keyboard path did not hand its text back**: Gboard logged its Send
+action, the chooser came back on top instead of returning to
+`CaptureActivity`, and back then cancelled cleanly. Whether that is the
+preview image's Gboard or a real defect is the hardware pass's first
+question; voice was not exercisable on the emulator.
+
+**Emulator pass, second (2026-09-10, the redesigned surface — the Wear
+capture design handoff, ADR-0039 as amended; debug APK `0.3.37` on the same
+AVD).** Home drew Capture, Items and Questions. **Items by urgency** listed
+the mirror's one item under `ITEMS · BY URGENCY` with its calm dot and `NO
+DEADLINE`. **Questions** drew the restyled cards under `STANDING QUESTIONS`.
+**Capture** through the emoji path reached the **destination screen** —
+the emoji as the transcript over the three rounds — and both `Mint for
+today` (`Captured` / `READY · DUE TODAY`) and `Triage` (`Captured` /
+`TRIAGE`) confirmed and finished. **The tile** (added through Wear's
+`DEBUG_SURFACE` broadcast, shown by swiping from the face) drew the track
+ring, the ember feather disc and the two glyph rounds in brand colours — no
+count line and no arc segments, because the emulator holds no token and
+the tile never invents a number. Three things the pass found and this branch
+fixed: Lucide's compact arc flags inflate under Compose but not under
+`VectorDrawable` (`ic_feather`, `ic_zap`; `VectorArcFlagsTest` now bans
+the form), sysui's renderer could not load the glyphs by resource id even
+then (they ship inline as PNG), and two layouts clipped on the round face.
+`tile_preview.png` is this pass's tile. Not exercisable here: voice, the
+keyboard path (unchanged from the first pass), and **"Open on phone"** —
+`RemoteActivityHelper` needs a paired phone.
+
+**Proving the lane on hardware — the watch.** *Owed by the first device
+pass:* the phone reports `Sent to Pixel Watch.`, the home line clears, the
+capture button opens the recogniser already listening (and a cancelled
+recogniser falls back to the chooser), a
+dictated line reaches the destination screen and lands where it was sent
+(Triage; Ready; Ready with today's date) on the phone within a minute, the
+Items list matches the phone's frontier on the urgency axis and **"Open on
+phone" lands on the phone's item detail** (the `.ItemLink` alias, over
+`RemoteActivityHelper`), the questions list matches the phone's Now panes
+in order with a switched-off question absent, a tap expands in place, the
+tile is added from the face and shows the arc and counts after the first
+sync and `SYNCED nH AGO` once the mirror is an hour old, and its disc opens
+the recogniser while its rounds open the two lists. Record the run here with
+its date and the APK's version.
+
 ## Sync model (grilling 2026-08-14)
 
 Foreground: one `user` cycle on resume plus the 60-second `timer` cadence

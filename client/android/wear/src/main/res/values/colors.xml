@@ -1,0 +1,8 @@
+<resources>
+    <!-- sand-50, tokens/colors.css: the launcher icon's plate, the same
+         value `:app`'s colors.xml carries and for the same reason — the
+         light-plate bird artwork it wraps. The phone's `ColorTokenDriftTest`
+         gates the phone copy; `WearThemeStructuralTest` pins this one
+         equal to it. -->
+    <color name="ic_launcher_background">#fdfaf6</color>
+</resources>

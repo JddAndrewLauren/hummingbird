@@ -109,6 +109,29 @@
             </intent-filter>
         </activity-alias>
 
+        <!-- The item-link door (the Wear capture design handoff, 2026-09-10):
+             `hummingbird://item/<id>`, which the watch fires through
+             `RemoteActivityHelper` from an expanded row's "Open on phone".
+             An alias over MainActivity for the same reason the two above
+             are aliases over CaptureActivity — one entry per door, and the
+             launcher entry keeps its own single filter. VIEW + BROWSABLE is
+             what `RemoteActivityHelper` requires of an intent it carries.
+             The URI is `ItemLink`'s (`:core-binding`), defined once for
+             both APKs; MainActivity reads it through `ItemLink.itemId` and
+             lands on the existing item-detail route through the same
+             pop-to-Now door a tapped notification uses. -->
+        <activity-alias
+            android:name=".ItemLink"
+            android:targetActivity=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="hummingbird" android:host="item" />
+            </intent-filter>
+        </activity-alias>
+
         <!-- The FCM entry point (M2/#141). `exported="false"`: the only
              caller is Google Play services, which binds it through the
              MESSAGING_EVENT action rather than by export. -->

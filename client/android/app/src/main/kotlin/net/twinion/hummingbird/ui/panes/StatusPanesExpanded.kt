@@ -48,14 +48,6 @@ import uniffi.hummingbird_ffi_mobile.MobileWorkflowResolved
 @Composable
 internal fun warnColor(): Color = if (LocalHbDark.current) StatusWarnFgDark else Amber600
 
-/** The web's shared stale caveat line — "stale — as of Nh ago", or the
- * honest no-number arm (`WastePaneExpanded.tsx`'s own note: an unknown age
- * has no hours to name, so it says that instead of fabricating one). */
-internal fun staleWords(freshness: MobilePaneFreshness): String = when (freshness) {
-    is MobilePaneFreshness.Age -> "stale — as of ${freshness.ageMs / 3_600_000}h ago"
-    MobilePaneFreshness.Unknown -> "stale — age unknown"
-}
-
 @Composable
 internal fun StaleLine(freshness: MobilePaneFreshness) {
     Text(
