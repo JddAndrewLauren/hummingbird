@@ -92,10 +92,10 @@ It shares two libraries with `:app` and nothing else:
 
 | Module | What it holds |
 | --- | --- |
-| `:core-binding` | The two cargo tasks, the UniFFI binding, `AUTHORITY_BASE_URL`, and the host core package (`CoreHolder`, `TokenStore`, `TokenValidation`, `TokenMessage`, `ZoneBridge`, `SyncHistoryStore`, `WallClock`, the diagnostics recorder and journal, `SyncWorker`). minSdk 34. |
+| `:core-binding` | The two cargo tasks, the UniFFI binding, `AUTHORITY_BASE_URL`, and the host core package (`CoreHolder`, `TokenStore`, `TokenValidation`, `TokenMessage`, `ZoneBridge`, `SyncHistoryStore`, `WallClock` — with `todayDeadline`, the one "Mint for today" date rule both clients read — `ItemLink`, the one spelling of `hummingbird://item/<id>`, the diagnostics recorder and journal, `SyncWorker` with its `onRunFinished` host hook). minSdk 34. |
 | `:brand` | `Color.kt`, `Font.kt` + `res/font/`, every Lucide `ic_*` drawable (`net.twinion.hummingbird.brand.R`), and the pane words: `PaneAnswers`, `PaneGlyph`, `PaneCollapse`, `PaneBand`, `NowPaneWords`. minSdk 34. |
 | `:app` | The phone — everything that draws or that only the phone does. minSdk 35. |
-| `:wear` | The watch — home, questions, capture, the capture tile, the token listener. minSdk 34, arm64-v8a only. |
+| `:wear` | The watch — home, items by urgency, questions, capture with its destination screen, the data-bearing capture tile, the token listener. minSdk 34, arm64-v8a only. |
 
 **The Data Layer coupling.** The phone sends the watch its token over the
 Wearable `MessageClient` (Settings → Watch → "Send to watch"), and the Data
@@ -150,12 +150,39 @@ action, the chooser came back on top instead of returning to
 preview image's Gboard or a real defect is the hardware pass's first
 question; voice was not exercisable on the emulator.
 
+**Emulator pass, second (2026-09-10, the redesigned surface — the Wear
+capture design handoff, ADR-0039 as amended; debug APK `0.3.37` on the same
+AVD).** Home drew Capture, Items and Questions. **Items by urgency** listed
+the mirror's one item under `ITEMS · BY URGENCY` with its calm dot and `NO
+DEADLINE`. **Questions** drew the restyled cards under `STANDING QUESTIONS`.
+**Capture** through the emoji path reached the **destination screen** —
+the emoji as the transcript over the three rounds — and both `Mint for
+today` (`Captured` / `READY · DUE TODAY`) and `Triage` (`Captured` /
+`TRIAGE`) confirmed and finished. **The tile** (added through Wear's
+`DEBUG_SURFACE` broadcast, shown by swiping from the face) drew the track
+ring, the ember feather disc and the two glyph rounds in brand colours — no
+count line and no arc segments, because the emulator holds no token and
+the tile never invents a number. Three things the pass found and this branch
+fixed: Lucide's compact arc flags inflate under Compose but not under
+`VectorDrawable` (`ic_feather`, `ic_zap`; `VectorArcFlagsTest` now bans
+the form), sysui's renderer could not load the glyphs by resource id even
+then (they ship inline as PNG), and two layouts clipped on the round face.
+`tile_preview.png` is this pass's tile. Not exercisable here: voice, the
+keyboard path (unchanged from the first pass), and **"Open on phone"** —
+`RemoteActivityHelper` needs a paired phone.
+
 **Proving the lane on hardware — the watch.** *Owed by the first device
 pass:* the phone reports `Sent to Pixel Watch.`, the home line clears, a
-dictated line lands in Triage on the phone within a minute, the questions
-list matches the phone's Now panes in order with a switched-off question
-absent, a tap expands in place, the tile is added from the face and its tap
-opens the chooser. Record the run here with its date and the APK's version.
+dictated line reaches the destination screen and lands where it was sent
+(Triage; Ready; Ready with today's date) on the phone within a minute, the
+Items list matches the phone's frontier on the urgency axis and **"Open on
+phone" lands on the phone's item detail** (the `.ItemLink` alias, over
+`RemoteActivityHelper`), the questions list matches the phone's Now panes
+in order with a switched-off question absent, a tap expands in place, the
+tile is added from the face and shows the arc and counts after the first
+sync and `SYNCED nH AGO` once the mirror is an hour old, and its disc opens
+the chooser while its rounds open the two lists. Record the run here with
+its date and the APK's version.
 
 ## Sync model (grilling 2026-08-14)
 

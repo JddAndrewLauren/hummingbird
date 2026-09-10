@@ -1,6 +1,8 @@
 # ADR-0039: The watch is a device with its own core
 
-**Status:** accepted · 2026-09-10
+**Status:** accepted · 2026-09-10 · amended inline 2026-09-10 (the Wear
+capture design handoff, on #807: decisions 3, 5 and 6, and "what this does
+not decide")
 **Context:** map #35's build order (desktop web → native Android → Wear OS)
 reached the watch, and #129 — a watch tile per standing-question pane — had
 parked as `ready-for-human` because no Wear client existed and its specifics
@@ -58,6 +60,17 @@ renders one engine's published state; the watch has an engine of its own).
    decision 4 already places OS text entry, dictation included, outside the
    local-only guarantee.
 
+   *Amended 2026-09-10 (the Wear capture design handoff, #807):* the line no
+   longer goes straight to Triage. The core's gate is asked first, then a
+   **destination screen** draws the transcript as spoken over the web
+   capture box's three squares as three rounds — Triage (the inbox on
+   `Sky600`), Mint action (the plus on the accent), Mint for today (the
+   `calendar-check` on `Ember700`, stamping `WallClock.todayDeadline`, the
+   one such rule on Android, shared with the phone's third button) — and
+   the confirmation names where it landed (`TRIAGE`, `READY`, `READY · DUE
+   TODAY`). Still title-only otherwise; deciding is still mint-time work,
+   and the two extra facts are the tap's, not a form's.
+
 4. **The questions list is the Now surface's `rank_panes`, rendered on Wear,
    in the order the core returns it.** The six Now questions, in salience
    order exactly as the web's Now screen and the phone's Now panes draw
@@ -80,12 +93,47 @@ renders one engine's published state; the watch has an engine of its own).
    argument against a per-device record in the synced schema applies whole.
    Their refresh budget is the open question #129 still owes a grilling.
 
+   *Amended 2026-09-10 (the Wear capture design handoff, #807):* **the one
+   tile is no longer static.** It draws from the mirror — an urgency arc
+   around the face (overdue, then everything due within the core's three-day
+   window as one segment; two colours read at a glance on a 1.4-inch face,
+   three do not — operator decision) and a mono count line — around the
+   ember feather disc that opens `CaptureActivity`, with two glyph rounds
+   beneath it that open the Items and Questions lists. Its refresh is
+   decided: a redraw request after every completed sync (both legs;
+   `SyncWorker` gained a host hook the phone leaves unset) and an hourly
+   freshness interval as the fallback — one cadence, no second clock. Its
+   honesty rule is decision 6's: once the mirror is an hour old the count
+   line reads `SYNCED nH AGO` rather than a stale number as a current one;
+   with no token it draws the disc alone. Every colour is a `:brand`
+   constant through the tile's own ProtoLayout `ColorScheme`. Per-question
+   tiles, their content and *their* refresh budget stay #129's.
+
 6. **The home screen is two buttons and at most one line.** Capture (ember —
    the one accent, its one use here; `feather`, the brand's verb) and
    Questions (tonal), and beneath them either "Send a token from the phone"
    (no token, or the last cycle refused it) or "synced Nh ago" once the
    mirror is over an hour old — the design README's honesty rule. Inside the
    hour the screen says nothing.
+
+   *Amended 2026-09-10 (the Wear capture design handoff, #807):* three
+   buttons — Capture, then **Items** (tonal, `zap`) and Questions (tonal,
+   `help-circle`), the tile's two rounds as words. **Items by urgency** is a
+   third screen: the frontier on the core's `Urgency` axis — the `nowBoard`
+   door the phone's Now screen reads, flattened column by column so the
+   flattening is the order and nothing on the watch sorts
+   (`WearItemsStructuralTest`, decision 4's rule re-applied). One card per
+   item: the dot in the urgency colour, one mono line folding the band and
+   the deadline (`OVERDUE · THU`, `DUE TODAY`, `DUE FRI`, `DUE OCT 3`, `NO
+   DEADLINE` — a rendering of the core's band against the board's own day,
+   per-client under ADR-0025 as the phone's `urgencyLabel` already is), the
+   title, the context and size when set. Tap expands one card at a time:
+   the description (`itemDetail`, fetched then), and **Open on phone** — an
+   item link, `hummingbird://item/<id>`, spelled once in `:core-binding`'s
+   `ItemLink`, carried by `RemoteActivityHelper` and claimed by the phone's
+   `.ItemLink` alias onto its existing item-detail route. The watch still
+   reads and never writes: a launch on the phone is not a write on the
+   watch. The questions list is restyled to the same card.
 
 7. **The sync model is the phone's, minus push.** One deliberate cycle on
    every resume, the 60-second foreground cadence while resumed
@@ -146,7 +194,9 @@ renders one engine's published state; the watch has an engine of its own).
   grilling; the opt-in shape is decided above).
 - A push lane on the watch.
 - Whether the watch ever writes anything but a capture (marking done, an
-  ack): the first slice is capture and read.
+  ack): the first slice is capture and read. *(Unchanged by the 2026-09-10
+  amendments: "Open on phone" launches the phone's item detail and edits
+  nothing on the watch.)*
 - Any change to what a Now pane *says* — the words are `:brand`'s, decided
   once for both devices; a watch that needed different words would be a
   per-client rendering decision under
