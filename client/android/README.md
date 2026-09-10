@@ -97,7 +97,7 @@ It shares two libraries with `:app` and nothing else:
 | `:core-binding` | The two cargo tasks, the UniFFI binding, `AUTHORITY_BASE_URL`, and the host core package (`CoreHolder`, `TokenStore`, `TokenValidation`, `TokenMessage`, `ZoneBridge`, `SyncHistoryStore`, `WallClock` — with `todayDeadline`, the one "Mint for today" date rule both clients read — `ItemLink`, the one spelling of `hummingbird://item/<id>`, the diagnostics recorder and journal, `SyncWorker` with its `onRunFinished` host hook). minSdk 34. |
 | `:brand` | `Color.kt`, `Font.kt` + `res/font/`, every Lucide `ic_*` drawable (`net.twinion.hummingbird.brand.R`), and the pane words: `PaneAnswers`, `PaneGlyph`, `PaneCollapse`, `PaneBand`, `NowPaneWords`. minSdk 34. |
 | `:app` | The phone — everything that draws or that only the phone does. minSdk 35. |
-| `:wear` | The watch — home, items by urgency, questions, capture with its destination screen, the data-bearing capture tile, the token listener. minSdk 34, arm64-v8a only. |
+| `:wear` | The watch — home, items by urgency, questions, capture with its destination screen, the data-bearing capture tile, the token listener. minSdk 34, armeabi-v7a (the Pixel Watch 4 is 32-bit) plus arm64-v8a. |
 
 **The Data Layer coupling.** The phone sends the watch its token over the
 Wearable `MessageClient` (Settings → Watch → "Send to watch"), and the Data
