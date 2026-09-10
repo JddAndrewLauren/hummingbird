@@ -43,6 +43,24 @@ object WallClock {
     fun utc(nowMs: Long): String =
         Instant.ofEpochMilli(nowMs).atZone(ZoneOffset.UTC).format(SHAPE)
 
+    /** The deadline a "Mint for today" submit stamps: this device's own
+     * calendar date, in the wire's whole-day form (`YYYY-MM-DD`, never a
+     * time — a date-only deadline reads as *end* of that day,
+     * `server/domain/src/deadline.rs`). The port of
+     * `client/web/src/screens/capture-meta.ts`'s `todayDeadline`, and the
+     * one such rule on Android: the phone's third submit button and the
+     * watch's destination screen both read it from here, so the two can
+     * never name different days. Device-local, not UTC — the same evening
+     * west of Greenwich that [civilDate]'s doc warns about, from the other
+     * side: a civil *instant* resolves in the reader's zone, so
+     * [civilDate], which is UTC on purpose for the picker's midnight
+     * values, is the wrong function for this. Literally [local]'s date
+     * half. */
+    fun todayDeadline(nowMs: Long, zone: ZoneId = ZoneId.systemDefault()): String =
+        local(nowMs, zone).take(DATE_LENGTH)
+
+    private const val DATE_LENGTH = "YYYY-MM-DD".length
+
     // ------------------------------------------------- the picker boundary
     //
     // Material 3's `DatePickerState` speaks epoch milliseconds and the wire

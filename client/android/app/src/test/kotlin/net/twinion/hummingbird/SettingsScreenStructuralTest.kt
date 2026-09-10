@@ -43,6 +43,25 @@ class SettingsScreenStructuralTest {
     }
 
     @Test
+    fun `the watch token is sent and never retained on the phone`() {
+        // ADR-0039: the raw string lives in the card's text field until the
+        // send succeeds, and in no ViewModel field — a `String`-typed flow
+        // on SettingsViewModel would be a second copy of a write credential.
+        assertTrue(
+            "the view model hands the raw token straight to the injected sender",
+            viewModelSrc.contains("_watchSend.value = sendWatchTokenFn(raw)"),
+        )
+        assertFalse(
+            "no String-typed state on the view model",
+            Regex("""MutableStateFlow<String\??>""").containsMatchIn(viewModelSrc),
+        )
+        assertTrue(
+            "the field is cleared on a successful send",
+            screenSrc.contains("if (outcome is SendOutcome.Sent) raw = \"\""),
+        )
+    }
+
+    @Test
     fun `no settings surface names a sync-status word as a literal`() {
         // "Stale"/"Held"/"Synced"/"Offline" are `hummingbird_core::
         // decisions::settings::sync_status_label`'s own words — a Kotlin

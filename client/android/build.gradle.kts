@@ -24,6 +24,52 @@ val repoRoot: File = projectDir.parentFile.parentFile
 // the host cdylib under its `target/debug`.
 val cargoWorkspace: File = projectDir.parentFile
 
+// ---------------------------------------------------------------------------
+// The build version, shared by every application module (`:app`, `:wear`)
+// so the two APKs a deploy produces carry the same stamp. The scheme is the
+// web's (`client/web/src/shell/build-version.ts`): `VERSION` at the repo
+// root plus the commits since it was last touched, as the patch;
+// `versionCode` is the total commit count, so it only ever climbs — Android
+// refuses a downgrade, and a stable, climbing code is what lets a device
+// install a new APK over the old one in place (`deploy.sh`). Both fall back
+// when git cannot say (CI's checkout is shallow, and an export has no
+// history at all): `1` and `+unknown`, never a number nobody wrote. `git`
+// is run at configure time, twice, against the repo root; a non-zero exit
+// or a shallow clone yields the fallback rather than a truncated count.
+// Read as `rootProject.extra["hbVersionCode"]` / `["hbVersionName"]`.
+// ---------------------------------------------------------------------------
+fun git(vararg args: String): String? =
+    runCatching {
+        val proc = ProcessBuilder("git", *args)
+            .directory(projectDir)
+            .redirectErrorStream(true)
+            .start()
+        val out = proc.inputStream.bufferedReader().readText().trim()
+        if (proc.waitFor() == 0) out else null
+    }.getOrNull()
+
+val gitIsShallow: Boolean = git("rev-parse", "--is-shallow-repository") != "false"
+
+fun buildVersionCode(): Int =
+    if (gitIsShallow) 1 else git("rev-list", "--count", "HEAD")?.toIntOrNull() ?: 1
+
+fun buildVersionName(): String {
+    val versionFile = repoRoot.resolve("VERSION")
+    val base = Regex("""^\s*(\d+)\.(\d+)\.(\d+)\s*$""")
+        .find(runCatching { versionFile.readText() }.getOrDefault(""))
+        ?: return "0.0.0+unknown"
+    val (major, minor, patch) = base.destructured
+    if (gitIsShallow) return "$major.$minor.$patch+unknown"
+    val touched = git("log", "-1", "--format=%H", "--", versionFile.absolutePath)
+        ?.takeIf { it.isNotEmpty() } ?: return "$major.$minor.$patch+unknown"
+    val since = git("rev-list", "--count", "$touched..HEAD")?.toIntOrNull()
+        ?: return "$major.$minor.$patch+unknown"
+    return "$major.$minor.${patch.toInt() + since}"
+}
+
+extra["hbVersionCode"] = buildVersionCode()
+extra["hbVersionName"] = buildVersionName()
+
 subprojects {
     tasks.withType<Test>().configureEach {
         systemProperty("hummingbird.repoRoot", repoRoot.absolutePath)

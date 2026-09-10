@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- A watch app and only a watch app: the Play/side-load installer
+         refuses this APK on anything that is not a Wear device. -->
+    <uses-feature android:name="android.hardware.type.watch" />
+
+    <!-- Package visibility (API 30+): `CaptureActivity` asks whether a
+         speech recogniser exists before opening it, and `resolveActivity`
+         answers null for any package not declared here. On the emulator the
+         recogniser happens to be the current IME, which is always visible;
+         on a watch it need not be. -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
+    </queries>
+
+    <!-- The sync cycle and nothing else reaches the network (the core owns
+         HTTP per ADR-0003; this is its permission). No RECORD_AUDIO: capture
+         dictates through the system's own input chooser, never a
+         hummingbird-owned microphone (ADR-0039, ADR-0022 decision 4). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application
+        android:name=".WearApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Hummingbird.Wear">
+
+        <uses-library
+            android:name="com.google.android.wearable"
+            android:required="true" />
+
+        <!-- Standalone: the watch carries its own core and token and needs
+             no companion install to function (ADR-0039). The phone is where
+             the token is typed, not where the data lives. -->
+        <meta-data
+            android:name="com.google.android.wearable.standalone"
+            android:value="true" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Hummingbird.Wear">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Capture (ADR-0039): opens the system speech recogniser at once, the input chooser behind it and
+             finishes on the answer. Exported so the capture tile can launch
+             it directly; its own task and out of Recents so a half-finished
+             capture is never what "the app" reopens to. -->
+        <activity
+            android:name=".capture.CaptureActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:taskAffinity="net.twinion.hummingbird.wear.capture"
+            android:theme="@style/Theme.Hummingbird.Wear" />
+
+        <!-- The capture tile (ADR-0039): a capture tile whose one button
+             launches CaptureActivity. The permission and action are the
+             Tiles contract; PREVIEW is what the tile picker shows. -->
+        <service
+            android:name=".tile.CaptureTileService"
+            android:exported="true"
+            android:label="@string/tile_capture_label"
+            android:permission="com.google.android.wearable.permission.BIND_TILE_PROVIDER">
+            <intent-filter>
+                <action android:name="androidx.wear.tiles.action.BIND_TILE_PROVIDER" />
+            </intent-filter>
+            <meta-data
+                android:name="androidx.wear.tiles.PREVIEW"
+                android:resource="@drawable/tile_preview" />
+        </service>
+
+        <!-- The token hand-off's receiving end (ADR-0039): the system starts
+             this service for a Data Layer message on the `/hummingbird`
+             prefix from the phone running this package under this key.
+             Exported because the platform binds it; the filter is what
+             scopes it. -->
+        <service
+            android:name=".token.TokenListenerService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.google.android.gms.wearable.MESSAGE_RECEIVED" />
+                <data
+                    android:scheme="wear"
+                    android:host="*"
+                    android:pathPrefix="/hummingbird" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

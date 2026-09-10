@@ -48,6 +48,7 @@ grepping it.
 | The agent's calendar write (ADR-0031) — the id-gated mint route, and the skill that calls it | `server/authority/src/handlers/calendar_token.rs`, `server/worker/src/calendar.rs`, `openclaw/calendar/` | `calendar_token.rs`'s `write_verdict`, then `openclaw/calendar/scripts/gcal.sh`; ADR-0031 |
 | The SCPS mail writer (ADR-0032) — the fifth skill, delegating every calendar call to `gcal.sh` and writing the monthly Photo Quest binding itself | `openclaw/scps/`, `openclaw/agent/AGENTS.md`'s "SCPS mail" section | `openclaw/scps/scripts/scps.sh`, then `docs/openclaw.md`'s "The SCPS mailbox" runbook section; ADR-0032 |
 | The mobile seam + the Android app (#141, through the frontier-board slice) | `client/ffi-mobile/`, `client/android/` | `ffi-mobile/src/lib.rs`, `android/README.md`, ADR-0025 |
+| The watch (ADR-0039, as amended 2026-09-10 by the Wear capture design handoff) — a device with its own core and its own `device-watch` token: the `:wear` module over the two libraries the phone shares with it (`:core-binding`, the Rust seam and host core package; `:brand`, tokens, type, glyphs and the pane words), the phone-delivered token, capture through the system input chooser **then a destination screen** (Triage / Mint action / Mint for today), the Now questions and **the items by urgency** (the frontier's `Urgency` axis, read-only, "Open on phone" through `ItemLink`) in the core's order, and one **data-bearing** capture tile (urgency arc + counts, redrawn after every sync) | `client/android/{core-binding,brand,wear}/`, `client/android/app/src/main/kotlin/net/twinion/hummingbird/watch/`, `client/android/core-binding/.../core/{ItemLink,WallClock}.kt` | `wear/build.gradle.kts`'s header, then `android/README.md`'s "The watch" section; ADR-0039 |
 | The bottom nav + Done/Ledger roster sink (M3/#532) | `client/core/src/decisions/roster.rs`, `client/ffi-mobile/src/lib.rs`, `client/android/.../{MainActivity,Done,Ledger}{Screen,ViewModel}.kt` | `decisions/roster.rs`, then `android/README.md`'s "The bottom nav" section; ADR-0025 |
 | Item detail, and where a tapped notification lands | `client/core/src/{item_detail.rs,decisions/notification.rs}`, `client/android/.../ItemDetail{Panel,Screen,ViewModel}.kt` (the panel is the body, with four hosts: the route, Now inline, the Recall overlay, and Triage in `PROMOTE` mode) | `item_detail.rs`, then `decisions/notification.rs`; ADR-0027 |
 | The rules surface (#141/M4) — the sink, both seams, the Compose screen | `client/core/src/decisions/rules/`, `client/ffi-mobile/src/lib.rs`, `client/android/.../Rules{Screen,ViewModel}.kt` | `decisions/rules/mod.rs`, then `backtest.rs`; ADR-0013/0025 |
@@ -112,7 +113,9 @@ with that same credential, so the sentence above is a statement about every
 device token rather than about browsers. The
 population of `device` tokens is: one per operator device (a browser
 profile running the capture extension is one — `device-chrome-<machine>`,
-ADR-0037), the runner's
+ADR-0037; the watch is one — `device-watch`, ADR-0039, delivered from the
+phone's Settings over the Wearable Data Layer and held on the watch alone),
+the runner's
 (`runner`), and the OpenClaw agent's (`openclaw-agent`, on the gateway
 machine — ADR-0029, minted and rotated per `docs/openclaw.md`).
 **That population is no longer uniform in what it can reach.** Since
@@ -163,8 +166,13 @@ natively-tested lib and leave only `fetch`/`crypto.subtle` in the shim.
 **The Kotlin is gated by CI alone.** No mandated local command compiles
 `client/android/` — a green local suite, an independent fresh-test re-run
 included, says nothing about whether Android builds; `android.yml`'s `build`
-job is the only evidence. `client/android/README.md`'s CI paragraph has the
-trap that earned the rule.
+job is the only evidence, and since ADR-0039 it runs every module's suite by
+name (`:core-binding`, `:brand`, `:app`, `:wear`) and assembles both APKs — a
+module left off that line is a module whose tests never run.
+`client/android/README.md`'s CI paragraph has the trap that earned the rule.
+Running the suites locally when the machine can (the Mac can: JDK, SDK, NDK
+and `cargo-ndk` are all present) is a shortcut to the same answer, not a
+substitute for it.
 
 **The design system.** The UI brand is the "Hummingbird Design System" project
 on claude.ai/design, mirrored at `.claude/skills/hummingbird-design/`. **All

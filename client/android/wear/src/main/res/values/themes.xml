@@ -1,0 +1,8 @@
+<resources>
+    <!-- Pre-Compose window theme only: a black window so the first frame on
+         an always-dark, round display does not flash a light page before
+         `setContent`. Everything visible is Compose + `WearTheme`. -->
+    <style name="Theme.Hummingbird.Wear" parent="@android:style/Theme.DeviceDefault">
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>

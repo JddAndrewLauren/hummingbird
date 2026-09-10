@@ -77,6 +77,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.speech.DictationHost
 import net.twinion.hummingbird.core.CoreHolder
+import net.twinion.hummingbird.core.ItemLink
 import net.twinion.hummingbird.core.SyncHistoryStore
 import net.twinion.hummingbird.core.TokenStore
 import net.twinion.hummingbird.notify.AlertNotifier
@@ -130,12 +131,12 @@ class MainActivity : ComponentActivity() {
      * three strings the tap decision needs. A flow rather than a Compose
      * state because `onNewIntent` fires outside composition — the Activity
      * is already running when a second notification is tapped. */
-    private val deepLinkedAlertId = MutableStateFlow<NotificationTap?>(null)
+    private val deepLinkedAlertId = MutableStateFlow<Arrival?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        deepLinkedAlertId.value = NotificationTap.from(intent)
+        deepLinkedAlertId.value = Arrival.from(intent)
         setContent {
             // The theme preference (#535) is read here, above
             // `HummingbirdTheme`, rather than inside `AppRoot` — the
@@ -170,9 +171,24 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        NotificationTap.from(intent)?.let {
+        Arrival.from(intent)?.let {
             deepLinkedAlertId.value = it
         }
+    }
+}
+
+/** How this Activity was reached with somewhere particular to go: a tapped
+ * notification (its extras), or an item link from the watch (its data URI,
+ * `ItemLink`'s — the `.ItemLink` alias in the manifest). A launcher start
+ * is neither, and answers `null`. */
+private sealed interface Arrival {
+    data class Notification(val tap: NotificationTap) : Arrival
+    data class Item(val itemId: String) : Arrival
+
+    companion object {
+        fun from(intent: Intent?): Arrival? =
+            ItemLink.itemId(intent)?.let { Item(it) }
+                ?: NotificationTap.from(intent)?.let { Notification(it) }
     }
 }
 
@@ -363,7 +379,7 @@ internal class ChromeScrollState {
 
 @Composable
 private fun AppRoot(
-    deepLinkedAlertId: MutableStateFlow<NotificationTap?>,
+    deepLinkedAlertId: MutableStateFlow<Arrival?>,
     themePreference: ThemePreference,
     onThemePreference: (ThemePreference) -> Unit,
 ) {
@@ -520,17 +536,27 @@ private fun AppRoot(
     // tap is what creates it — and because a second tap while the app is
     // already open arrives through `onNewIntent`, outside any composition.
     LaunchedEffect(navController) {
-        deepLinkedAlertId.collect { tap ->
-            if (tap != null) {
-                // The destination is the core's answer, not this file's:
-                // a Kotlin `removePrefix("item:")` would hand-copy a key
-                // convention that has one owner (ADR-0027). Synchronous
-                // and clock-free, so it runs before navigating.
-                when (val target = notificationTapTarget(tap.source, tap.sourceKey)) {
-                    is MobileTapTarget.Item ->
-                        navController.openItemFromNotification(target.itemId)
-                    MobileTapTarget.Alert ->
-                        navController.openAlertFromNotification(tap.alertId)
+        deepLinkedAlertId.collect { arrival ->
+            if (arrival != null) {
+                when (arrival) {
+                    // The destination is the core's answer, not this file's:
+                    // a Kotlin `removePrefix("item:")` would hand-copy a key
+                    // convention that has one owner (ADR-0027). Synchronous
+                    // and clock-free, so it runs before navigating.
+                    is Arrival.Notification -> {
+                        val tap = arrival.tap
+                        when (val target = notificationTapTarget(tap.source, tap.sourceKey)) {
+                            is MobileTapTarget.Item ->
+                                navController.openItemFromNotification(target.itemId)
+                            MobileTapTarget.Alert ->
+                                navController.openAlertFromNotification(tap.alertId)
+                        }
+                    }
+                    // The watch's item link names its item outright, and
+                    // lands through the same pop-to-Now door: the cold-tap
+                    // defect (#518) is a property of the restored stack,
+                    // not of who asked.
+                    is Arrival.Item -> navController.openItemFromNotification(arrival.itemId)
                 }
                 // Consumed: a configuration change must not re-navigate.
                 deepLinkedAlertId.value = null

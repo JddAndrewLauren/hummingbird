@@ -918,20 +918,22 @@ export function CaptureBox({
             onClick={() => submit("ready")}
           />
           {/* The third square is the mint again, with today's date stamped
-              as the deadline — the same accent, because it is the same
-              gesture, and the flag glyph is what it adds (the design system's
-              named vocabulary reserves `flag` for a deadline and `calendar`
-              for a scheduled date; this writes a deadline). It overrides a
-              deadline picked under "More details" rather than yielding to
-              it: the button's name is a promise about the date, and a click
-              that silently kept some other day would break it. Date-only,
-              per `todayDeadline`. */}
+              as the deadline. Ember-700 — the accent's own family with more
+              heat — because it is the same gesture plus a claim about the
+              date, and `calendar-check` because that is what it adds (the
+              Wear capture handoff of 2026-09-10 settled both, for the web,
+              the phone and the watch alike; `flag` stays the deadline glyph
+              in item metadata, `calendar` the scheduled date's). It
+              overrides a deadline picked under "More details" rather than
+              yielding to it: the button's name is a promise about the date,
+              and a click that silently kept some other day would break it.
+              Date-only, per `todayDeadline`. */}
           <IconButton
             size="md"
             style={{ height: 36, width: 36 }}
             variant="solid"
-            tone="accent"
-            icon="flag"
+            tone="ember-deep"
+            icon="calendar-check"
             label="Mint for today"
             disabled={!canSubmit}
             onClick={() => submit("ready", { deadline: todayDeadline(Date.now()) })}

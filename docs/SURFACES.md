@@ -673,12 +673,47 @@ gating this row, per the 2026-08-20 decision above, and standing one up in
 structural or bounds-measuring tests as covering it; they were never the
 blocker and are not the answer.
 
+## Wear OS (ADR-0039)
+
+**Code root:** `client/android/wear/` (the `:wear` module, over
+`:core-binding` and `:brand`). **Surfaces** (ADR-0039 as amended 2026-09-10
+by the Wear capture design handoff): four screens and one tile — the home
+(capture, items and questions buttons, one honest line), the items by
+urgency (the frontier's `Urgency` axis as cards, one expanding in place with
+"Open on phone"), the standing-questions list with its in-place expansion,
+the capture flow (the system speech recogniser, the input chooser behind it,
+then the destination screen — Triage / Mint action / Mint for today — then a
+confirmation naming where it landed), and the data-bearing capture tile
+(urgency arc, count line, feather disc, two glyph rounds).
+
+**No visual gate.** There is no Wear emulator matrix here: the watch build is
+arm64-only by decision, and the render evidence is the emulator and hardware
+passes recorded in `client/android/README.md`'s "The watch" section
+(`tile_preview.png` is the emulator's tile). What CI gates is structural, in
+`wear/src/test`: every colour is a `:brand` constant
+(`WearThemeStructuralTest`), the manifest's load-bearing declarations
+(`WearManifestStructuralTest`), the capture refusal rule
+(`WearCaptureRefusalTest`), the pane rules — the seam's order, no second
+clock, exhaustive `when`s, the brand's words (`WearQuestionsStructuralTest`)
+— the same rules over the items list plus read-only-through-`ItemLink`
+(`WearItemsStructuralTest`), and the tile's shapes — a future that always
+resolves, a guarded mirror read, the sync leg's refresh hook
+(`WearTileStructuralTest`) — over pure tests of its words and arcs
+(`TileFactsTest`) and the rows' words (`ItemRowLabelTest`). The tile's
+glyphs ship as inline PNG because sysui's renderer could not load `:brand`'s
+vectors by resource id; `:brand`'s `VectorArcFlagsTest` bans the compact
+arc-flag form that native `VectorDrawable` rejects.
+The design kit for this surface is
+`.claude/skills/hummingbird-design/ui_kits/wear/`, pulled 2026-09-10; its
+three tiles predate the ADR-0039 grilling and are the visual target for the
+per-question tiles that slice deferred.
+
 ## Planned, not built
 
-The design system carries UI kits for **Wear OS** and **iOS**
-(`.claude/skills/hummingbird-design/ui_kits/`). Neither has code in this
-repo, so neither has a gate here. Add a surface section when one gets a code
-root — an emulator/simulator matrix, per the `/wrapup` reference.
+The design system carries a UI kit for **iOS**
+(`.claude/skills/hummingbird-design/ui_kits/ios/`). It has no code in this
+repo, so it has no gate here. Add a surface section when it gets a code
+root — a simulator matrix, per the `/wrapup` reference.
 
 ---
 

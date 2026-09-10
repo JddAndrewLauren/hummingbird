@@ -208,8 +208,10 @@ picks a different set, `Icon.jsx` is the only file that changes.
   `inbox` (triage), `route`, `zap` (now / next up), `bell` / `siren` /
   `bell-off` (the notification lane), `calendar-clock` and `radio` (context
   tile: upcoming vs. in progress), `cloud-fog` (fog), `list-checks` (steps),
-  `flag` (deadline), `calendar` (scheduled date), `link` (blocked by),
-  `refresh-cw`, `check`, `sparkles` (mint).
+  `flag` (deadline), `calendar` (scheduled date), `calendar-check` (the
+  capture box's "Mint for today" — the gesture that *writes* today's
+  deadline, on `ember-700`; `flag` stays the deadline as item metadata),
+  `link` (blocked by), `refresh-cw`, `check`, `sparkles` (mint).
 - **Emoji:** never. **Unicode as icons:** never — the middle dot `·` in meta
   lines is punctuation, not an icon.
 - **Raster icons:** only the app icon PNGs in `assets/`.
