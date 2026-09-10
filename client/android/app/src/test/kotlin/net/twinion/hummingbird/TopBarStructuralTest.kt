@@ -15,7 +15,7 @@ class TopBarStructuralTest {
 
     private fun source(name: String): String {
         val root = System.getProperty("hummingbird.repoRoot")
-            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see client/android/build.gradle.kts)")
         val file = File(root, "client/android/app/src/main/kotlin/net/twinion/hummingbird/$name")
         check(file.isFile) { "$name not found under $root" }
         return file.readText()
@@ -62,7 +62,13 @@ class TopBarStructuralTest {
         val src = source("MainActivity.kt")
         assertTrue(
             "light and dark plates are two separate exports, swapped on the resolved theme",
-            src.contains("if (dark) R.drawable.app_icon_dark else R.drawable.app_icon_light"),
+            // The plates are `:app`'s own PNGs, named by the app's fully
+            // qualified `R` since `:brand`'s `R` took the plain name in this
+            // file (ADR-0039; R classes are non-transitive here).
+            src.contains(
+                "if (dark) net.twinion.hummingbird.R.drawable.app_icon_dark " +
+                    "else net.twinion.hummingbird.R.drawable.app_icon_light",
+            ),
         )
     }
 }

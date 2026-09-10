@@ -8,7 +8,7 @@ import androidx.compose.ui.graphics.Color
  * not decoration: a glyph carries meaning colour alone cannot convey to
  * TalkBack, and a dot with no accessible name is a blank box. The shell
  * renders these; a pane only says which. */
-internal sealed interface PaneGlyph {
+sealed interface PaneGlyph {
     val label: String
 
     data class Dot(val fill: Color, val edge: Color, override val label: String) : PaneGlyph
@@ -20,4 +20,4 @@ internal sealed interface PaneGlyph {
  * applied by the shell (`PaneShell.kt`), never trusted to the pane: the cap
  * exists to protect the row from the pane rather than to be honoured by
  * it. */
-internal const val MAX_GLYPHS = 4
+const val MAX_GLYPHS = 4

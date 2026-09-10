@@ -24,7 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
-import net.twinion.hummingbird.R
+import net.twinion.hummingbird.brand.R
 import net.twinion.hummingbird.core.WallClock
 
 /** #529's third shared form component: one of the capture box's two

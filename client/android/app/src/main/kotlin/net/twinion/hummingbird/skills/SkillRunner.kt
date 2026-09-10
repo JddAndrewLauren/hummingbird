@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
-import net.twinion.hummingbird.BuildConfig
+import net.twinion.hummingbird.core.BuildConfig
 import net.twinion.hummingbird.core.TokenStore
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient

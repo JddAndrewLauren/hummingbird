@@ -5,21 +5,47 @@ the 2026-08-14 grilling: full web parity is the destination, reached one
 screen at a time, each screen's decision modules sinking into
 `hummingbird-core` first (ADR-0025) — no Kotlin copy of a decision function
 is ever created. Rendering is native: Jetpack Compose + Material 3, themed
-from the design system's tokens (`app/src/main/kotlin/.../ui/theme/`).
+from the design system's tokens (`brand/src/main/kotlin/.../ui/theme/`, the
+`:brand` module below).
 
 ## The build's two seams
 
 Everything under `app/src/main/kotlin` is an ordinary Compose app. The Rust
-side arrives through two Gradle tasks in `app/build.gradle.kts`, both
-running cargo against the `client/` workspace one level up:
+side arrives through two Gradle tasks in `core-binding/build.gradle.kts`,
+both running cargo against the `client/` workspace one level up:
 
 - **`cargoNdkBuild`** — `cargo ndk` cross-compiles `hummingbird-ffi-mobile`
-  into `app/src/main/jniLibs/` (gitignored; arm64-v8a for the device,
-  x86_64 for the emulator).
+  into `core-binding/src/main/jniLibs/` (gitignored; arm64-v8a for the
+  device, x86_64 for the emulator).
 - **`generateUniffiBindings`** — builds the host cdylib and runs UniFFI in
-  library mode: the Kotlin binding under `app/build/generated/uniffi/` is
-  derived from the exported surface in `client/ffi-mobile/src/lib.rs`,
+  library mode: the Kotlin binding under `core-binding/build/generated/uniffi/`
+  is derived from the exported surface in `client/ffi-mobile/src/lib.rs`,
   which is the single source of truth (no `.udl`).
+
+`:core-binding` is an Android library module (ADR-0039): the seam above plus
+the host-side core package every device app needs identically — `CoreHolder`,
+`TokenStore`, `TokenValidation`, `ZoneBridge`, `SyncHistoryStore`,
+`WallClock`, the diagnostics recorder and journal, `SyncWorker`, and the
+`AUTHORITY_BASE_URL` build constant. Packages are unchanged
+(`net.twinion.hummingbird.{core,diagnostics,sync}`); `:app` depends on the
+module and keeps everything that draws or that only the phone does. The JVM
+unit-test configuration every module shares (`hummingbird.repoRoot`,
+`jna.library.path`, the drift gates' input files) is the root
+`build.gradle.kts`'s `subprojects` block. CI runs each module's suite by
+name (`android.yml`); a module left off that line is a module whose tests
+never run.
+
+`:brand` is the second library (ADR-0039): the design tokens (`Color.kt`),
+the bundled typefaces (`Font.kt`, `res/font/`, licences under
+`brand/licenses/fonts/`), every Lucide drawable (`res/drawable/ic_*.xml` —
+reached from `:app` as `net.twinion.hummingbird.brand.R`, since R classes
+are non-transitive here; the launcher art stays in `:app`), and the pane
+words every device says identically: `PaneAnswers.kt`, `PaneGlyph.kt`,
+`PaneCollapse.kt`, `PaneBand.kt` (`bandColor`, cut from `PaneShell.kt`) and
+`NowPaneWords.kt` (the pure half of `NowPanesExpanded.kt`). Nothing in it
+is a composable; the Material3 theme (`Theme.kt`, `Type.kt`, `Motion.kt`)
+and every screen stay in `:app`. The colour and type drift gates moved with
+their subjects and run as `:brand:testDebugUnitTest`.
 
 Prerequisites beyond Android Studio: `rustup target add
 aarch64-linux-android x86_64-linux-android`, `cargo install cargo-ndk`, and

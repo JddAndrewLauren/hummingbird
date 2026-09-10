@@ -44,6 +44,7 @@ import net.twinion.hummingbird.ui.theme.UrgencySoonDark
 import uniffi.hummingbird_ffi_mobile.MobileUrgencyBand
 import uniffi.hummingbird_ffi_mobile.NowItemRecord
 import uniffi.hummingbird_ffi_mobile.TriageItemRecord
+import net.twinion.hummingbird.brand.R
 
 // The one compact item card (extracted from NowScreen.kt for the Triage
 // parity slice): title first, then the conditional meta "pills" row —

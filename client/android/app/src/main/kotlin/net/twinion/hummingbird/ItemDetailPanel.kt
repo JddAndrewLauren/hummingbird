@@ -81,6 +81,7 @@ import uniffi.hummingbird_ffi_mobile.itemGrillButtonLabel
 import uniffi.hummingbird_ffi_mobile.linkDisplayLabel
 import uniffi.hummingbird_ffi_mobile.linkIsFollowable
 import uniffi.hummingbird_ffi_mobile.skillRunStampLabel
+import net.twinion.hummingbird.brand.R
 
 // One item, in full — the panel every one of its four hosts renders:
 //

@@ -160,7 +160,7 @@ class NowColumnCapTest {
      * placement, so it cannot use `NowItemDoorTest`'s stripping reader. */
     private fun rawSource(name: String): String {
         val root = System.getProperty("hummingbird.repoRoot")
-            ?: error("hummingbird.repoRoot not set -- run under Gradle (see app/build.gradle.kts)")
+            ?: error("hummingbird.repoRoot not set -- run under Gradle (see client/android/build.gradle.kts)")
         val file = File(root, "client/android/app/src/main/kotlin/net/twinion/hummingbird/$name")
         check(file.isFile) { "$name not found under $root" }
         return file.readText()

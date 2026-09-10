@@ -77,9 +77,13 @@ jobs:
       - name: Point cargo-ndk at the runner's NDK
         run: echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
 
+      # Every module with a JVM suite, by name: `:core-binding` holds the
+      # Rust-seam tests and `:brand` the token drift gates (ADR-0039 split
+      # both out of `:app`), and a module left off this line merges green
+      # with its tests never run.
       - name: Unit tests
         working-directory: client/android
-        run: ./gradlew --no-daemon :app:testDebugUnitTest
+        run: ./gradlew --no-daemon :core-binding:testDebugUnitTest :brand:testDebugUnitTest :app:testDebugUnitTest
 
       - name: Assemble debug APK
         working-directory: client/android

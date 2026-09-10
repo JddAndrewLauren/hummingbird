@@ -23,7 +23,7 @@ class ItemDetailPanelStructuralTest {
 
     private fun repoFile(relative: String): String {
         val root = System.getProperty("hummingbird.repoRoot")
-            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see client/android/build.gradle.kts)")
         val file = File(root, relative)
         check(file.isFile) { "$relative not found under $root" }
         return file.readText()
@@ -675,7 +675,8 @@ class ItemDetailPanelStructuralTest {
             "and the drawable must not come back with one",
             File(
                 System.getProperty("hummingbird.repoRoot")!!,
-                "client/android/app/src/main/res/drawable/ic_pencil.xml",
+                // The Lucide drawables live in `:brand` since ADR-0039.
+                "client/android/brand/src/main/res/drawable/ic_pencil.xml",
             ).exists(),
         )
         assertEquals(

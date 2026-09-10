@@ -105,7 +105,7 @@ class FrontierLanesTest {
     @Test
     fun `the web parity source still carries the constants this port copies`() {
         val root = System.getProperty("hummingbird.repoRoot")
-            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see client/android/build.gradle.kts)")
         val file = File(root, "client/web/src/screens/frontier-lanes.ts")
         check(file.isFile) { "frontier-lanes.ts not found under $root" }
         val web = file.readText()

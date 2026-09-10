@@ -15,7 +15,7 @@ class PaneShellStructuralTest {
 
     private fun source(name: String): String {
         val root = System.getProperty("hummingbird.repoRoot")
-            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see client/android/build.gradle.kts)")
         val file = File(root, "client/android/app/src/main/kotlin/net/twinion/hummingbird/$name")
         check(file.isFile) { "$name not found under $root" }
         return file.readText()
@@ -23,9 +23,21 @@ class PaneShellStructuralTest {
             .replace(Regex("""(?m)^\s*//.*$"""), "")
     }
 
+    /** The same read against `:brand`, where the words and the collapse
+     * rule live since ADR-0039 (the watch reads them too). */
+    private fun brandSource(name: String): String {
+        val root = System.getProperty("hummingbird.repoRoot")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see client/android/build.gradle.kts)")
+        val file = File(root, "client/android/brand/src/main/kotlin/net/twinion/hummingbird/$name")
+        check(file.isFile) { "$name not found under $root" }
+        return file.readText()
+            .replace(Regex("""/\*[\s\S]*?\*/"""), "")
+            .replace(Regex("""(?m)^\s*//.*$"""), "")
+    }
+
     private val shellSrc by lazy { source("PaneShell.kt") }
-    private val answersSrc by lazy { source("ui/panes/PaneAnswers.kt") }
-    private val collapseSrc by lazy { source("ui/panes/PaneCollapse.kt") }
+    private val answersSrc by lazy { brandSource("ui/panes/PaneAnswers.kt") }
+    private val collapseSrc by lazy { brandSource("ui/panes/PaneCollapse.kt") }
 
     @Test
     fun `the words read decided facts and return no band of their own`() {

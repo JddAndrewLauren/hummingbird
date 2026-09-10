@@ -46,6 +46,7 @@ import kotlinx.coroutines.launch
 import net.twinion.hummingbird.ui.contentMaxWidth
 import uniffi.hummingbird_ffi_mobile.MobileRecallGroup
 import uniffi.hummingbird_ffi_mobile.MobileRecallRowRecord
+import net.twinion.hummingbird.brand.R
 
 // Recall (#542, #478/CONTEXT.md, reshaped by the search-overlay slice):
 // re-find one known item across everything the mirror has ever known, live

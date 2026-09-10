@@ -4,7 +4,7 @@ import androidx.compose.ui.graphics.Color
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToLong
-import net.twinion.hummingbird.R
+import net.twinion.hummingbird.brand.R
 import uniffi.hummingbird_ffi_mobile.MobilePaneAnswerState
 import uniffi.hummingbird_ffi_mobile.MobilePaneBand
 import uniffi.hummingbird_ffi_mobile.MobilePaneFacts
@@ -58,7 +58,7 @@ import uniffi.hummingbird_ffi_mobile.MobileWorkflowResolved
 // fail this build, never render as a silently-wrong sentence.
 
 /** The collapsed row's whole sentence for one ranked pane. */
-internal fun paneHeadline(pane: MobileRankedPane, nowMs: Long): String = when (val facts = pane.facts) {
+fun paneHeadline(pane: MobileRankedPane, nowMs: Long): String = when (val facts = pane.facts) {
     is MobilePaneFacts.Homework -> homeworkHeadline(facts.resolved)
     is MobilePaneFacts.Scps -> scpsHeadline(pane, facts.resolved)
     is MobilePaneFacts.Waste -> wasteHeadline(pane, facts.setup, facts.resolved)
@@ -76,7 +76,7 @@ internal fun paneHeadline(pane: MobileRankedPane, nowMs: Long): String = when (v
 
 /** The collapsed row's marks for one ranked pane — unbounded here; the
  * shell applies [MAX_GLYPHS]. */
-internal fun paneGlyphs(pane: MobileRankedPane, nowMs: Long): List<PaneGlyph> = when (val facts = pane.facts) {
+fun paneGlyphs(pane: MobileRankedPane, nowMs: Long): List<PaneGlyph> = when (val facts = pane.facts) {
     is MobilePaneFacts.Homework -> homeworkGlyphs(facts.resolved)
     is MobilePaneFacts.Scps -> emptyList()
     is MobilePaneFacts.Waste -> wasteGlyphs(pane, facts.setup, facts.resolved)
@@ -105,7 +105,7 @@ private val SETUP_NEEDS_A_LOOK = PaneGlyph.Icon(R.drawable.ic_help_circle, "setu
 
 /** `ageWords` in `github.ts`/`uptime.ts`, ported — internal since the
  * pane-content slice: the expanded cards speak the same ages. */
-internal fun ageWords(ageMs: Long): String {
+fun ageWords(ageMs: Long): String {
     val hours = ageMs / 3_600_000
     if (hours < 1) return "under an hour ago"
     if (hours < 48) return "${hours}h ago"
@@ -116,7 +116,7 @@ internal fun ageWords(ageMs: Long): String {
  * uses, minus the "ago" — read by the poller pane's expanded card so it
  * never disagrees with [ageWords] or with its own collapsed tile (#775
  * review round 1). */
-internal fun cadenceWords(cadenceMs: Long): String {
+fun cadenceWords(cadenceMs: Long): String {
     val hours = cadenceMs / 3_600_000
     if (hours < 1) return "under an hour"
     if (hours < 48) return "${hours}h"
@@ -134,9 +134,9 @@ private fun heardAgo(freshness: MobilePaneFreshness): String = when (freshness) 
  * ported (its doc records why these are literal hex, not brand tokens:
  * they encode OBJECT identity, the one thing the reader matches against
  * the real world before walking outside). */
-internal data class Bin(val fill: Color, val edge: Color, val label: String)
+data class Bin(val fill: Color, val edge: Color, val label: String)
 
-internal fun bin(stream: MobileWasteStream): Bin = when (stream) {
+fun bin(stream: MobileWasteStream): Bin = when (stream) {
     MobileWasteStream.TRASH -> Bin(Color(0x739AA3AB), Color(0xFF79838B), "trash")
     MobileWasteStream.RECYCLING -> Bin(Color(0x737FC4E8), Color(0xFF3F93C4), "recycling")
     MobileWasteStream.YARD -> Bin(Color(0x736AA84F), Color(0xFF4D8A3A), "yard")
@@ -145,7 +145,7 @@ internal fun bin(stream: MobileWasteStream): Bin = when (stream) {
 /** Kerb order, never the order the payload happened to list —
  * `STREAM_ORDER`/`orderedStreams` in `waste.ts`, ported (the core carries
  * the list in payload order on purpose; kerb order is the client's). */
-internal val KERB_ORDER = listOf(
+val KERB_ORDER = listOf(
     MobileWasteStream.TRASH,
     MobileWasteStream.RECYCLING,
     MobileWasteStream.YARD,
@@ -153,7 +153,7 @@ internal val KERB_ORDER = listOf(
 
 /** `WEEKDAYS` in `waste.ts` — the word is per-client, the day is the
  * core's `weekdayIndex` (0 = Sunday). */
-internal val WEEKDAYS = listOf(
+val WEEKDAYS = listOf(
     "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
 )
 
@@ -192,7 +192,7 @@ private fun wasteHeadline(
 
 /** `wasteCollapsedHeadline` in `waste.ts`, ported verbatim — including the
  * `daysAway == 0` equality its doc defends (never `<= 0`). */
-internal fun wasteCollapsedHeadline(daysAway: Long, weekday: String, holiday: Boolean): String {
+fun wasteCollapsedHeadline(daysAway: Long, weekday: String, holiday: Boolean): String {
     if (daysAway == 0L) return "Trash today"
     if (daysAway == 1L && !holiday) return "Trash tonight"
     return "$weekday · ${daysAway}d"
@@ -238,7 +238,7 @@ private fun homeworkHeadline(resolved: MobileHomeworkResolved): String = when (r
 /** `homeworkHeadline` in `homework.ts`, ported word for word — the forms
  * are #675's own decision table, and the two clients must read the same
  * answer in the same words. */
-internal fun homeworkCollapsedHeadline(facts: MobileHomeworkFacts): String {
+fun homeworkCollapsedHeadline(facts: MobileHomeworkFacts): String {
     if (facts.winner == null) return "No open homework"
     // No deadline on it: saying "Homework" and stopping is the honest
     // version — a fabricated "someday" would invent a date nobody set.
@@ -303,7 +303,7 @@ private fun weekendHeadline(pane: MobileRankedPane, resolved: MobileWeekendResol
 
 /** `weekendCollapsedHeadline` in `weekend.ts`, ported — counts only, never
  * a per-entry list (the core module's own call). */
-internal fun weekendCollapsedHeadline(counts: MobileWeekendCounts, underWay: Boolean): String {
+fun weekendCollapsedHeadline(counts: MobileWeekendCounts, underWay: Boolean): String {
     val total = counts.events + counts.due + counts.scheduled
     if (total == 0L) return if (underWay) "Clear so far" else "Nothing planned"
     val parts = mutableListOf<String>()
@@ -416,7 +416,7 @@ private fun vacationHeadline(pane: MobileRankedPane, resolved: MobileVacationRes
  * lane, so it is wrong-looking output today: closing it means the seam
  * growing the name the web derives from the event title (#621 records this
  * as its own scope line). */
-internal fun vacationTripHeadline(next: MobileTrip?): String {
+fun vacationTripHeadline(next: MobileTrip?): String {
     if (next == null) return "Nothing booked in the next 2 years"
     val name = next.location ?: "a trip"
     return when (next.phase) {
@@ -432,7 +432,7 @@ internal fun vacationTripHeadline(next: MobileTrip?): String {
 // ------------------------------------------------------------------ race
 
 /** `SERIES_LABELS`/`seriesLabel` in `race.ts`, ported. */
-internal fun seriesLabel(series: String): String =
+fun seriesLabel(series: String): String =
     if (series == "f1") {
         "F1"
     } else if (series == "indycar") {
@@ -442,11 +442,11 @@ internal fun seriesLabel(series: String): String =
     }
 
 /** `abbreviate` in `race.ts` — "Monaco Grand Prix" reads as "Monaco GP". */
-internal fun abbreviateEventName(name: String): String =
+fun abbreviateEventName(name: String): String =
     name.replace(Regex("""\s+Grand Prix$""", RegexOption.IGNORE_CASE), " GP")
 
 /** `countdown` in `race.ts`, ported. */
-internal fun countdown(deltaMs: Long): Pair<String, String> {
+fun countdown(deltaMs: Long): Pair<String, String> {
     val minutes = (deltaMs / 60_000.0).roundToLong()
     if (minutes < 120) return Pair(maxOf(minutes, 0).toString(), "min")
     val hours = (deltaMs / 3_600_000.0).roundToLong()
@@ -523,7 +523,7 @@ private fun raceGlyphs(
 
 /** `formatUsd` in `kimi.ts`, ported — the sign in front of the symbol
  * (`-$1.00`, never `$-1.00`). */
-internal fun formatUsd(amount: Double): String {
+fun formatUsd(amount: Double): String {
     val sign = if (amount < 0) "-" else ""
     return "$sign$${String.format(Locale.US, "%.2f", abs(amount))}"
 }
@@ -532,7 +532,7 @@ internal fun formatUsd(amount: Double): String {
  * band already made about it. The web switches on the core's `kimi_band`;
  * this reads the pane's DECIDED band, which is the same value having
  * crossed the seam once instead of being recomputed here. */
-internal fun kimiCollapsedHeadline(availableBalance: Double, band: MobilePaneBand): String {
+fun kimiCollapsedHeadline(availableBalance: Double, band: MobilePaneBand): String {
     val amount = formatUsd(availableBalance)
     return when (band) {
         MobilePaneBand.LIVE -> "$amount — exhausted"
@@ -641,7 +641,7 @@ private fun githubGlyphs(pane: MobileRankedPane, resolved: MobileWorkflowResolve
 
 /** `uptimeCollapsedHeadline` in `uptime.ts`, ported — reads the body only,
  * no band. */
-internal fun uptimeCollapsedHeadline(serviceId: String, body: MobileProbeBody): String {
+fun uptimeCollapsedHeadline(serviceId: String, body: MobileProbeBody): String {
     when (body.expected) {
         MobileProbeExpected.OFF -> return if (body.error != null) {
             "$serviceId · off, as expected"
@@ -748,7 +748,7 @@ private fun pollerGlyphs(pane: MobileRankedPane, resolved: MobilePollerResolved)
 
 /** The reachability facts this file needs, decoupled from the uniffi
  * record so [relativeAge]'s port stays testable without the seam. */
-internal data class ReachabilityWords(
+data class ReachabilityWords(
     val ageMs: Long,
     val stale: Boolean,
     val latestAttemptLanded: Boolean,
@@ -758,7 +758,7 @@ internal data class ReachabilityWords(
  * web reads it through the wasm seam (`shell/sync-status.ts`), which the
  * mobile seam does not export; the wording is pinned against the Rust
  * original by `PaneAnswersTest`. */
-internal fun relativeAge(ageMs: Long): String {
+fun relativeAge(ageMs: Long): String {
     val clamped = maxOf(ageMs, 0)
     val minutes = clamped / 60_000
     if (minutes < 1) return "just now"
@@ -768,7 +768,7 @@ internal fun relativeAge(ageMs: Long): String {
     return "${hours / 24}d ago"
 }
 
-internal fun reachabilityHeadline(words: ReachabilityWords?): String {
+fun reachabilityHeadline(words: ReachabilityWords?): String {
     if (words == null) return "Never synced on this device."
     val verb = if (words.latestAttemptLanded) "Synced" else "Last synced"
     return "$verb ${relativeAge(words.ageMs)}"

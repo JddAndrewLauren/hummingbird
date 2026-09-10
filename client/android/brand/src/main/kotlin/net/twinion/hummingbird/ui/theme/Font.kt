@@ -3,13 +3,13 @@ package net.twinion.hummingbird.ui.theme
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import net.twinion.hummingbird.R
+import net.twinion.hummingbird.brand.R
 
 // The brand's bundled typefaces (#528, ADR-0026): static OFL TTFs fetched
 // from Google Fonts' own static-instance CDN (never a variable font, never
 // a runtime GMS font-provider download) and committed under res/font/ —
 // offline-safe, no network dependency at render time. Their OFL licenses
-// live at app/licenses/fonts/, not res/font/ itself: aapt only accepts font
+// live at brand/licenses/fonts/, not res/font/ itself: aapt only accepts font
 // and font-family-XML files inside a `font/` resource directory, so a
 // license .txt there would fail the build.
 //

@@ -38,6 +38,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import net.twinion.hummingbird.brand.R
 
 /** The item pane's action row is one line — the grill, the microtask
  * affordance, the submit and the mark-done check together (operator

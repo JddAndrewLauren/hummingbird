@@ -65,6 +65,7 @@ import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 import net.twinion.hummingbird.ui.theme.Sky600
 import uniffi.hummingbird_ffi_mobile.CaptureDestination
 import uniffi.hummingbird_ffi_mobile.parseSharePayload
+import net.twinion.hummingbird.brand.R
 
 // M1-5's capture surface (#128/#503), the second launcher icon's
 // destination: field focused with the IME up on launch with zero taps,

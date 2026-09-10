@@ -59,6 +59,7 @@ import net.twinion.hummingbird.ui.forms.PriorityRow
 import net.twinion.hummingbird.ui.forms.ProjectField
 import net.twinion.hummingbird.ui.theme.Sky600
 import uniffi.hummingbird_ffi_mobile.CaptureDestination
+import net.twinion.hummingbird.brand.R
 
 // The FAB's capture sheet — the design kit's own Android capture form
 // (`ui_kits/android/AndroidScreens.jsx`, `AndroidTriage`): title field with
