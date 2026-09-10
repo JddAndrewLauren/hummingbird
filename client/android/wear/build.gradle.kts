@@ -116,6 +116,8 @@ dependencies {
     implementation(libs.wear.compose.material3)
     implementation(libs.wear.compose.foundation)
     implementation(libs.wear.compose.navigation)
+    // The system input chooser capture hands its one line to.
+    implementation(libs.wear.input)
     implementation(libs.activity.compose)
     implementation(libs.lifecycle.runtime.compose)
     implementation(libs.androidx.core.ktx)

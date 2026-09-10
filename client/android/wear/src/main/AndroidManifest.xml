@@ -42,6 +42,17 @@
             </intent-filter>
         </activity>
 
+        <!-- Capture (ADR-0039): opens the system input chooser at once and
+             finishes on the answer. Exported so the capture tile can launch
+             it directly; its own task and out of Recents so a half-finished
+             capture is never what "the app" reopens to. -->
+        <activity
+            android:name=".capture.CaptureActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:taskAffinity="net.twinion.hummingbird.wear.capture"
+            android:theme="@style/Theme.Hummingbird.Wear" />
+
         <!-- The token hand-off's receiving end (ADR-0039): the system starts
              this service for a Data Layer message on the `/hummingbird`
              prefix from the phone running this package under this key.

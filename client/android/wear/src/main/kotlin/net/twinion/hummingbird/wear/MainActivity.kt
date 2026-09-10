@@ -1,5 +1,6 @@
 package net.twinion.hummingbird.wear
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -23,6 +24,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.core.CoreHolder
 import net.twinion.hummingbird.core.SyncHistoryStore
+import net.twinion.hummingbird.wear.capture.CaptureActivity
 import net.twinion.hummingbird.wear.questions.QuestionsScreen
 import net.twinion.hummingbird.wear.token.TokenPresence
 import net.twinion.hummingbird.wear.ui.theme.WearTheme
@@ -112,7 +114,7 @@ private fun WearAppRoot() {
                 HomeScreen(
                     needsToken = !tokenPresent || credentialRefused,
                     syncAgeLine = syncAgeLine(lastInformativeSyncMs, nowMs),
-                    onCapture = { /* the capture flow lands with the next slice */ },
+                    onCapture = { context.startActivity(Intent(context, CaptureActivity::class.java)) },
                     onQuestions = { navController.navigate("questions") },
                 )
             }

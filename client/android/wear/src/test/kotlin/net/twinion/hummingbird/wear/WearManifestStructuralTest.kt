@@ -51,6 +51,16 @@ class WearManifestStructuralTest {
     }
 
     @Test
+    fun `CaptureActivity is exported, on its own task, and out of Recents`() {
+        val application = manifest().children("application").single()
+        val capture = application.children("activity").single { it.attr("name") == ".capture.CaptureActivity" }
+        assertEquals("true", capture.attr("exported"))
+        assertEquals("true", capture.attr("excludeFromRecents"))
+        assertTrue("its own taskAffinity", capture.attr("taskAffinity").isNotEmpty())
+        assertTrue("no launcher filter on the capture activity", capture.children("intent-filter").isEmpty())
+    }
+
+    @Test
     fun `the token listener is bound to the Data Layer on the hummingbird prefix`() {
         val application = manifest().children("application").single()
         val listener = application.children("service").single { it.attr("name") == ".token.TokenListenerService" }
