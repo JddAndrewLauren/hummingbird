@@ -203,11 +203,14 @@ GMS woke the watch app, `SyncWorker` ran within the minute, and the mirror
 landed. **Items by urgency** drew the overdue frontier in the core's order
 (`OVERDUE · WED`, `@COMPUTER · SIZE: …`), a tap expanded the card with its
 description, and **"Open on phone" fired `hummingbird://item/<id>`** through
-`RemoteIntentSender`; the phone's logcat shows the VIEW intent resolving to
-the `.ItemLink` alias and that activity resumed. **The tile**, eleventh in the
+`RemoteIntentSender` and **landed on the phone's item detail** (the VIEW
+intent resolved to the `.ItemLink` alias; the operator confirmed the
+screen). **The tile**, eleventh in the
 carousel, drew the arc (overdue in the alarm colour, then the soon segment)
 over `3 OVERDUE · 5 SOON` — exactly the authority's count for the same
-instant — with the feather disc opening the recogniser. **Found and fixed
+instant — with the feather disc opening the recogniser and the two rounds opening
+Items and Standing questions. **Questions** matched the phone's Now panes in
+order (operator comparison). **Found and fixed
 here:** the home's honesty line was clipped below the three buttons on this
 face (the AVD is larger); the column scrolls now, and with a fresh mirror
 the line is rightly absent. Not exercised tonight: `SYNCED nH AGO` (needs an
