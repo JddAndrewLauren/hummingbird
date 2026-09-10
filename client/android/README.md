@@ -128,10 +128,27 @@ go over the previous one in place with the token intact.
 
 **The compile rule is the same.** `android.yml` is the only mandated gate,
 and it runs `:wear:testDebugUnitTest` and `:wear:assembleDebug` (artifact
-`hummingbird-wear-debug-apk`). A Wear emulator is x86_64 and this APK is
-arm64-only by decision; widening `abiFilters` behind a `-PwearEmulator`
-property is the documented route and is deliberately not built until someone
-needs it.
+`hummingbird-wear-debug-apk`). The Mac's Wear AVD (`Pixel_Watch`, Wear OS
+7.0, arm64) runs this APK as it is; a Wear emulator on an Intel host is
+x86_64 and this APK is arm64-only by decision — widening `abiFilters` behind
+a `-PwearEmulator` property is the documented route there and is deliberately
+not built until someone needs it.
+
+**Emulator pass (2026-09-10, debug APK on the `Pixel_Watch` AVD, API 37).**
+Installed and launched clean; `libhummingbird_ffi_mobile.so` loaded and the
+hourly `SyncWorker` ran at start. Home drew the ember Capture button with
+the feather glyph, the tonal Questions button and the mono line "Send a
+token from the phone". Questions listed the Now panes with the roster's
+labels, band dots and headlines ("No open homework", "Waiting for the first
+calendar sync", "Not set up"), and a tap expanded the SCPS row in place.
+Capture opened the system chooser (emoji, voice, keyboard); the **emoji
+path captured end to end** — the one-shot sync worker started, the
+"Captured" confirmation drew, the activity finished back to home. The
+**keyboard path did not hand its text back**: Gboard logged its Send
+action, the chooser came back on top instead of returning to
+`CaptureActivity`, and back then cancelled cleanly. Whether that is the
+preview image's Gboard or a real defect is the hardware pass's first
+question; voice was not exercisable on the emulator.
 
 **Proving the lane on hardware — the watch.** *Owed by the first device
 pass:* the phone reports `Sent to Pixel Watch.`, the home line clears, a

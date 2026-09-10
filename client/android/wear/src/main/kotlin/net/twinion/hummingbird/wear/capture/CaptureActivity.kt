@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.RemoteInput
 import android.content.Intent
 import android.os.Bundle
+import android.view.inputmethod.EditorInfo
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -21,6 +22,7 @@ import androidx.wear.compose.material3.ConfirmationDialog
 import androidx.wear.compose.material3.Icon
 import androidx.wear.compose.material3.Text
 import androidx.wear.input.RemoteInputIntentHelper
+import androidx.wear.input.wearableExtender
 import kotlinx.coroutines.launch
 import net.twinion.hummingbird.brand.R
 import net.twinion.hummingbird.wear.ui.theme.WearTheme
@@ -93,6 +95,15 @@ internal fun captureInputIntent(): Intent {
     val input = RemoteInput.Builder(KEY_TEXT)
         .setLabel("Capture")
         .setAllowFreeFormInput(true)
+        // Wear's own extender: emoji allowed (a title may be one), and the
+        // keyboard's action key asked to read Done — a capture is finished,
+        // not sent to someone. (The Wear OS 7.0 emulator's Gboard still
+        // showed Send and its result never reached the chooser there; the
+        // emoji path through the same chooser did — README, "The watch".)
+        .wearableExtender {
+            setEmojisAllowed(true)
+            setInputActionType(EditorInfo.IME_ACTION_DONE)
+        }
         .build()
     return RemoteInputIntentHelper.createActionRemoteInputIntent().also {
         RemoteInputIntentHelper.putRemoteInputsExtra(it, listOf(input))
