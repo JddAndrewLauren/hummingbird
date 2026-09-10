@@ -35,7 +35,10 @@ type GooglePoller<S> = ContextPoller<GoogleProviderPoller<ReqwestGoogleTransport
 /// `not_read` window of at most `CALENDAR_POLL_INTERVAL_MS` per device
 /// while it repolls, and is right because a context mirror is disposable
 /// by construction: it holds nothing this device authored.
-const SCHEMA_VERSION: u32 = 2;
+///
+/// Public so a host's own tests can seed a mirror the poller will accept —
+/// `ffi-mobile`'s pane round-trips write one through `save_snapshot`.
+pub const SCHEMA_VERSION: u32 = 2;
 const PROVIDER: &str = "google_calendar";
 
 /// The calendar lane's declared poll cadence (#46/ADR-0005's 15-minute
