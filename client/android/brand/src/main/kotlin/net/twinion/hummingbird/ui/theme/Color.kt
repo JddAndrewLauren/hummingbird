@@ -60,6 +60,12 @@ val StatusInfoFgDark = Color(0xFF5CB6D8) // --status-info-fg (dark)
 // divergences on this page.
 val StatusWarnFgDark = Color(0xFFF0B429) // --status-warn-fg (dark)
 val StatusDoneFgDark = Color(0xFF4CC79B) // --status-done-fg (dark)
+// The watch's capture confirmation disc (the Wear capture handoff,
+// 2026-09-10): the done foreground on its own translucent bed. Light aliases
+// the ramp (`--status-done-bg` light is `var(--moss-100)`); dark declares a
+// literal — 18% moss on whatever is behind it, the same divergence as
+// `StatusInfoBgDark` below.
+val StatusDoneBgDark = Color(0x2E17916B) // --status-done-bg (dark): moss 18%
 // The Status quiet stack's problem-card border. Light aliases the ramp
 // (`--accent-quiet-border` light is `var(--ember-200)`, so the use site
 // reads `Ember200` and needs no constant of its own); dark declares a

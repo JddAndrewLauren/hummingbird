@@ -45,6 +45,8 @@ class ColorTokenDriftTest {
         // The Settings sync card's WARN/SUCCESS tones (#535 review).
         "StatusWarnFgDark" to ScopedToken("--status-warn-fg", Scope.DARK),
         "StatusDoneFgDark" to ScopedToken("--status-done-fg", Scope.DARK),
+        // The watch's capture confirmation disc (dark).
+        "StatusDoneBgDark" to ScopedToken("--status-done-bg", Scope.DARK),
         // The Status quiet stack's problem-card border (dark).
         "AccentQuietBorderDark" to ScopedToken("--accent-quiet-border", Scope.DARK),
         // The stage vocabulary's dark scope (#557, `StageBadge`) — every
