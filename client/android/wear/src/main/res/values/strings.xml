@@ -1,0 +1,5 @@
+<resources>
+    <!-- The product name is lowercase everywhere (design system, content
+         fundamentals) — the same string the phone shows. -->
+    <string name="app_name">hummingbird</string>
+</resources>

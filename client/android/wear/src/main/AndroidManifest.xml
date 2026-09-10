@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- A watch app and only a watch app: the Play/side-load installer
+         refuses this APK on anything that is not a Wear device. -->
+    <uses-feature android:name="android.hardware.type.watch" />
+
+    <!-- The sync cycle and nothing else reaches the network (the core owns
+         HTTP per ADR-0003; this is its permission). No RECORD_AUDIO: capture
+         dictates through the system's own input chooser, never a
+         hummingbird-owned microphone (ADR-0039, ADR-0022 decision 4). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application
+        android:name=".WearApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Hummingbird.Wear">
+
+        <uses-library
+            android:name="com.google.android.wearable"
+            android:required="true" />
+
+        <!-- Standalone: the watch carries its own core and token and needs
+             no companion install to function (ADR-0039). The phone is where
+             the token is typed, not where the data lives. -->
+        <meta-data
+            android:name="com.google.android.wearable.standalone"
+            android:value="true" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Hummingbird.Wear">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
