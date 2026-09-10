@@ -26,7 +26,7 @@ pub use event::{EventRecord, EventStatus, EventWhen};
 #[cfg(feature = "reqwest-transport")]
 pub use host::{
     outcome_name, CalendarEventsResponse, CalendarHostCore, CalendarListResponse,
-    CALENDAR_POLL_INTERVAL_MS,
+    CALENDAR_POLL_INTERVAL_MS, SCHEMA_VERSION as CALENDAR_SCHEMA_VERSION,
 };
 pub(crate) use query::is_actionable;
 pub use google::{CalendarHorizon, CalendarSelection};

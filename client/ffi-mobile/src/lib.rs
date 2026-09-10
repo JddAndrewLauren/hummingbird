@@ -3737,10 +3737,11 @@ fn pane_item_facts(
 }
 
 /// The calendar arm of [`mobile_pane_inputs`] — what this device has
-/// mirrored for each question's own window, and whether it has ever
-/// connected a calendar at all. Empty and `false` for phase one
-/// ([`MobileTaskHost::pane_zone_queries`]), which runs *before* any zone is
-/// resolved and so cannot name a window to read.
+/// mirrored for each question, and whether it has ever connected a
+/// calendar at all. Phase one ([`MobileTaskHost::pane_zone_queries`]) runs
+/// *before* any zone is resolved and so cannot name a window, so it carries
+/// the whole mirror under every key ([`MobileTaskHost::calendar_arm_unzoned`]);
+/// phase two carries each question's own window ([`MobileTaskHost::calendar_arm`]).
 #[derive(Debug, Clone, Default, PartialEq)]
 struct CalendarArm {
     reads: HashMap<String, CalendarReadFacts>,
@@ -5576,17 +5577,19 @@ impl MobileTaskHost {
     /// civil-date reasoning (`panes::mod`'s own test) — kept generic over
     /// `surface` so #537's Now questions reach it unchanged.
     pub async fn pane_zone_queries(&self, surface: MobileSurface, now_ms: i64) -> Vec<MobileZoneQuery> {
+        // Phase one runs before any zone is resolved, so it cannot read a
+        // question's true window — but it MUST read the mirror all the
+        // same: `vacation_zone_queries`/`scps_zone_queries` ask for one
+        // fact PER EVENT (a midnight per all-day date, a civil date per
+        // timed instant), and emit them only off a bound read. Feeding this
+        // phase an empty arm (what shipped with #621) meant those queries
+        // never went out, every per-event lookup in phase two missed, and
+        // the trip pane answered "nothing booked" on a device whose mirror
+        // held the trips. So this phase reads the unzoned SUPERSET
+        // (`calendar_arm_unzoned`) and phase two re-reads the true windows.
+        let calendar = self.calendar_arm_unzoned(now_ms).await;
         let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await;
-        // Phase one reads no calendar arm — it runs before any zone is
-        // resolved, and every calendar window this lane needs is a function
-        // of the reader's own zone. `weekend`/`vacation` ask for their zone
-        // facts here and read their events in phase two.
-        let inputs = mobile_pane_inputs(
-            &inner.core,
-            now_ms,
-            MobileSyncFacts::default(),
-            CalendarArm::default(),
-        );
+        let inputs = mobile_pane_inputs(&inner.core, now_ms, MobileSyncFacts::default(), calendar);
         panes::zone_queries(map_surface(surface), &inputs)
             .iter()
             .map(to_mobile_zone_query)
@@ -5921,6 +5924,43 @@ impl MobileTaskHost {
                 }
                 _ => None,
             })
+    }
+
+    /// Phase one's calendar arm: every event the mirror holds, under each
+    /// calendar-reading question's key, with no window applied.
+    ///
+    /// No zone is resolved yet when this runs, so the true windows
+    /// ([`Self::calendar_arm`]) cannot be computed — but the per-event zone
+    /// queries `vacation`/`scps` emit exist only off a bound read, so this
+    /// phase needs the events. Reading the WHOLE mirror is safe and bounded
+    /// by construction: the mirror only ever holds what
+    /// `calendar::google::adapter`'s `window_bounds` fetched (seven days
+    /// back, ninety or seven hundred and thirty ahead), so it is a superset
+    /// of every zone's true interval, and an event outside a question's
+    /// window costs one `java.time` lookup and nothing else — phase two
+    /// re-reads the true windows and decides on those. A device that never
+    /// opted in, or has no snapshot yet, contributes `NotRead` under each
+    /// key, which the panes already read as "not requested yet".
+    async fn calendar_arm_unzoned(&self, now_ms: i64) -> CalendarArm {
+        let calendar = self.calendar.lock().await;
+        let mut reads = HashMap::new();
+        for key in [weekend::CALENDAR_REQUEST_KEY, vacation::CALENDAR_REQUEST_KEY, scps::CALENDAR_REQUEST_KEY] {
+            // Admits every event: `query.rs`'s `overlaps` compares instants
+            // numerically and all-day dates lexically, so these bounds are
+            // below and above anything a provider can stamp.
+            let response = calendar
+                .host
+                .events_in_interval(
+                    i64::MIN / 2,
+                    i64::MAX / 2,
+                    "0000-00-00".to_string(),
+                    "9999-99-99".to_string(),
+                    now_ms,
+                )
+                .await;
+            reads.insert(key.to_string(), to_calendar_read_facts(response));
+        }
+        CalendarArm { reads, connected: calendar.opted_in }
     }
 
     /// Phase two's calendar arm (#621): each calendar-reading question's own
@@ -7489,22 +7529,91 @@ mod tests {
         );
     }
 
-    /// Phase one must stay calendar-free: it runs before any zone is
-    /// resolved, so there is no window to read, and asking anyway would be
-    /// a disk read per tick for an answer nothing uses.
+    /// Phase one reads the mirror — the whole of it, unzoned — because the
+    /// per-event zone queries `vacation_zone_queries` emits exist only off
+    /// a bound read. What this pins is the failure that shipped with #621:
+    /// an empty phase-one arm meant no midnight was ever asked for a trip's
+    /// dates, phase two's `midnight_ms` lookups all missed, and a device
+    /// whose mirror held the trips answered "nothing booked".
     #[tokio::test]
-    async fn the_zone_query_phase_reads_no_calendar_arm() {
+    async fn the_zone_query_phase_asks_for_each_mirrored_trips_dates() {
         let dir = tempfile::tempdir().unwrap();
         let host = unreachable_host(&dir, "device-token").await;
+        host.set_binding(
+            "seed-trips".to_string(),
+            vacation::TRIPS_CALENDAR_BINDING_KEY.to_string(),
+            "trips@g".to_string(),
+            1_000,
+        )
+        .await
+        .unwrap();
+        seed_calendar_mirror(
+            &dir.path().join("cal-ns"),
+            vec![all_day_event("trips@g", "Trip: Lisbon", "2030-03-10", "2030-03-16")],
+            1_000,
+        )
+        .await;
         host.init_calendar(true, Vec::new()).await;
 
-        // The queries a connected device asks are the same ones a
-        // never-connected one does — the calendar arm contributes none.
+        let midnight = |date: &str| MobileZoneQuery::Midnight {
+            zone: hummingbird_core::decisions::panes::zone::DEVICE_ZONE.to_string(),
+            date: date.to_string(),
+        };
         let connected = host.pane_zone_queries(MobileSurface::Now, 1_000).await;
+        assert!(connected.contains(&midnight("2030-03-10")), "{connected:?}");
+        assert!(connected.contains(&midnight("2030-03-16")), "{connected:?}");
+
+        // Disconnected, the read is not bound and the trip's dates are not
+        // asked for — the arm is read, but it decides nothing on its own.
         host.disconnect_calendar().await;
         let disconnected = host.pane_zone_queries(MobileSurface::Now, 1_000).await;
+        assert!(!disconnected.contains(&midnight("2030-03-10")), "{disconnected:?}");
+    }
 
-        assert_eq!(connected, disconnected);
+    /// Writes a calendar mirror the host's poller will accept, under the
+    /// namespace `MobileTaskHost::init` was given — the same slot and
+    /// schema version `CalendarHostCore` reads (`calendar.json`,
+    /// `CALENDAR_SCHEMA_VERSION`), so `current_snapshot` finds it on the
+    /// next read without any poll having run.
+    pub(super) async fn seed_calendar_mirror(
+        namespace: &std::path::Path,
+        events: Vec<hummingbird_core::calendar::EventRecord>,
+        as_of_ms: u64,
+    ) {
+        std::fs::create_dir_all(namespace).unwrap();
+        let store = FsSnapshotStore::new(namespace.join("calendar.json"));
+        hummingbird_core::storage::save_snapshot(
+            &store,
+            hummingbird_core::calendar::CALENDAR_SCHEMA_VERSION,
+            as_of_ms,
+            &hummingbird_core::calendar::CalendarSnapshot::new(events),
+        )
+        .await
+        .unwrap();
+    }
+
+    /// One confirmed all-day event, `end_date` exclusive the way the
+    /// provider stamps it.
+    pub(super) fn all_day_event(
+        calendar_id: &str,
+        title: &str,
+        start_date: &str,
+        end_date: &str,
+    ) -> hummingbird_core::calendar::EventRecord {
+        use hummingbird_core::calendar::{EventRecord, EventStatus, EventWhen};
+        EventRecord {
+            provider_event_id: format!("{calendar_id}:{start_date}"),
+            calendar_id: calendar_id.to_string(),
+            title: title.to_string(),
+            when: EventWhen::AllDay { start_date: start_date.to_string(), end_date: end_date.to_string() },
+            recurrence_id: None,
+            location: Some("Lisbon".to_string()),
+            organizer: None,
+            status: EventStatus::Confirmed,
+            provider_updated_at_ms: 0,
+            html_link: None,
+            description: None,
+        }
     }
 
     #[tokio::test]
@@ -11160,6 +11269,62 @@ mod settings_tests {
                 MobileZoneFact { key, value }
             })
             .collect()
+    }
+
+    /// The trip pane, end to end through both phases on this seam, off a
+    /// mirror that already holds the trip: phase one asks for the trip's
+    /// own midnights (the arm read unzoned), the host answers them, phase
+    /// two reads the true window and classifies. Before the phase-one arm
+    /// was read this pinned "nothing booked" — the defect the operator saw
+    /// on the Fold with a connected calendar and a bound trips calendar.
+    #[tokio::test]
+    async fn a_mirrored_trip_answers_the_vacation_pane_through_both_phases() {
+        const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("panes-now-trip");
+        let host = MobileTaskHost::init(
+            namespace.to_str().unwrap().to_string(),
+            "http://127.0.0.1:1".to_string(),
+            "token".to_string(),
+        )
+        .await
+        .unwrap();
+        // Noon UTC on 2030-03-01, in `resolve_zone_facts`'s own UTC civil days.
+        let now_ms = civil_days_between("1970-01-01", "2030-03-01").unwrap() * DAY_MS + 12 * 3_600_000;
+        host.set_binding(
+            "seed-trips".to_string(),
+            vacation::TRIPS_CALENDAR_BINDING_KEY.to_string(),
+            "trips@g".to_string(),
+            now_ms,
+        )
+        .await
+        .unwrap();
+        crate::tests::seed_calendar_mirror(
+            &namespace,
+            vec![crate::tests::all_day_event("trips@g", "Trip: Lisbon", "2030-03-10", "2030-03-16")],
+            now_ms as u64,
+        )
+        .await;
+        host.init_calendar(true, Vec::new()).await;
+
+        let queries = host.pane_zone_queries(MobileSurface::Now, now_ms).await;
+        let facts = resolve_zone_facts(queries);
+        let panes = host.rank_panes(MobileSurface::Now, now_ms, facts, MobileSyncFacts::default()).await;
+
+        let pane = panes
+            .iter()
+            .find(|pane| pane.standing_question == MobileStandingQuestion::Vacation)
+            .expect("the Now surface ranks the vacation pane");
+        let MobilePaneFacts::Vacation { resolved: Some(MobileVacationResolved::Facts { facts }) } = &pane.facts
+        else {
+            panic!("expected bound vacation facts, got {:?}", pane.facts);
+        };
+        let next = facts.next.as_ref().expect("the mirrored trip is the next trip");
+        assert_eq!(next.phase, MobileTripPhase::Upcoming);
+        assert_eq!(next.days_until, 9);
+        assert_eq!(next.length_days, 6);
+        assert_eq!(next.location.as_deref(), Some("Lisbon"));
+        assert_eq!(pane.answer.answer_state, MobilePaneAnswerState::Answered);
     }
 
     #[tokio::test]
