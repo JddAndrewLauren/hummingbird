@@ -31,7 +31,8 @@ import net.twinion.hummingbird.ui.theme.Sky600
 // order and colours: the inbox on triage's blue, the plus on the accent,
 // the calendar-check on ember-700 for "Mint for today". The glyph and the
 // colour are the label, so each button's `contentDescription` is the only
-// place its gesture is named, with a mono caption beneath for the reader
+// place its gesture is named, with a mono caption beneath (upper-case, the
+// meta register every other mono line on the watch uses) for the reader
 // who has not learned them yet. `Sky600` and `Ember700` are named directly
 // for the phone's reason (`CaptureActivity.kt`'s row): one fill has to
 // carry white content, and the scheme's slots are not those blues and
@@ -49,7 +50,9 @@ internal fun DestinationScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(horizontal = 20.dp),
+                // The scaffold's own padding already insets the round face;
+                // the first emulator pass squeezed the third round at 20dp.
+                .padding(horizontal = 6.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -61,10 +64,10 @@ internal fun DestinationScreen(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Destination(R.drawable.ic_inbox, "Triage", "triage", Sky600, onTriage)
-                Destination(R.drawable.ic_plus, "Mint action", "add", MaterialTheme.colorScheme.primary, onMint)
-                Destination(R.drawable.ic_calendar_check, "Mint for today", "today", Ember700, onToday)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Destination(R.drawable.ic_inbox, "Triage", "TRIAGE", Sky600, onTriage)
+                Destination(R.drawable.ic_plus, "Mint action", "ADD", MaterialTheme.colorScheme.primary, onMint)
+                Destination(R.drawable.ic_calendar_check, "Mint for today", "TODAY", Ember700, onToday)
             }
         }
     }
@@ -92,6 +95,6 @@ private fun Destination(
         ) {
             Icon(painterResource(iconRes), contentDescription = name, modifier = Modifier.size(24.dp))
         }
-        Text(caption, style = MaterialTheme.typography.labelSmall, color = Ink400)
+        Text(caption, style = MaterialTheme.typography.labelSmall, color = Ink400, maxLines = 1, softWrap = false)
     }
 }

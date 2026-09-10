@@ -9,6 +9,7 @@ import androidx.wear.protolayout.DeviceParametersBuilders.DeviceParameters
 import androidx.wear.protolayout.DimensionBuilders.degrees
 import androidx.wear.protolayout.DimensionBuilders.dp
 import androidx.wear.protolayout.DimensionBuilders.expand
+import androidx.wear.protolayout.DimensionBuilders.wrap
 import androidx.wear.protolayout.LayoutElementBuilders
 import androidx.wear.protolayout.LayoutElementBuilders.LayoutElement
 import androidx.wear.protolayout.material3.ButtonColors
@@ -214,7 +215,11 @@ private fun segment(length: Float, color: Color): LayoutElementBuilders.ArcLine 
  * 116/284 of it, the rounds 44/284 with a floor at Wear's touch minimum,
  * the gap between them 40/284. */
 private fun MaterialScope.centreColumn(face: Float, facts: TileFacts): LayoutElement {
+    // Full width, so the button group beneath the disc is centred on the
+    // face rather than clipped to the disc's own width (the first emulator
+    // pass drew the right round cut off for exactly this reason).
     val column = LayoutElementBuilders.Column.Builder()
+        .setWidth(expand())
         .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
     val line = tileCountLine(facts.counts, facts.lastInformativeAtMs, facts.nowMs)
     if (line != null) {
@@ -237,7 +242,7 @@ private fun MaterialScope.centreColumn(face: Float, facts: TileFacts): LayoutEle
     column.addContent(gap(GAP_DP))
     val round = maxOf(face * ROUND_FRACTION, MIN_TOUCH_DP)
     column.addContent(
-        buttonGroup(spacing = face * ROUND_GAP_FRACTION) {
+        buttonGroup(width = wrap(), spacing = face * ROUND_GAP_FRACTION) {
             buttonGroupItem { glyphRound(RES_ZAP, ROUTE_ITEMS, round) }
             buttonGroupItem { glyphRound(RES_HELP_CIRCLE, ROUTE_QUESTIONS, round) }
         },
