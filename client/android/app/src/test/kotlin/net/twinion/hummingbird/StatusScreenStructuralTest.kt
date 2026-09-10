@@ -13,9 +13,9 @@ import org.junit.Test
 // build, never render as a silently-missing row. `MobilePaneBand`'s own
 // exhaustive `when` moved to `PaneShell.kt` at #537, when the row/band/
 // status-words rendering `StatusScreen.kt` used to own directly became the
-// shared shell `NowScreen.kt`'s own three panes render through too — this
-// file's gate follows the code, one `screenSrc`/`shellSrc` pair rather than
-// one file.
+// shared shell `NowScreen.kt`'s own three panes render through too, and on
+// to `:brand`'s `PaneBand.kt` at ADR-0039, when the watch needed the same
+// mapping — this file's gate follows the code, wherever it lives.
 class StatusScreenStructuralTest {
 
     private fun repoFile(relative: String): String {
@@ -31,15 +31,21 @@ class StatusScreenStructuralTest {
             .replace(Regex("""/\*[\s\S]*?\*/"""), "")
             .replace(Regex("""(?m)^\s*//.*$"""), "")
 
+    private fun brandSource(name: String) =
+        repoFile("client/android/brand/src/main/kotlin/net/twinion/hummingbird/$name")
+            .replace(Regex("""/\*[\s\S]*?\*/"""), "")
+            .replace(Regex("""(?m)^\s*//.*$"""), "")
+
     private val screenSrc by lazy { source("StatusScreen.kt") }
     private val shellSrc by lazy { source("PaneShell.kt") }
     private val stackSrc by lazy { source("ui/panes/StatusQuietStack.kt") }
     private val partitionSrc by lazy { source("ui/panes/StatusPartition.kt") }
+    private val bandSrc by lazy { brandSource("ui/panes/PaneBand.kt") }
 
     /** Every file this screen's rendering now spans. The quiet stack and its
      * partition joined at #689, and the rules below bind them exactly as
      * they bound the screen alone. */
-    private val statusSurface by lazy { listOf(screenSrc, shellSrc, stackSrc, partitionSrc) }
+    private val statusSurface by lazy { listOf(screenSrc, shellSrc, stackSrc, partitionSrc, bandSrc) }
 
     @Test
     fun `every when over the seam pane enums is exhaustive with no wildcard arm`() {
@@ -50,8 +56,8 @@ class StatusScreenStructuralTest {
         )
         val bandArm = Regex("""MobilePaneBand\.[A-Z_]+\s*->""")
         assertTrue(
-            "PaneShell.kt must map MobilePaneBand by its variants",
-            bandArm.containsMatchIn(shellSrc),
+            "PaneBand.kt must map MobilePaneBand by its variants",
+            bandArm.containsMatchIn(bandSrc),
         )
         assertTrue(
             "the quiet stack must map MobileStandingQuestion by its variants",

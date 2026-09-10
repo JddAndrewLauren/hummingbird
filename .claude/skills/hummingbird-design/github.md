@@ -146,17 +146,6 @@ then pushed, so the mirror and the design project do not fork:
   before the internal pointer/focus handlers, which now compose with the
   caller's rather than being silently replaced by them.
 
-## Pending pull (2026-09-10)
-
-`ui_kits/wear/` (Next up, Urgent alert, Calendar context) is still not
-mirrored. The first Wear client (`client/android/wear/`, ADR-0039) started on
-2026-09-10 and its session could not pull: `DesignSync list_files` answered
-"needs design-system authorization" twice, before and after `/design-login`
-on the account in use (the project is connected to the WORK account, above).
-`:wear` is styled from `tokens/` and `README.md` alone until the kit is
-pulled; when a WORK-authorized session pulls it, replace this section with a
-"Pulled" line under "Local pull" and check the built screens against the kit.
-
 ## Local pull (this copy)
 
 date: 2026-08-09 (base pull) · 2026-08-14 (`ui_kits/android/`)
@@ -168,6 +157,17 @@ pulled into: `.claude/skills/hummingbird-design/` — the repo-local mirror of t
 Pulled 2026-08-09: SKILL.md, readme.md (as README.md), github.md, styles.css,
 `tokens/`, all 16 components (`components/**` jsx + d.ts + prompt.md),
 `ui_kits/web/`.
+
+Pulled 2026-09-10: `ui_kits/wear/` (README.md, index.html, WearScreens.jsx)
+— the first Wear client started (`client/android/wear/`, ADR-0039). Pulled
+from a session on the WORK account after two refused attempts earlier the
+same day (`/design-login` had to be re-run after a `/login`). The kit's three
+tiles (Next up, Urgent alert, Calendar context) predate the ADR-0039 grilling,
+which chose a watch *app* (capture + the Now questions list) first and
+per-question tiles later; its rules for the wrist — always dark, one answer
+per tile, no list longer than three rows, 44px targets, "stale — as of" over
+absence — bind the app too. Its "No Wear client exists" line is now stale
+upstream and is a candidate for the next push.
 
 Pulled 2026-08-14: `ui_kits/android/` (README.md, index.html,
 android-frame.jsx, AndroidScreens.jsx) — the Android surface started with M0
@@ -181,7 +181,7 @@ Omitted (fetch on demand with `DesignSync get_file` against the projectId
 above, or view on claude.ai/design):
 - `guidelines/*.card.html` and `components/*.card.html` — Design System pane
   preview cards; the values they render live in `tokens/` and README.md
-- `ui_kits/ios/`, `ui_kits/wear/` — pull when those surfaces start
+- `ui_kits/ios/` — pull when that surface starts
 - `assets/*.png` (app icons, concept sheet) — binary; download from the
   design project when needed
 - pane infra: `_ds_bundle.js`, `_ds_manifest.json`, `thumbnail.html`,
