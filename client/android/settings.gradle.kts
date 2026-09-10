@@ -1,8 +1,10 @@
 // The native Android client (#141): a standalone Gradle build rooted here,
 // deliberately NOT coupled into any other build system in the repo — the
-// only seam to the Rust side is the two cargo invocations app/build.gradle.kts
-// wires (cargo-ndk for the .so, uniffi-bindgen for the Kotlin binding),
-// both running against the `client/` cargo workspace one directory up.
+// only seam to the Rust side is the two cargo invocations
+// core-binding/build.gradle.kts wires (cargo-ndk for the .so, uniffi-bindgen
+// for the Kotlin binding), both running against the `client/` cargo workspace
+// one directory up. `:core-binding` is the library every device app here
+// consumes (ADR-0039); `:app` is the phone.
 pluginManagement {
     repositories {
         google {
@@ -26,4 +28,5 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "hummingbird-android"
+include(":core-binding")
 include(":app")

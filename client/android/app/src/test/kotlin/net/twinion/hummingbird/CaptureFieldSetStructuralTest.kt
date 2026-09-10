@@ -16,7 +16,7 @@ class CaptureFieldSetStructuralTest {
     private fun repoRoot(): File =
         File(
             System.getProperty("hummingbird.repoRoot")
-                ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)"),
+                ?: error("hummingbird.repoRoot not set — run under Gradle (see client/android/build.gradle.kts)"),
         )
 
     private fun repoFile(relative: String): String {

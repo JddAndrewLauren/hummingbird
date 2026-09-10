@@ -68,7 +68,7 @@ class StageBadgeTest {
     // refinement) so a doc comment is free to name the thing a pin forbids.
     private fun repoFile(relative: String): String {
         val root = System.getProperty("hummingbird.repoRoot")
-            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see client/android/build.gradle.kts)")
         val file = File(root, relative)
         check(file.isFile) { "$relative not found under $root" }
         return file.readText()

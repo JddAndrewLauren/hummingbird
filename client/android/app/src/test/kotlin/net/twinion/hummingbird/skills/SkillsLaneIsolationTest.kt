@@ -24,7 +24,7 @@ class SkillsLaneIsolationTest {
 
     private val laneFiles: List<Pair<String, String>> by lazy {
         val root = System.getProperty("hummingbird.repoRoot")
-            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see client/android/build.gradle.kts)")
         val dir = File(root, "client/android/app/src/main/kotlin/net/twinion/hummingbird/skills")
         check(dir.isDirectory) { "the skills package was not found under $root" }
         val files = dir.walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()

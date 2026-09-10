@@ -10,16 +10,29 @@ from the design system's tokens (`app/src/main/kotlin/.../ui/theme/`).
 ## The build's two seams
 
 Everything under `app/src/main/kotlin` is an ordinary Compose app. The Rust
-side arrives through two Gradle tasks in `app/build.gradle.kts`, both
-running cargo against the `client/` workspace one level up:
+side arrives through two Gradle tasks in `core-binding/build.gradle.kts`,
+both running cargo against the `client/` workspace one level up:
 
 - **`cargoNdkBuild`** — `cargo ndk` cross-compiles `hummingbird-ffi-mobile`
-  into `app/src/main/jniLibs/` (gitignored; arm64-v8a for the device,
-  x86_64 for the emulator).
+  into `core-binding/src/main/jniLibs/` (gitignored; arm64-v8a for the
+  device, x86_64 for the emulator).
 - **`generateUniffiBindings`** — builds the host cdylib and runs UniFFI in
-  library mode: the Kotlin binding under `app/build/generated/uniffi/` is
-  derived from the exported surface in `client/ffi-mobile/src/lib.rs`,
+  library mode: the Kotlin binding under `core-binding/build/generated/uniffi/`
+  is derived from the exported surface in `client/ffi-mobile/src/lib.rs`,
   which is the single source of truth (no `.udl`).
+
+`:core-binding` is an Android library module (ADR-0039): the seam above plus
+the host-side core package every device app needs identically — `CoreHolder`,
+`TokenStore`, `TokenValidation`, `ZoneBridge`, `SyncHistoryStore`,
+`WallClock`, the diagnostics recorder and journal, `SyncWorker`, and the
+`AUTHORITY_BASE_URL` build constant. Packages are unchanged
+(`net.twinion.hummingbird.{core,diagnostics,sync}`); `:app` depends on the
+module and keeps everything that draws or that only the phone does. The JVM
+unit-test configuration every module shares (`hummingbird.repoRoot`,
+`jna.library.path`, the drift gates' input files) is the root
+`build.gradle.kts`'s `subprojects` block. CI runs each module's suite by
+name (`android.yml`); a module left off that line is a module whose tests
+never run.
 
 Prerequisites beyond Android Studio: `rustup target add
 aarch64-linux-android x86_64-linux-android`, `cargo install cargo-ndk`, and

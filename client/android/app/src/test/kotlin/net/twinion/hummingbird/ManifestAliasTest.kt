@@ -23,7 +23,7 @@ class ManifestAliasTest {
 
     private fun manifest(): Element {
         val root = System.getProperty("hummingbird.repoRoot")
-            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see client/android/build.gradle.kts)")
         val file = File(root, "client/android/app/src/main/AndroidManifest.xml")
         check(file.isFile) { "AndroidManifest.xml not found under $root" }
         val factory = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
@@ -224,7 +224,7 @@ class ManifestAliasTest {
         // themselves can't carry a comment, so only their XML wrappers and
         // any vector art are in scope) and none may mention "placeholder".
         val root = System.getProperty("hummingbird.repoRoot")
-            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see client/android/build.gradle.kts)")
         val resDir = File(root, "client/android/app/src/main/res")
         val iconDirs = resDir.listFiles { f -> f.isDirectory && (f.name.startsWith("drawable") || f.name.startsWith("mipmap")) }
             ?: error("res/ not found or unreadable under $resDir")

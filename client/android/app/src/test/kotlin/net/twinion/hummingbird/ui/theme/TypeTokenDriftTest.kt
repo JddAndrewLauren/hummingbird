@@ -144,7 +144,7 @@ class TypeTokenDriftTest {
 
     private fun repoFile(relative: String): File {
         val root = System.getProperty("hummingbird.repoRoot")
-            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see client/android/build.gradle.kts)")
         val f = File(root, relative)
         check(f.isFile || f.isDirectory) { "$relative not found under $root" }
         return f

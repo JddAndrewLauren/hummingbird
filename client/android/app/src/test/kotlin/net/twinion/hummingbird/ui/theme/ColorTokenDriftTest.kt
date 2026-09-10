@@ -230,7 +230,7 @@ class ColorTokenDriftTest {
 
     private fun repoFile(relative: String): File {
         val root = System.getProperty("hummingbird.repoRoot")
-            ?: error("hummingbird.repoRoot not set — run under Gradle, or set the property (see app/build.gradle.kts)")
+            ?: error("hummingbird.repoRoot not set — run under Gradle, or set the property (see client/android/build.gradle.kts)")
         val f = File(root, relative)
         check(f.isFile) { "$relative not found under $root" }
         return f

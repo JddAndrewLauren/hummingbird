@@ -56,7 +56,7 @@ class LevelGlyphsTest {
 
     private val src: String by lazy {
         val root = System.getProperty("hummingbird.repoRoot")
-            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see client/android/build.gradle.kts)")
         val file = File(root, "client/android/app/src/main/kotlin/net/twinion/hummingbird/ui/LevelGlyphs.kt")
         check(file.isFile) { "LevelGlyphs.kt not found under $root" }
         // Comments stripped so the header may name the vocabulary words it

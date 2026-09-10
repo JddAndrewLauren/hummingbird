@@ -124,7 +124,7 @@ class CalendarPrefsTest {
     @Test
     fun `nothing token-shaped is stored in the calendar preferences`() {
         val root = System.getProperty("hummingbird.repoRoot")
-            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see client/android/build.gradle.kts)")
         val source = java.io.File(
             root,
             "client/android/app/src/main/kotlin/net/twinion/hummingbird/CalendarPrefs.kt",

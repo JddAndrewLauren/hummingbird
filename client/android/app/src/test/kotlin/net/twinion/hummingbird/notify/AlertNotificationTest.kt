@@ -123,7 +123,7 @@ class AlertNotificationTest {
         // baked into a title. This can. Any time source in this file is
         // the defect.
         val root = System.getProperty("hummingbird.repoRoot")
-            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see client/android/build.gradle.kts)")
         val src = File(
             root,
             "client/android/app/src/main/kotlin/net/twinion/hummingbird/notify/AlertNotification.kt",

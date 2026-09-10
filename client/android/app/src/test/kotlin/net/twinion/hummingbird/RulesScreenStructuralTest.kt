@@ -21,7 +21,7 @@ class RulesScreenStructuralTest {
 
     private fun repoFile(relative: String): String {
         val root = System.getProperty("hummingbird.repoRoot")
-            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see client/android/build.gradle.kts)")
         val file = File(root, relative)
         check(file.isFile) { "$relative not found under $root" }
         return file.readText()

@@ -49,10 +49,14 @@ class MotionTokenDriftTest {
     @Test
     fun `the reduced-motion read lives here and nowhere else`() {
         // It was `StatusQuietStack.expandSpec`'s alone until this slice, and
-        // two animator-scale reads would be two places to keep honest.
-        val offenders = repoFile("client/android/app/src/main/kotlin")
+        // two animator-scale reads would be two places to keep honest. Every
+        // module's production Kotlin is walked (`:app`, `:core-binding`, and
+        // whatever ADR-0039 adds next), not `:app`'s alone — a module split
+        // must not open a second place for the read.
+        val offenders = repoFile("client/android")
             .walkTopDown()
             .filter { it.isFile && it.extension == "kt" }
+            .filter { "/src/main/kotlin/" in it.path }
             .filter { it.name != "Motion.kt" }
             .filter { it.readText().contains("ANIMATOR_DURATION_SCALE") }
             .map { it.name }
@@ -77,7 +81,7 @@ class MotionTokenDriftTest {
 
     private fun repoFile(relative: String): File {
         val root = System.getProperty("hummingbird.repoRoot")
-            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see client/android/build.gradle.kts)")
         val f = File(root, relative)
         check(f.isFile || f.isDirectory) { "$relative not found under $root" }
         return f

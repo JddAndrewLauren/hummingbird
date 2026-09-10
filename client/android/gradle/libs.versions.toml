@@ -105,6 +105,8 @@ androidx-test-runner = { group = "androidx.test", name = "runner", version.ref =
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
+# The library modules (`:core-binding`, ADR-0039) — same AGP pin as the application plugin.
+android-library = { id = "com.android.library", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }

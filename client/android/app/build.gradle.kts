@@ -12,72 +12,6 @@ plugins {
     alias(libs.plugins.google.services)
 }
 
-// The `client/` cargo workspace, one level above this Gradle root — the
-// Rust side of the two seam tasks below.
-val cargoWorkspace: File = rootProject.projectDir.parentFile
-
-// `cargo` and `cargo-ndk` live in ~/.cargo/bin, which Android Studio's
-// GUI-launched Gradle daemon does not have on PATH.
-val cargoPath: String =
-    System.getenv("PATH") + File.pathSeparator +
-        "${System.getProperty("user.home")}/.cargo/bin"
-
-// ---------------------------------------------------------------------------
-// Seam task 1: cross-compile hummingbird-ffi-mobile into jniLibs.
-// arm64-v8a is the device (Pixel 10 Pro Fold); x86_64 is the emulator.
-// ---------------------------------------------------------------------------
-val cargoNdkBuild = tasks.register<Exec>("cargoNdkBuild") {
-    group = "rust"
-    description = "cargo-ndk cross-compile of hummingbird-ffi-mobile into src/main/jniLibs"
-    workingDir = cargoWorkspace
-    environment("PATH", cargoPath)
-    commandLine(
-        "cargo", "ndk",
-        "-t", "arm64-v8a",
-        "-t", "x86_64",
-        "-o", layout.projectDirectory.dir("src/main/jniLibs").asFile.absolutePath,
-        "build", "--release", "-p", "hummingbird-ffi-mobile",
-    )
-}
-
-// ---------------------------------------------------------------------------
-// Seam task 2: generate the Kotlin binding from the host-built cdylib
-// (UniFFI library mode: the exported surface in ffi-mobile/src/lib.rs is
-// the single source of truth; no .udl). Two steps — build the host dylib,
-// then run the bindgen bin against it.
-// ---------------------------------------------------------------------------
-val cargoHostBuild = tasks.register<Exec>("cargoHostBuild") {
-    group = "rust"
-    description = "Host build of hummingbird-ffi-mobile for uniffi-bindgen library mode"
-    workingDir = cargoWorkspace
-    environment("PATH", cargoPath)
-    commandLine("cargo", "build", "-p", "hummingbird-ffi-mobile")
-}
-
-val hostCdylibName: String =
-    when {
-        System.getProperty("os.name").lowercase().contains("mac") -> "libhummingbird_ffi_mobile.dylib"
-        // The repo's Windows story is WSL (memory: never /mnt/c), so the
-        // remaining native case is Linux — CI's ubuntu runner included.
-        else -> "libhummingbird_ffi_mobile.so"
-    }
-
-val generateUniffiBindings = tasks.register<Exec>("generateUniffiBindings") {
-    group = "rust"
-    description = "uniffi-bindgen Kotlin binding into build/generated/uniffi"
-    dependsOn(cargoHostBuild)
-    workingDir = cargoWorkspace
-    environment("PATH", cargoPath)
-    commandLine(
-        "cargo", "run", "-p", "hummingbird-ffi-mobile",
-        "--features", "bindgen", "--bin", "uniffi-bindgen", "--",
-        "generate",
-        "--library", "target/debug/$hostCdylibName",
-        "--language", "kotlin",
-        "--out-dir", layout.buildDirectory.dir("generated/uniffi").get().asFile.absolutePath,
-    )
-}
-
 // ---------------------------------------------------------------------------
 // The build version (see `defaultConfig` for the scheme). `git` is run at
 // configure time, twice, against the repo root two levels up; a non-zero
@@ -134,10 +68,6 @@ android {
         versionCode = buildVersionCode()
         versionName = buildVersionName()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-
-        // The authority's origin (ADR-0008), host-supplied to the core at
-        // init per ADR-0003 — the app is the host, so it lives here.
-        buildConfigField("String", "AUTHORITY_BASE_URL", "\"https://hb.twinion.net\"")
     }
 
     buildTypes {
@@ -162,12 +92,6 @@ android {
         }
     }
 
-    sourceSets {
-        getByName("main") {
-            java.srcDir(layout.buildDirectory.dir("generated/uniffi"))
-        }
-    }
-
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -175,7 +99,6 @@ android {
 
     buildFeatures {
         compose = true
-        buildConfig = true
     }
 
     testOptions {
@@ -196,10 +119,6 @@ kotlin {
     }
 }
 
-tasks.named("preBuild") {
-    dependsOn(cargoNdkBuild, generateUniffiBindings)
-}
-
 // Without `keystore.properties` the release build type has no signing config
 // and AGP quietly emits an *unsigned* APK, which no phone will install and
 // which `deploy.sh` would then ship. Refuse at packaging time instead; the
@@ -216,6 +135,11 @@ tasks.matching { it.name == "packageRelease" }.configureEach {
 }
 
 dependencies {
+    // The Rust seam and the host core package — `CoreHolder`, `TokenStore`,
+    // the diagnostics recorder, `SyncWorker` — shared with every other
+    // device app (ADR-0039). JNA, coroutines and WorkManager arrive
+    // transitively as that module's `api`.
+    implementation(project(":core-binding"))
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
     implementation(libs.compose.ui.tooling.preview)
@@ -245,7 +169,6 @@ dependencies {
     // step, buying build complexity for no secrecy.
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)
-    implementation("${libs.jna.get()}@aar")
 
     debugImplementation(libs.compose.ui.tooling)
 
@@ -260,13 +183,11 @@ dependencies {
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.coroutines.test)
     // The plain (non-`@aar`) JNA artifact, for `testDebugUnitTest` alone:
-    // the `@aar` variant above bundles only Android per-ABI `.so`s, so a
-    // JVM unit test that reaches a real uniffi call (`ZoneBridgeTest`,
-    // #537 — the pane lane's zone-bridge resolver, which crosses
-    // `mobileZoneQueryKey` rather than re-deriving `ZoneQuery::key` in
-    // Kotlin, `ffi-mobile::mobile_zone_query_key`'s own doc) needs the
-    // host's own native dispatch library (`libjnidispatch.jnilib` on
-    // macOS) on its classpath, which only this plain jar carries.
+    // tests here that reach a real uniffi call (`GlyphRenderTest` and kin,
+    // through the binding `:core-binding` exposes) need the host's own
+    // native dispatch library on the JVM classpath, which only this plain
+    // jar carries; the `@aar` variant the app ships bundles Android `.so`s
+    // only. Where the host cdylib itself is found is the root build file.
     testImplementation(libs.jna)
     // #576: the width-measuring gate. `ui-test-junit4` brings
     // `createComposeRule()`; Robolectric is what lets it run without an
@@ -284,55 +205,12 @@ dependencies {
 tasks.matching { it.name.startsWith("merge") && it.name.contains("AndroidTestAssets") }
     .configureEach { dependsOn(copySkillsFixture) }
 
-// ColorTokenDriftTest reads tokens/colors.css and Color.kt from the repo
-// root — two levels above this Gradle root (client/android → client → repo).
-// A system property rather than `user.dir`, which differs between Gradle
-// and an IDE runner.
+// The repo root, two levels above this Gradle root (client/android → client
+// → repo), for the androidTest fixture copy below. The JVM unit-test
+// configuration that used to sit here (`hummingbird.repoRoot`,
+// `jna.library.path`, the drift gates' input files) is the root build
+// file's `subprojects` block now, shared with `:core-binding`.
 val repoRoot: File = rootProject.projectDir.parentFile.parentFile
-tasks.withType<Test>().configureEach {
-    systemProperty("hummingbird.repoRoot", repoRoot.absolutePath)
-    // #537: `cargoHostBuild`'s own output dir, so a JVM unit test that
-    // reaches a real uniffi call (`ZoneBridgeTest`) can load the host
-    // cdylib JNA dlopens against — `generateUniffiBindings`'s dependency on
-    // `cargoHostBuild` already guarantees this file exists by the time any
-    // test task runs, since compiling this module's Kotlin needs the
-    // generated binding first.
-    dependsOn(cargoHostBuild)
-    systemProperty("jna.library.path", File(cargoWorkspace, "target/debug").absolutePath)
-    // The CSS sits outside this Gradle project, so without this line a
-    // token change leaves testDebugUnitTest UP-TO-DATE and the drift gate
-    // silently doesn't rerun — a stale local green. (CI runs fresh either
-    // way; this is for the local loop.)
-    inputs.file(File(repoRoot, ".claude/skills/hummingbird-design/tokens/colors.css"))
-        .withPropertyName("designTokensCss")
-    // Same freshness fix for TypeTokenDriftTest (#528): fonts.css sits
-    // outside this Gradle project too.
-    inputs.file(File(repoRoot, ".claude/skills/hummingbird-design/tokens/fonts.css"))
-        .withPropertyName("designTokensFontsCss")
-    // And the launcher backgrounds the colour gate now covers. This one is
-    // in-tree, but res/ is not an input to the unit-test task either, so
-    // editing a hex here leaves the gate UP-TO-DATE just the same.
-    inputs.file(File(repoRoot, "client/android/app/src/main/res/values/colors.xml"))
-        .withPropertyName("launcherColorsXml")
-    // Same freshness fix for BottomNavStructuralTest (#532): nav-bar.ts
-    // sits outside this Gradle project too, and a change to the web's
-    // ON_THE_BAR set would otherwise leave the bar-set pin UP-TO-DATE.
-    inputs.file(File(repoRoot, "client/web/src/shell/nav-bar.ts"))
-        .withPropertyName("navBarTs")
-    // Same fix for WindowWidthStructuralTest and FrontierLanesTest (the
-    // unfolded slice): both pin against web shell sources that sit outside
-    // this Gradle project.
-    inputs.file(File(repoRoot, "client/web/src/shell/breakpoints.ts"))
-        .withPropertyName("breakpointsTs")
-    inputs.file(File(repoRoot, "client/web/src/screens/frontier-lanes.ts"))
-        .withPropertyName("frontierLanesTs")
-    // Same freshness fix for DiagnosticsRecorderTest's forbidden-field drift
-    // gate (#741): diagnostics.rs sits outside this Gradle project too, so a
-    // change to FORBIDDEN_FIELD_NAMES would otherwise leave the gate
-    // UP-TO-DATE.
-    inputs.file(File(repoRoot, "server/domain/src/diagnostics.rs"))
-        .withPropertyName("domainDiagnosticsRs")
-}
 
 // ---------------------------------------------------------------------------
 // M4/#538: the shared run-body fixture, copied into androidTest assets.

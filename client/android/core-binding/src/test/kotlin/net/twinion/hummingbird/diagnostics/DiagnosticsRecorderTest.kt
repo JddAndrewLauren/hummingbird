@@ -267,7 +267,7 @@ class DiagnosticsRecorderTest {
      * fails loudly on an empty list rather than scanning nothing. */
     private fun parsedForbiddenFieldNames(): List<String> {
         val root = System.getProperty("hummingbird.repoRoot")
-            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see client/android/build.gradle.kts)")
         val source = File(root, "server/domain/src/diagnostics.rs").readText()
         val listBody = Regex("""pub const FORBIDDEN_FIELD_NAMES: &\[&str\] = &\[([\s\S]*?)\];""")
             .find(source)

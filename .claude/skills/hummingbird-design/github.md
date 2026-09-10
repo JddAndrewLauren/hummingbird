@@ -146,6 +146,17 @@ then pushed, so the mirror and the design project do not fork:
   before the internal pointer/focus handlers, which now compose with the
   caller's rather than being silently replaced by them.
 
+## Pending pull (2026-09-10)
+
+`ui_kits/wear/` (Next up, Urgent alert, Calendar context) is still not
+mirrored. The first Wear client (`client/android/wear/`, ADR-0039) started on
+2026-09-10 and its session could not pull: `DesignSync list_files` answered
+"needs design-system authorization" twice, before and after `/design-login`
+on the account in use (the project is connected to the WORK account, above).
+`:wear` is styled from `tokens/` and `README.md` alone until the kit is
+pulled; when a WORK-authorized session pulls it, replace this section with a
+"Pulled" line under "Local pull" and check the built screens against the kit.
+
 ## Local pull (this copy)
 
 date: 2026-08-09 (base pull) · 2026-08-14 (`ui_kits/android/`)

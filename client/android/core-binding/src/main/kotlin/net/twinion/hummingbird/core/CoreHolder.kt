@@ -4,7 +4,6 @@ import android.content.Context
 import java.io.File
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import net.twinion.hummingbird.BuildConfig
 import net.twinion.hummingbird.diagnostics.DiagnosticsRecorder
 import uniffi.hummingbird_ffi_mobile.MobileDiagnosticEvent
 import uniffi.hummingbird_ffi_mobile.MobileTaskHost

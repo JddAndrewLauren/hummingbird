@@ -148,7 +148,7 @@ class WeekendCardTest {
         // one: this module runs no Robolectric, so a private `@Composable`
         // in `NowPanesExpanded.kt` cannot be composed in a JVM test.
         val root = System.getProperty("hummingbird.repoRoot")
-            ?: error("hummingbird.repoRoot not set — run under Gradle (see app/build.gradle.kts)")
+            ?: error("hummingbird.repoRoot not set — run under Gradle (see client/android/build.gradle.kts)")
         fun source(relative: String) =
             File(root, "client/android/app/src/main/kotlin/net/twinion/hummingbird/$relative")
                 .readText()
