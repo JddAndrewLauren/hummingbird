@@ -1,7 +1,10 @@
 #!/bin/bash
-# Build the release APK and drop it in Dropbox, where the phone installs it
-# from -- the whole deploy path, and the one that needs no Developer options
-# on the device.
+# Build the release APKs -- the phone's and, since ADR-0039, the watch's --
+# and drop them in Dropbox, where the phone installs its own from: the whole
+# phone deploy path, and the one that needs no Developer options on the
+# device. The watch APK goes on over adb (README, "The watch"); it is built
+# here so both are signed with the ONE release key in one go, which is the
+# Data Layer's condition for the token hand-off ever arriving.
 #
 #   ./client/android/deploy.sh
 #
@@ -14,7 +17,8 @@
 # backwards. Debug builds broke the first (a debug key is per machine and per
 # CI run; `README.md`'s date-picker pass records the uninstall that cost),
 # so this script signs with the one release key, held in 1Password and never
-# rotated; `app/build.gradle.kts` derives the second from the commit count.
+# rotated; the root `build.gradle.kts` derives the second from the commit
+# count, once, for both modules.
 #
 # The key follows the ADMIN_SECRET handling rule (CLAUDE.md, "Credential
 # blast radius"): it is fetched from `op://dev/hummingbird-android-keystore`
@@ -71,14 +75,18 @@ keyPassword=$key_pw
 PROPS
 unset store_pw key_pw
 
-(cd "$here" && ./gradlew --quiet :app:assembleRelease)
+(cd "$here" && ./gradlew --quiet :app:assembleRelease :wear:assembleRelease)
 
 apk="$here/app/build/outputs/apk/release/app-release.apk"
+wear_apk="$here/wear/build/outputs/apk/release/wear-release.apk"
 [ -f "$apk" ] || { echo "no APK at $apk" >&2; exit 1; }
+[ -f "$wear_apk" ] || { echo "no APK at $wear_apk" >&2; exit 1; }
 
-# Name the copy by the version Gradle stamped in, read back off the APK
-# itself so the file name cannot disagree with what the phone will show.
+# Name the copies by the version Gradle stamped in, read back off the APK
+# itself so the file name cannot disagree with what the device will show.
 # `aapt2` and `apksigner` ship in the SDK's build-tools; the newest one wins.
+# Both certificate lines are printed: they must be identical, or the watch
+# never receives the token the phone sends (ADR-0039, costs).
 sdk=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}
 tools=$(ls -d "$sdk"/build-tools/*/ 2>/dev/null | sort -V | tail -1)
 version="unknown"
@@ -87,10 +95,14 @@ if [ -n "$tools" ] && [ -x "$tools/aapt2" ]; then
   code=$(sed -n "s/.*versionCode='\([^']*\)'.*/\1/p" <<< "$badging")
   name=$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" <<< "$badging")
   version="$name-$code"
-  "$tools/apksigner" verify --print-certs "$apk" | grep -i 'SHA-256' | head -1
+  echo "phone: $("$tools/apksigner" verify --print-certs "$apk" | grep -i 'SHA-256' | head -1)"
+  echo "watch: $("$tools/apksigner" verify --print-certs "$wear_apk" | grep -i 'SHA-256' | head -1)"
 fi
 
 mkdir -p "$apk_dir"
 cp "$apk" "$apk_dir/hummingbird-$version.apk"
 cp "$apk" "$apk_dir/hummingbird-latest.apk"
+cp "$wear_apk" "$apk_dir/hummingbird-wear-$version.apk"
+cp "$wear_apk" "$apk_dir/hummingbird-wear-latest.apk"
 echo "release APK $version -> $apk_dir/hummingbird-$version.apk (and hummingbird-latest.apk)"
+echo "watch APK   $version -> $apk_dir/hummingbird-wear-$version.apk (and hummingbird-wear-latest.apk)"

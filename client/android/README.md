@@ -84,6 +84,62 @@ an NDK (Studio's SDK manager, or `sdkmanager "ndk;<version>"`).
 - On device, the app asks once for a `device` token (minted by the
   operator against the authority); it rests in the Android Keystore.
 
+## The watch (ADR-0039)
+
+The Pixel Watch client is the `:wear` module — a device with its own Rust
+core and its own `device` token, `device-watch`, not a view over the phone's.
+It shares two libraries with `:app` and nothing else:
+
+| Module | What it holds |
+| --- | --- |
+| `:core-binding` | The two cargo tasks, the UniFFI binding, `AUTHORITY_BASE_URL`, and the host core package (`CoreHolder`, `TokenStore`, `TokenValidation`, `TokenMessage`, `ZoneBridge`, `SyncHistoryStore`, `WallClock`, the diagnostics recorder and journal, `SyncWorker`). minSdk 34. |
+| `:brand` | `Color.kt`, `Font.kt` + `res/font/`, every Lucide `ic_*` drawable (`net.twinion.hummingbird.brand.R`), and the pane words: `PaneAnswers`, `PaneGlyph`, `PaneCollapse`, `PaneBand`, `NowPaneWords`. minSdk 34. |
+| `:app` | The phone — everything that draws or that only the phone does. minSdk 35. |
+| `:wear` | The watch — home, questions, capture, the capture tile, the token listener. minSdk 34, arm64-v8a only. |
+
+**The Data Layer coupling.** The phone sends the watch its token over the
+Wearable `MessageClient` (Settings → Watch → "Send to watch"), and the Data
+Layer delivers only between apps with the **same package name and the same
+signing certificate** on paired nodes. So `:wear` ships under the phone's
+`applicationId` and the phone's release key, `deploy.sh` builds both APKs in
+one go and prints both certificate lines (they must match), and a watch
+running a debug build while the phone runs release receives nothing — with
+no error anywhere. Install the watch with the release key from the first
+install.
+
+**Provisioning.** Mint the watch's token once:
+`./scripts/mint-device-token.sh device-watch "Pixel Watch" hummingbird-device-watch`,
+then paste it from 1Password into the phone's Settings → Watch card and tap
+"Send to watch". The phone reports `Sent to Pixel Watch.`; the watch's home
+line "Send a token from the phone" disappears and a sync lands within the
+minute. The raw token is retained nowhere on the phone.
+
+**Deploy, over adb over Wi-Fi.** Developer options on the watch → Wireless
+debugging → Pair new device; then on the Mac:
+
+```
+adb pair <watch-ip>:<pairing-port>     # once, with the code the watch shows
+adb connect <watch-ip>:<port>
+adb -s <watch-ip>:<port> install -r ~/Dropbox/hummingbird/apk/hummingbird-wear-latest.apk
+```
+
+`versionCode` is the commit count, shared with the phone, so later installs
+go over the previous one in place with the token intact.
+
+**The compile rule is the same.** `android.yml` is the only mandated gate,
+and it runs `:wear:testDebugUnitTest` and `:wear:assembleDebug` (artifact
+`hummingbird-wear-debug-apk`). A Wear emulator is x86_64 and this APK is
+arm64-only by decision; widening `abiFilters` behind a `-PwearEmulator`
+property is the documented route and is deliberately not built until someone
+needs it.
+
+**Proving the lane on hardware — the watch.** *Owed by the first device
+pass:* the phone reports `Sent to Pixel Watch.`, the home line clears, a
+dictated line lands in Triage on the phone within a minute, the questions
+list matches the phone's Now panes in order with a switched-off question
+absent, a tap expands in place, the tile is added from the face and its tap
+opens the chooser. Record the run here with its date and the APK's version.
+
 ## Sync model (grilling 2026-08-14)
 
 Foreground: one `user` cycle on resume plus the 60-second `timer` cadence

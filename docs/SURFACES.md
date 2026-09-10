@@ -673,12 +673,33 @@ gating this row, per the 2026-08-20 decision above, and standing one up in
 structural or bounds-measuring tests as covering it; they were never the
 blocker and are not the answer.
 
+## Wear OS (ADR-0039)
+
+**Code root:** `client/android/wear/` (the `:wear` module, over
+`:core-binding` and `:brand`). **Surfaces:** three screens and one tile —
+the home (capture button, questions button, one honest line), the
+standing-questions list with its in-place expansion, the capture flow (the
+system input chooser, then a confirmation), and the static capture tile.
+
+**No visual gate.** There is no Wear emulator matrix here: the watch build is
+arm64-only by decision, and the only render evidence is the hardware pass
+recorded in `client/android/README.md`'s "The watch" section. What CI gates
+is structural, in `wear/src/test`: every colour is a `:brand` constant
+(`WearThemeStructuralTest`), the manifest's load-bearing declarations
+(`WearManifestStructuralTest`), the capture refusal rule
+(`WearCaptureRefusalTest`), and the pane rules — the seam's order, no second
+clock, exhaustive `when`s, the brand's words (`WearQuestionsStructuralTest`).
+The design kit for this surface is
+`.claude/skills/hummingbird-design/ui_kits/wear/`, pulled 2026-09-10; its
+three tiles predate the ADR-0039 grilling and are the visual target for the
+per-question tiles that slice deferred.
+
 ## Planned, not built
 
-The design system carries UI kits for **Wear OS** and **iOS**
-(`.claude/skills/hummingbird-design/ui_kits/`). Neither has code in this
-repo, so neither has a gate here. Add a surface section when one gets a code
-root — an emulator/simulator matrix, per the `/wrapup` reference.
+The design system carries a UI kit for **iOS**
+(`.claude/skills/hummingbird-design/ui_kits/ios/`). It has no code in this
+repo, so it has no gate here. Add a surface section when it gets a code
+root — a simulator matrix, per the `/wrapup` reference.
 
 ---
 
