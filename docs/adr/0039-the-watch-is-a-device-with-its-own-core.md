@@ -156,9 +156,15 @@ renders one engine's published state; the watch has an engine of its own).
    `:app` and `:wear` consume; the cargo tasks run once. `:wear` ships under
    `applicationId net.twinion.hummingbird` and the phone's release key, minSdk
    34 (Wear OS 5; no Wear release is API 35, so the two libraries sit at 34
-   and `:app` stays 35), arm64-v8a only (the Pixel Watch 3/4 is the only
-   target; x86_64 is filtered at packaging, so the watch APK is half the
-   phone's). Wear Compose stays on 1.5.x because 1.6 requires Compose 1.9 and
+   and `:app` stays 35), **armeabi-v7a plus arm64-v8a** — *amended
+   2026-09-10 by the first hardware install*: this decision first read
+   "arm64-v8a only (the Pixel Watch 3/4 is the only target)", and the Pixel
+   Watch 4 refused that APK with `INSTALL_FAILED_NO_MATCHING_ABIS` because its
+   userspace is 32-bit (`ro.product.cpu.abilist` is `armeabi-v7a,armeabi`,
+   with no 64-bit list at all). So `:core-binding`'s one cargo task now
+   cross-compiles a third target, `armv7-linux-androideabi`, and `:wear`
+   packages armeabi-v7a (the watch) beside arm64-v8a (the arm64 Wear AVD, and
+   any 64-bit watch); x86_64 is still filtered at packaging. Wear Compose stays on 1.5.x because 1.6 requires Compose 1.9 and
    would force a BoM bump on the phone for a watch-only need. Every colour
    the watch draws is a `:brand` constant — no `Color(0x…)` literal under
    `wear/src/main`, pinned — so the design mirror's drift gate covers the
@@ -172,6 +178,8 @@ renders one engine's published state; the watch has an engine of its own).
   one binding, or the two drift.
 - **Typing or a QR code on the watch** for the token (decision 2).
 - **A hummingbird-owned microphone on the watch** (decision 3; ADR-0022 D4).
+- **arm64-v8a only on the watch** — the original text of decision 8,
+  overturned by the hardware on 2026-09-10 (see the amendment there).
 - **x86_64 on the watch** — the emulator is not a target this slice; a
   `-PwearEmulator` widening is documented, not built.
 - **FCM on the watch this slice** — the hourly leg plus the honesty line is

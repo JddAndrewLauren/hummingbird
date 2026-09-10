@@ -686,8 +686,9 @@ then the destination screen — Triage / Mint action / Mint for today — then a
 confirmation naming where it landed), and the data-bearing capture tile
 (urgency arc, count line, feather disc, two glyph rounds).
 
-**No visual gate.** There is no Wear emulator matrix here: the watch build is
-arm64-only by decision, and the render evidence is the emulator and hardware
+**No visual gate.** There is no Wear emulator matrix here: the watch build
+packages armeabi-v7a and arm64-v8a only (no x86_64, by decision), and the
+render evidence is the emulator and hardware
 passes recorded in `client/android/README.md`'s "The watch" section
 (`tile_preview.png` is the emulator's tile). What CI gates is structural, in
 `wear/src/test`: every colour is a `:brand` constant

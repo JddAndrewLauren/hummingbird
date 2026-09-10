@@ -40,14 +40,18 @@ android {
         versionName = rootProject.extra["hbVersionName"] as String
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // The Pixel Watch 3/4 is arm64 and nothing else installs this APK.
+        // The Pixel Watch 4 runs a 32-bit userspace — `ro.product.cpu.abilist`
+        // is `armeabi-v7a,armeabi`, no arm64 at all — so the arm64-only APK
+        // this shipped as first answered INSTALL_FAILED_NO_MATCHING_ABIS on
+        // hardware (2026-09-10). armeabi-v7a is what the watch installs;
+        // arm64-v8a stays in for the arm64 Wear AVD and any 64-bit watch.
         // `:core-binding` still cross-compiles x86_64 for the phone
-        // emulator; this filter drops it at packaging, halving the watch
-        // APK. A Wear emulator (x86_64) would need this widened — a
-        // `-PwearEmulator` flag, documented in the README, deliberately not
-        // built until someone needs it.
+        // emulator; this filter drops it at packaging. A Wear emulator on an
+        // Intel host (x86_64) would need this widened — a `-PwearEmulator`
+        // flag, documented in the README, deliberately not built until
+        // someone needs it.
         ndk {
-            abiFilters += "arm64-v8a"
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
         }
     }
 

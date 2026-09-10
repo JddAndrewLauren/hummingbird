@@ -16,7 +16,8 @@ both running cargo against the `client/` workspace one level up:
 
 - **`cargoNdkBuild`** — `cargo ndk` cross-compiles `hummingbird-ffi-mobile`
   into `core-binding/src/main/jniLibs/` (gitignored; arm64-v8a for the
-  device, x86_64 for the emulator).
+  phone, armeabi-v7a for the watch — the Pixel Watch 4's userspace is
+  32-bit — and x86_64 for the phone emulator).
 - **`generateUniffiBindings`** — builds the host cdylib and runs UniFFI in
   library mode: the Kotlin binding under `core-binding/build/generated/uniffi/`
   is derived from the exported surface in `client/ffi-mobile/src/lib.rs`,
@@ -48,7 +49,8 @@ and every screen stay in `:app`. The colour and type drift gates moved with
 their subjects and run as `:brand:testDebugUnitTest`.
 
 Prerequisites beyond Android Studio: `rustup target add
-aarch64-linux-android x86_64-linux-android`, `cargo install cargo-ndk`, and
+aarch64-linux-android armv7-linux-androideabi x86_64-linux-android`,
+`cargo install cargo-ndk`, and
 an NDK (Studio's SDK manager, or `sdkmanager "ndk;<version>"`).
 
 ## Running it
@@ -124,15 +126,28 @@ adb -s <watch-ip>:<port> install -r ~/Dropbox/hummingbird/apk/hummingbird-wear-l
 ```
 
 `versionCode` is the commit count, shared with the phone, so later installs
-go over the previous one in place with the token intact.
+go over the previous one in place with the token intact. Two traps from the
+first hardware pairing (2026-09-10): **the watch may be unreachable on the
+home Wi-Fi** even while the router lists it — neither the Mac nor the phone
+could resolve it, nor the Mac the phone; the phone's hotspot, with the Mac
+and the watch both joined to it, worked at once. And **platform-tools
+37.0.0's `adb pair` crashes the adb server** (`protocol fault (couldn't read
+status message)` on the client, an `abort()` in `adb_server_main` in the
+crash report) whatever the network; platform-tools 35.0.2, unzipped anywhere
+and run by path, paired first try, after which the watch appears under its
+mDNS name and every later `adb` command works from either version.
 
 **The compile rule is the same.** `android.yml` is the only mandated gate,
 and it runs `:wear:testDebugUnitTest` and `:wear:assembleDebug` (artifact
 `hummingbird-wear-debug-apk`). The Mac's Wear AVD (`Pixel_Watch`, Wear OS
-7.0, arm64) runs this APK as it is; a Wear emulator on an Intel host is
-x86_64 and this APK is arm64-only by decision — widening `abiFilters` behind
-a `-PwearEmulator` property is the documented route there and is deliberately
-not built until someone needs it.
+7.0, arm64) runs this APK as it is, and so does the Pixel Watch 4, whose
+userspace is **32-bit** (`ro.product.cpu.abilist` = `armeabi-v7a,armeabi`;
+the first hardware install, 2026-09-10, answered
+`INSTALL_FAILED_NO_MATCHING_ABIS` to the arm64-only APK this shipped as, and
+ADR-0039 decision 8 is amended). A Wear emulator on an Intel host is x86_64
+and is still filtered out — widening `abiFilters` behind a `-PwearEmulator`
+property is the documented route there and is deliberately not built until
+someone needs it.
 
 **Emulator pass (2026-09-10, debug APK on the `Pixel_Watch` AVD, API 37).**
 Installed and launched clean; `libhummingbird_ffi_mobile.so` loaded and the
