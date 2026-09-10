@@ -186,6 +186,33 @@ then (they ship inline as PNG), and two layouts clipped on the round face.
 keyboard path (unchanged from the first pass), and **"Open on phone"** —
 `RemoteActivityHelper` needs a paired phone.
 
+**Hardware pass (2026-09-10, Pixel Watch 4 — Wear OS 6 / API 37, 213dp
+face — release APK `0.3.41-284`, paired over the phone's hotspot with
+platform-tools 35.0.2; see the two traps above).** The arm64-only APK did not
+install (`INSTALL_FAILED_NO_MATCHING_ABIS`: the watch's userspace is 32-bit),
+so this pass began by adding armeabi-v7a — ADR-0039 decision 8 is amended.
+The 32-bit core loaded and home drew the three buttons. **Capture opened
+Gboard's recogniser already listening** (logcat `Microphone = listening`); a
+dictated line reached the destination screen and **Mint for today** put it on
+the authority as `ready` with deadline `2026-09-10` — *after* the token
+arrived, because the watch had none yet: the capture sat in the core's
+outbound queue, drawn in Items as `DUE TODAY`, and flushed on the first sync.
+Cancelling the recogniser fell back to the input chooser (emoji, voice,
+keyboard). The phone's Settings → Watch card reported `Sent to Pixel Watch.`;
+GMS woke the watch app, `SyncWorker` ran within the minute, and the mirror
+landed. **Items by urgency** drew the overdue frontier in the core's order
+(`OVERDUE · WED`, `@COMPUTER · SIZE: …`), a tap expanded the card with its
+description, and **"Open on phone" fired `hummingbird://item/<id>`** through
+`RemoteIntentSender`; the phone's logcat shows the VIEW intent resolving to
+the `.ItemLink` alias and that activity resumed. **The tile**, eleventh in the
+carousel, drew the arc (overdue in the alarm colour, then the soon segment)
+over `3 OVERDUE · 5 SOON` — exactly the authority's count for the same
+instant — with the feather disc opening the recogniser. **Found and fixed
+here:** the home's honesty line was clipped below the three buttons on this
+face (the AVD is larger); the column scrolls now, and with a fresh mirror
+the line is rightly absent. Not exercised tonight: `SYNCED nH AGO` (needs an
+hour-old mirror) and the keyboard path.
+
 **Proving the lane on hardware — the watch.** *Owed by the first device
 pass:* the phone reports `Sent to Pixel Watch.`, the home line clears, the
 capture button opens the recogniser already listening (and a cancelled
