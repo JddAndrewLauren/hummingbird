@@ -279,15 +279,31 @@ class CaptureViewModel(
      * it did. Local-first per #128's own criterion: [captureFn]
      * (`MobileTaskHost.capture`, in production) enqueues durably before any
      * network call, so a caller awaiting this can finish the activity
-     * immediately after — the item is already in the local mirror. */
-    suspend fun submit(destination: CaptureDestination, nowMs: Long): Boolean {
+     * immediately after — the item is already in the local mirror.
+     *
+     * [deadlineOverride] is the third button's — "Mint for today" — and it
+     * is an override, not form state, on the web's own rule
+     * (`CaptureBox.tsx`): the button's name is a promise about the date, so
+     * it wins over a deadline picked under the details disclosure rather
+     * than yielding to it, and a form field the reader never sees would be
+     * the destination smell over again. The form keeps whatever it held;
+     * only the draft sent carries the day. */
+    suspend fun submit(
+        destination: CaptureDestination,
+        nowMs: Long,
+        deadlineOverride: String? = null,
+    ): Boolean {
         val current = _draft.value
         if (_submitting.value || !canSubmitDraft()) {
             return false
         }
         _submitting.value = true
         try {
-            captureFn(current.toDraft(destination), nowMs)
+            val draft = current.toDraft(destination)
+            captureFn(
+                if (deadlineOverride == null) draft else draft.copy(deadline = deadlineOverride),
+                nowMs,
+            )
         } finally {
             _submitting.value = false
         }
