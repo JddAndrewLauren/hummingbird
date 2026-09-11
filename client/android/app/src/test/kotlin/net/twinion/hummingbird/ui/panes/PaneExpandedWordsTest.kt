@@ -43,6 +43,22 @@ class PaneExpandedWordsTest {
     }
 
     @Test
+    fun `the poller pane says minutes below an hour, in the web's own units, on both its lines`() {
+        // #780: a 15-minute poller reads "15m" here as it does in `poller.ts`,
+        // and the age the collapsed tile speaks promotes through the same
+        // tiers as the cadence the expanded card speaks (#775 review round 1).
+        assertEquals("15m", cadenceWords(15 * 60_000L))
+        assertEquals("15m ago", pollerAgeWords(15 * 60_000L))
+        assertEquals("under a minute", cadenceWords(59_999L))
+        assertEquals("6h", cadenceWords(6 * 3_600_000L))
+        assertEquals("6h ago", pollerAgeWords(6 * 3_600_000L))
+        assertEquals("3d", cadenceWords(72 * 3_600_000L))
+        // The github/uptime cards keep the web's own hour floor (`github.ts`,
+        // `uptime.ts`): the split is deliberate, not drift.
+        assertEquals("under an hour ago", ageWords(15 * 60_000L))
+    }
+
+    @Test
     fun `the github last-run line survives the mirror's optional event`() {
         // The web assumes lastRunEvent; the mobile mirror carries an Option,
         // and an absent event drops its parenthetical, never printing null.
