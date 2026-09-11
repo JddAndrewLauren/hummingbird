@@ -461,7 +461,14 @@ five pollers' superseded Actions repository secrets —
 had the Fly copies deployed. Every credential in this section is now
 **Fly-only, and rotation is two places**: 1Password, then
 `flyctl secrets set --stage …` followed by a deploy (or
-`flyctl secrets deploy` when nothing else is shipping). The five
+`flyctl secrets deploy` when nothing else is shipping) — **with one
+exception, `UPTIME_PROBE_INGEST_TOKEN`**, which #792 added to this machine
+without removing its Actions copy. Until the operator deletes that copy
+(#792's step 7, the same decision #774's step 7 left open) it is a
+three-place rotation — 1Password, Fly, `gh secret set` — with the same
+failure mode the paragraph above describes; the moment step 7 lands it
+joins the others at two, and `uptime-probe.yml`'s `workflow_dispatch:`
+stops working at the same moment (its own header says so). The five
 workflows keep their `workflow_dispatch:` trigger, but a dispatch now reads
 an unresolvable `secrets.*`, which expands to the empty string — so it
 fails as "not set" rather than running against a stale copy. That is the

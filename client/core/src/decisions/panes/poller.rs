@@ -93,14 +93,16 @@
 //! poller from its own execution jitter, never to absorb an external queue.
 //!
 //! This also means a poller genuinely still queued behind GitHub Actions
-//! (today: `city-waste`, `kimi-balance`, `race-schedule-poll`,
-//! `uptime-probe`) is judged by the **same** threshold as a supercronic one.
-//! Every one of those declares a cadence of an hour or more, so `3×` clears
-//! GitHub's own measured queueing with room to spare — except
-//! `uptime-probe`, whose Actions delivery this repo has independently
-//! measured at ~22% (#773's own note): that poller is *supposed* to read
-//! `imminent` here much of the time, which is this pane doing its job, not
-//! a false alarm to chase away.
+//! (today: `city-waste`, `kimi-balance`, `race-schedule-poll`) is judged by
+//! the **same** threshold as a supercronic one. Every one of those declares
+//! a cadence of six hours or more, so `3×` clears GitHub's own measured
+//! queueing with room to spare. `uptime-probe` used to be the exception —
+//! hourly on Actions, delivered at ~22% of its cadence (#773's own note),
+//! so it was *supposed* to read `imminent` here much of the time. #792
+//! moved it onto the sweeper's supercronic clock (the root `crontab`, at
+//! `:37`), so since then its reading is judged exactly like the five
+//! pollers #774 moved: an `imminent` reading for `uptime/v1` on this pane
+//! is a real alarm now, never one to chase away.
 
 use serde::{Deserialize, Serialize};
 
