@@ -9,6 +9,7 @@ import {
   projectRoster,
   rosterSummary,
   visibleRows,
+  anyWriteFailureMessage,
   writeFailureMessage,
 } from "./roster";
 
@@ -137,14 +138,16 @@ describe("awaitingCreate", () => {
   });
 });
 
-describe("writeFailureMessage", () => {
+describe("anyWriteFailureMessage", () => {
+  // #690: the grid's ungated read is its own function — every call here
+  // deliberately names ANY write's failure, whoever issued it.
   it("says nothing about a write that went through", () => {
-    expect(writeFailureMessage(null)).toBeNull();
-    expect(writeFailureMessage(write("ok", { projectId: "p-new" }))).toBeNull();
+    expect(anyWriteFailureMessage(null)).toBeNull();
+    expect(anyWriteFailureMessage(write("ok", { projectId: "p-new" }))).toBeNull();
   });
 
   it("passes a failure's own message through", () => {
-    expect(writeFailureMessage(write("failed", { error: "name must be non-empty" }))).toBe(
+    expect(anyWriteFailureMessage(write("failed", { error: "name must be non-empty" }))).toBe(
       "name must be non-empty",
     );
   });
@@ -153,14 +156,25 @@ describe("writeFailureMessage", () => {
   // no message of its own — so the fallback copy is the only thing standing
   // between the operator and silence.
   it("states a busy drop in the fallback copy rather than staying silent", () => {
-    expect(writeFailureMessage(write("busy"))).toBe("That project write did not go through.");
-    expect(writeFailureMessage(write("failed"))).toBe("That project write did not go through.");
+    expect(anyWriteFailureMessage(write("busy"))).toBe("That project write did not go through.");
+    expect(anyWriteFailureMessage(write("failed"))).toBe("That project write did not go through.");
   });
 
+  it("names a failure whose seed nobody here issued", () => {
+    expect(anyWriteFailureMessage(write("failed", { seed: "foreign-seed", error: "no can do" }))).toBe("no can do");
+  });
+});
+
+describe("writeFailureMessage", () => {
   // #669: seed-keyed reads. `issuedSeed` is how a reader recognises its OWN
-  // write in a slot shared by more than one card — omitting the argument
-  // (the tests above) keeps the grid's pre-existing, ungated read; passing
-  // it scopes the message to a write this exact caller issued.
+  // write in a slot shared by more than one card — the message renders only
+  // for a write this exact caller issued. There is no ungated spelling of
+  // this function (#690); that read is `anyWriteFailureMessage` above.
+  it("says nothing about a write that went through, whatever the seed", () => {
+    expect(writeFailureMessage(null, "s-1")).toBeNull();
+    expect(writeFailureMessage(write("ok", { seed: "s-1", projectId: "p-new" }), "s-1")).toBeNull();
+  });
+
   it("says nothing about a failure whose seed this caller did not issue", () => {
     expect(writeFailureMessage(write("failed", { error: "no can do" }), "other-seed")).toBeNull();
   });
@@ -179,6 +193,23 @@ describe("writeFailureMessage", () => {
     expect(writeFailureMessage(write("busy", { seed: "s-1" }), "s-1", "That link write did not go through.")).toBe(
       "That link write did not go through.",
     );
+  });
+
+  // #690: the trap #669's shape laid for the next caller. A reader holding a
+  // seed it may not have minted yet (`string | undefined`) must not be able
+  // to reach the ungated read by spreading it in — under the old optional
+  // argument, `undefined` silently meant "ungated" and would have named a
+  // sibling's failure as this caller's own. Two gates pin it: the types
+  // refuse `undefined` outright (`tsc -b` covers this file, so the
+  // `@ts-expect-error` below fails typecheck the day the parameter widens
+  // back), and should one arrive at runtime anyway it reads as gated —
+  // never matching any minted seed — rather than as ungated.
+  it("cannot reach the ungated read from a `string | undefined` caller", () => {
+    const readAs = (held?: string) =>
+      // @ts-expect-error `undefined` is neither a seed nor "no write outstanding"; the ungated read is `anyWriteFailureMessage`.
+      writeFailureMessage(write("failed", { seed: "foreign-seed", error: "no can do" }), held);
+    expect(readAs(undefined)).toBeNull();
+    expect(readAs("foreign-seed")).toBe("no can do");
   });
 });
 
