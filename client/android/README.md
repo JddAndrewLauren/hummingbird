@@ -522,11 +522,19 @@ The queue's collapsed rows are the SAME compact card the Now screen's
 frontier renders (`NowRow.kt`, extracted for exactly this — the
 Triage-parity slice, operator request 2026-08-20), fed by a verbatim-copy
 adapter over `TriageItemRecord` (whose `urgency` band arrives decided from
-the seam, like every other pill). One item opens at a time, expanding at
-index 0 of the queue's one `LazyColumn` into **`ItemDetailPanel`, in
-`ItemDetailPanelMode.PROMOTE`**. Index 0 is no longer Now's shape — Now
-expands the tapped row in its own slot ("In place, not at the top" below) —
-and this screen has not been changed to match.
+the seam, like every other pill). One item opens at a time, expanding **in
+the tapped row's own slot** of the queue's one `LazyVerticalGrid` — the
+queue loop renders the selected record as the pane and every other record
+as its row, Now's shape ("In place, not at the top" below; #659 made the two
+match, and nothing scrolls on a selection) — into **`ItemDetailPanel`, in
+`ItemDetailPanelMode.PROMOTE`**. The row is not drawn as well, so the
+re-tap-to-toggle-shut gesture the row carried is gone with it: the pane's
+own header row is the close target sitting where the row was, and it routes
+through the panel's dirty-draft confirmation, which is what the row's guard
+had to hand-roll. The dirty-draft Back handler scrolls to the pane's own
+index (read from the layout by the pane's key, falling back to where it was
+last seen) and — Now's fallthrough — closes rather than scrolls when the
+board no longer carries the item.
 
 That pane used to be a second, Triage-only editor (`TriageEditorPanel` over
 its own `TriageDraft`), because `available_actions` answers nothing for the
@@ -554,6 +562,22 @@ Grill rules above, and — the same foreground-resume discipline `AlertsScreen`,
 re-reads the queue on every return to the screen, not only on the app-wide
 `syncTick`: a capture minted from `CaptureActivity` while Triage was
 backgrounded must not wait for the next tick to appear.
+
+**Emulator pass (2026-09-10, #659, debug APK on the `Pixel_10_Pro_Fold`
+AVD folded to its cover display, 1080x2364 at density 390).** The evidence
+`docs/SURFACES.md`'s 2026-08-20 decision asks for, read off `uiautomator`
+bounds rather than eyeballed. The queue held ten local captures. Tapping
+the fourth row expanded it at its own position: rows one to three kept
+their exact bounds (title baselines at y=432, 627, 822 before and after)
+and the pane's header — the tapped title, with the × at its right — sat
+where the row had been (y=1012, against the row's y=1017), nothing having
+scrolled. Tapping the second row while the fourth was open collapsed the
+fourth and expanded the second in place (header at y=622 against the row's
+y=627), row one unmoved. The × restored the row, and every row below it, to
+byte-identical bounds. The pass ran against a local `wrangler dev`
+authority rather than `hb.twinion.net` (the base URL swapped in
+`core-binding/build.gradle.kts` for the length of the build only), so no
+device token was pasted and nothing could reach the real authority.
 
 The seam doors are `MobileTaskHost::triage_board(now)` (decided from the
 already-sunk `hummingbird_core::decisions::queue::triage_process_queue`) and
@@ -1717,9 +1741,15 @@ re-stages it). The guard above makes that survivable — one dead Back press,
 no lost work — and the fix needs a decision about dirty drafts rather than a
 patch, so it is #660.
 
-Triage still renders its pane at index 0. It is *not* what it was cited as
-being, and making it match is a one-line change of the same shape — left
-undone deliberately rather than assumed.
+Triage matched on 2026-09-10 (#659). It was left at index 0 deliberately
+when Now was converted rather than assumed, and the conversion is the same
+shape: the queue loop's row-or-pane branch, no scroll on a selection, the
+Back handler retargeted at the pane's own index with the close-not-scroll
+fallthrough gated on board membership (the flat queue has no column cap, so
+there is no `cappedColumnRows` counterpart). `TriageScreenStructuralTest`
+pins the branch bounded to the queue loop and the absence of any selection
+scroll, each pin mutation-tested; the emulator pass is recorded in "The
+Triage screen" above.
 
 ## The title-edit trap, and what `rememberSaveable(input)` does not do
 

@@ -122,16 +122,33 @@ fun ageWords(ageMs: Long): String {
     return "${hours / 24}d ago"
 }
 
-/** A declared cadence, promoted through the same hours/days [ageWords]
- * uses, minus the "ago" — read by the poller pane's expanded card so it
- * never disagrees with [ageWords] or with its own collapsed tile (#775
- * review round 1). */
-fun cadenceWords(cadenceMs: Long): String {
-    val hours = cadenceMs / 3_600_000
-    if (hours < 1) return "under an hour"
+/** `durationWords` in `poller.ts`, ported: minutes below an hour, then the
+ * same hours/days promotion as [ageWords]. The poller pane alone reads it
+ * (#780): every stream poller runs every 15 minutes, so a floor at "under
+ * an hour" collapses the one number that pane exists to show, whereas the
+ * github and uptime cards' ages are hours-scale facts and keep the hour
+ * floor — exactly the split the web draws between `poller.ts` and
+ * `github.ts`/`uptime.ts`. */
+private fun pollerDurationWords(ms: Long): String {
+    val hours = ms / 3_600_000
+    if (hours < 1) {
+        val minutes = ms / 60_000
+        return if (minutes < 1) "under a minute" else "${minutes}m"
+    }
     if (hours < 48) return "${hours}h"
     return "${hours / 24}d"
 }
+
+/** The poller pane's age — `poller.ts`'s own `ageWords`, minutes tier
+ * included. Shared by its collapsed headline and its expanded card so the
+ * two never disagree (#775 review round 1). */
+fun pollerAgeWords(ageMs: Long): String = "${pollerDurationWords(ageMs)} ago"
+
+/** A declared cadence, promoted through the same minutes/hours/days
+ * [pollerAgeWords] uses, minus the "ago" — read by the poller pane's
+ * expanded card so it never disagrees with its own collapsed tile (#775
+ * review round 1; the minutes tier is #780). */
+fun cadenceWords(cadenceMs: Long): String = pollerDurationWords(cadenceMs)
 
 private fun heardAgo(freshness: MobilePaneFreshness): String = when (freshness) {
     is MobilePaneFreshness.Age -> ageWords(freshness.ageMs)
@@ -724,7 +741,7 @@ private fun pollerHeadline(pane: MobileRankedPane, resolved: MobilePollerResolve
             when (val freshness = facts.freshness) {
                 MobilePaneFreshness.Unknown -> "$source · age unknown"
                 is MobilePaneFreshness.Age -> {
-                    val heard = ageWords(freshness.ageMs)
+                    val heard = pollerAgeWords(freshness.ageMs)
                     when (facts.band) {
                         MobilePaneBand.IMMINENT -> "$source · overdue, last row $heard"
                         MobilePaneBand.DISTANT -> "$source · cadence unreadable, last row $heard"

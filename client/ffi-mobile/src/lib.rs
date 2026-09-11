@@ -2281,7 +2281,23 @@ fn to_backtest_item(item: &Item, occurred_at_utc: String) -> rules::BacktestItem
 // the actionable-items list (weekend's merge). **#775 grew the source loop
 // again**: `poller::poller_sources()` now names nine sources, not five, and
 // the loop below reads every one of them whether or not a sunk pane also
-// claims it. **#564/#621 filled the last
+// claims it. **#779 changed what drives that loop.** #775 iterated the
+// registry's live list and #777 guarded the five sunk panes' own `SOURCE`s
+// with a `debug_assert!`, which compiles out of the APK: the guarantee held
+// in CI and nowhere the phone runs. The decision: the mobile seam carries
+// the guarantee **at runtime, by construction, in the web's shape** —
+// [`mobile_pane_inputs`] reads `panes::required_sources`, the core's
+// restatement of the web's per-question `requiredSources`, where each pane
+// declares its own source and only the poller question derives from the
+// registry. A retirement therefore cannot blank an Android pane in any
+// build: the loop never consulted the registry for the sunk five, so it
+// has nothing to lose there, and there is no assertion left to compile
+// out. The core's own test pins that the union names every sunk pane's
+// `SOURCE`; this seam's test pins that the loop reads exactly that union.
+// ADR-0025 would also have permitted keeping the `debug_assert!` as a
+// documented per-client divergence, but a guarantee that costs nothing at
+// runtime and removes a hand-maintained list is the stronger reading of
+// its "decisions sink to the core" rule. **#564/#621 filled the last
 // field**: the calendar arm now carries this device's own `calendar_reads`
 // and `calendar_connected` off the lane below, so weekend and vacation
 // answer for real once a calendar is connected and fall back to their
@@ -3756,26 +3772,24 @@ fn mobile_pane_inputs(
     sync: MobileSyncFacts,
     calendar: CalendarArm,
 ) -> PaneInputs {
-    // kimi/github/uptime/waste/race's own `SOURCE` constants are each one of
-    // `poller::poller_sources`' nine — this loop reads every source any
-    // sunk pane needs in one pass rather than one hand-written line per
-    // question (`poller.rs`'s own "not a hand-maintained list" reasoning,
-    // applied at this seam too). That coincidence is asserted below rather
-    // than assumed: `poller_sources()` filters retired entries, so a future
-    // retirement (`v1` -> `v2`, the shape `sources.rs` already has one of)
-    // would otherwise silently drop a sunk pane's own source out of this
-    // loop with no test failing and no compile error.
-    let sources = poller::poller_sources();
+    // The read loop is driven by what the panes declare, never by the
+    // registry (#779, this section's header): `panes::required_sources`
+    // names each sunk pane's own `SOURCE` plus poller's live set, so a
+    // future retirement (`v1` -> `v2`, the shape `sources.rs` already has
+    // one of) can shrink poller's subjects but never this loop — the pane
+    // that still reads a source keeps it declared, and `Core::pane_read`
+    // reads the mirror by name without consulting the registry. Both
+    // surfaces are unioned because this builder serves both (the web's
+    // `usePaneReadsWiring.ts` does the same union for the same reason).
     let mut pane_reads = HashMap::new();
-    for source in &sources {
-        pane_reads.insert(source.to_string(), to_pane_read_facts(&core.pane_read(source, now_ms)));
+    for source in panes::required_sources(Surface::Now)
+        .into_iter()
+        .chain(panes::required_sources(Surface::Status))
+    {
+        pane_reads
+            .entry(source.to_string())
+            .or_insert_with(|| to_pane_read_facts(&core.pane_read(source, now_ms)));
     }
-    debug_assert!(
-        [kimi::SOURCE, github::SOURCE, uptime::SOURCE, waste::SOURCE, race::SOURCE]
-            .iter()
-            .all(|sunk| sources.contains(sunk)),
-        "a sunk pane's own SOURCE dropped out of poller::poller_sources()",
-    );
     let bindings: Vec<BindingFact> = core.bindings().iter().map(to_binding_fact).collect();
     let items: Vec<PaneItemFacts> = pane_item_facts(
         &core.frontier(),
@@ -10890,6 +10904,34 @@ mod settings_tests {
         )
         .await
         .unwrap()
+    }
+
+    /// #779: the read loop is exactly the panes' own declaration, unioned
+    /// over both surfaces — not the registry's live list. Today the two
+    /// coincide (every sunk pane's source is also a live snapshot writer),
+    /// so this pins the *shape* the guarantee rests on: a retirement that
+    /// shrinks `poller_sources()` leaves every sunk pane's `SOURCE` a key
+    /// here, because the pane declared it. Runs in release builds by
+    /// construction; there is no `debug_assert!` to compile out.
+    #[tokio::test]
+    async fn the_pane_reads_are_every_source_the_sunk_panes_declare_on_either_surface() {
+        let host = pane_host("panes-required-sources").await;
+        let inner = host.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await;
+        let inputs = mobile_pane_inputs(&inner.core, 1_000, MobileSyncFacts::default(), CalendarArm::default());
+
+        let mut declared: Vec<&str> = panes::required_sources(Surface::Now);
+        for source in panes::required_sources(Surface::Status) {
+            if !declared.contains(&source) {
+                declared.push(source);
+            }
+        }
+        let mut read: Vec<&str> = inputs.pane_reads.keys().map(String::as_str).collect();
+        read.sort_unstable();
+        declared.sort_unstable();
+        assert_eq!(read, declared);
+        for own in [kimi::SOURCE, github::SOURCE, uptime::SOURCE, waste::SOURCE, race::SOURCE] {
+            assert!(inputs.pane_reads.contains_key(own), "{own} is a sunk pane's own source and must be read");
+        }
     }
 
     #[tokio::test]

@@ -40,8 +40,8 @@ import {
 export interface ProjectsWiring {
   /** Returns the create's minted seed (#669, the same "return the seed"
    * contract every write here now carries) — the grid does not currently
-   * scope its create banner to it (`roster.ts`'s `writeFailureMessage`'s own
-   * doc states why), but the seed is there for a caller that wants it. */
+   * scope its create banner to it (`roster.ts`'s `anyWriteFailureMessage`'s
+   * own doc states why), but the seed is there for a caller that wants it. */
   createProject: (name: string) => string;
   /** #625's properties-card write, widened by #630's archive/unarchive
    * gesture: `patch` carries only the fields the caller actually changed,
