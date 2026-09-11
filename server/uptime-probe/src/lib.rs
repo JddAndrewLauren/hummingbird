@@ -41,8 +41,36 @@
 //!
 //! **Out of process, not in the Durable Object's alarm.** `server/worker`
 //! has no test harness of any kind, so anything expressed there is untested
-//! by construction — every poller here states this. A GitHub Actions cron
-//! drives it (`.github/workflows/uptime-probe.yml`).
+//! by construction — every poller here states this. The sweeper's
+//! supercronic clock drives it — the root `crontab`'s entry for
+//! `/app/bin/uptime-probe`, inside the `hummingbird-sweeper` container
+//! (#792, on #774's pattern). It ran on a GitHub Actions cron
+//! (`.github/workflows/uptime-probe.yml`) until then, which delivered it
+//! roughly once every four hours against the hourly cadence it declares
+//! (#773's measurements; 115 minutes against 60 measured on 2026-09-08) —
+//! under the pane's 3h stale band, so the pane flipped `STALE` about a
+//! probe that ran and succeeded every time. The workflow keeps
+//! `workflow_dispatch:` only.
+//!
+//! **The probe's host is now one of the things it cannot probe.** The
+//! sweeper has no line in `services.json` (below, ADR-0017 decision 4),
+//! and until #792 this probe ran on a third party's clock, so its liveness
+//! was independent of every service it judged. Now a dead
+//! `hummingbird-sweeper` machine also silences this probe. That is not a
+//! false "up": the pane bands its own answer stale at 3h precisely so a
+//! dead poller reads as "I can't tell", never as "fine"
+//! (`client/core/src/decisions/panes/uptime.rs`'s `STALE_AFTER_MS`), and
+//! the sweeper's real liveness monitor stays healthchecks.io
+//! (`docs/sweeper.md`, "Liveness") — so a stale uptime pane is a *second*
+//! symptom of a dead sweeper, not a new blind spot. Accepted, deliberately.
+//!
+//! **"Up" still means reachable from the public internet.** Every
+//! `services.json` URL is a public hostname — the runner's resolves through
+//! public DNS to Fly's edge proxy even from another Fly machine — so a 401
+//! there proves what it proved from an Actions runner. Never rewrite one
+//! onto `.internal`/6PN: that would prove a private path nobody else uses.
+//! The one thing the move changes is the egress network the probe arrives
+//! from; #792's live verification is what checked that.
 //!
 //! **Reachable ≠ functional** (ADR-0017 decision 3). A half-landed
 //! migration still returns a correct 401. This lane answers "is the door

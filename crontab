@@ -1,21 +1,33 @@
-# supercronic reads this inside the container. Six jobs share this one
-# clock now (#774): the sweeper's own drain plus the five evaluated-stream/
-# status pollers this issue moved off GitHub Actions `schedule:` — which
-# delivered them roughly once every four hours (#773's measurements) —
-# onto the always-on clock `hummingbird-sweeper` already runs. Adding an
-# entry here extends the clock supercronic already owns; it does not start
-# a second one (CLAUDE.md's "No competing clocks" rule; #773 makes the
-# argument in full).
+# supercronic reads this inside the container. Seven jobs share this one
+# clock now: the sweeper's own drain, the five evaluated-stream/status
+# pollers #774 moved off GitHub Actions `schedule:` — which delivered them
+# roughly once every four hours (#773's measurements) — and, since #792,
+# the uptime probe, moved for the same reason (115 minutes measured against
+# its hourly cadence on 2026-09-08). All onto the always-on clock
+# `hummingbird-sweeper` already runs. Adding an entry here extends the
+# clock supercronic already owns; it does not start a second one
+# (CLAUDE.md's "No competing clocks" rule; #773 makes the argument in
+# full).
 #
 # Each poller's cadence matches its own `POLLED_EVERY_MS` (or, for
-# `github-status-poll`, `body::POLLED_EVERY_MS`): the four stream pollers
-# every 15 minutes, `github-status-poll` every 30. The minute offsets are
-# staggered off `/app/sweep` and off one another, deliberately — the
-# machine is `shared-cpu-1x`/256mb, and six jobs landing on the same tick is
-# an avoidable spike rather than a necessary one.
+# `github-status-poll` and `uptime-probe`, `body::POLLED_EVERY_MS`): the
+# four stream pollers every 15 minutes, `github-status-poll` every 30,
+# `uptime-probe` hourly (ADR-0017 decision 6 — each probe cold-boots the
+# scale-to-zero runner, so hourly is deliberate and not faster). The minute
+# offsets are staggered off `/app/sweep` and off one another, deliberately
+# — the machine is `shared-cpu-1x`/256mb, and seven jobs landing on the
+# same tick is an avoidable spike rather than a necessary one. The probe's
+# `:37` is additionally kept clear of every sweep tick because that job
+# wakes another Fly machine.
+#
+# No timeout wrapper around `uptime-probe`: the bin bounds every request
+# itself (`HTTP_TIMEOUT = 30s` in its `main.rs`), which is what actually
+# bounded a hung fetch — the runner's deliberate cold boot included — when
+# it ran under Actions' `timeout-minutes: 15` too. Nothing to add here.
 */15 * * * * /app/sweep
 2,17,32,47 * * * * HB_INGEST_TOKEN="$GMAIL_INGEST_TOKEN" /app/bin/hummingbird-gmail-poll
 5,20,35,50 * * * * HB_INGEST_TOKEN="$CALENDAR_INGEST_TOKEN" /app/bin/hummingbird-calendar-poll
 8,23,38,53 * * * * HB_INGEST_TOKEN="$M365_MAIL_INGEST_TOKEN" /app/bin/graph-mail-poll
 11,26,41,56 * * * * HB_INGEST_TOKEN="$M365_CALENDAR_INGEST_TOKEN" /app/bin/graph-calendar-poll
 14,44 * * * * HB_INGEST_TOKEN="$GH_STATUS_INGEST_TOKEN" GITHUB_TOKEN="$GH_STATUS_PAT" /app/bin/github-status-poll
+37 * * * * HB_INGEST_TOKEN="$UPTIME_PROBE_INGEST_TOKEN" /app/bin/uptime-probe
