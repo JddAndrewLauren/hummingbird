@@ -115,7 +115,14 @@ the same change); it names, and does not resolve, a tension with
   install and the manual test.
 - Loading unpacked ties the extension's identity, and so its stored
   token, to the directory it was loaded from. Load from a stable checkout;
-  a different worktree is a different extension.
+  a different worktree is a different extension. *Amended 2026-09-10
+  (#798): no longer so. The manifest carries a `key` — the public half of
+  an RSA pair generated once, the private half uncommitted and unneeded
+  for an unpacked load — and Chrome derives the id from that instead, so
+  every load of the tree, from any path, is one extension with one
+  `storage.local`. The id and the key's role are recorded in the README;
+  `manifest.test.js` pins both. Firefox is unaffected: its id was always
+  `gecko.id`.*
 - Chrome logs "Unrecognized manifest key 'browser_specific_settings'" on
   every reload. Accepted: the key is mandatory for Firefox signing, Chrome
   ignores it at runtime, and a second manifest for one operator is not
