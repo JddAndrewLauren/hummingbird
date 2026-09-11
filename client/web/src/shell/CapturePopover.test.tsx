@@ -26,7 +26,6 @@ import { fireEvent, render, screen } from "../test/component";
 function renderPopover(
   options: {
     open?: boolean;
-    demo?: boolean;
     lastCapture?: TaskCaptureResult | null;
     projects?: ProjectDTO[];
     contextSuggestions?: readonly string[];
@@ -48,7 +47,6 @@ function renderPopover(
     onSubmit,
     projects: options.projects ?? [],
     contextSuggestions: options.contextSuggestions ?? DEFAULT_CONTEXTS,
-    demo: options.demo ?? false,
     vaultName: options.vaultName ?? null,
     fileLinks: options.fileLinks,
     attachmentFailure: options.attachmentFailure ?? null,
@@ -112,7 +110,6 @@ describe("CapturePopover — the overlay", () => {
         onSubmit={vi.fn()}
         projects={[]}
         contextSuggestions={DEFAULT_CONTEXTS}
-        demo={false}
         lastCapture={null}
         cancelDictationRequestId={0}
         onDictatingChange={onDictatingChange}
@@ -550,24 +547,6 @@ describe("CapturePopover — the clear-on-ok rule (#222)", () => {
     expect(screen.getByText("Nope.")).toBeDefined();
 
     rerender({ seed: "s2", kind: "ok", id: "item-9", error: null });
-    expect(screen.queryByText("Nope.")).toBeNull();
-  });
-
-  it("clears and reports right away in demo mode, where no result is coming", () => {
-    const { onSubmit } = renderPopover({ demo: true });
-    fireEvent.change(field(), { target: { value: "Call the plumber" } });
-    fireEvent.click(screen.getByRole("button", { name: "Triage" }));
-
-    expect(onSubmit).toHaveBeenCalledTimes(1);
-    expect(field().value).toBe("");
-    expect(screen.getByText(/Added to Triage — Call the plumber/)).toBeDefined();
-  });
-
-  it("never wears a stale failure in demo mode", () => {
-    renderPopover({
-      demo: true,
-      lastCapture: { seed: "s1", kind: "failed", id: null, error: "Nope." },
-    });
     expect(screen.queryByText("Nope.")).toBeNull();
   });
 });
