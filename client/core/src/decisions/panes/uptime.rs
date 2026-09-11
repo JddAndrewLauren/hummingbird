@@ -39,10 +39,19 @@ pub const SOURCE: &str = "uptime/v1";
 /// service id, so it can never collide with a genuine key.
 pub const NEVER_POLLED_SUBJECT: &str = "pending";
 
-/// ~3h against the probe workflow's hourly cadence (ADR-0017 decision 6):
-/// three missed runs is worse here than for any other infra pane, because
-/// this lane is the one that would otherwise notice every *other* service
-/// going dark.
+/// ~3h against the probe's hourly cadence (ADR-0017 decision 6): three
+/// missed runs is worse here than for any other infra pane, because this
+/// lane is the one that would otherwise notice every *other* service going
+/// dark.
+///
+/// Since #792 the probe's clock is the sweeper's supercronic (the root
+/// `crontab`), so the probe's host — `hummingbird-sweeper`, which has no
+/// line in `services.json` and never had — is the one thing it cannot
+/// probe: a dead sweeper silences the probe too. This band is what keeps
+/// that honest: rows stop arriving, the answer goes stale, and stale never
+/// reads as "fine". The sweeper's own liveness stays healthchecks.io's job
+/// (`docs/sweeper.md`, "Liveness"); a stale reading here is a second
+/// symptom of that, not a replacement for it.
 pub const STALE_AFTER_MS: i64 = 3 * 60 * 60 * 1000;
 
 /// The declared intent for one service — `"on"` or `"off"`, verbatim off the
@@ -231,11 +240,11 @@ pub fn uptime_facts(service_id: &str, inputs: &PaneInputs) -> ProbeResolved {
 /// This question's answer for the shell (#315 over ADR-0017), minus its
 /// rendering half.
 ///
-/// **The probe workflow itself going quiet must not read as continued
-/// agreement.** Read from the payload alone, a `dormant` band is only as
-/// trustworthy as the poller that wrote it — once the hourly workflow
-/// stops running, every row it ever wrote keeps reporting whatever it last
-/// saw, forever. A stale `dormant` reading is therefore escalated to
+/// **The probe itself going quiet must not read as continued agreement.**
+/// Read from the payload alone, a `dormant` band is only as trustworthy as
+/// the poller that wrote it — once the hourly probe (or the sweeper clock
+/// that fires it, since #792) stops running, every row it ever wrote keeps
+/// reporting whatever it last saw, forever. A stale `dormant` reading is therefore escalated to
 /// `imminent` here, `waste.rs`'s own escalation shape but on a single band:
 /// unlike `github.rs`'s `dormant`-or-`distant`, `uptime.ts` has no
 /// `distant` band at all, so this pane only ever has one dormant reading to

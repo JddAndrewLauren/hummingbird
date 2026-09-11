@@ -15,18 +15,19 @@
 //! **This is the part of the brief that "cannot forget to declare itself"**
 //! (#314's own phrasing): the poller reads *this repo's own committed
 //! workflow files* rather than a second, hand-maintained list of "which
-//! workflows are scheduled" — a sixth `schedule:` workflow (five exist
+//! workflows are scheduled" — a fifth `schedule:` workflow (four exist
 //! today: `city-waste.yml`, `kimi-balance.yml`, `race-alert-poll.yml`,
-//! `race-schedule-poll.yml`, `uptime-probe.yml`) shows up here the moment
-//! its file lands, with no second edit anywhere in this crate.
+//! `race-schedule-poll.yml`) shows up here the moment its file lands, with
+//! no second edit anywhere in this crate.
 //!
 //! **#774 moved five other pollers — `calendar-poll.yml`, `github-status.yml`
 //! (this crate's own workflow), `gmail-poll.yml`, `graph-mail-poll.yml` and
 //! `graph-calendar-poll.yml` — off Actions `schedule:` entirely, onto the
-//! sweeper's supercronic clock.** Each kept its `workflow_dispatch:`
-//! trigger (a manual run still works) but dropped `schedule:`, so they read
-//! as unscheduled here now, on purpose —
-//! `the_five_moved_pollers_no_longer_carry_a_schedule_trigger` below pins
+//! sweeper's supercronic clock, and #792 moved a sixth, `uptime-probe.yml`,
+//! the same way.** Each kept its `workflow_dispatch:` trigger (a manual run
+//! still works) but dropped `schedule:`, so they read as unscheduled here
+//! now, on purpose —
+//! `the_six_moved_pollers_no_longer_carry_a_schedule_trigger` below pins
 //! that reading, the mirror image of the coverage test's usual job.
 //!
 //! **Baked into the image, "shows up here the moment its file lands"
@@ -156,15 +157,15 @@ mod tests {
     // stops recognising fails a build-time test here rather than silently
     // dropping out of the pane.
     //
-    // **Every scheduled workflow is embedded** — five today — not a sample
-    // of them: a guard that covered four would have said nothing about the
+    // **Every scheduled workflow is embedded** — four today — not a sample
+    // of them: a guard that covered three would have said nothing about the
     // rest, which is exactly the drop-out this guard exists to catch.
     // `EVERY_SCHEDULED_WORKFLOW` below is the list, and
     // `every_committed_scheduled_workflow_is_still_read_as_scheduled` walks
-    // it. `CALENDAR_POLL`, `GITHUB_STATUS`, `GMAIL_POLL`, `GRAPH_MAIL_POLL`
-    // and `GRAPH_CALENDAR_POLL` stay included below even though #774
-    // dropped them from that list — they feed the negative guard just past
-    // it instead.
+    // it. `CALENDAR_POLL`, `GITHUB_STATUS`, `GMAIL_POLL`, `GRAPH_MAIL_POLL`,
+    // `GRAPH_CALENDAR_POLL` and `UPTIME_PROBE` stay included below even
+    // though #774 and #792 dropped them from that list — they feed the
+    // negative guard just past it instead.
     const CALENDAR_POLL: &str = include_str!("../../../.github/workflows/calendar-poll.yml");
     const CITY_WASTE: &str = include_str!("../../../.github/workflows/city-waste.yml");
     const GITHUB_STATUS: &str = include_str!("../../../.github/workflows/github-status.yml");
@@ -182,7 +183,7 @@ mod tests {
 
     /// `(file name, contents, expected top-level `name:`, expected crons)`
     /// for every `schedule:`-carrying workflow committed in this repo.
-    /// Adding a sixth scheduled workflow without adding it here fails
+    /// Adding a fifth scheduled workflow without adding it here fails
     /// `the_embedded_list_covers_every_scheduled_workflow_in_the_repo`
     /// (see the module header on doing that in the same PR).
     const EVERY_SCHEDULED_WORKFLOW: &[(&str, &str, &str, &[&str])] = &[
@@ -190,7 +191,6 @@ mod tests {
         ("kimi-balance.yml", KIMI_BALANCE, "kimi-balance", &["0 */6 * * *"]),
         ("race-alert-poll.yml", RACE_ALERT_POLL, "race-alert-poll", &["*/15 * * * *"]),
         ("race-schedule-poll.yml", RACE_SCHEDULE_POLL, "race-schedule-poll", &["0 */6 * * *"]),
-        ("uptime-probe.yml", UPTIME_PROBE, "uptime-probe", &["5 * * * *"]),
     ];
 
     /// The general guard the module header claims: **every** committed
@@ -272,13 +272,14 @@ mod tests {
         }
     }
 
-    /// The header's own count, pinned: five today — #774 moved
+    /// The header's own count, pinned: four today — #774 moved
     /// `calendar-poll.yml`, `github-status.yml`, `gmail-poll.yml`,
     /// `graph-mail-poll.yml` and `graph-calendar-poll.yml` off Actions
-    /// `schedule:` entirely, onto the sweeper's supercronic clock.
+    /// `schedule:` entirely, onto the sweeper's supercronic clock, and #792
+    /// moved `uptime-probe.yml` after them.
     #[test]
-    fn the_repo_carries_five_scheduled_workflows_today() {
-        assert_eq!(EVERY_SCHEDULED_WORKFLOW.len(), 5);
+    fn the_repo_carries_four_scheduled_workflows_today() {
+        assert_eq!(EVERY_SCHEDULED_WORKFLOW.len(), 4);
     }
 
     #[test]
@@ -297,21 +298,22 @@ mod tests {
         assert_eq!(workflow.cron_expressions, vec!["0 */6 * * *"]);
     }
 
-    /// #774 moved these five pollers' cadence onto the sweeper's
-    /// supercronic clock and dropped their Actions `schedule:` trigger,
-    /// keeping `workflow_dispatch:` only — this pins that they now read as
-    /// unscheduled, the mirror image of
+    /// #774 moved five pollers' cadence onto the sweeper's supercronic
+    /// clock and dropped their Actions `schedule:` trigger, keeping
+    /// `workflow_dispatch:` only, and #792 did the same to the uptime probe
+    /// — this pins that they now read as unscheduled, the mirror image of
     /// `every_committed_scheduled_workflow_is_still_read_as_scheduled`
     /// above. A well-meaning revert that restores `schedule:` on one of
     /// these without also dropping its `crontab` entry would otherwise
     /// double the cadence silently; this fails loud here instead.
     #[test]
-    fn the_five_moved_pollers_no_longer_carry_a_schedule_trigger() {
+    fn the_six_moved_pollers_no_longer_carry_a_schedule_trigger() {
         assert_eq!(parse_workflow("gmail-poll.yml", GMAIL_POLL), None);
         assert_eq!(parse_workflow("calendar-poll.yml", CALENDAR_POLL), None);
         assert_eq!(parse_workflow("graph-mail-poll.yml", GRAPH_MAIL_POLL), None);
         assert_eq!(parse_workflow("graph-calendar-poll.yml", GRAPH_CALENDAR_POLL), None);
         assert_eq!(parse_workflow("github-status.yml", GITHUB_STATUS), None);
+        assert_eq!(parse_workflow("uptime-probe.yml", UPTIME_PROBE), None);
     }
 
     #[test]

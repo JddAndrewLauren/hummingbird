@@ -4,24 +4,29 @@
 # origin, the runner) and writes one `context_snapshots` row per service
 # under `uptime/v1`.
 #
-# **`schedule:` case, per the convention `city-waste.yml` established.**
-# hummingbird is public, so scheduled Actions runs are free, and this lane
-# is self-monitoring on the same posture every prior scheduled workflow here
-# gives: the pane bands its own answer stale at ~3h and then escalates
-# rather than trusting a poller that may itself be dead, so a stalled run is
-# visible within a few hours without anyone watching this workflow. This is
-# the **tenth** `schedule:` in the repo, counted directly against the
-# workflow files at the time this one was added (`city-waste.yml`,
-# `gmail-poll.yml`, `calendar-poll.yml`, `graph-mail-poll.yml`,
-# `graph-calendar-poll.yml`, `race-schedule-poll.yml`, `race-alert-poll.yml`,
-# `kimi-balance.yml`, `github-status.yml`, and this one) — see the repo rule
-# that a workflow header states its own count rather than copying one, since
-# two prior headers here (`city-waste.yml`, `kimi-balance.yml`) were each
-# found stating a wrong count of their own. The same overturn of issue #8's
-# ban applies verbatim — that ban was about a *private* repo's pooled
-# Actions minutes and $0 spending cap, neither of which exists here. It does
-# not compete with any live clock: this is the only thing that ever probes
-# these three services over HTTP.
+# **Moved off Actions `schedule:` at #792, onto the sweeper's supercronic
+# clock** — `gmail-poll.yml`'s header carries the full argument, measured
+# in #773 and again after #774 landed: on 2026-09-08 this lane's newest
+# snapshot sat 115 minutes old against its declared 60, while the five
+# pollers #774 had just moved sat at 3–12 minutes against 15. Actions
+# `schedule:` delivers roughly once every four hours, which is over the
+# pane's 3h stale band, so the pane flipped `STALE` about a probe that
+# ran and succeeded every time — and this is the pane that is supposed to
+# notice every *other* service going dark. `hummingbird-sweeper` is an
+# always-on container that can just run it on time, and this is the one
+# poller that needs a single Fly secret to move (`UPTIME_PROBE_INGEST_TOKEN`
+# — see below). The root `crontab`'s entry for `/app/bin/uptime-probe` owns
+# the standing cadence now; `workflow_dispatch` stays as the manual
+# fallback for as long as the Actions copy of the secret exists (#792's
+# step 7 is the operator's call to delete it, on #774's precedent).
+#
+# One cost, accepted and written down (#792): the sweeper is the one
+# service this probe cannot probe (ADR-0017 decision 4 — it never opens a
+# listener), and it is now also the probe's host, so a dead sweeper
+# silences the probe. The pane bands its own answer stale at 3h so that
+# reads as "I can't tell", never as "fine", and the sweeper's own liveness
+# stays healthchecks.io's job. `server/uptime-probe/src/lib.rs`'s "Where
+# it runs" section has the whole of it.
 #
 # **Hourly, deliberately not faster** (ADR-0017 decision 6). Each probe
 # cold-boots the scale-to-zero runner (`runner/fly.toml:21`,
@@ -32,10 +37,12 @@
 # frequent probe. The whole workflow runs as one unit at this cadence; there
 # is no per-service interval anywhere in `services.json`.
 #
-# `server/uptime-probe/src/body.rs::POLLED_EVERY_MS` must match this
-# interval — it is what `Freshness` reads as the declared cadence, and
-# `server/uptime-probe/tests/contract.rs::polled_every_ms_is_one_hour` pins
-# the constant's own side.
+# `server/uptime-probe/src/body.rs::POLLED_EVERY_MS` must match the
+# interval the probe actually runs at — now `crontab`'s entry for
+# `uptime-probe`, not this file's own (removed) cron — it is what
+# `Freshness` reads as the declared cadence, and
+# `server/uptime-probe/tests/contract.rs::polled_every_ms_is_one_hour_and_the_crontab_says_so_too`
+# pins the two together.
 #
 # **The credential.** `UPTIME_PROBE_INGEST_TOKEN` is an `ingest`-scope token
 # bound to `uptime/v1`, minted from the operator's terminal against
@@ -49,10 +56,8 @@
 name: uptime-probe
 
 on:
-  schedule:
-    - cron: "5 * * * *"
-  # A missed or dropped run, and the first run after the token is minted,
-  # otherwise have no trigger at all.
+  # The only trigger left: a manual run, while the Actions copy of the
+  # secret still exists. The standing cadence is `crontab`'s.
   workflow_dispatch:
 
 # One poller at a time. Two overlapping runs would race on the same
@@ -67,7 +72,10 @@ jobs:
     runs-on: ubuntu-latest
     # Three unauthenticated requests and three POSTs, behind a cached
     # build. Anything slower than this is a hung fetch — including the
-    # runner's own cold boot, which this probe deliberately triggers.
+    # runner's own cold boot, which this probe deliberately triggers. The
+    # bin's own 30s per-request `HTTP_TIMEOUT` is what actually bounds
+    # that; this is the Actions-side belt over it, and `crontab` needs no
+    # equivalent.
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
