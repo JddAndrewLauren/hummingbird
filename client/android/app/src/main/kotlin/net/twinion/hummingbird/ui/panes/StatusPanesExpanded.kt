@@ -431,7 +431,7 @@ private fun PollerPaneExpanded(
         FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(
                 when (val freshness = facts.freshness) {
-                    is MobilePaneFreshness.Age -> "as of ${ageWords(freshness.ageMs)}"
+                    is MobilePaneFreshness.Age -> "as of ${pollerAgeWords(freshness.ageMs)}"
                     MobilePaneFreshness.Unknown -> "age unknown"
                 },
                 style = MaterialTheme.typography.labelSmall,
