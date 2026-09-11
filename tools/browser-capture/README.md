@@ -57,13 +57,14 @@ Once per browser profile, per machine.
    are worth the minute.
 
 2. **Load unpacked.** `chrome://extensions` → Developer mode → *Load
-   unpacked* → this directory. **Load it from a stable path**: an unpacked
-   extension's id is derived from its directory, and the token lives in
-   `storage.local` *per id*, so loading from a different checkout or
-   worktree is a different extension with no token. Chrome expects the
-   "Unrecognized manifest key 'browser_specific_settings'" warning under
-   *Errors*; the key is Firefox's, mandatory for signing there, and Chrome
-   ignores it at runtime.
+   unpacked* → this directory. The id Chrome shows is
+   `eljlbpcfpddadchmlmcabfndadekconp` from any path: the manifest's `key`
+   pins it (below), and the token lives in `storage.local` *per id*, so
+   a load from another checkout or worktree is the same extension with the
+   same token — a stored-token check is that id under *Details*. Chrome
+   expects the "Unrecognized manifest key 'browser_specific_settings'"
+   warning under *Errors*; the key is Firefox's, mandatory for signing
+   there, and Chrome ignores it at runtime.
 
 3. **Paste the token.** Extension → *Options* → paste from 1Password
    (`op read op://dev/hummingbird-device-chrome-hal2024/password`) → Store.
@@ -73,6 +74,21 @@ Once per browser profile, per machine.
 4. Pin the toolbar button. `Alt+Shift+H` opens it from the keyboard; Enter
    in the title or Ctrl+Enter in the description lands in Triage. A mint
    is a click on its square, never a keystroke.
+
+### The manifest `key`
+
+Without one, an unpacked extension's id is a hash of its directory, and
+the token stored under one checkout is absent under the next (#798).
+`manifest.json`'s `key` is the base64 DER SubjectPublicKeyInfo of an RSA
+key pair generated once; Chrome hashes it for the id instead, so every
+load of this tree, from any path, is `eljlbpcfpddadchmlmcabfndadekconp`
+and shares one `storage.local`. `manifest.test.js` pins both the key's
+shape and that this file names the id it derives. Only the public half is
+committed. The private half is **not** needed for an unpacked load — it
+would sign a packed `.crx`, which this repo does not produce — and is not
+in the repo (`.gitignore` covers `*.pem`); if a pack is ever wanted, a
+fresh pair means a fresh id and a token paste. Firefox ignores `key`: its
+id is `gecko.id`.
 
 ### Rotation
 
