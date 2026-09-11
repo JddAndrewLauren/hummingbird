@@ -136,11 +136,6 @@ export interface CaptureBoxProps {
    * time instead of having to be retyped. A prop rather than a call in this
    * file because the items are the caller's state; the box has no store. */
   contextSuggestions: readonly string[];
-  /** Demo mode has no worker behind it, so no `captureResult` will ever
-   * arrive: the demo arm clears on submit (the fixture queue IS the
-   * acknowledgement) and must never wear a stale failure from a previous
-   * real session. */
-  demo: boolean;
   /** Bumped to move focus into the field — the shell's global capture hotkey
    * and its "New" button both land here. Focus is taken on mount too (this
    * component mounts when the popover opens, which IS the request), so
@@ -170,7 +165,7 @@ export interface CaptureBoxProps {
   vaultName?: string | null;
   /** ADR-0036: present when there is file-link wiring behind this render,
    * carrying the one device-local fact a pasted path needs
-   * (`normalizePastedPath`). Absent — demo mode — draws no file disclosure,
+   * (`normalizePastedPath`). Absent draws no file disclosure,
    * the same "a render with nothing to send it never offers what it cannot
    * do" contract every other write here carries. */
   fileLinks?: { localRoot: string | null };
@@ -282,7 +277,6 @@ export function CaptureBox({
   onSubmit,
   projects,
   contextSuggestions,
-  demo,
   focusRequestId,
   lastCapture,
   onClose,
@@ -665,11 +659,10 @@ export function CaptureBox({
   // popover returns `null` when shut (`CapturePopover.tsx`), so the box
   // unmounts and the preserved context dies with it — there is no teardown to
   // write, and nothing survives to the next time capture is opened.
-  /** Everything the disclosures hold, back to shut and empty. Two callers —
-   * the clear-on-ok block below and the demo arm of `submit` — and it exists
-   * so a fourth disclosure can never be added to one of them and forgotten
-   * in the other. It does NOT touch `meta`: the context carve-out is the
-   * caller's, and only one of the two keeps it. */
+  /** Everything the disclosures hold, back to shut and empty — one function
+   * so a fourth disclosure is reset where the other three are and cannot be
+   * forgotten (#638 removed its second caller, `submit`'s demo arm). It does
+   * NOT touch `meta`: the context carve-out is the caller's. */
   function clearDisclosures(): void {
     setDetailsOpen(false);
     setLinkOpen(false);
@@ -690,7 +683,7 @@ export function CaptureBox({
       // The dictation failure goes with the draft it happened to. Left
       // standing, a "Nothing was heard." would sit under a freshly emptied box
       // describing a session two captures ago — the same stale-report failure
-      // `!demo` guards `captureError` against.
+      // `captureError`'s `kind !== "ok"` guards against.
       setDictationError(null);
       if (inFlight) {
         setLast(inFlight);
@@ -731,13 +724,13 @@ export function CaptureBox({
   // Reviewer finding on issue #222: `TaskState.lastCapture` was written on
   // every `captureResult` and read by nothing, so a failed capture left the
   // reader with no signal at all. A capture has no pre-existing item to key
-  // the error against, so it renders near the box itself; `!demo` keeps it
-  // out of the fixture-only demo view, which never issues a real capture and
-  // so must never wear a stale one from a previous real session.
-  // `kind !== "ok"` overwrites itself on the next capture result, so a stale
-  // failure never survives a later success.
+  // the error against, so it renders near the box itself. `kind !== "ok"`
+  // overwrites itself on the next capture result, so a stale failure never
+  // survives a later success. (A `!demo` guard once kept it out of the
+  // fixture-only demo view; #638 removed that prop chain, since #457 left
+  // nothing that could pass `true`.)
   const captureError =
-    !demo && lastCapture && lastCapture.kind !== "ok"
+    lastCapture && lastCapture.kind !== "ok"
       ? (lastCapture.error ?? "That capture didn't go through.")
       : null;
 
@@ -776,19 +769,6 @@ export function CaptureBox({
       vaultPath: typedNotePath === "" ? null : typedNotePath,
       filePath: typedFilePath === "" ? null : typedFilePath,
     };
-    if (demo) {
-      // No `captureResult` is coming — the caller's fixture queue IS the
-      // acknowledgement, so the demo arm clears and reports right away.
-      onSubmit(draft, destination, fields, attachments);
-      setLast({ destination, title: draft });
-      setDraft("");
-      // Same carve-out as the clear-on-ok block above: context stays, the
-      // rest goes. Two sites because demo has no result to wait for.
-      setMeta({ ...EMPTY_CAPTURE_META, context: meta.context });
-      clearDisclosures();
-      focusField();
-      return;
-    }
     // The raw string, not a trimmed one: #110's "the raw string reaches the
     // mutation unmodified" — `canSubmitCapture` decides *whether* to submit,
     // never *what* is submitted.
