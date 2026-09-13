@@ -825,11 +825,6 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
         // this component's other readers handle it themselves.
         projects={task.projects ?? []}
         contextSuggestions={captureContexts}
-        // #457: this component no longer has a kit world to be inert for —
-        // `demo`'s own fixture-queue arm lives on in `CaptureBox`'s own
-        // `demo` prop for a future caller, but nothing left in this
-        // component ever passes `true`.
-        demo={false}
         vaultName={obsidianVaultName(task.bindings)}
         fileLinks={fileLinksWiring}
         attachmentFailure={captureAttachments.failure}

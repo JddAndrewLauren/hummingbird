@@ -26,7 +26,9 @@ use crate::manifest::{Expected, Service};
 use crate::verdict::Outcome;
 
 /// How often this poller says it runs, for `Freshness`'s declared cadence.
-/// **Must match `.github/workflows/uptime-probe.yml`'s cron.** Hourly, as
+/// **Must match `crontab`'s entry for `/app/bin/uptime-probe`** (the
+/// sweeper's supercronic clock, since #792 — `tests/contract.rs` pins the
+/// two together). Hourly, as
 /// one unit across every declared service (ADR-0017 decision 6) — probing
 /// the scale-to-zero runner more often would cost real wake-ups to learn
 /// nothing new, and there is no per-service override of this: the manifest

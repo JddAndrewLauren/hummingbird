@@ -1,6 +1,7 @@
 package net.twinion.hummingbird
 
 import java.io.File
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -10,8 +11,8 @@ import org.junit.Test
 // re-derived count or a smuggled-in Grill interview at review time.
 //
 // Since the panel unification this file gates what remains *this screen's*:
-// the counts, the queue rows, the selection, and the two guards that live
-// above the LazyColumn. Everything the opened pane shows and does is
+// the counts, the queue rows, the selection expanding in place (#659), and
+// the Back guard that lives above the grid. Everything the opened pane shows and does is
 // `ItemDetailPanelStructuralTest`'s — including the header, the field set
 // and the mark-done check, which used to be pinned here against a second
 // editor implementation.
@@ -185,42 +186,75 @@ class TriageScreenStructuralTest {
     }
 
     @Test
-    fun `the opened capture expands at index 0 of the one grid, the Now pattern`() {
-        // Same inline-expansion shape as NowScreen: the pane is an item
-        // INSIDE the queue's one scrollable — a LazyVerticalGrid since the
-        // unfolded slice, one fixed column on the phone — above the rows,
-        // which keep rendering below, and the pane IS `ItemDetailPanel`.
-        // The separate seeded editor is gone: one panel, one draft, one
-        // patch rule, with #360 kept by the mode above instead of by a
-        // second implementation.
-        //
+    fun `the opened capture expands in place, in the tapped row's own slot, the Now pattern`() {
+        // #659, NowScreen's 2026-08-20 shape: the pane is an item INSIDE the
+        // queue's one scrollable — a LazyVerticalGrid since the unfolded
+        // slice, one fixed column on the phone — and WHERE inside is the
+        // point: the selected record renders as the pane in its own slot
+        // and every other record as its row, so the card the operator
+        // tapped grows rather than a block appearing at the top of the
+        // queue. The pane IS `ItemDetailPanel`, with #360 kept by the mode
+        // above instead of by a second implementation. Comments are
+        // stripped, so these are code positions.
+        val flat = screenSrc.replace(Regex("""\s+"""), " ")
+        val lazyColumn = screenSrc.indexOf("LazyVerticalGrid(")
+        val queueBranch = screenSrc.indexOf("board != null -> for (item in board.items)")
+        val paneEmit = screenSrc.indexOf("item(", queueBranch)
+        assertTrue("TriageScreen must keep one LazyVerticalGrid", lazyColumn >= 0)
+        assertTrue("the queue loop must sit inside the grid", queueBranch > lazyColumn)
+        assertFalse(
+            "the pane must not be an entry of its own before the queue's branches — " +
+                "that was the index-0 block",
+            screenSrc.substring(lazyColumn, queueBranch).contains("selected-item"),
+        )
+
+        // The row-or-pane branch, bounded to the queue loop: every item
+        // draws exactly one of the two, so the queue keeps one line per
+        // item and no item is drawn twice (the pane's header is the title,
+        // its action row the mark-done check).
+        val queueLoop = flat.substring(flat.indexOf("board != null -> for (item in board.items)"))
+        assertTrue(
+            "the selected record must render as the pane in its own slot, spanning every " +
+                "grid lane — full width whatever the column count",
+            queueLoop.contains(
+                "if (item.id == selectedId) { item( key = selectedItemKey(item.id), " +
+                    "span = { GridItemSpan(maxLineSpan) }, ) { Card(",
+            ),
+        )
+        assertTrue(
+            "and every other record as its row, never as a selected one",
+            queueLoop.contains("} else { item(key = item.id) { NowRow( record = item.asRowModel(), dark = dark, selected = false,"),
+        )
+        assertTrue(
+            "the expanded pane must be the shared ItemDetailPanel",
+            paneEmit >= 0 && screenSrc.indexOf("ItemDetailPanel(", paneEmit) > paneEmit,
+        )
+
         // The slot key **names the item**, and a constant one is a defect,
         // not a style: it makes the panel's disposal-and-recompose land on
         // the same `SaveableStateHolder` slot, which handed item B the state
         // item A saved there (`README`'s "The title-edit trap").
         assertTrue(
-            "the opened capture must be the grid's per-item selected-item entry",
-            screenSrc.contains("key = \"selected-item-\$id\""),
+            "the pane's key must name the item",
+            screenSrc.contains("private fun selectedItemKey(itemId: String) = \"selected-item-\$itemId\""),
         )
         assertFalse(
             "and the key must not go back to a constant — that is the leak",
-            screenSrc.contains("key = \"selected-item\""),
+            screenSrc.contains("\"selected-item\""),
         )
-        val paneKeyAt = screenSrc.indexOf("key = \"selected-item-\$id\"")
-        val paneSpanAt = screenSrc.indexOf("span = { GridItemSpan(maxLineSpan) }", paneKeyAt)
-        assertTrue(
-            "the pane must span every grid lane — full width whatever the column count",
-            paneKeyAt >= 0 && paneSpanAt in paneKeyAt..(paneKeyAt + 300),
+
+        // **Nothing scrolls on a selection.** The pane opens where the
+        // finger already is; the jump to 0 was what made the first tap and
+        // the second look like different gestures. No effect keyed on the
+        // selection may touch the grid state, and no scroll may target a
+        // literal index.
+        assertFalse(
+            "no selection-change effect may scroll the grid",
+            screenSrc.contains("LaunchedEffect(selectedId)") || screenSrc.contains("lastScrolledSelection"),
         )
-        val lazyColumn = screenSrc.indexOf("LazyVerticalGrid(")
-        val pane = screenSrc.indexOf("key = \"selected-item-")
-        val rows = screenSrc.indexOf("NowRow(")
-        assertTrue("TriageScreen must keep one LazyVerticalGrid", lazyColumn >= 0)
-        assertTrue("the pane item must sit inside the grid", pane > lazyColumn)
-        assertTrue("the queue's rows must render after the pane item", rows > pane)
-        assertTrue(
-            "the expanded pane must be the shared ItemDetailPanel",
-            screenSrc.contains("ItemDetailPanel("),
+        assertFalse(
+            "and nothing may scroll to a literal index — the pane is never at 0 by construction",
+            Regex("""(animateScrollToItem|scrollToItem)\(\d""").containsMatchIn(screenSrc),
         )
         assertFalse(
             "the retired second editor must not come back",
@@ -253,15 +287,40 @@ class TriageScreenStructuralTest {
         // re-tap guard below is the other), so an assertion that only
         // looked for that spelling stayed green with this handler gutted —
         // green for the wrong one of two indistinguishable reasons.
+        //
+        // Since #659 the pane is the selected row's own slot, so the scroll
+        // target is no longer 0 for free: the handler re-reads the pane's
+        // index from the live layout by the pane's key, falling back to the
+        // position it was last seen at, and — NowScreen's fallthrough — only
+        // while the board still carries the item. When the pane is not in
+        // the grid at all it CLOSES rather than scrolls; otherwise Back is
+        // dead while a dirty draft can never be re-seeded (no dialog, no
+        // close, no way out).
         val flat = screenSrc.replace(Regex("""\s+"""), " ")
         assertTrue(
             "the screen must guard Back whenever a pane is open, and route a dirty " +
-                "draft to the panel's own dialog rather than closing the pane",
+                "draft to the panel's own dialog rather than closing the pane — " +
+                "scrolling to the pane's OWN index, gated on board membership",
             flat.contains(
                 "BackHandler(enabled = selectedId != null) { " +
-                    "if (panelViewModel?.isDirty == true) { " +
-                    "scope.launch { listState.animateScrollToItem(0) } " +
+                    "val paneIndex = selectedId ?.takeIf { id -> board?.items?.any { it.id == id } == true } " +
+                    "?.let { id -> val key = selectedItemKey(id) " +
+                    "listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == key }?.index " +
+                    "?: lastSeenPanePosition } " +
+                    "if (paneIndex != null && panelViewModel?.isDirty == true) { " +
+                    "scope.launch { listState.animateScrollToItem(paneIndex) } " +
                     "} else { viewModel.closeSelection() } }",
+            ),
+        )
+        assertTrue(
+            "the fallback position must be captured from the layout while the pane is on " +
+                "screen, keyed on the selection so a stale index never names another row",
+            flat.contains(
+                "var lastSeenPanePosition by remember(selectedId) { mutableStateOf<Int?>(null) } " +
+                    "LaunchedEffect(listState, selectedId) { " +
+                    "val key = selectedId?.let { selectedItemKey(it) } ?: return@LaunchedEffect " +
+                    "snapshotFlow { listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == key }?.index " +
+                    "}.collect { index -> if (index != null) lastSeenPanePosition = index } }",
             ),
         )
         val handler = screenSrc.indexOf("BackHandler(")
@@ -283,15 +342,30 @@ class TriageScreenStructuralTest {
     }
 
     /** Every leaving gesture asks the same question. Re-tapping the open
-     * row is `select(sameId)`, a toggle shut — and the one exit that does
-     * not pass through the panel, so it is the one this screen must guard
-     * itself. The X, the header tap and Back inside the pane all route
-     * through the panel's own `DiscardConfirmation`. */
+     * row used to be `select(sameId)`, a toggle shut — and the one exit
+     * that did not pass through the panel, so the screen had to guard it
+     * itself. Since #659 the open item is never drawn as a row, so that
+     * gesture is unreachable from here and the guard with it: the pane's
+     * own header row is a close target sitting where the row was, and it
+     * routes through the panel's `DiscardConfirmation` like the X and Back
+     * inside the pane. So the rows carry the plain select and no dirtiness
+     * check of their own — a second copy of the guard here would be dead
+     * code that reads as a live one. */
     @Test
-    fun `re-tapping the open row on a dirty draft asks before dropping it`() {
+    fun `the rows carry no re-tap guard of their own — the pane's header is the close target`() {
         assertTrue(
-            "the queue's rows must guard a re-tap of the already-open row",
-            screenSrc.contains("if (item.id == selectedId && panelViewModel?.isDirty == true)"),
+            "a row tap is the plain select — a tap on a different row keeps replace semantics",
+            screenSrc.contains("onOpen = { viewModel.select(item.id) }"),
+        )
+        assertFalse(
+            "no row may re-check dirtiness — the open item has no row to re-tap",
+            screenSrc.contains("item.id == selectedId && panelViewModel?.isDirty"),
+        )
+        // The guard is asked exactly once on this screen: by Back.
+        assertEquals(
+            "panelViewModel?.isDirty is read by the Back guard alone",
+            1,
+            Regex("""panelViewModel\?\.isDirty""").findAll(screenSrc).count(),
         )
     }
 

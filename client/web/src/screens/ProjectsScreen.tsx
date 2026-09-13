@@ -29,6 +29,7 @@ import { FRONTIER_AXES } from "./frontier-columns";
 import { Aside, Column, TwoColumn } from "./layout";
 import type { StorageLike } from "./storage";
 import {
+  anyWriteFailureMessage,
   awaitingCreate,
   countsMeta,
   githubRepoUrl,
@@ -106,6 +107,17 @@ export interface ProjectsScreenProps {
    * `App.tsx` (`captureContexts`) and threaded down. Optional so a host
    * that has not been wired still renders, over the build's defaults. */
   contextSuggestions?: readonly string[];
+  /** The grid's create gesture. **Deliberately `=> void`** while its four
+   * write siblings below return their minted seed (#690, decided): nothing
+   * on this screen reads a create's seed — the grid's banner is the one
+   * ungated read (`roster.ts`'s `anyWriteFailureMessage`) and its waiting
+   * state keys on the result's `projectId` (`awaitingCreate`), not its
+   * seed — and this is the one write prop the screen shares with Now,
+   * Triage and the frontier board (each declares the same `=> void`
+   * shape, and `App.tsx` hands all four the same `useProjectsWiring`
+   * handler, which does return the seed for a caller that wants it).
+   * Widening it here alone would make this screen the odd one out among
+   * four consumers of one handler for a value nobody reads. */
   onCreateProject: (name: string) => void;
   /** #625: the dossier's properties card write, widened by #630's archive
    * card — `patch` carries only the fields the caller actually changed.
@@ -272,7 +284,9 @@ function Grid({
   const [showArchived, setShowArchived] = useState(false);
   const visible = visibleRows(rows, showArchived);
   const waiting = awaitingCreate(rows, lastProjectWrite);
-  const failure = writeFailureMessage(lastProjectWrite);
+  // The one ungated read on this screen (#690): the grid holds no seed of
+  // its own to key on — `anyWriteFailureMessage`'s own doc says why.
+  const failure = anyWriteFailureMessage(lastProjectWrite);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)" }}>
@@ -548,7 +562,6 @@ function Dossier({
               about, and it is the one card here a reader consults while
               looking at the board beside it. */}
           <RouteCard
-            projectId={projectId}
             route={route}
             lastRouteWrite={lastRouteWrite}
             onPatchRoute={onPatchRoute}
@@ -742,11 +755,6 @@ function RouteCard({
   lastRouteWrite,
   onPatchRoute,
 }: {
-  // Kept on the type even though the body below no longer reads it directly
-  // — seed-keying (`writeFailureMessage`) needs no `projectId` gate of its
-  // own, but every call site still passes it and every sibling card's props
-  // keep the same shape.
-  projectId: string;
   route: RouteDTO | undefined;
   lastRouteWrite: TaskRouteResult | null;
   onPatchRoute: (current: RouteDTO, patch: { destination?: string | null; notes?: string | null }) => string;

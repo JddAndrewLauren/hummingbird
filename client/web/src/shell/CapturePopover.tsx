@@ -45,7 +45,6 @@ export interface CapturePopoverProps {
    * `field-vocabulary.ts`'s `contextSuggestions` over the live items, built by
    * `App.tsx` because that is where the store's slices are. */
   contextSuggestions: readonly string[];
-  demo: boolean;
   /** #771/ADR-0036: the two facts the note and file disclosures need, and
    * the report of a follow-up write that did not land. All three forwarded
    * straight to `CaptureBox`; this popover holds none of it, exactly as it
@@ -92,7 +91,6 @@ export function CapturePopover({
   onSubmit,
   projects,
   contextSuggestions,
-  demo,
   vaultName,
   fileLinks,
   attachmentFailure,
@@ -255,7 +253,6 @@ export function CapturePopover({
             onSubmit={onSubmit}
             projects={projects}
             contextSuggestions={contextSuggestions}
-            demo={demo}
             focusRequestId={focusRequestId}
             vaultName={vaultName}
             fileLinks={fileLinks}

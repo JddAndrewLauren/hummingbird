@@ -1,0 +1,3 @@
+# The private half of the manifest `key` pair (#798). An unpacked load
+# never needs it; it would pack a .crx, which this repo does not do.
+*.pem

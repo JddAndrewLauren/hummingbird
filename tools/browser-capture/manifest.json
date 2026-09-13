@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "hummingbird capture",
   "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzVrbTCghWXpjtvfFukda8jCOwU1XXbyGyoDeJgYL14qk36mOyEiVxGkVhVzBK0RQl/awaHqJU070CEvFrmsA+TuouBZfPR6WKMwcxlMZ+0XZ6KViDAsfZC8nKQ3T6Zzd5x0Ff6qzYXxUnk8AM1V5h7qkIPvGXUnw2tsT1PMy3A1bfcAf/Oq9uloRtExgpvfH8mgdHxjC0/Sj/T1cW0rfMF4HuVmXhWtM5SvTC0f/ugwqSvOJcL3KzNx8UeqdOSUdNzDObVHr3WEAZv1KyEF3MoF357fApAsGrXR/4inuvHEc19lwbiA39rmjh650KSizGEldR1hOcWjdvFy15Of11QIDAQAB",
   "description": "Capture the current tab as a hummingbird item.",
   "action": {
     "default_popup": "popup.html",

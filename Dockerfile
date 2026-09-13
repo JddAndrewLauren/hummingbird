@@ -1,7 +1,9 @@
-# The five out-of-process poller binaries this issue (#774) moved off GitHub
-# Actions `schedule:` onto this container's own supercronic clock:
+# The six out-of-process poller binaries moved off GitHub Actions
+# `schedule:` onto this container's own supercronic clock:
 # `hummingbird-gmail-poll`, `hummingbird-calendar-poll`, `graph-mail-poll`,
-# `graph-calendar-poll` and `github-status-poll`. Same builder-stage pattern
+# `graph-calendar-poll` and `github-status-poll` (#774), and `uptime-probe`
+# (#792 — its package is `hummingbird-uptime-probe`, its `[[bin]]` is not;
+# both halves below are spelled from `Cargo.toml`). Same builder-stage pattern
 # `runner/Dockerfile` established for `next-up-rank` — read that file's
 # header first; this one does not re-derive the reasoning, only restates
 # what differs.
@@ -11,7 +13,7 @@
 # Bump both together, deliberately.
 FROM rust:1.97.1-slim AS poller-builder
 WORKDIR /src
-# `server/` comes whole, not just the five poller crates' own directories —
+# `server/` comes whole, not just the six poller crates' own directories —
 # `runner/Dockerfile`'s own comment on this explains why: `server/domain`
 # inherits `version`/`edition` from the workspace root with
 # `.workspace = true`, so cargo must find the workspace root that declares
@@ -41,7 +43,8 @@ RUN cargo build --release \
     -p hummingbird-gmail-poll --bin hummingbird-gmail-poll \
     -p hummingbird-calendar-poll --bin hummingbird-calendar-poll \
     -p hummingbird-graph-poll --bin graph-mail-poll --bin graph-calendar-poll \
-    -p hummingbird-github-status --bin github-status-poll
+    -p hummingbird-github-status --bin github-status-poll \
+    -p hummingbird-uptime-probe --bin uptime-probe
 
 FROM python:3.12-slim
 
@@ -84,12 +87,13 @@ RUN chmod +x /app/sweep
 # away (per-commit freshness becomes per-deploy).
 COPY .github/workflows /app/workflows
 
-# The five poller binaries built above.
+# The six poller binaries built above.
 COPY --from=poller-builder /src/server/target/release/hummingbird-gmail-poll /app/bin/hummingbird-gmail-poll
 COPY --from=poller-builder /src/server/target/release/hummingbird-calendar-poll /app/bin/hummingbird-calendar-poll
 COPY --from=poller-builder /src/server/target/release/graph-mail-poll /app/bin/graph-mail-poll
 COPY --from=poller-builder /src/server/target/release/graph-calendar-poll /app/bin/graph-calendar-poll
 COPY --from=poller-builder /src/server/target/release/github-status-poll /app/bin/github-status-poll
+COPY --from=poller-builder /src/server/target/release/uptime-probe /app/bin/uptime-probe
 
 # Absolute path, not a bare `supercronic`: as PID 1 supercronic re-execs itself
 # to reap dead processes, and that re-exec does not search PATH -- a bare

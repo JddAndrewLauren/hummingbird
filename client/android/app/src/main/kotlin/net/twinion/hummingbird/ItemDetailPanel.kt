@@ -89,11 +89,13 @@ import net.twinion.hummingbird.brand.R
 //    tapped `item-threshold/v1` notification lands, because a state
 //    source's alert is a reading of the item's condition and landing on the
 //    alert would show a reading of a thing while withholding the thing),
-//  - `NowScreen`'s inline expansion (a tapped card opens above the
-//    still-standing board, `NowScreen.tsx`'s own `SelectedItemSection` /
-//    ADR-0021 decision 7),
+//  - `NowScreen`'s inline expansion (a tapped card grows in its own slot
+//    of the still-standing board — `NowScreen.tsx`'s own
+//    `SelectedItemSection` / ADR-0021 decision 7; README's "In place, not
+//    at the top"),
 //  - the `RecallOverlay`'s expansion under its result row,
-//  - and `TriageScreen`'s expansion at index 0 of its queue, in
+//  - and `TriageScreen`'s expansion in the tapped row's own slot of its
+//    queue (#659, the same in-place shape), in
 //    [ItemDetailPanelMode.PROMOTE].
 //
 // Triage rendered a separate seeded editor until the unification: two

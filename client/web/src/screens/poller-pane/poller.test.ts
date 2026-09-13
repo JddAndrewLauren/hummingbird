@@ -5,6 +5,8 @@ import {
   FLOOR_MS,
   OVERDUE_MULTIPLIER,
   SOURCES,
+  ageWords,
+  cadenceWords,
   pollerAnswer,
   pollerBand,
   pollerCollapsedHeadline,
@@ -94,6 +96,19 @@ describe("pollerSubjects", () => {
 
   it("is still every watched source once some have data", () => {
     expect(pollerSubjects(inputs())).toEqual(SOURCES);
+  });
+});
+
+describe("ageWords / cadenceWords", () => {
+  it("say minutes below an hour, through the same tiers, so a 15-minute poller reads 15m on both lines", () => {
+    // #777 gave both lines one promotion; #780 pins it — Android's
+    // `PaneExpandedWordsTest` carries the same fixtures.
+    expect(cadenceWords(15 * 60_000)).toBe("15m");
+    expect(ageWords(15 * 60_000)).toBe("15m ago");
+    expect(cadenceWords(59_999)).toBe("under a minute");
+    expect(cadenceWords(6 * 3_600_000)).toBe("6h");
+    expect(ageWords(6 * 3_600_000)).toBe("6h ago");
+    expect(cadenceWords(72 * 3_600_000)).toBe("3d");
   });
 });
 

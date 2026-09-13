@@ -135,21 +135,42 @@ export interface ProjectLaneWriteResult {
  * `null` whenever it holds no write outstanding) is what tells them apart:
  * the message renders only once `lastWrite.seed` matches it.
  *
- * `issuedSeed` is optional for the one caller with no per-write seed to
- * scope to: the grid's create banner has no single in-flight write of its
- * own (a create's minted seed is dropped — `useProjectsWiring`'s own doc),
- * so omitting the argument keeps its pre-existing, ungated read — the grid
- * still names ANY project write's failure, same as it always has. Every
- * other caller passes its own `issuedSeed` and gets the scoped read. */
+ * `issuedSeed` is **required**, and `undefined` is not one of its values
+ * (#690). The one reader with no per-write seed to scope to — the grid's
+ * create banner — goes through [`anyWriteFailureMessage`] instead, a
+ * separate door rather than an omitted argument, so that a caller holding
+ * a `string | undefined` (a seed it may or may not have minted yet) cannot
+ * spread it in and land on the ungated read by accident: that would name a
+ * sibling reader's failure as its own, the exact defect #669 removed. Should
+ * `undefined` still arrive at runtime past the types, the comparison below
+ * treats it like `null` — gated, and never matching any minted seed. */
 export function writeFailureMessage(
   lastWrite: ProjectLaneWriteResult | null,
-  issuedSeed?: string | null,
+  issuedSeed: string | null,
   fallback = "That project write did not go through.",
 ): string | null {
   if (lastWrite === null || lastWrite.kind === "ok") {
     return null;
   }
-  if (issuedSeed !== undefined && lastWrite.seed !== issuedSeed) {
+  if (lastWrite.seed !== issuedSeed) {
+    return null;
+  }
+  return lastWrite.error ?? fallback;
+}
+
+/** The **ungated** read (#690): what ANY non-`ok` write in `lastWrite` says,
+ * whoever issued it. Exactly one caller wants this — the grid's create
+ * banner, which has no single in-flight write of its own to scope to (a
+ * create's minted seed is dropped: `useProjectsWiring`'s own doc), and which
+ * names any project write's failure, same as it always has. It is its own
+ * function, not an optional argument on [`writeFailureMessage`], so that
+ * reaching the ungated read is a deliberate spelling at the call site and
+ * never the accident of a `string | undefined` seed. */
+export function anyWriteFailureMessage(
+  lastWrite: ProjectLaneWriteResult | null,
+  fallback = "That project write did not go through.",
+): string | null {
+  if (lastWrite === null || lastWrite.kind === "ok") {
     return null;
   }
   return lastWrite.error ?? fallback;
