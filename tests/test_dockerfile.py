@@ -86,7 +86,7 @@ class DockerfilePollerBinsTest(unittest.TestCase):
 
     def test_the_gate_reads_the_real_lists(self):
         # Guard against the regexes silently matching nothing: the five
-        # #774 pollers must be seen on both sides.
+        # #774 pollers and #792's `uptime-probe` must be seen on both sides.
         text = DOCKERFILE.read_text()
         expected = {
             "hummingbird-gmail-poll",
@@ -94,6 +94,7 @@ class DockerfilePollerBinsTest(unittest.TestCase):
             "graph-mail-poll",
             "graph-calendar-poll",
             "github-status-poll",
+            "uptime-probe",
         }
         self.assertEqual(set(copied_bins(text)), expected)
         self.assertEqual(set(cargo_build_bins(text)), expected)

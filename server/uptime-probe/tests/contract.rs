@@ -70,33 +70,70 @@ fn the_source_agrees_with_the_pane() {
     assert_eq!(hummingbird_domain::UPTIME_V1, "uptime/v1");
 }
 
-/// `.github/workflows/uptime-probe.yml`'s cron must agree with this — the
-/// declared cadence `Freshness` reads.
+/// `crontab`'s entry for this binary must agree with this — the declared
+/// cadence `Freshness` reads. #792 moved this poller off Actions
+/// `schedule:` onto the sweeper's supercronic clock, so the file pinned
+/// here is `crontab`, not `.github/workflows/uptime-probe.yml`.
 ///
-/// **Checked against the workflow file, not only against itself.** A bare
+/// **Checked against the crontab, not only against itself.** A bare
 /// `assert_eq!(POLLED_EVERY_MS, 60 * 60 * 1000)` restates the constant and
-/// would still pass the day someone changed the cron and left this alone,
-/// which is the exact drift this file exists to catch on every *other*
-/// contract it guards. `hummingbird-github-status::cron::declared_cadence_ms`
-/// would decide this properly, but reaching it means a cross-crate
-/// dependency for a test, so the cron line itself is asserted here instead —
-/// no dependency, and the failure still lands on a real edit to the
-/// workflow.
-const UPTIME_PROBE_WORKFLOW: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../.github/workflows/uptime-probe.yml"
-));
+/// would still pass the day someone changed the crontab entry and left this
+/// alone, which is the exact drift this file exists to catch on every
+/// *other* contract it guards. `hummingbird-github-status::cron::
+/// declared_cadence_ms` would decide this properly, but reaching it means a
+/// cross-crate dependency for a test, so the entry's own minute field is
+/// read here instead — no dependency, and the failure still lands on a real
+/// edit to `crontab`. The reading is `gmail-poll/tests/contract.rs`'s
+/// `firings_per_hour`, verbatim.
+const CRONTAB: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../crontab"));
+
+/// The one `crontab` line that fires this binary, minute field only — how
+/// many distinct minutes it fires within the hour is the cadence, whatever
+/// minute was actually picked to stagger it off the other six jobs.
+fn firings_per_hour(binary: &str) -> usize {
+    let line = CRONTAB
+        .lines()
+        .find(|l| l.contains(binary))
+        .unwrap_or_else(|| panic!("crontab carries no entry for {binary}"));
+    // The whole file, not just the first match: a *second* entry for the same
+    // binary would double the real cadence while this gate stayed green, and
+    // a second clock for one job is the banned failure (CLAUDE.md's "No
+    // competing clocks"; issue #8).
+    let entries = CRONTAB.lines().filter(|l| l.contains(binary)).count();
+    assert_eq!(entries, 1, "crontab declares more than one entry for {binary}; POLLED_EVERY_MS names one cadence");
+    let minute_field = line.split_whitespace().next().expect("a minute field");
+    minute_field.split(',').count()
+}
 
 #[test]
-fn polled_every_ms_is_one_hour_and_the_workflow_says_so_too() {
+fn polled_every_ms_is_one_hour_and_the_crontab_says_so_too() {
+    const MS_PER_HOUR: i64 = 60 * 60 * 1000;
     assert_eq!(POLLED_EVERY_MS, 60 * 60 * 1000);
-    assert!(
-        UPTIME_PROBE_WORKFLOW.contains(r#"- cron: "5 * * * *""#),
-        "uptime-probe.yml no longer runs hourly at :05 — `POLLED_EVERY_MS` is now a lie, and \
+    assert_eq!(
+        MS_PER_HOUR % POLLED_EVERY_MS,
+        0,
+        "POLLED_EVERY_MS must divide an hour evenly for this gate to read a minute count as a cadence"
+    );
+    let expected_firings_per_hour = (MS_PER_HOUR / POLLED_EVERY_MS) as usize;
+    assert_eq!(
+        firings_per_hour("/app/bin/uptime-probe"),
+        expected_firings_per_hour,
+        "crontab's entry for uptime-probe no longer fires hourly — `POLLED_EVERY_MS` is now a lie, and \
          every pane reading `declaredCadenceMs` bands its freshness against the wrong cadence"
     );
-    // The whole cron field, so a *second* schedule entry tightening or
-    // loosening the real cadence cannot slip past the `contains` above.
-    let cron_lines = UPTIME_PROBE_WORKFLOW.lines().filter(|l| l.trim().starts_with("- cron:")).count();
-    assert_eq!(cron_lines, 1, "uptime-probe.yml declares more than one cron; POLLED_EVERY_MS names one cadence");
+}
+
+/// `HB_INGEST_TOKEN` is the singular env var name every binary on this
+/// machine reads (`main.rs`'s own `env("HB_INGEST_TOKEN")`); the per-source
+/// secret is mapped onto it on the command line, not read directly.
+#[test]
+fn the_crontab_entry_maps_the_uptime_probe_ingest_secret_onto_hb_ingest_token() {
+    let line = CRONTAB
+        .lines()
+        .find(|l| l.contains("/app/bin/uptime-probe"))
+        .expect("crontab carries an entry for uptime-probe");
+    assert!(
+        line.contains(r#"HB_INGEST_TOKEN="$UPTIME_PROBE_INGEST_TOKEN""#),
+        "uptime-probe's crontab entry no longer maps UPTIME_PROBE_INGEST_TOKEN onto HB_INGEST_TOKEN"
+    );
 }
