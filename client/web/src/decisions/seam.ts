@@ -571,7 +571,9 @@ export const FRONTIER_AXES: readonly FrontierAxis[] = [
   "urgency",
 ];
 
-export const DEFAULT_FRONTIER_AXIS: FrontierAxis = "context";
+/** Urgency — `hummingbird_core::decisions::frontier::DEFAULT_FRONTIER_AXIS`
+ * (operator decision 2026-09-13, replacing Context). */
+export const DEFAULT_FRONTIER_AXIS: FrontierAxis = "urgency";
 
 /** Which way the `urgency` axis's `calm` column reads —
  * `hummingbird_core::decisions::frontier::CalmOrder`'s wire names. Read by

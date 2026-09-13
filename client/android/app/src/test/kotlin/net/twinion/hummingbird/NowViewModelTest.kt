@@ -8,6 +8,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
+import uniffi.hummingbird_ffi_mobile.MobileCalmOrder
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 import uniffi.hummingbird_ffi_mobile.MobilePaneAnswer
 import uniffi.hummingbird_ffi_mobile.MobileKimiGap
@@ -129,7 +130,7 @@ class NowViewModelTest {
     }
 
     private fun viewModel(
-        fetchBoardFn: suspend (MobileFrontierAxis, NowFacetSelectionRecord, String) -> NowBoardRecord = { _, _, _ -> board() },
+        fetchBoardFn: suspend (MobileFrontierAxis, NowFacetSelectionRecord, String, MobileCalmOrder) -> NowBoardRecord = { _, _, _, _ -> board() },
         readAxisFn: suspend () -> MobileFrontierAxis = { MobileFrontierAxis.CONTEXT },
         writeAxisFn: suspend (MobileFrontierAxis) -> Unit = {},
         readCollapsedFn: suspend () -> Set<String> = { emptySet() },
@@ -138,6 +139,8 @@ class NowViewModelTest {
         rankPanesFn: suspend (Long, List<MobileZoneFact>) -> List<MobileRankedPane> = { _, _ -> emptyList() },
         setScheduledDateFn: suspend (String, String?, Long) -> Unit = { _, _, _ -> },
         completeFn: suspend (String, Long) -> Unit = { _, _ -> },
+        readCalmOrderFn: suspend () -> MobileCalmOrder = { MobileCalmOrder.OLDEST },
+        writeCalmOrderFn: suspend (MobileCalmOrder) -> Unit = {},
     ) = NowViewModel(
         fetchBoardFn,
         readAxisFn,
@@ -148,13 +151,54 @@ class NowViewModelTest {
         rankPanesFn,
         setScheduledDateFn,
         completeFn,
+        readCalmOrderFn = readCalmOrderFn,
+        writeCalmOrderFn = writeCalmOrderFn,
     )
+
+    @Test
+    fun `a fresh view model starts on the urgency axis, oldest first`() {
+        val vm = viewModel()
+
+        assertEquals(MobileFrontierAxis.URGENCY, vm.axis.value)
+        assertEquals(MobileCalmOrder.OLDEST, vm.calmOrder.value)
+    }
+
+    @Test
+    fun `load restores the persisted calm order before the first fetch`() = runBlocking {
+        var seenOrder: MobileCalmOrder? = null
+        val vm = viewModel(
+            fetchBoardFn = { _, _, _, order -> seenOrder = order; board() },
+            readCalmOrderFn = { MobileCalmOrder.NEWEST },
+        )
+
+        vm.load("2026-08-15T12:00")
+
+        assertEquals(MobileCalmOrder.NEWEST, vm.calmOrder.value)
+        assertEquals(MobileCalmOrder.NEWEST, seenOrder)
+    }
+
+    @Test
+    fun `flipCalmOrder writes each direction in turn and reloads under it`() = runBlocking {
+        val written = mutableListOf<MobileCalmOrder>()
+        val seen = mutableListOf<MobileCalmOrder>()
+        val vm = viewModel(
+            fetchBoardFn = { _, _, _, order -> seen += order; board() },
+            writeCalmOrderFn = { order -> written += order },
+        )
+
+        vm.flipCalmOrder("2026-08-15T12:00")
+        vm.flipCalmOrder("2026-08-15T12:00")
+
+        assertEquals(listOf(MobileCalmOrder.NEWEST, MobileCalmOrder.OLDEST), written)
+        assertEquals(listOf(MobileCalmOrder.NEWEST, MobileCalmOrder.OLDEST), seen)
+        assertEquals(MobileCalmOrder.OLDEST, vm.calmOrder.value)
+    }
 
     @Test
     fun `load restores the persisted axis and collapse set before the first fetch`() = runBlocking {
         var seenAxis: MobileFrontierAxis? = null
         val vm = viewModel(
-            fetchBoardFn = { axis, _, _ -> seenAxis = axis; board() },
+            fetchBoardFn = { axis, _, _, _ -> seenAxis = axis; board() },
             readAxisFn = { MobileFrontierAxis.SIZE },
             readCollapsedFn = { setOf("@phone") },
         )
@@ -176,7 +220,7 @@ class NowViewModelTest {
         var acted: Pair<String, Long>? = null
         var fetches = 0
         val vm = viewModel(
-            fetchBoardFn = { _, _, _ -> fetches += 1; board("a") },
+            fetchBoardFn = { _, _, _, _ -> fetches += 1; board("a") },
             completeFn = { itemId, nowMs -> acted = itemId to nowMs },
         )
         vm.load("2026-08-19T12:00")
@@ -197,7 +241,7 @@ class NowViewModelTest {
     fun `a failed complete re-reads anyway, keeps another row's panel, and says so`() = runBlocking {
         var fetches = 0
         val vm = viewModel(
-            fetchBoardFn = { _, _, _ -> fetches += 1; board("a", "other") },
+            fetchBoardFn = { _, _, _, _ -> fetches += 1; board("a", "other") },
             completeFn = { _, _ -> throw RuntimeException("boom") },
         )
         vm.load("2026-08-19T12:00")
@@ -216,7 +260,7 @@ class NowViewModelTest {
     @Test
     fun `a failed complete leaves the acted row's own panel standing`() = runBlocking {
         val vm = viewModel(
-            fetchBoardFn = { _, _, _ -> board("a") },
+            fetchBoardFn = { _, _, _, _ -> board("a") },
             completeFn = { _, _ -> throw RuntimeException("boom") },
         )
         vm.load("2026-08-19T12:00")
@@ -256,7 +300,7 @@ class NowViewModelTest {
     @Test
     fun `loadedOnce is false until a load completes, so entry loads exactly once`() = runBlocking {
         var fetches = 0
-        val vm = viewModel(fetchBoardFn = { _, _, _ -> fetches += 1; board() })
+        val vm = viewModel(fetchBoardFn = { _, _, _, _ -> fetches += 1; board() })
 
         assertFalse("a fresh ViewModel has not loaded", vm.loadedOnce)
 
@@ -268,7 +312,7 @@ class NowViewModelTest {
 
     @Test
     fun `refresh loads whatever the injected fetch fn returns, in its own order`() = runBlocking {
-        val vm = viewModel(fetchBoardFn = { _, _, _ -> board("b", "a") })
+        val vm = viewModel(fetchBoardFn = { _, _, _, _ -> board("b", "a") })
 
         vm.refresh("2026-08-15T12:00")
 
@@ -278,7 +322,7 @@ class NowViewModelTest {
     @Test
     fun `refresh passes the given deadline-shaped now straight through`() = runBlocking {
         var seenNow: String? = null
-        val vm = viewModel(fetchBoardFn = { _, _, now -> seenNow = now; board() })
+        val vm = viewModel(fetchBoardFn = { _, _, now, _ -> seenNow = now; board() })
 
         vm.refresh("2026-08-15T09:30")
 
@@ -291,7 +335,7 @@ class NowViewModelTest {
         var writtenCollapsed: Set<String>? = null
         var seenAxis: MobileFrontierAxis? = null
         val vm = viewModel(
-            fetchBoardFn = { axis, _, _ -> seenAxis = axis; board() },
+            fetchBoardFn = { axis, _, _, _ -> seenAxis = axis; board() },
             writeAxisFn = { axis -> writtenAxis = axis },
             writeCollapsedFn = { collapsed -> writtenCollapsed = collapsed },
         )
@@ -311,7 +355,7 @@ class NowViewModelTest {
     @Test
     fun `toggleFacet adds then removes a value and reloads under the current selection each time`() = runBlocking {
         var seenFacets: NowFacetSelectionRecord? = null
-        val vm = viewModel(fetchBoardFn = { _, facets, _ -> seenFacets = facets; board() })
+        val vm = viewModel(fetchBoardFn = { _, facets, _, _ -> seenFacets = facets; board() })
 
         vm.toggleFacet(FrontierFacet.CONTEXT, "@phone", "2026-08-15T12:00")
         assertEquals(setOf("@phone"), vm.facets.value.context)
@@ -368,7 +412,7 @@ class NowViewModelTest {
         val writes = mutableListOf<Set<String>>()
         var liveKeys = listOf("@phone", "@garden")
         val vm = viewModel(
-            fetchBoardFn = { _, _, _ -> board(liveColumnKeys = liveKeys) },
+            fetchBoardFn = { _, _, _, _ -> board(liveColumnKeys = liveKeys) },
             writeCollapsedFn = { writes.add(it) },
         )
         vm.refresh("2026-08-15T12:00")
@@ -396,7 +440,7 @@ class NowViewModelTest {
         // prune even though the *rendered* columns (post-facet) might not
         // currently include it.
         val vm = viewModel(
-            fetchBoardFn = { _, _, _ -> board(liveColumnKeys = listOf("@phone", "@computer")) },
+            fetchBoardFn = { _, _, _, _ -> board(liveColumnKeys = listOf("@phone", "@computer")) },
         )
         vm.refresh("2026-08-15T12:00")
 
@@ -462,7 +506,7 @@ class NowViewModelTest {
             shownCount = 0u,
             totalCount = 0u,
         )
-        val vm = viewModel(fetchBoardFn = { _, _, _ -> blockedBoard })
+        val vm = viewModel(fetchBoardFn = { _, _, _, _ -> blockedBoard })
 
         vm.refresh("2026-08-15T12:00")
 
@@ -568,7 +612,7 @@ class NowViewModelTest {
         // `InternalException`, and `refresh` runs inside a resume effect —
         // unhandled, it takes the Activity down. `TriageViewModel.load`'s
         // shape, applied here.
-        val vm = viewModel(fetchBoardFn = { _, _, _ -> throw RuntimeException("mirror unreadable") })
+        val vm = viewModel(fetchBoardFn = { _, _, _, _ -> throw RuntimeException("mirror unreadable") })
 
         vm.refresh("2026-08-15T12:00")
 
@@ -581,7 +625,7 @@ class NowViewModelTest {
 
     @Test
     fun `a board read cancelled by a fold is never worded as a failure`() = runBlocking {
-        val vm = viewModel(fetchBoardFn = { _, _, _ -> throw CancellationException("resume cancelled") })
+        val vm = viewModel(fetchBoardFn = { _, _, _, _ -> throw CancellationException("resume cancelled") })
 
         try {
             vm.refresh("2026-08-15T12:00")
@@ -596,7 +640,7 @@ class NowViewModelTest {
     fun `a successful board read clears a previous failure line`() = runBlocking {
         var fail = true
         val vm = viewModel(
-            fetchBoardFn = { _, _, _ ->
+            fetchBoardFn = { _, _, _, _ ->
                 if (fail) throw RuntimeException("boom") else board("i-1")
             },
         )
@@ -613,7 +657,7 @@ class NowViewModelTest {
         // The panes are the second half of one reload: a throw here would
         // take down an Activity that had already rendered a good board.
         val vm = viewModel(
-            fetchBoardFn = { _, _, _ -> board("i-1") },
+            fetchBoardFn = { _, _, _, _ -> board("i-1") },
             rankPanesFn = { _, _ -> throw RuntimeException("rank unreadable") },
         )
 

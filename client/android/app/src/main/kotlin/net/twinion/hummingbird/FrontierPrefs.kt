@@ -9,11 +9,13 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import java.io.IOException
 import kotlinx.coroutines.flow.first
+import uniffi.hummingbird_ffi_mobile.MobileCalmOrder
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 
 // M3/#530's frontier board: the two preferences `frontier-prefs.ts`'s own
 // header (`client/web/src/screens/frontier-prefs.ts`) keeps device-local
-// and persisted — the grouping axis and the per-column collapse set.
+// and persisted — the grouping axis and the per-column collapse set — plus
+// the urgency axis's calm-column order, the web's third.
 // Facet selection is the deliberate third that is NEVER persisted; see
 // `FrontierFacetSelection`'s own doc in `NowViewModel.kt` for why.
 //
@@ -43,6 +45,7 @@ private val Context.frontierPrefsStore: DataStore<Preferences> by preferencesDat
 object FrontierPrefs {
     private val AXIS_KEY = stringPreferencesKey("axis")
     private val COLLAPSED_KEY = stringSetPreferencesKey("collapsed_columns")
+    private val CALM_ORDER_KEY = stringPreferencesKey("calm_order")
 
     /** Runs a store access, answering `null` if the store itself failed.
      * Catches [IOException] specifically rather than wrapping the call in a
@@ -56,10 +59,10 @@ object FrontierPrefs {
         null
     }
 
-    /** [MobileFrontierAxis.CONTEXT] (the default axis) is stored as key
+    /** [MobileFrontierAxis.URGENCY] (the default axis) is stored as key
      * ABSENCE, never as a value — `frontier-prefs.ts`'s own convention, so
      * an install that has never touched this store and one that has
-     * explicitly picked Context read back identically. An unrecognised
+     * explicitly picked Urgency read back identically. An unrecognised
      * stored value (a future axis this build predates) degrades to the
      * default rather than crashing the read. */
     suspend fun readAxis(context: Context): MobileFrontierAxis =
@@ -74,6 +77,14 @@ object FrontierPrefs {
     suspend fun writeCollapsedColumns(context: Context, collapsed: Set<String>) =
         writeCollapsedColumns(context.frontierPrefsStore, collapsed)
 
+    /** [MobileCalmOrder.OLDEST] (the default) is stored as key absence, and
+     * an unrecognised value degrades to it — `writeAxis`'s convention. */
+    suspend fun readCalmOrder(context: Context): MobileCalmOrder =
+        readCalmOrder(context.frontierPrefsStore)
+
+    suspend fun writeCalmOrder(context: Context, order: MobileCalmOrder) =
+        writeCalmOrder(context.frontierPrefsStore, order)
+
     // The same four doors against a `DataStore` handed in rather than
     // reached through a `Context`. The four above are the app's, and the
     // only thing they add is `frontierPrefsStore` — the store delegate is
@@ -84,15 +95,15 @@ object FrontierPrefs {
 
     internal suspend fun readAxis(store: DataStore<Preferences>): MobileFrontierAxis {
         val stored = tolerating { store.data.first()[AXIS_KEY] }
-            ?: return MobileFrontierAxis.CONTEXT
+            ?: return MobileFrontierAxis.URGENCY
         return runCatching { MobileFrontierAxis.valueOf(stored) }
-            .getOrDefault(MobileFrontierAxis.CONTEXT)
+            .getOrDefault(MobileFrontierAxis.URGENCY)
     }
 
     internal suspend fun writeAxis(store: DataStore<Preferences>, axis: MobileFrontierAxis) {
         tolerating {
             store.edit { prefs ->
-                if (axis == MobileFrontierAxis.CONTEXT) {
+                if (axis == MobileFrontierAxis.URGENCY) {
                     prefs.remove(AXIS_KEY)
                 } else {
                     prefs[AXIS_KEY] = axis.name
@@ -117,6 +128,25 @@ object FrontierPrefs {
                     prefs.remove(COLLAPSED_KEY)
                 } else {
                     prefs[COLLAPSED_KEY] = collapsed
+                }
+            }
+        }
+    }
+
+    internal suspend fun readCalmOrder(store: DataStore<Preferences>): MobileCalmOrder {
+        val stored = tolerating { store.data.first()[CALM_ORDER_KEY] }
+            ?: return MobileCalmOrder.OLDEST
+        return runCatching { MobileCalmOrder.valueOf(stored) }
+            .getOrDefault(MobileCalmOrder.OLDEST)
+    }
+
+    internal suspend fun writeCalmOrder(store: DataStore<Preferences>, order: MobileCalmOrder) {
+        tolerating {
+            store.edit { prefs ->
+                if (order == MobileCalmOrder.OLDEST) {
+                    prefs.remove(CALM_ORDER_KEY)
+                } else {
+                    prefs[CALM_ORDER_KEY] = order.name
                 }
             }
         }

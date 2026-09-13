@@ -55,8 +55,8 @@ const COLLAPSED_KEY = "hb.now.frontier-collapsed";
 const CALM_ORDER_KEY = "hb.now.frontier-calm-order";
 
 describe("frontier-prefs — the grouping axis", () => {
-  it("defaults to context when nothing is stored", () => {
-    expect(readFrontierAxis(fakeStorage(), "now")).toBe("context");
+  it("defaults to urgency when nothing is stored", () => {
+    expect(readFrontierAxis(fakeStorage(), "now")).toBe("urgency");
   });
 
   it("round-trips a non-default axis", () => {
@@ -68,22 +68,22 @@ describe("frontier-prefs — the grouping axis", () => {
 
   it("removes the key rather than storing the default, so it cannot rot", () => {
     const storage = fakeStorage({ [AXIS_KEY]: "size" });
-    writeFrontierAxis(storage, "now", "context");
+    writeFrontierAxis(storage, "now", "urgency");
     expect(AXIS_KEY in storage.entries).toBe(false);
-    expect(readFrontierAxis(storage, "now")).toBe("context");
+    expect(readFrontierAxis(storage, "now")).toBe("urgency");
   });
 
   it("degrades an unknown stored axis to the default", () => {
     // A newer build's vocabulary, or a hand-edited key. #403: "An unknown
     // stored axis degrades to the default."
-    expect(readFrontierAxis(fakeStorage({ [AXIS_KEY]: "delegation" }), "now")).toBe("context");
-    expect(readFrontierAxis(fakeStorage({ [AXIS_KEY]: "" }), "now")).toBe("context");
-    expect(readFrontierAxis(fakeStorage({ [AXIS_KEY]: "CONTEXT" }), "now")).toBe("context");
+    expect(readFrontierAxis(fakeStorage({ [AXIS_KEY]: "delegation" }), "now")).toBe("urgency");
+    expect(readFrontierAxis(fakeStorage({ [AXIS_KEY]: "" }), "now")).toBe("urgency");
+    expect(readFrontierAxis(fakeStorage({ [AXIS_KEY]: "URGENCY" }), "now")).toBe("urgency");
   });
 
   it("survives an absent storage and a throwing one", () => {
-    expect(readFrontierAxis(undefined, "now")).toBe("context");
-    expect(readFrontierAxis(throwing, "now")).toBe("context");
+    expect(readFrontierAxis(undefined, "now")).toBe("urgency");
+    expect(readFrontierAxis(throwing, "now")).toBe("urgency");
     expect(() => writeFrontierAxis(undefined, "now", "size")).not.toThrow();
     expect(() => writeFrontierAxis(throwing, "now", "size")).not.toThrow();
   });
@@ -144,7 +144,7 @@ describe("frontier-prefs — the two boards", () => {
       "hb.projects.frontier-axis",
       "hb.projects.frontier-collapsed",
     ]);
-    expect(readFrontierAxis(storage, "now")).toBe("context");
+    expect(readFrontierAxis(storage, "now")).toBe("urgency");
     expect([...readCollapsedColumns(storage, "now")]).toEqual([]);
     expect(readFrontierAxis(storage, "projects")).toBe("size");
   });
@@ -155,7 +155,7 @@ describe("frontier-prefs — the two boards", () => {
     // been shared — must not group by a button that is not on screen.
     const storage = fakeStorage({ "hb.projects.frontier-axis": "project" });
     expect(readFrontierAxis(storage, "projects")).toBe("project");
-    expect(readFrontierAxis(storage, "projects", ["context", "size", "energy"])).toBe("context");
+    expect(readFrontierAxis(storage, "projects", ["context", "size", "energy", "urgency"])).toBe("urgency");
   });
 });
 

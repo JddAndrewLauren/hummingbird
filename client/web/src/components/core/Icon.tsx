@@ -1,7 +1,9 @@
 import type { HTMLAttributes } from "react";
 import {
   Activity,
+  ArrowDown,
   ArrowLeft,
+  ArrowUp,
   ArrowUpRight,
   Bell,
   BellOff,
@@ -76,6 +78,10 @@ export const ICON_MAP = {
   // disclosure glyph and says nothing about going back; this is a
   // navigation move, so it gets the navigation arrow.
   "arrow-left": ArrowLeft,
+  // The urgency axis's calm-order toggle: up is oldest first (ascending by
+  // arrival), down is newest first.
+  "arrow-down": ArrowDown,
+  "arrow-up": ArrowUp,
   "arrow-up-right": ArrowUpRight,
   bell: Bell,
   "bell-off": BellOff,

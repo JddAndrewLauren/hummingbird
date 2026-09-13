@@ -127,6 +127,23 @@ layout budget to spend rather than a label to append. The drift gate in
 `ffi-mobile` names `urgency` as a deliberate omission rather than checking a
 subset, so a **new** axis nobody has thought about still fails it.*
 
+*Amended 2026-09-13: **Urgency is the default axis, on every surface, and the
+phone offers it** (operator decision). The core's `DEFAULT_FRONTIER_AXIS`
+names it and the web seam's literal follows. Both clients store the default
+as a missing key, so anyone who never picked an axis now opens on Urgency.
+The tripwire below still reads "nobody ever switches away from the default",
+with Urgency now the default. Two things changed because of this. (1) **The
+calm-order control is one toggle, not two buttons.** On the web it is a
+single `ControlButton` drawing Lucide `arrow-up` for oldest first (ascending
+by arrival) and `arrow-down` for newest first. Its accessible name spells the
+direction out in words. (2) **(g) above is superseded.** On the phone the
+arrow sits inside the selected Urgency chip, and tapping that chip again flips
+the direction. That way the strip spends one chip on the axis and its order,
+not two. `FrontierPrefs` persists the direction under `calm_order`, the same
+way `hb.<screen>.frontier-calm-order` does on the web. `AxisRowWrappingTest`
+re-measures the six-chip strip, and the `ffi-mobile` drift gate now expects
+all five axes.*
+
 *Amended 2026-08-21: the board has a **second surface**. An open project's
 dossier renders this same board given only that project's items, in place of
 the ordered action list and fog card ADR-0030's own slices put there — a

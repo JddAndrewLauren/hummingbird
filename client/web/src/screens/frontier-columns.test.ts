@@ -97,14 +97,14 @@ const FIELD: Record<(typeof FIELD_AXES)[number], keyof TaskItemDTO> = {
 const FIELD_AXES = ["context", "project", "size", "energy"] as const;
 
 describe("groupFrontier — the axis vocabulary", () => {
-  it("offers the four axes ADR-0021 licensed plus urgency, with context the default", () => {
+  it("offers the four axes ADR-0021 licensed plus urgency, with urgency the default", () => {
     // The first four are CONTEXT.md's own "size, energy and context" plus
     // project, and deliberately exclude the delegation axis — a two-valued
     // marker whose absence is the default would yield one column plus "the
     // rest". `urgency` is decision 1's own amendment; it is last because the
-    // switch's order is not a ranking and context still leads as the default.
+    // switch's order is not a ranking — not even now that it is the default.
     expect(FRONTIER_AXES).toEqual(["context", "project", "size", "energy", "urgency"]);
-    expect(DEFAULT_FRONTIER_AXIS).toBe("context");
+    expect(DEFAULT_FRONTIER_AXIS).toBe("urgency");
   });
 
   it("offers both calm-order directions, oldest the default", () => {
