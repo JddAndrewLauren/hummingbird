@@ -1,6 +1,7 @@
 package net.twinion.hummingbird
 
 import androidx.activity.compose.BackHandler
+import androidx.annotation.DrawableRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -54,6 +55,8 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -64,6 +67,7 @@ import net.twinion.hummingbird.ui.contentMaxWidth
 import net.twinion.hummingbird.ui.panes.NowPaneExpanded
 import net.twinion.hummingbird.ui.panes.PaneCollapse
 import net.twinion.hummingbird.ui.theme.LocalHbDark
+import uniffi.hummingbird_ffi_mobile.MobileCalmOrder
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
 import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
@@ -99,16 +103,18 @@ private val AXIS_LABEL: Map<MobileFrontierAxis, String> = mapOf(
     MobileFrontierAxis.PROJECT to "Project",
     MobileFrontierAxis.SIZE to "Size",
     MobileFrontierAxis.ENERGY to "Energy",
+    MobileFrontierAxis.URGENCY to "Urgency",
 )
 
 /** [FRONTIER_GROUP_AXES] (`hummingbird_core::decisions::frontier`),
- * mirrored in the switch's own display order — `context` leads because it
- * is the default, exactly the core constant's own doc. */
+ * mirrored in the switch's own display order — `urgency` last, as the core
+ * constant has it, even though it is the default. */
 private val FRONTIER_AXES: List<MobileFrontierAxis> = listOf(
     MobileFrontierAxis.CONTEXT,
     MobileFrontierAxis.PROJECT,
     MobileFrontierAxis.SIZE,
     MobileFrontierAxis.ENERGY,
+    MobileFrontierAxis.URGENCY,
 )
 
 /** Display text for the column of items naming no value on the live axis
@@ -118,6 +124,10 @@ internal val NO_VALUE_LABEL: Map<MobileFrontierAxis, String> = mapOf(
     MobileFrontierAxis.PROJECT to "No project",
     MobileFrontierAxis.SIZE to "No size",
     MobileFrontierAxis.ENERGY to "No energy",
+    // Unreachable — urgency is total, so no item lacks a band — but the map
+    // is read over the whole axis vocabulary (`NO_VALUE_LABEL` in
+    // `FrontierColumns.tsx`, which says the same).
+    MobileFrontierAxis.URGENCY to "No urgency",
 )
 
 /** `hummingbird_domain::Size`'s closed vocabulary — `ItemDetailPanel.kt`'s
@@ -282,6 +292,7 @@ fun NowScreen(
     val viewModel: NowViewModel = viewModel(factory = NowViewModel.factory(context))
     val board by viewModel.board.collectAsState()
     val axis by viewModel.axis.collectAsState()
+    val calmOrder by viewModel.calmOrder.collectAsState()
     val facets by viewModel.facets.collectAsState()
     val filtersOpen by viewModel.filtersOpen.collectAsState()
     val collapsed by viewModel.collapsed.collectAsState()
@@ -462,6 +473,8 @@ fun NowScreen(
                 AxisRow(
                     axis = axis,
                     onPick = { next -> scope.launch { viewModel.setAxis(next, nowDeadlineShaped()) } },
+                    calmOrder = calmOrder,
+                    onFlipCalmOrder = { scope.launch { viewModel.flipCalmOrder(nowDeadlineShaped()) } },
                     filtersOpen = filtersOpen,
                     facetCount = facets.count(),
                     onToggleFilters = { viewModel.toggleFiltersOpen() },
@@ -808,6 +821,15 @@ fun NowScreen(
  * that superseded the original `FlowRow`). Three constraints follow from
  * that, and all three are load-bearing:
  *
+ * - **The calm-order arrow rides inside the Urgency chip** (operator
+ *   decision 2026-09-13) rather than being a chip of its own: selected,
+ *   Urgency draws an up arrow (oldest first) or a down arrow (newest
+ *   first) after its label, and tapping it again flips the direction —
+ *   the web's separate toggle, folded into the one chip this strip could
+ *   afford. Urgency joined the strip the same day, as the default axis, so
+ *   the strip is six chips now and the widths below are the five-chip
+ *   measurements it was built on; `AxisRowWrappingTest` holds the current
+ *   figure.
  * - The five chips fit **272dp** — 320dp, the narrowest width this repo
  *   tests at (`ChoiceRowWrappingTest`'s own qualifier), less `NowScreen`'s
  *   24dp gutters. `AxisRowWrappingTest` measures it, and that measurement
@@ -853,6 +875,8 @@ fun NowScreen(
 internal fun AxisRow(
     axis: MobileFrontierAxis,
     onPick: (MobileFrontierAxis) -> Unit,
+    calmOrder: MobileCalmOrder,
+    onFlipCalmOrder: () -> Unit,
     filtersOpen: Boolean,
     facetCount: Int,
     onToggleFilters: () -> Unit,
@@ -864,14 +888,27 @@ internal fun AxisRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             for (candidate in FRONTIER_AXES) {
+                val orderable = candidate == MobileFrontierAxis.URGENCY && axis == candidate
                 AxisChip(
                     selected = axis == candidate,
-                    onClick = { onPick(candidate) },
+                    // The live Urgency chip's second tap is the calm-order
+                    // flip; every other tap picks an axis.
+                    onClick = if (orderable) onFlipCalmOrder else ({ onPick(candidate) }),
                     label = AXIS_LABEL[candidate] ?: candidate.name,
-                    // One of four, so a radio rather than a checkbox — the
+                    // One of five, so a radio rather than a checkbox — the
                     // `FilterChip` this replaces called every chip a
                     // checkbox, including these.
                     role = Role.RadioButton,
+                    trailingIcon = when {
+                        !orderable -> null
+                        calmOrder == MobileCalmOrder.OLDEST -> R.drawable.ic_arrow_up
+                        else -> R.drawable.ic_arrow_down
+                    },
+                    stateDescription = when {
+                        !orderable -> null
+                        calmOrder == MobileCalmOrder.OLDEST -> "Oldest first"
+                        else -> "Newest first"
+                    },
                 )
             }
             AxisChip(
@@ -904,7 +941,14 @@ private fun AxisChip(
     onClick: () -> Unit,
     label: String,
     role: Role,
+    @DrawableRes trailingIcon: Int? = null,
+    stateDescription: String? = null,
 ) {
+    val color = if (selected) {
+        MaterialTheme.colorScheme.onSecondaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
     Box(
         modifier = Modifier
             .height(28.dp)
@@ -917,19 +961,33 @@ private fun AxisChip(
                 },
             )
             .selectable(selected = selected, role = role, onClick = onClick)
+            .then(
+                if (stateDescription != null) {
+                    Modifier.semantics { this.stateDescription = stateDescription }
+                } else {
+                    Modifier
+                },
+            )
             .padding(horizontal = 6.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 1,
-            color = if (selected) {
-                MaterialTheme.colorScheme.onSecondaryContainer
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            },
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                label,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                color = color,
+            )
+            if (trailingIcon != null) {
+                // Decorative: the direction is spoken by `stateDescription`.
+                Icon(
+                    painterResource(trailingIcon),
+                    contentDescription = null,
+                    tint = color,
+                    modifier = Modifier.padding(start = 2.dp).size(14.dp),
+                )
+            }
+        }
     }
 }
 

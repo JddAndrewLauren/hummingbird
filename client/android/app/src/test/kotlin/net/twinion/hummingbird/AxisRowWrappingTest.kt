@@ -25,6 +25,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import uniffi.hummingbird_ffi_mobile.MobileCalmOrder
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 
 /** The axis strip's shrink-to-fit gate (operator decision 2026-08-20).
@@ -88,10 +89,10 @@ class AxisRowWrappingTest {
     // kept here only as the control's yardstick (see that test).
     private val narrowStressWidth = 272.dp
 
-    // Every label the strip renders: `AXIS_LABEL`'s four, plus the Filter
+    // Every label the strip renders: `AXIS_LABEL`'s five, plus the Filter
     // chip with a count in it (the wider of its two states, so the test
     // measures the worse case rather than the resting one).
-    private val labels = listOf("Context", "Project", "Size", "Energy", "Filter · 2")
+    private val labels = listOf("Context", "Project", "Size", "Energy", "Urgency", "Filter · 2")
 
     @Test
     fun `the whole axis strip fits one line inside the narrowest content width`() {
@@ -106,8 +107,12 @@ class AxisRowWrappingTest {
             HummingbirdTheme {
             Box(modifier = Modifier.width(unconstrained)) {
                 AxisRow(
-                    axis = MobileFrontierAxis.CONTEXT,
+                    // Urgency selected: its chip then carries the calm-order
+                    // arrow, the strip's widest state.
+                    axis = MobileFrontierAxis.URGENCY,
                     onPick = {},
+                    calmOrder = MobileCalmOrder.OLDEST,
+                    onFlipCalmOrder = {},
                     filtersOpen = false,
                     facetCount = 2,
                     onToggleFilters = {},

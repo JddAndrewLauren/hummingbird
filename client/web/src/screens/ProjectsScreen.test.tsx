@@ -909,13 +909,13 @@ describe("ProjectsScreen", () => {
     it("offers every axis but Project, which would be one column here", () => {
       openBoard(twoProjects({ frontier: [inProject] }));
 
-      expect(screen.getByRole("button", { name: "Context", pressed: true })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Context" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Size" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Energy" })).toBeTruthy();
       // The fifth axis reaches this board for free — `PROJECT_BOARD_AXES`
       // subtracts `project` from the vocabulary rather than listing what it
-      // offers, which is the property this line pins.
-      expect(screen.getByRole("button", { name: "Urgency" })).toBeTruthy();
+      // offers, which is the property this line pins. It is also the default.
+      expect(screen.getByRole("button", { name: "Urgency", pressed: true })).toBeTruthy();
       expect(screen.queryByRole("button", { name: "Project" })).toBeNull();
     });
 

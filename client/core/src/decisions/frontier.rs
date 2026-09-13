@@ -166,9 +166,9 @@ impl FrontierAxis {
     }
 }
 
-/// Every grouping axis, in the order the switch offers them — `context`
-/// leads because it is the default, `urgency` is last because it is the
-/// newest and the switch's order is not a ranking.
+/// Every grouping axis, in the order the switch offers them — `urgency` is
+/// last because it is the newest and the switch's order is not a ranking,
+/// even though it is now the default (operator decision 2026-09-13).
 pub const FRONTIER_GROUP_AXES: [FrontierAxis; 5] = [
     FrontierAxis::Context,
     FrontierAxis::Project,
@@ -177,7 +177,9 @@ pub const FRONTIER_GROUP_AXES: [FrontierAxis; 5] = [
     FrontierAxis::Urgency,
 ];
 
-pub const DEFAULT_FRONTIER_AXIS: FrontierAxis = FrontierAxis::Context;
+/// Urgency (operator decision 2026-09-13, replacing Context): the board
+/// opens on what is pressing, and the other axes are one tap away.
+pub const DEFAULT_FRONTIER_AXIS: FrontierAxis = FrontierAxis::Urgency;
 
 /// Which way the `urgency` axis's `calm` column reads. That column is the
 /// board's "nothing is pressing" pile — every deadline-less item, plus
@@ -963,6 +965,11 @@ mod tests {
         assert_eq!(columns.len(), 1);
         assert_eq!(columns[0].value.as_deref(), Some("calm"));
         assert_eq!(columns[0].ids.len(), 2);
+    }
+
+    #[test]
+    fn urgency_is_the_default_axis() {
+        assert_eq!(DEFAULT_FRONTIER_AXIS, FrontierAxis::Urgency);
     }
 
     #[test]

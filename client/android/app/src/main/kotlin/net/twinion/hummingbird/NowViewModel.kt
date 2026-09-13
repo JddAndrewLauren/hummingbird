@@ -90,6 +90,7 @@ class NowViewModel(
         axis: MobileFrontierAxis,
         facets: NowFacetSelectionRecord,
         now: String,
+        calmOrder: MobileCalmOrder,
     ) -> NowBoardRecord,
     private val readAxisFn: suspend () -> MobileFrontierAxis,
     private val writeAxisFn: suspend (MobileFrontierAxis) -> Unit,
@@ -130,6 +131,11 @@ class NowViewModel(
      * test needs no DataStore. */
     private val readPaneCollapseFn: suspend () -> Map<String, CollapseOverride> = { emptyMap() },
     private val writePaneCollapseFn: suspend (Map<String, CollapseOverride>) -> Unit = {},
+    /** The urgency axis's calm-column order (`FrontierPrefs`), defaulted
+     * like the pane doors above so a test that never flips it needs no
+     * store. */
+    private val readCalmOrderFn: suspend () -> MobileCalmOrder = { MobileCalmOrder.OLDEST },
+    private val writeCalmOrderFn: suspend (MobileCalmOrder) -> Unit = {},
 ) : ViewModel() {
 
     private val _board = MutableStateFlow<NowBoardRecord?>(null)
@@ -159,8 +165,13 @@ class NowViewModel(
     private val _loading = MutableStateFlow(true)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
 
-    private val _axis = MutableStateFlow(MobileFrontierAxis.CONTEXT)
+    private val _axis = MutableStateFlow(MobileFrontierAxis.URGENCY)
     val axis: StateFlow<MobileFrontierAxis> = _axis.asStateFlow()
+
+    /** Which way the urgency axis's `calm` column reads — persisted, like
+     * the axis; carried and ignored on every other axis. */
+    private val _calmOrder = MutableStateFlow(MobileCalmOrder.OLDEST)
+    val calmOrder: StateFlow<MobileCalmOrder> = _calmOrder.asStateFlow()
 
     private val _facets = MutableStateFlow(FrontierFacetSelection())
     val facets: StateFlow<FrontierFacetSelection> = _facets.asStateFlow()
@@ -250,6 +261,7 @@ class NowViewModel(
      * the board once under them — `NowScreen`'s first resume. */
     suspend fun load(now: String) {
         _axis.value = readAxisFn()
+        _calmOrder.value = readCalmOrderFn()
         _collapsed.value = readCollapsedFn()
         refresh(now)
         loadedOnce = true
@@ -263,7 +275,7 @@ class NowViewModel(
     suspend fun refresh(now: String) {
         _loading.value = true
         try {
-            _board.value = fetchBoardFn(_axis.value, _facets.value.toRecord(), now)
+            _board.value = fetchBoardFn(_axis.value, _facets.value.toRecord(), now, _calmOrder.value)
             _statusLine.value = null
         } catch (error: CancellationException) {
             // A resume cancelled by a fold or a fast Back — never a failure
@@ -291,6 +303,17 @@ class NowViewModel(
         _collapsed.value = emptySet()
         writeCollapsedFn(emptySet())
         _expanded.value = emptySet()
+        refresh(now)
+    }
+
+    /** Flips the calm column between oldest and newest first, persists
+     * it, and reloads. No collapse or expand state to clear: the direction
+     * re-orders one column's cards and renames nothing (`pickCalmOrder` in
+     * `FrontierColumns.tsx`). */
+    suspend fun flipCalmOrder(now: String) {
+        val next = if (_calmOrder.value == MobileCalmOrder.OLDEST) MobileCalmOrder.NEWEST else MobileCalmOrder.OLDEST
+        _calmOrder.value = next
+        writeCalmOrderFn(next)
         refresh(now)
     }
 
@@ -439,16 +462,13 @@ class NowViewModel(
          * — never a fresh core or a second store per call. */
         fun create(context: Context): NowViewModel =
             NowViewModel(
-                fetchBoardFn = { axis, facets, now ->
-                    // `MobileCalmOrder` orders the `urgency` axis's `calm`
-                    // column, and this screen offers no urgency axis (see
-                    // `NowScreen.kt`'s FRONTIER_AXES) — so the value is
-                    // inert here and is passed explicitly anyway, because
-                    // the seam deliberately holds no default of its own.
+                fetchBoardFn = { axis, facets, now, calmOrder ->
                     CoreHolder.get(context.applicationContext)
-                        .nowBoard(axis, facets, now, MobileCalmOrder.OLDEST)
+                        .nowBoard(axis, facets, now, calmOrder)
                 },
                 readAxisFn = { FrontierPrefs.readAxis(context.applicationContext) },
+                readCalmOrderFn = { FrontierPrefs.readCalmOrder(context.applicationContext) },
+                writeCalmOrderFn = { order -> FrontierPrefs.writeCalmOrder(context.applicationContext, order) },
                 writeAxisFn = { axis -> FrontierPrefs.writeAxis(context.applicationContext, axis) },
                 readCollapsedFn = { FrontierPrefs.readCollapsedColumns(context.applicationContext) },
                 writeCollapsedFn = { collapsed ->

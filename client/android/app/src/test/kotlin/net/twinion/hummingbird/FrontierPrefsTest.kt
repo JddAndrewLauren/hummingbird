@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import uniffi.hummingbird_ffi_mobile.MobileCalmOrder
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 
 // `FrontierPrefs`'s own header: "a store that cannot be read or written is
@@ -56,7 +57,7 @@ class FrontierPrefsTest {
 
         assertEquals(
             "a read that cannot reach the store must degrade to the default axis",
-            MobileFrontierAxis.CONTEXT,
+            MobileFrontierAxis.URGENCY,
             FrontierPrefs.readAxis(store),
         )
     }
@@ -81,6 +82,7 @@ class FrontierPrefsTest {
         // refresh that follows it in `NowViewModel.setAxis`.
         FrontierPrefs.writeAxis(store, MobileFrontierAxis.PROJECT)
         FrontierPrefs.writeCollapsedColumns(store, setOf("errands"))
+        FrontierPrefs.writeCalmOrder(store, MobileCalmOrder.NEWEST)
     }
 
     @Test
@@ -92,6 +94,8 @@ class FrontierPrefsTest {
             { FrontierPrefs.readCollapsedColumns(store) },
             { FrontierPrefs.writeAxis(store, MobileFrontierAxis.SIZE) },
             { FrontierPrefs.writeCollapsedColumns(store, setOf("errands")) },
+            { FrontierPrefs.readCalmOrder(store) },
+            { FrontierPrefs.writeCalmOrder(store, MobileCalmOrder.NEWEST) },
         )) {
             try {
                 runBlocking { read() }
@@ -113,5 +117,37 @@ class FrontierPrefsTest {
 
         assertEquals(MobileFrontierAxis.ENERGY, FrontierPrefs.readAxis(store))
         assertEquals(setOf("errands", "calls"), FrontierPrefs.readCollapsedColumns(store))
+    }
+
+    @Test
+    fun `an unreadable store reads as oldest first`() = runBlocking {
+        assertEquals(
+            MobileCalmOrder.OLDEST,
+            FrontierPrefs.readCalmOrder(FailingStore(IOException("corrupt"))),
+        )
+    }
+
+    @Test
+    fun `the calm order round-trips, and the default is stored as key absence`() = runBlocking {
+        val store = WorkingStore()
+
+        FrontierPrefs.writeCalmOrder(store, MobileCalmOrder.NEWEST)
+        assertEquals(MobileCalmOrder.NEWEST, FrontierPrefs.readCalmOrder(store))
+
+        FrontierPrefs.writeCalmOrder(store, MobileCalmOrder.OLDEST)
+        assertEquals(emptyMap<Any, Any>(), store.stored.asMap())
+        assertEquals(MobileCalmOrder.OLDEST, FrontierPrefs.readCalmOrder(store))
+    }
+
+    @Test
+    fun `the default axis is stored as key absence`() = runBlocking {
+        val store = WorkingStore()
+
+        FrontierPrefs.writeAxis(store, MobileFrontierAxis.CONTEXT)
+        assertEquals(MobileFrontierAxis.CONTEXT, FrontierPrefs.readAxis(store))
+
+        FrontierPrefs.writeAxis(store, MobileFrontierAxis.URGENCY)
+        assertEquals(emptyMap<Any, Any>(), store.stored.asMap())
+        assertEquals(MobileFrontierAxis.URGENCY, FrontierPrefs.readAxis(store))
     }
 }

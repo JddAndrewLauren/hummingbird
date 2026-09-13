@@ -70,6 +70,10 @@ function memoryStorage(seed: Record<string, string> = {}) {
   };
 }
 
+/** Urgency is the default axis; the tests written against field-valued
+ * columns (`@computer`, `No context`) open the board on Context instead. */
+const ON_CONTEXT: Record<string, string> = { "hb.now.frontier-axis": "context" };
+
 /** The frontier's column headings — every `h2` on the screen except the
  * standing-questions aside's own, which is a section header in the other
  * landmark entirely and is not a column. */
@@ -83,11 +87,12 @@ function renderNow(
   task: TaskState,
   selectedItemId: string | null = null,
   grill?: import("../shell/useGrillTakeoverWiring").GrillTakeoverWiring,
+  storageSeed: Record<string, string> = ON_CONTEXT,
 ) {
   const onAct = vi.fn();
   const onOpenItem = vi.fn();
   const onCloseItemDetail = vi.fn();
-  const storage = memoryStorage();
+  const storage = memoryStorage(storageSeed);
   const view = render(
     <NowScreen
       onScreen={() => {}}
@@ -164,14 +169,24 @@ describe("NowScreen — test isolation", () => {
   });
 
   it("gives each render its own storage, so an axis switch cannot outlive its test", () => {
-    const first = renderNow(taskState({ frontier: [itemDTO({ id: "i1", context: "@computer" })] }));
+    const first = renderNow(
+      taskState({ frontier: [itemDTO({ id: "i1", context: "@computer" })] }),
+      null,
+      undefined,
+      {},
+    );
     fireEvent.click(screen.getByRole("button", { name: "Energy" }));
     expect(first.storage.entries["hb.now.frontier-axis"]).toBe("energy");
 
-    const second = renderNow(taskState({ frontier: [itemDTO({ id: "i2", context: "@computer" })] }));
+    const second = renderNow(
+      taskState({ frontier: [itemDTO({ id: "i2", context: "@computer" })] }),
+      null,
+      undefined,
+      {},
+    );
     expect("hb.now.frontier-axis" in second.storage.entries).toBe(false);
     // ...and the second render is back on the default axis.
-    expect(screen.getByRole("button", { name: "Context", pressed: true })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Urgency", pressed: true })).toBeDefined();
   });
 });
 
@@ -326,7 +341,8 @@ describe("NowScreen — the frontier list", () => {
       }),
     );
 
-    // Context is the default axis, and neither item names one.
+    // Neither item names a context.
+    fireEvent.click(screen.getByRole("button", { name: "Context" }));
     expect(screen.getByRole("heading", { name: "No context" })).toBeDefined();
     expect(screen.queryByRole("heading", { name: "Kitchen rebuild" })).toBeNull();
 
@@ -371,19 +387,21 @@ describe("NowScreen — the frontier list", () => {
     }
   });
 
-  it("offers the calm-order control on the urgency axis alone", () => {
-    renderNow(taskState({ frontier: [itemDTO({ id: "i1", title: "Rewire the lamp" })] }));
+  it("offers the calm-order toggle on the urgency axis alone", () => {
+    renderNow(taskState({ frontier: [itemDTO({ id: "i1", title: "Rewire the lamp" })] }), null, undefined, {});
+
+    // Urgency is the default axis, so the toggle is there from the start —
+    // one button, naming the live direction.
+    expect(screen.getByRole("button", { name: "Calm column: Oldest first" })).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Calm column: Newest first" })).toBeNull();
 
     // The direction reads the `calm` column and nothing else, so on any
     // other axis it would be a switch with no visible subject.
-    expect(screen.queryByRole("button", { name: "Oldest first" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Size" }));
+    expect(screen.queryByRole("button", { name: /^Calm column/ })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Urgency" }));
-    expect(screen.getByRole("button", { name: "Oldest first" })).toBeDefined();
-    expect(screen.getByRole("button", { name: "Newest first" })).toBeDefined();
-
-    fireEvent.click(screen.getByRole("button", { name: "Size" }));
-    expect(screen.queryByRole("button", { name: "Newest first" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Calm column: Oldest first" })).toBeDefined();
   });
 
   it("re-orders the calm column when the direction is switched, and persists it", () => {
@@ -394,9 +412,11 @@ describe("NowScreen — the frontier list", () => {
           itemDTO({ id: "i2", title: "Newer thing", createdAt: 2_000 }),
         ],
       }),
+      null,
+      undefined,
+      {},
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Urgency" }));
     const titlesNow = () =>
       screen
         .getAllByRole("button")
@@ -405,16 +425,18 @@ describe("NowScreen — the frontier list", () => {
 
     expect(titlesNow()[0]).toContain("Older thing");
 
-    fireEvent.click(screen.getByRole("button", { name: "Newest first" }));
+    fireEvent.click(screen.getByRole("button", { name: "Calm column: Oldest first" }));
     expect(titlesNow()[0]).toContain("Newer thing");
+    expect(screen.getByRole("button", { name: "Calm column: Newest first" })).toBeDefined();
     // Unlike the filter, the direction is remembered: it re-reads a column
     // rather than hiding one, so it cannot become a remembered lie about
     // what you have to do.
     expect(storage.entries["hb.now.frontier-calm-order"]).toBe("newest");
 
     // ...and back to the default, which is stored as key absence.
-    fireEvent.click(screen.getByRole("button", { name: "Oldest first" }));
+    fireEvent.click(screen.getByRole("button", { name: "Calm column: Newest first" }));
     expect("hb.now.frontier-calm-order" in storage.entries).toBe(false);
+    expect(titlesNow()[0]).toContain("Older thing");
   });
 
   it("caps a column at six cards and says how many are hidden", () => {
@@ -861,7 +883,7 @@ describe("NowScreen — the surface filter (ADR-0017, #311)", () => {
 // in, where in that column it sits, and which editor selecting one opens —
 // which is precisely what typecheck cannot see.
 describe("NowScreen — the captures in the columns", () => {
-  function fakeStorage(seed: Record<string, string> = {}) {
+  function fakeStorage(seed: Record<string, string> = ON_CONTEXT) {
     const entries = { ...seed };
     return {
       entries,
@@ -1423,7 +1445,7 @@ describe("NowScreen — inline project creation from the forced-open row (#652)"
 // modules' own five-test templates are in `frontier-prefs.test.ts`; these are
 // the wiring those templates cannot see.
 describe("NowScreen — the frontier's controls (#403)", () => {
-  function fakeStorage(seed: Record<string, string> = {}) {
+  function fakeStorage(seed: Record<string, string> = ON_CONTEXT) {
     const entries = { ...seed };
     return {
       entries,
@@ -1797,7 +1819,7 @@ describe("NowScreen — selection above the columns (#404)", () => {
   });
 
   it("returns to the columns on close, with the axis, collapse and filter state intact", () => {
-    function fakeStorage(seed: Record<string, string> = {}) {
+    function fakeStorage(seed: Record<string, string> = ON_CONTEXT) {
       const entries = { ...seed };
       return {
         entries,
@@ -2173,7 +2195,7 @@ describe("NowScreen — dragging a card between columns", () => {
       onchange: null,
       dispatchEvent: () => false,
     })) as unknown as typeof window.matchMedia;
-    const storage = memoryStorage();
+    const storage = memoryStorage(ON_CONTEXT);
     const screenFor = (next: TaskState) => (
       <NowScreen
         onScreen={() => {}}

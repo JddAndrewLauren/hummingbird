@@ -57,7 +57,6 @@ import { StageBadge } from "../components/domain/StageBadge";
 import { EmptyState } from "../components/feedback/EmptyState";
 import { ControlButton, SECTION_TOGGLE_HOVER, sectionToggleStyle } from "./ControlButton";
 import {
-  CALM_ORDERS,
   dropEdits,
   FRONTIER_AXES,
   groupFrontier,
@@ -1059,35 +1058,24 @@ export function FrontierColumns({
         {/* Only the `urgency` axis has a `calm` column to order, so this is
             the one control on the strip that comes and goes. It sits directly
             after the axis buttons because it is a modifier of the one just
-            pressed, not a peer of them. */}
+            pressed, not a peer of them. One button cycling two directions,
+            drawn as the arrow of the live one (up is oldest first, ascending
+            by arrival); its name says the direction in words, because an
+            arrow alone does not say what it sorts. */}
         {axis === "urgency" ? (
-          // A labelled group, not two more loose toggles. The axis buttons
-          // beside these use the identical `aria-pressed` treatment, so
-          // without a name for the pair a screen reader hears seven
-          // same-shaped controls in a row and nothing saying the last two
-          // answer a different question.
-          <div
-            role="group"
-            aria-label="Calm column order"
-            style={{
-              display: "flex",
-              gap: "var(--space-2)",
-              alignItems: "center",
+          <ControlButton
+            aria-label={`Calm column: ${CALM_ORDER_LABEL[calmOrder]}`}
+            title={CALM_ORDER_LABEL[calmOrder]}
+            onClick={() => pickCalmOrder(calmOrder === "oldest" ? "newest" : "oldest")}
+            baseStyle={{
+              ...controlStyle(false),
+              padding: "var(--space-3)",
               marginLeft: "var(--space-4)",
             }}
+            hoverStyle={controlHoverStyle(false)}
           >
-            {CALM_ORDERS.map((entry) => (
-              <ControlButton
-                key={entry}
-                aria-pressed={calmOrder === entry}
-                onClick={() => pickCalmOrder(entry)}
-                baseStyle={controlStyle(calmOrder === entry)}
-                hoverStyle={controlHoverStyle(calmOrder === entry)}
-              >
-                {CALM_ORDER_LABEL[entry]}
-              </ControlButton>
-            ))}
-          </div>
+            <Icon name={calmOrder === "oldest" ? "arrow-up" : "arrow-down"} size={17} />
+          </ControlButton>
         ) : null}
 
         {/* The axis switch is permanent chrome and the filter hides behind a

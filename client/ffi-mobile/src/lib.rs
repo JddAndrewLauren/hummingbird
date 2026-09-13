@@ -882,22 +882,16 @@ fn to_blocked_item_record(item: &Item, now: &str) -> NowItemRecord {
 /// only place the two are allowed to drift apart from, and it is
 /// exhaustive with no wildcard arm for exactly that reason.
 ///
-/// `Urgency` is carried here because the core enum gained it, **not**
-/// because the phone offers it: `NowScreen.kt` holds its own four-entry
-/// switch list. Whoever puts the fifth button on the phone adds it to that
-/// list and threads [`MobileCalmOrder`] out of a preference; nothing here
-/// has to change again.
+/// Every core axis crosses, and since 2026-09-13 the phone offers all five,
+/// `Urgency` as the default (ADR-0021's amendment of that date).
+/// `NowScreen.kt` holds its own switch list in this order, and the phone
+/// threads [`MobileCalmOrder`] out of `FrontierPrefs`. The drift gate below
+/// (`the_now_screen_facet_vocabularies_match_the_core`) fails if a new core axis
+/// lands without the phone deciding what to do with it.
 ///
-/// **The phone has no clamp for the gap that opens meanwhile**, and it is
-/// worth naming rather than assuming: `FrontierPrefs.readAxis` degrades to
-/// `CONTEXT` only when `valueOf` *throws*, so a stored `"URGENCY"` now
-/// parses and is returned, where before this variant existed it would have
-/// been rejected. The web clamps instead against the axes its board
-/// actually offers (`readFrontierAxis`'s `allowedAxes`), and Android has no
-/// equivalent. Harmless today — nothing on the phone can write that value,
-/// and `AXIS_LABEL[axis] ?: candidate.name` keeps the strip from crashing
-/// if one arrived — but it is the net the *next* mobile-omitted axis would
-/// need, so it belongs to whoever adds the button.
+/// The phone still has no clamp against an axis it does not offer, unlike
+/// the web's `readFrontierAxis` `allowedAxes`. That is harmless while it
+/// offers every axis, and it is the net the next phone-omitted axis would need.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum MobileFrontierAxis {
     Context,
@@ -8141,34 +8135,17 @@ mod tests {
             "NowScreen.kt's facet ENERGY_VALUES must match this — order included, since the level glyphs' ramp position is the list index (#558). The detail pane's own editor no longer holds a copy: it reads `captureFormMeta`.",
         );
 
-        // The phone offers a **prefix** of the core's grouping axes, not all
-        // of them: `urgency` (ADR-0021 decision 1's amendment) landed on the
-        // web alone, because `AxisRowWrappingTest` pins the whole axis strip
-        // — every label plus the Filter chip — to one unwrapped line at
-        // 419dp, and a fifth chip is a layout decision with its own budget
-        // to spend rather than a label to append. `MobileFrontierAxis`
-        // carries the variant regardless, so whoever spends it changes
-        // `NowScreen.kt`'s three maps and this list, and nothing else.
-        //
-        // Stated as an explicit omission rather than as a subset check: a
-        // *new* core axis nobody has thought about still fails this gate.
-        const NOT_YET_ON_THE_PHONE: [&str; 1] = ["urgency"];
-
+        // The phone offers every core grouping axis, in the core's order —
+        // `urgency` included since 2026-09-13, when it became the default
+        // and its calm-order arrow moved inside its own chip so the strip
+        // spends one chip on it, not two.
         let axes: Vec<&str> = frontier::FRONTIER_GROUP_AXES
             .into_iter()
             .map(|axis| axis.as_str())
             .collect();
-        for omitted in NOT_YET_ON_THE_PHONE {
-            assert!(
-                axes.contains(&omitted),
-                "{omitted} is named as not-yet-on-the-phone but is not a core axis at all",
-            );
-        }
-        let offered: Vec<&str> =
-            axes.iter().copied().filter(|axis| !NOT_YET_ON_THE_PHONE.contains(axis)).collect();
         assert_eq!(
-            offered,
-            vec!["context", "project", "size", "energy"],
+            axes,
+            vec!["context", "project", "size", "energy", "urgency"],
             "NowScreen.kt's FRONTIER_AXES (and AXIS_LABEL/NO_VALUE_LABEL) must match this order",
         );
     }

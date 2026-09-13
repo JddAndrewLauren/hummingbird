@@ -66,19 +66,20 @@ type World = "kit" | "board" | null;
 // never checked WHICH world loaded. These two strings were meant to exist
 // only in their own world's fixture: the kit world's hero item (`demo-data.
 // ts`'s `ION-118`, always the "top pick" since its stage is `in_progress`)
-// and the board world's `@computer` column heading (`demo-task-state.ts` —
-// the kit world's `DemoItem` has no `context` at all, so this string cannot
-// appear there by construction). That symmetry broke one-sided at #456:
+// and the board world's `calm` column heading (`demo-task-state.ts` — the
+// board opens on the Urgency axis, and the fixture's deadline-less items all
+// land in `calm` whatever today's date is; it was `@computer` while Context
+// was the default axis). That symmetry broke one-sided at #456:
 // `NowScreen` — the landing screen this check reads — deleted its kit-only
 // hero card and "Also startable" list, so `KIT_ONLY_TEXT` no longer renders
 // on any screen this file's `openApp` can reach; `hasKit` below is
 // permanently `false` in practice, dead instrumentation rather than a live
 // marker. `BOARD_ONLY_TEXT` is unaffected — Now's real frontier still
-// renders `@computer` off the board seed. Checked in both directions on
+// renders `calm` off the board seed. Checked in both directions on
 // purpose regardless — a one-directional check (kit string present) passes
 // for a page that loaded neither world, e.g. a silent 404 or a blank shell.
 const KIT_ONLY_TEXT = "Rewrite the sweeper's Gmail adapter";
-const BOARD_ONLY_TEXT = "@computer";
+const BOARD_ONLY_TEXT = "calm";
 
 /** Which world's marker(s) the page currently shows — `"both"` and `null`
  * (no marker, i.e. "none") are both failures of the instrument itself, named
@@ -336,7 +337,7 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     // absence check rather than an inferred one: the block really went,
     // not merely moved off this gate's board-only capture pass.
     await expect(page.getByText("Also startable")).toHaveCount(0);
-    await expect(page.getByRole("heading", { name: "@computer" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "calm" })).toBeVisible();
     await expect(page.getByRole("alert")).toHaveCount(2);
     // #455: the nav's triage/alerts badges derive from the store now
     // (`App.tsx`'s `navCounts`), not from `DemoData` — asserted once here
@@ -641,7 +642,7 @@ for (const theme of THEMES) {
       // `exact`, both of them: the nav rail's own "Projects" entry and this
       // screen's cards otherwise match the substring.
       await expect(
-        page.getByRole("button", { name: "Context", exact: true, pressed: true }),
+        page.getByRole("button", { name: "Urgency", exact: true, pressed: true }),
       ).toBeVisible();
       await expect(page.getByRole("button", { name: "Project", exact: true })).toHaveCount(0);
       await expectNoHorizontalOverflow(page);
@@ -732,6 +733,8 @@ for (const theme of THEMES) {
       // six-card cap showing `n more`.
       await openApp(page, theme, "board");
       await show(page, "Now", testInfo.project.name);
+      // Urgency is the default axis; this capture is the field-valued board.
+      await page.getByRole("button", { name: "Context", exact: true }).click();
       // The board is up (a column heading the fixture guarantees) and the
       // alerts with it — waiting on both is what stops a capture of a
       // half-rendered screen.
@@ -762,7 +765,7 @@ for (const theme of THEMES) {
       // no-value column, since urgency is total) and the Oldest/Newest
       // control, which is the only member of the axis strip that comes and
       // goes. The strip's width is the thing worth photographing at every
-      // project: it gains a fifth axis button *and* two more chips at once,
+      // project: it gains a fifth axis button *and* the arrow toggle at once,
       // and `expectNoHorizontalOverflow` is what says whether 390 survives
       // that.
       //
@@ -772,16 +775,14 @@ for (const theme of THEMES) {
       // label with the reveal control at the foot of the last lane.
       await openApp(page, theme, "board");
       await show(page, "Now", testInfo.project.name);
-      await expect(page.getByRole("heading", { name: "@computer" })).toBeVisible();
-
-      await page.getByRole("button", { name: "Urgency" }).click();
+      // The default axis, so nothing to click.
+      await expect(page.getByRole("button", { name: "Urgency", pressed: true })).toBeVisible();
       // The fixture's deadline-less majority all land here, so `calm` is the
       // one band guaranteed present whatever today's date is when the gate
       // runs — every other band depends on the fixture's deadlines against
       // the real clock.
       await expect(page.getByRole("heading", { name: "calm" })).toBeVisible();
-      await expect(page.getByRole("button", { name: "Oldest first" })).toBeVisible();
-      await expect(page.getByRole("button", { name: "Newest first" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Calm column: Oldest first" })).toBeVisible();
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
         path: `visual/.captures/now-urgency-${testInfo.project.name}-${theme}.png`,
