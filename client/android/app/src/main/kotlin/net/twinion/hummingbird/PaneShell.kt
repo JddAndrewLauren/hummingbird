@@ -55,10 +55,9 @@ import net.twinion.hummingbird.brand.R
 // **This file decides nothing about a pane.** `answerState` and `band`
 // arrive already decided ([MobileRankedPane]'s own doc), the facts arrive
 // decided beside them, and the words are `PaneAnswers.kt`'s — everything
-// below only renders them. `paneLabel` alone stays a caller-supplied
-// argument: which words name a pane's row is a per-surface rendering
-// choice (Status's four questions vs. Now's four), never a decision this
-// shell makes.
+// below only renders them. `paneLabel` stays a caller-supplied argument,
+// though since #716 both callers pass the same roster lookup
+// (`QuestionLabels.kt`) — the words are the core's, never this shell's.
 
 @Composable
 internal fun BandDot(band: MobilePaneBand) {

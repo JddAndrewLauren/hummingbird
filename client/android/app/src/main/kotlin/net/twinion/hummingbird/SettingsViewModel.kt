@@ -16,8 +16,13 @@ import uniffi.hummingbird_ffi_mobile.MobileBindingRecord
 import uniffi.hummingbird_ffi_mobile.MobileCalendarList
 import uniffi.hummingbird_ffi_mobile.MobileCalendarSelection
 import uniffi.hummingbird_ffi_mobile.MobileDeadLetterRecord
+import uniffi.hummingbird_ffi_mobile.MobileQuestionRosterEntry
+import uniffi.hummingbird_ffi_mobile.MobileQuestionSwitch
 import uniffi.hummingbird_ffi_mobile.MobileSetBindingException
+import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
+import uniffi.hummingbird_ffi_mobile.MobileSurface
 import uniffi.hummingbird_ffi_mobile.deadLetterHeading
+import uniffi.hummingbird_ffi_mobile.questionRoster
 
 /** Settings' own read of the seam (#535/M4) — bindings, the dead-letter
  * journal and the outbound queue's depth. Token entry/forget, the theme
@@ -31,7 +36,73 @@ data class SettingsRead(
     val bindings: List<MobileBindingRecord>,
     val deadLetters: List<MobileDeadLetterRecord>,
     val queueDepth: UInt,
+    /** Every question's off switch (#715), `MobileTaskHost.questionSwitches`'
+     * answer — device state, read with the bindings so one reload moves
+     * both. */
+    val switches: List<MobileQuestionSwitch> = emptyList(),
 )
+
+/** One question's group in Settings' `Standing questions` section (#716) —
+ * `bindings.ts`'s `QuestionBindingGroup`, field for field. */
+data class QuestionBindingGroup(
+    val question: MobileStandingQuestion,
+    val label: String,
+    val surface: MobileSurface,
+    /** `null` when this reader was handed no switch for the question — no
+     * toggle is drawn rather than one guessed at. */
+    val enabled: Boolean?,
+    val pending: Boolean,
+    val rows: List<MobileBindingRecord>,
+    /** Keys the roster says answer this question for which no row came
+     * back — a different fact from having none, said as one. */
+    val missing: List<String>,
+)
+
+/** The section's whole shape: every question in the roster's order, then
+ * the `settings` rows no question claims (the **Other settings rows**
+ * group). */
+data class GroupedBindings(
+    val groups: List<QuestionBindingGroup>,
+    val other: List<MobileBindingRecord>,
+)
+
+/** Folds `Core::bindings`' flat answer into the core's roster — the Kotlin
+ * twin of `bindings.ts`'s `groupBindingsByQuestion`, and like it a join,
+ * not a table: which keys answer which question, the questions' order and
+ * their words all arrive in [roster], and nothing here names one (#716,
+ * `QuestionRosterLiteralTest`). Never invents or hides a row: every input
+ * row lands in exactly one group or in `other`. */
+fun groupBindingsByQuestion(
+    roster: List<MobileQuestionRosterEntry>,
+    bindings: List<MobileBindingRecord>,
+    switches: List<MobileQuestionSwitch>,
+): GroupedBindings {
+    val claimed = mutableSetOf<String>()
+    val groups = roster.map { entry ->
+        val rows = mutableListOf<MobileBindingRecord>()
+        val missing = mutableListOf<String>()
+        for (key in entry.bindings) {
+            val row = bindings.find { it.key == key }
+            if (row == null) {
+                missing += key
+            } else {
+                claimed += key
+                rows += row
+            }
+        }
+        val switch = switches.find { it.question == entry.question }
+        QuestionBindingGroup(
+            question = entry.question,
+            label = entry.label,
+            surface = entry.surface,
+            enabled = switch?.enabled,
+            pending = switch?.pending ?: false,
+            rows = rows,
+            missing = missing,
+        )
+    }
+    return GroupedBindings(groups, bindings.filterNot { it.key in claimed })
+}
 
 /** Mints one binding write's seed — the Kotlin twin of `useBindingsWiring
  * .ts`'s `mintBindingSeed`, and deliberately the identical spelling
@@ -78,7 +149,15 @@ class SettingsViewModel(
      * is the watch's, and the phone keeps neither (`SettingsScreenStructuralTest`
      * pins that no `String`-typed flow exists here). */
     private val sendWatchTokenFn: suspend (String) -> SendOutcome = { SendOutcome.Unavailable("no sender wired") },
+    /** The core's standing-question roster (#714) — `questionRoster` in
+     * production, a constant of the build. */
+    private val rosterFn: () -> List<MobileQuestionRosterEntry> = { emptyList() },
+    /** `MobileTaskHost.setQuestionEnabled` (#715) — which overlays, so the
+     * reload after it reads the new state as `pending`. */
+    private val setQuestionEnabledFn: suspend (MobileStandingQuestion, Boolean, Long) -> Unit = { _, _, _ -> },
 ) : ViewModel() {
+
+    private val roster: List<MobileQuestionRosterEntry> by lazy { rosterFn() }
 
     private val _watchSend = MutableStateFlow<SendOutcome?>(null)
     /** The last send's outcome, for the Watch card's one line; `null` until
@@ -93,6 +172,17 @@ class SettingsViewModel(
 
     private val _queueDepth = MutableStateFlow(0u)
     val queueDepth: StateFlow<UInt> = _queueDepth.asStateFlow()
+
+    /** The `Standing questions` section — `null` until the first read, the
+     * same "not yet" [bindings] carries. */
+    private val _questions = MutableStateFlow<GroupedBindings?>(null)
+    val questions: StateFlow<GroupedBindings?> = _questions.asStateFlow()
+
+    /** The last toggle write's failure, matched by question — [bindingError]'s
+     * own rule: a stale failure never bleeds onto another row. */
+    private val _questionSwitchError = MutableStateFlow<Pair<MobileStandingQuestion, String>?>(null)
+    val questionSwitchError: StateFlow<Pair<MobileStandingQuestion, String>?> =
+        _questionSwitchError.asStateFlow()
 
     /** The picker's options, or `null` before any list attempt. A failed
      * or credential-less list is kept as its own `kind` rather than
@@ -126,6 +216,7 @@ class SettingsViewModel(
         _bindings.value = read.bindings
         _deadLetters.value = read.deadLetters
         _queueDepth.value = read.queueDepth
+        _questions.value = groupBindingsByQuestion(roster, read.bindings, read.switches)
     }
 
     /** Reloads the picker: the persisted selection first (it renders even
@@ -197,6 +288,24 @@ class SettingsViewModel(
         load()
     }
 
+    /** Switches one standing question on or off through the seam (#715),
+     * then reloads so the row reads the overlaid state — [setBinding]'s own
+     * shape. */
+    suspend fun setQuestionEnabled(question: MobileStandingQuestion, enabled: Boolean, nowMs: Long) {
+        try {
+            setQuestionEnabledFn(question, enabled, nowMs)
+        } catch (error: MobileSetBindingException) {
+            _questionSwitchError.value = question to when (error) {
+                is MobileSetBindingException.UnknownKey ->
+                    "This build doesn't know that question, so it wasn't switched."
+                is MobileSetBindingException.WriteFailed -> error.detail
+            }
+            return
+        }
+        _questionSwitchError.value = null
+        load()
+    }
+
     companion object {
         fun create(context: Context): SettingsViewModel {
             suspend fun core() = CoreHolder.get(context.applicationContext)
@@ -207,6 +316,7 @@ class SettingsViewModel(
                         bindings = host.bindings(),
                         deadLetters = host.deadLetters(),
                         queueDepth = host.queueDepth(),
+                        switches = host.questionSwitches(),
                     )
                 },
                 setBindingFn = { key, value, nowMs ->
@@ -239,6 +349,10 @@ class SettingsViewModel(
                 },
                 clearDiagnosticsFn = { DiagnosticsRecorder.get(context.applicationContext).clear() },
                 sendWatchTokenFn = WatchTokenSender.create(context)::send,
+                rosterFn = { questionRoster() },
+                setQuestionEnabledFn = { question, enabled, nowMs ->
+                    core().setQuestionEnabled(question, enabled, nowMs)
+                },
             )
         }
 

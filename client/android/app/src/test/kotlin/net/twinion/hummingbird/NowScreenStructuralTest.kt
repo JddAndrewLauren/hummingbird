@@ -362,20 +362,30 @@ class NowScreenStructuralTest {
         )
     }
 
+    /** #716: the pane's label is the core's roster word, through the one
+     * lookup both surfaces share — `QuestionRosterLiteralTest` holds the
+     * other half, that no label literal comes back. */
     @Test
-    fun `nowPaneLabels when over MobileStandingQuestion is exhaustive with no else arm`() {
-        val block = Regex("""nowPaneLabel\(pane: MobileRankedPane\): String = when \(pane\.standingQuestion\) \{([\s\S]*?)\n}""")
-            .find(nowScreenSrc)
+    fun `the Now panes are labelled from the roster, not a when of literals`() {
+        assertTrue(
+            "NowScreen.kt must label its panes through rosterPaneLabel",
+            nowScreenSrc.contains("paneLabel = { pane -> rosterPaneLabel(pane, QuestionRosterLabels.labels) }"),
+        )
+        assertFalse("NowScreen.kt must not declare its own nowPaneLabel", nowScreenSrc.contains("fun nowPaneLabel("))
+        val labelsSrc = repoFile("client/android/app/src/main/kotlin/net/twinion/hummingbird/QuestionLabels.kt")
+        val block = Regex("""fun namesSubject\(question: MobileStandingQuestion\): Boolean = when \(question\) \{([\s\S]*?)\n}""")
+            .find(labelsSrc)
             ?.groupValues
             ?.get(1)
-            ?: error("could not locate nowPaneLabel's when block in NowScreen.kt")
-        assertFalse("nowPaneLabel must not carry an else arm", block.contains("else ->"))
-        for (variant in listOf("HOMEWORK", "WASTE", "WEEKEND", "VACATION", "RACE", "KIMI", "GITHUB", "UPTIME", "REACHABILITY", "POLLER")) {
-            assertTrue(
-                "nowPaneLabel is missing the $variant arm",
-                block.contains("MobileStandingQuestion.$variant"),
-            )
+            ?: error("could not locate namesSubject's when block in QuestionLabels.kt")
+        assertFalse("namesSubject must not carry an else arm", block.contains("else ->"))
+        for (variant in listOf("HOMEWORK", "SCPS", "WASTE", "WEEKEND", "VACATION", "RACE", "KIMI", "GITHUB", "UPTIME", "REACHABILITY", "POLLER")) {
+            assertTrue("namesSubject is missing the $variant arm", block.contains("MobileStandingQuestion.$variant"))
         }
+        assertTrue(
+            "the roster lookup reads questionRoster(), the core's own list",
+            labelsSrc.contains("questionRoster().associate { it.question to it.label }"),
+        )
     }
 
     @Test

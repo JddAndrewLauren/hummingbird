@@ -6,8 +6,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Badge
@@ -16,6 +19,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Switch
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -27,16 +32,21 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -44,6 +54,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import net.twinion.hummingbird.brand.R
 import net.twinion.hummingbird.core.NetworkStatus
 import net.twinion.hummingbird.skills.BackendPreference
 import net.twinion.hummingbird.theme.ThemePreference
@@ -61,6 +72,8 @@ import uniffi.hummingbird_ffi_mobile.MobileCalendarSelection
 import uniffi.hummingbird_ffi_mobile.MobileCalendarState
 import uniffi.hummingbird_ffi_mobile.MobileDeadLetterReason
 import uniffi.hummingbird_ffi_mobile.MobileDeadLetterRecord
+import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
+import uniffi.hummingbird_ffi_mobile.MobileSurface
 import uniffi.hummingbird_ffi_mobile.MobileSyncStatusInput
 import uniffi.hummingbird_ffi_mobile.MobileSyncStatusSummary
 import uniffi.hummingbird_ffi_mobile.MobileSyncStatusTone
@@ -123,7 +136,8 @@ fun SettingsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val viewModel: SettingsViewModel = viewModel(factory = SettingsViewModel.factory(context))
-    val bindings by viewModel.bindings.collectAsState()
+    val questions by viewModel.questions.collectAsState()
+    val questionSwitchError by viewModel.questionSwitchError.collectAsState()
     val deadLetters by viewModel.deadLetters.collectAsState()
     val queueDepth by viewModel.queueDepth.collectAsState()
     val bindingError by viewModel.bindingError.collectAsState()
@@ -213,29 +227,21 @@ fun SettingsScreen(
             Text("Settings", style = MaterialTheme.typography.headlineLarge)
 
             SectionTitle("Standing questions")
-            val currentBindings = bindings
-            if (currentBindings == null) {
+            val currentQuestions = questions
+            if (currentQuestions == null) {
                 CircularProgressIndicator()
             } else {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(20.dp),
-                    ) {
-                        for (binding in currentBindings) {
-                            BindingRow(
-                                binding = binding,
-                                writeError = bindingError?.takeIf { it.first == binding.key }?.second,
-                                onSave = { value ->
-                                    scope.launch { viewModel.setBinding(binding.key, value, System.currentTimeMillis()) }
-                                },
-                            )
-                        }
-                    }
-                }
+                StandingQuestionsCard(
+                    grouped = currentQuestions,
+                    bindingError = bindingError,
+                    switchError = questionSwitchError,
+                    onSaveBinding = { key, value ->
+                        scope.launch { viewModel.setBinding(key, value, System.currentTimeMillis()) }
+                    },
+                    onSetEnabled = { question, enabled ->
+                        scope.launch { viewModel.setQuestionEnabled(question, enabled, System.currentTimeMillis()) }
+                    },
+                )
             }
 
             SectionTitle("This device")
@@ -428,6 +434,204 @@ private fun SectionTitle(text: String) {
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+}
+
+/** The `Standing questions` card (#716): one expandable row per question
+ * the roster reports, in the roster's order, each holding its switch and
+ * the binding rows that answer it; then **Other settings rows** — keys no
+ * question claims, including ones this build cannot write — so nothing
+ * stored in `settings` is hidden. `SettingsScreen.tsx`'s section, drawn in
+ * Compose.
+ *
+ * Internal rather than private so `SettingsQuestionRowsTest` can compose it
+ * with fakes: everything it needs arrives as arguments, nothing native. */
+@Composable
+internal fun StandingQuestionsCard(
+    grouped: GroupedBindings,
+    bindingError: Pair<String, String>?,
+    switchError: Pair<MobileStandingQuestion, String>?,
+    onSaveBinding: (key: String, value: String) -> Unit,
+    onSetEnabled: (MobileStandingQuestion, Boolean) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                "Every standing question this build asks, and what each one is set to. " +
+                    "A change here reaches every device on its next sync.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            for (group in grouped.groups) {
+                // `key` as well as the saveable key inside: the rows are a
+                // plain loop, so without it their positional slots would
+                // follow the index rather than the question.
+                key(group.question) {
+                    QuestionRow(
+                        rowKey = group.question.name,
+                        heading = group.label,
+                        meta = surfaceWord(group.surface),
+                        enabled = group.enabled,
+                        pending = group.pending,
+                        switchError = switchError?.takeIf { it.first == group.question }?.second,
+                        onSetEnabled = { enabled -> onSetEnabled(group.question, enabled) },
+                        empty = group.rows.isEmpty() && group.missing.isEmpty(),
+                    ) {
+                        for (binding in group.rows) {
+                            BindingRow(
+                                binding = binding,
+                                writeError = bindingError?.takeIf { it.first == binding.key }?.second,
+                                onSave = { value -> onSaveBinding(binding.key, value) },
+                            )
+                        }
+                        for (missingKey in group.missing) {
+                            Text(
+                                "No settings row for $missingKey yet.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+            if (grouped.other.isNotEmpty()) {
+                key(OTHER_ROWS_KEY) {
+                    QuestionRow(
+                        rowKey = OTHER_ROWS_KEY,
+                        heading = "Other settings rows",
+                        meta = "unclaimed",
+                        // Not a question: nothing switches it on or off.
+                        enabled = null,
+                        pending = false,
+                        switchError = null,
+                        onSetEnabled = {},
+                        empty = false,
+                    ) {
+                        for (binding in grouped.other) {
+                            BindingRow(
+                                binding = binding,
+                                writeError = bindingError?.takeIf { it.first == binding.key }?.second,
+                                onSave = { value -> onSaveBinding(binding.key, value) },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** The leftover group's row key. Not a question, so it can never collide
+ * with one — every question's key is its enum name. */
+private const val OTHER_ROWS_KEY = "other-settings-rows"
+
+/** One question's row: its name, the surface it renders on and — readable
+ * while the row is shut, because an off question is discoverable only here
+ * (ADR-0034's consequences) — `off` and `queued`; opened, its switch and
+ * [content].
+ *
+ * **Collapsed by default, and the open state is this device's alone.** It
+ * lives in the saved-instance state, so it survives a fold, a rotation and
+ * a process death, and is never written to `settings`: whether a question
+ * is asked syncs, whether one reader has its row open does not
+ * (`question-prefs.ts`'s own distinction).
+ *
+ * **Keyed on [rowKey], never on its position.** A `rememberSaveable` with
+ * no key registers under the composition's position, and every row of a
+ * loop sits at the same one — so each row's open state would be restored
+ * from whichever row saved last. `SettingsQuestionRowsTest` pins it. */
+@Composable
+private fun QuestionRow(
+    rowKey: String,
+    heading: String,
+    meta: String,
+    enabled: Boolean?,
+    pending: Boolean,
+    switchError: String?,
+    onSetEnabled: (Boolean) -> Unit,
+    empty: Boolean,
+    content: @Composable () -> Unit,
+) {
+    var expanded by rememberSaveable(key = "settings-question-expanded:$rowKey") { mutableStateOf(false) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 44.dp)
+                .clickable(onClickLabel = if (expanded) "Collapse" else "Expand") { expanded = !expanded }
+                .semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" },
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                painterResource(R.drawable.ic_chevron_down),
+                contentDescription = null,
+                modifier = Modifier
+                    .size(16.dp)
+                    .rotate(if (expanded) 0f else -90f),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(heading, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+            if (enabled == false) {
+                BadgedBox(badge = { Badge { Text("off") } }) {}
+            }
+            if (pending) {
+                BadgedBox(badge = { Badge { Text("queued") } }) {}
+            }
+            Text(meta, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        if (expanded) {
+            Column(
+                modifier = Modifier.padding(start = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                if (enabled != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("Asked", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "Off hides this question's panes, silences its alerts and stops it being polled.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = enabled,
+                            onCheckedChange = onSetEnabled,
+                            modifier = Modifier.semantics { contentDescription = "Asked — $heading" },
+                        )
+                    }
+                    if (switchError != null) {
+                        Text(switchError, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+                if (empty) {
+                    Text(
+                        "Nothing to set — this question reads no source anyone chose.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                content()
+            }
+        }
+    }
+}
+
+/** The mono meta word beside a question's name — a rendering choice. */
+private fun surfaceWord(surface: MobileSurface): String = when (surface) {
+    MobileSurface.NOW -> "now"
+    MobileSurface.STATUS -> "status"
 }
 
 /** One binding row: what it's for, what it holds, and — for a key this

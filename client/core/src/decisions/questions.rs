@@ -122,11 +122,8 @@ pub struct QuestionRosterEntry {
 /// names on the Status board is the one whose headline carries no subject
 /// of its own (`tile-copy.ts`: a separator-less headline keeps the
 /// question's label as its name), so the label is what that tile reads.
-/// Android
-/// still spells its own shorter Now-pane labels (`NowScreen.kt`'s
-/// `nowPaneLabel`) and keeps them until #716 renders this roster there — a
-/// divergence ADR-0034 decision 4 enters on purpose, because that surface
-/// owes a device run.
+/// Android reads them too since #716 (`QuestionLabels.kt`), on its Now and
+/// Status panes and in Settings.
 ///
 /// Wildcard-free by design; see the module header.
 pub fn question_label(question: StandingQuestion) -> &'static str {
