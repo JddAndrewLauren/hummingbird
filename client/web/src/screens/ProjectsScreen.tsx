@@ -1180,7 +1180,8 @@ function ArchiveCard({
   // this function's own doc). `issuedSeed` is `null` whenever this card has
   // no write outstanding, so a stray broadcast never matches by accident —
   // `roster.ts`'s `writeFailureMessage` is the shared, seed-keyed helper
-  // every reader on this screen now goes through (#669).
+  // every dossier card's read goes through (#669); the grid's create banner
+  // alone reads ungated, through `anyWriteFailureMessage` (#690).
   const failure = writeFailureMessage(lastProjectWrite, issuedSeed);
   if (pending && failure !== null) {
     setPending(false);
