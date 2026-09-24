@@ -126,9 +126,9 @@ mod tests {
     /// `uptime-probe.yml`'s shape while it ran on Actions (before #792).
     /// This assertion used to read `None`, and that `None` was the whole
     /// reason its tile sat permanently `distant` while the probe behind it
-    /// ran fine — see the module header. The offset minute is not incidental: it is what keeps the
-    /// probe off the top of the hour, and it must not change the cadence
-    /// this reads.
+    /// ran fine — see the module header. The offset minute is not
+    /// incidental: it is what keeps the probe off the top of the hour, and
+    /// it must not change the cadence this reads.
     #[test]
     fn an_hourly_fixed_minute_shape_is_read_as_hourly_whatever_the_minute() {
         assert_eq!(declared_cadence_ms("5 * * * *"), Some(HOUR_MS));

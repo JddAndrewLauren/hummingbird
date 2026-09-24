@@ -16,10 +16,10 @@
 # `schedule:` workflows exist today** — the count
 # `server/github-status/src/manifest.rs`'s
 # `the_repo_carries_four_scheduled_workflows_today` asserts. The same
-# overturn of issue #8's ban applies verbatim — that ban was about a *private* repo's pooled Actions
-# minutes and $0 spending cap, neither of which exists here. It does not
-# compete with any live clock: this is the only thing that ever polls this
-# endpoint.
+# overturn of issue #8's ban applies verbatim — that ban was about a
+# *private* repo's pooled Actions minutes and $0 spending cap, neither of
+# which exists here. It does not compete with any live clock: this is the
+# only thing that ever polls this endpoint.
 #
 # **Six hours, not daily.** A balance is a countdown to a hard cliff
 # (`exceeded_current_quota_error` fails every hosted skill op closed once
