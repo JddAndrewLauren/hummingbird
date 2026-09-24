@@ -1,5 +1,5 @@
 import type { QuestionDef } from "../questions/contract";
-import { SOURCE, raceAnswer, raceSubjects } from "./race";
+import { raceAnswer, raceSubjects } from "./race";
 import { RacePaneExpanded } from "./RacePaneExpanded";
 
 /** "When is the next race?" as the shell's registry sees it (#119 over

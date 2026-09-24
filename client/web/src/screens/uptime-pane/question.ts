@@ -1,5 +1,5 @@
 import type { QuestionDef } from "../questions/contract";
-import { SOURCE, uptimeAnswer, uptimeSubjects } from "./uptime";
+import { uptimeAnswer, uptimeSubjects } from "./uptime";
 import { UptimePaneExpanded } from "./UptimePaneExpanded";
 
 /** "Is the authority, the web origin and the runner answering HTTP right

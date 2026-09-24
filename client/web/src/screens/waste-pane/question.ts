@@ -1,5 +1,5 @@
 import type { QuestionDef } from "../questions/contract";
-import { SNAPSHOT_KEY, SOURCE, wasteAnswer } from "./waste";
+import { SNAPSHOT_KEY, wasteAnswer } from "./waste";
 import { WastePaneExpanded } from "./WastePaneExpanded";
 
 /** "Which cans go out?" as the shell's registry sees it (#120 over #245).

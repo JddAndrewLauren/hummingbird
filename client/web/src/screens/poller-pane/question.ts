@@ -1,5 +1,5 @@
 import type { QuestionDef } from "../questions/contract";
-import { SOURCES, pollerAnswer, pollerSubjects } from "./poller";
+import { pollerAnswer, pollerSubjects } from "./poller";
 import { PollerPaneExpanded } from "./PollerPaneExpanded";
 
 /** "Is this poller writing on time?" (#775) — one pane per source

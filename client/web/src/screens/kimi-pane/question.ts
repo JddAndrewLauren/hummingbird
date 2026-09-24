@@ -1,5 +1,5 @@
 import type { QuestionDef } from "../questions/contract";
-import { SNAPSHOT_KEY, SOURCE, kimiAnswer } from "./kimi";
+import { SNAPSHOT_KEY, kimiAnswer } from "./kimi";
 import { KimiPaneExpanded } from "./KimiPaneExpanded";
 
 /** "What's left of my Moonshot balance?" as the shell's registry sees it
