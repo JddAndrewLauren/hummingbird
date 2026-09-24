@@ -13,7 +13,6 @@ import { KimiPaneExpanded } from "./KimiPaneExpanded";
  * header for why this question has no per-device setup at all. */
 export const kimiQuestion: QuestionDef = {
   surface: "status",
-  sources: [SOURCE],
   subjects: () => [SNAPSHOT_KEY],
   answer: (_subjectKey, inputs) => kimiAnswer(inputs),
   Expanded: KimiPaneExpanded,

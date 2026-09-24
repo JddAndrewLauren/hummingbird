@@ -182,6 +182,7 @@ export interface DecisionsModule {
   waste_setup_json(inputsJson: string): string;
   parse_waste_body_json(snapshotJson: string): string;
   pane_zone_queries_json(inputsJson: string, surface: string): string;
+  required_sources_json(surface: string): string;
   rank_panes_json(inputsJson: string, zoneFactsJson: string, surface: string): string;
   status_alarm_json(inputsJson: string): string;
   order_panes_json(panesJson: string, questionOrderJson: string): string;
@@ -1494,6 +1495,16 @@ export function paneZoneQueries(inputs: PaneInputsSource, surface: PaneSurface):
   return JSON.parse(
     required().pane_zone_queries_json(paneInputsPayload(inputs), surface),
   ) as ZoneQuery[];
+}
+
+/** `hummingbird_core::decisions::panes::required_sources` — every
+ * `context_snapshots` source one surface's questions read, in the core's
+ * declaration order (#820). The core's `question_sources` is the only
+ * declaration of which question reads which source; `usePaneReadsWiring.ts`
+ * reads it here and the mobile seam's pane-read loop reads it directly, so
+ * the two clients cannot drift. */
+export function requiredSourcesFromCore(surface: PaneSurface): string[] {
+  return JSON.parse(required().required_sources_json(surface)) as string[];
 }
 
 /** `hummingbird_core::decisions::panes::alarm::status_alarm` — the Status

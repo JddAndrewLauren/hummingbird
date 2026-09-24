@@ -336,9 +336,9 @@ describe("the microtask affordance, the backend fallback and the Grill review pr
 // module-evaluation-order constraint as above — `registry.ts` builds its
 // `QUESTIONS` map at module evaluation and reads `QUESTION_ORDER` there, so
 // a seam call would throw the "used before ready" guard on every page load,
-// not merely in a test. The waste pane's four constants are the same story
-// via `question.ts`'s `sources: [SOURCE]`. All of them are pinned here
-// instead.
+// not merely in a test. The waste pane's four constants were the same
+// story via `question.ts`'s `sources: [SOURCE]` until #820 (`waste.ts`'s
+// header). All of them are pinned here instead.
 describe("the seam's literal pane vocabulary, pinned against the core", () => {
   it("BAND_ORDER matches the core's salience vocabulary, in order", () => {
     expect([...BAND_ORDER]).toEqual(paneBandOrderFromCore());

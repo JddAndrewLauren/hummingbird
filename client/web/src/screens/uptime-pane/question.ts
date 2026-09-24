@@ -13,7 +13,6 @@ import { UptimePaneExpanded } from "./UptimePaneExpanded";
  * with no rows yet renders as a gap, never as nothing." */
 export const uptimeQuestion: QuestionDef = {
   surface: "status",
-  sources: [SOURCE],
   subjects: uptimeSubjects,
   answer: uptimeAnswer,
   Expanded: UptimePaneExpanded,

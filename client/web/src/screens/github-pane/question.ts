@@ -14,7 +14,6 @@ import { GithubPaneExpanded } from "./GithubPaneExpanded";
  * platform with no rows yet renders as a gap, never as nothing." */
 export const githubQuestion: QuestionDef = {
   surface: "status",
-  sources: [SOURCE],
   subjects: githubSubjects,
   answer: githubAnswer,
   Expanded: GithubPaneExpanded,

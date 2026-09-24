@@ -9,7 +9,6 @@ import { PollerPaneExpanded } from "./PollerPaneExpanded";
  * header). */
 export const pollerQuestion: QuestionDef = {
   surface: "status",
-  sources: SOURCES,
   subjects: pollerSubjects,
   answer: pollerAnswer,
   Expanded: PollerPaneExpanded,

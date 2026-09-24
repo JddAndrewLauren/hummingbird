@@ -2280,10 +2280,13 @@ fn to_backtest_item(item: &Item, occurred_at_utc: String) -> rules::BacktestItem
 // with a `debug_assert!`, which compiles out of the APK: the guarantee held
 // in CI and nowhere the phone runs. The decision: the mobile seam carries
 // the guarantee **at runtime, by construction, in the web's shape** —
-// [`mobile_pane_inputs`] reads `panes::required_sources`, the core's
-// restatement of the web's per-question `requiredSources`, where each pane
-// declares its own source and only the poller question derives from the
-// registry. A retirement therefore cannot blank an Android pane in any
+// [`mobile_pane_inputs`] reads `panes::required_sources`, the union of
+// `panes::question_sources`, where each pane declares its own source and
+// only the poller question derives from the registry. **Since #820 that is
+// the only declaration**: the web's `usePaneReadsWiring.ts` reads the same
+// union through `ffi-web`'s `required_sources_json`, and its per-question
+// TS `sources` copy is gone, so the two clients' pane-read sets cannot
+// drift. A retirement therefore cannot blank an Android pane in any
 // build: the loop never consulted the registry for the sunk five, so it
 // has nothing to lose there, and there is no assertion left to compile
 // out. The core's own test pins that the union names every sunk pane's

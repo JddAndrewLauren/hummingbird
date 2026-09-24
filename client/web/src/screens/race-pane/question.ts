@@ -14,7 +14,6 @@ import { RacePaneExpanded } from "./RacePaneExpanded";
  * exists. */
 export const raceQuestion: QuestionDef = {
   surface: "now",
-  sources: [SOURCE],
   subjects: raceSubjects,
   answer: raceAnswer,
   Expanded: RacePaneExpanded,
