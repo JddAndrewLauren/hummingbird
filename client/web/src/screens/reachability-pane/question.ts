@@ -7,7 +7,6 @@ import { SUBJECT_KEY, reachabilityAnswer } from "./reachability";
 // sync cycle and persisted locally, never polled through a second lane.
 export const reachabilityQuestion: QuestionDef = {
   surface: "status",
-  sources: [],
   subjects: () => [SUBJECT_KEY],
   answer: (_subjectKey, inputs) => reachabilityAnswer(inputs),
   Expanded: ReachabilityPaneExpanded,

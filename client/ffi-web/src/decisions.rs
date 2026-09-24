@@ -1428,6 +1428,19 @@ pub fn pane_zone_queries_json(inputs_json: &str, surface: &str) -> String {
     }
 }
 
+/// [`panes::required_sources`] — every `context_snapshots` source one
+/// surface's questions read, as a JSON string array (#820). The web's
+/// `usePaneReadsWiring.ts` reads this rather than declaring its own
+/// per-question list, so it and the mobile seam's pane-read loop read one
+/// declaration. An unrecognised surface reads nothing.
+#[wasm_bindgen]
+pub fn required_sources_json(surface: &str) -> String {
+    let Some(surface) = Surface::parse(surface) else {
+        return "[]".to_string();
+    };
+    serde_json::to_string(&panes::required_sources(surface)).unwrap()
+}
+
 /// [`panes::rank_panes`] — phase two for a whole surface, already in
 /// display order. An unrecognised surface ranks nothing.
 #[wasm_bindgen]
@@ -2795,6 +2808,18 @@ mod tests {
         );
         assert_eq!(rank_panes_json(&inputs, FACTS, "not-a-surface"), "[]");
         assert_eq!(pane_zone_queries_json(&inputs, "not-a-surface"), "[]");
+    }
+
+    /// #820: the web's door answers exactly the core's declaration, per
+    /// surface and in order — the same `panes::required_sources` the mobile
+    /// seam's pane-read loop is pinned to (`ffi-mobile`'s own test).
+    #[test]
+    fn required_sources_json_is_the_cores_declaration_per_surface() {
+        for (wire, surface) in [("now", Surface::Now), ("status", Surface::Status)] {
+            let crossed: Vec<String> = serde_json::from_str(&required_sources_json(wire)).unwrap();
+            assert_eq!(crossed, panes::required_sources(surface), "{wire}");
+        }
+        assert_eq!(required_sources_json("elsewhere"), "[]");
     }
 
     #[test]

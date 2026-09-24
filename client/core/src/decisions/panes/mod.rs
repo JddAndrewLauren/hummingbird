@@ -97,47 +97,55 @@ pub const SUNK: [(StandingQuestion, Surface); 11] = [
     (StandingQuestion::Poller, Surface::Status),
 ];
 
-/// Every `context_snapshots` source `surface`'s sunk questions read — the
-/// union over that surface's questions of what each one declares, in
-/// [`SUNK`] order, deduplicated. The web's `requiredSources` (its
-/// `questions/registry.ts`), restated here for the hosts that build
-/// [`PaneInputs::pane_reads`] Rust-side (#779).
+/// The `context_snapshots` sources one question reads — **the only
+/// declaration of that relation in the repo** (#820). Both hosts that build
+/// [`PaneInputs::pane_reads`] read it through [`required_sources`]: the
+/// mobile seam's pane-read loop (#779) directly, and the web's
+/// `usePaneReadsWiring.ts` through `ffi-web`'s `required_sources_json`. The
+/// web's `QuestionDef` carried a per-question `sources` copy until #820
+/// deleted it, so a source added here reaches both clients or neither.
 ///
 /// **The pane declares; the registry is never consulted.** Each arm below
 /// names the pane's own `SOURCE`, so a source stays in this list for
 /// exactly as long as some pane still reads it — a retirement in
 /// [`hummingbird_domain::REGISTRY`] cannot remove it, and a host that
-/// reads this union cannot blank a pane by reading too little. The one
+/// reads this cannot blank a pane by reading too little. The one
 /// registry-derived arm is [`poller`], whose subjects *are* the live
 /// sources, which is that question's own definition rather than a
 /// shortcut. Exhaustive over [`StandingQuestion`] with no wildcard arm: a
 /// twelfth question must say what it reads, even if that is nothing.
+pub fn question_sources(question: StandingQuestion) -> Vec<&'static str> {
+    match question {
+        StandingQuestion::Waste => vec![waste::SOURCE],
+        StandingQuestion::Race => vec![race::SOURCE],
+        StandingQuestion::Kimi => vec![kimi::SOURCE],
+        StandingQuestion::Github => vec![github::SOURCE],
+        StandingQuestion::Uptime => vec![uptime::SOURCE],
+        StandingQuestion::Poller => poller::poller_sources(),
+        // The calendar-arm questions, the items-keyed one and the
+        // client-only one read no snapshot lane at all.
+        StandingQuestion::Homework
+        | StandingQuestion::Scps
+        | StandingQuestion::Weekend
+        | StandingQuestion::Vacation
+        | StandingQuestion::Reachability => Vec::new(),
+    }
+}
+
+/// Every `context_snapshots` source `surface`'s sunk questions read — the
+/// union of [`question_sources`] over that surface's questions, in
+/// [`SUNK`] order, deduplicated.
 ///
-/// Takes no inputs, like the web's: the off switch (#715) is applied by
-/// [`rank_panes`], not here — a switched-off question's source is still
-/// read, and the cost of that is a local read, not a poll.
+/// Takes no inputs: the off switch (#715) is applied by [`rank_panes`],
+/// not here — a switched-off question's source is still read, and the cost
+/// of that is a local read, not a poll.
 pub fn required_sources(surface: Surface) -> Vec<&'static str> {
     let mut sources: Vec<&'static str> = Vec::new();
     for (question, declared) in SUNK {
         if declared != surface {
             continue;
         }
-        let own: Vec<&'static str> = match question {
-            StandingQuestion::Waste => vec![waste::SOURCE],
-            StandingQuestion::Race => vec![race::SOURCE],
-            StandingQuestion::Kimi => vec![kimi::SOURCE],
-            StandingQuestion::Github => vec![github::SOURCE],
-            StandingQuestion::Uptime => vec![uptime::SOURCE],
-            StandingQuestion::Poller => poller::poller_sources(),
-            // The calendar-arm questions, the items-keyed one and the
-            // client-only one read no snapshot lane at all.
-            StandingQuestion::Homework
-            | StandingQuestion::Scps
-            | StandingQuestion::Weekend
-            | StandingQuestion::Vacation
-            | StandingQuestion::Reachability => Vec::new(),
-        };
-        for source in own {
+        for source in question_sources(question) {
             if !sources.contains(&source) {
                 sources.push(source);
             }
@@ -304,6 +312,27 @@ mod tests {
         assert_eq!(status.len(), poller::poller_sources().len());
         // (Now's two are live snapshot writers too, so poller names them
         // from Status as well — today's registry, not a contract.)
+    }
+
+    /// #820: each question's own declaration, pinned per question — the
+    /// relation both hosts' pane-read loops are built from.
+    #[test]
+    fn question_sources_names_each_panes_own_source_and_nothing_else() {
+        assert_eq!(question_sources(StandingQuestion::Waste), vec![waste::SOURCE]);
+        assert_eq!(question_sources(StandingQuestion::Race), vec![race::SOURCE]);
+        assert_eq!(question_sources(StandingQuestion::Kimi), vec![kimi::SOURCE]);
+        assert_eq!(question_sources(StandingQuestion::Github), vec![github::SOURCE]);
+        assert_eq!(question_sources(StandingQuestion::Uptime), vec![uptime::SOURCE]);
+        assert_eq!(question_sources(StandingQuestion::Poller), poller::poller_sources());
+        for none in [
+            StandingQuestion::Homework,
+            StandingQuestion::Scps,
+            StandingQuestion::Weekend,
+            StandingQuestion::Vacation,
+            StandingQuestion::Reachability,
+        ] {
+            assert!(question_sources(none).is_empty(), "{}", none.as_str());
+        }
     }
 
     fn bound_inputs() -> PaneInputs {

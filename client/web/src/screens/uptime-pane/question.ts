@@ -1,5 +1,5 @@
 import type { QuestionDef } from "../questions/contract";
-import { SOURCE, uptimeAnswer, uptimeSubjects } from "./uptime";
+import { uptimeAnswer, uptimeSubjects } from "./uptime";
 import { UptimePaneExpanded } from "./UptimePaneExpanded";
 
 /** "Is the authority, the web origin and the runner answering HTTP right
@@ -13,7 +13,6 @@ import { UptimePaneExpanded } from "./UptimePaneExpanded";
  * with no rows yet renders as a gap, never as nothing." */
 export const uptimeQuestion: QuestionDef = {
   surface: "status",
-  sources: [SOURCE],
   subjects: uptimeSubjects,
   answer: uptimeAnswer,
   Expanded: UptimePaneExpanded,
