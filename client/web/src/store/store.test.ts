@@ -35,6 +35,7 @@ const initialTask: TaskState = {
   linksByProject: {},
   lastProjectLinkWrite: null,
   fileLinksByItem: {},
+  grillsByItem: {},
   lastFileLinkWrite: null,
   routeByProject: {},
   lastRouteWrite: null,

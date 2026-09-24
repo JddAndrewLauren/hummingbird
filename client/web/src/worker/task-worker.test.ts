@@ -55,6 +55,7 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     createProjectLink: vi.fn().mockResolvedValue('{"kind":"ok","id":"link-1","error":null}'),
     patchProjectLink: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     fileLinks: vi.fn().mockReturnValue('{"kind":"ok","links":[]}'),
+    grills: vi.fn().mockReturnValue('{"kind":"ok","grills":[]}'),
     createFileLink: vi.fn().mockResolvedValue('{"kind":"ok","id":"file-link-1","error":null}'),
     removeFileLink: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     route: vi.fn().mockReturnValue('{"kind":"ok","route":null}'),
@@ -913,6 +914,54 @@ describe("handleTaskRequest", () => {
       fileLinks: vi.fn().mockReturnValue('{"kind":"busy","links":[]}'),
     });
     expect(await run({ type: "getFileLinks", itemId: "item-1" }, host)).toEqual([]);
+  });
+
+  // #358's Grill history: a mirror read, every snake_case column crossing
+  // to camelCase, and never a transcript (the sweep carries none).
+  it("getGrills maps every raw grill to its camelCase DTO, alongside the requested item id", async () => {
+    const rawGrill = {
+      id: "grill-1",
+      item_id: "item-1",
+      summary: "Needs a plumber's quote first",
+      verdict: "fog_remains",
+      model_proposal: '{"title":"Get a quote"}',
+      applied_patch: '{"title":"Get two quotes"}',
+      resulting_stage: "grilling",
+      completed_at: 7_000,
+      version: 3,
+    };
+    const host = fakeHost({
+      grills: vi.fn().mockReturnValue(JSON.stringify({ kind: "ok", grills: [rawGrill] })),
+    });
+    const posted = await run({ type: "getGrills", itemId: "item-1" }, host);
+
+    expect(posted).toEqual([
+      {
+        type: "grills",
+        itemId: "item-1",
+        grills: [
+          {
+            id: "grill-1",
+            itemId: "item-1",
+            summary: "Needs a plumber's quote first",
+            verdict: "fog_remains",
+            modelProposal: '{"title":"Get a quote"}',
+            appliedPatch: '{"title":"Get two quotes"}',
+            resultingStage: "grilling",
+            completedAt: 7_000,
+            version: 3,
+          },
+        ],
+      },
+    ]);
+    expect(host.grills).toHaveBeenCalledWith("item-1");
+  });
+
+  it('getGrills posts nothing when the host answers "busy"', async () => {
+    const host = fakeHost({
+      grills: vi.fn().mockReturnValue('{"kind":"busy","grills":[]}'),
+    });
+    expect(await run({ type: "getGrills", itemId: "item-1" }, host)).toEqual([]);
   });
 
   it("createFileLink hands the host the seed, item, path and clock, and posts the result keyed by seed and item", async () => {

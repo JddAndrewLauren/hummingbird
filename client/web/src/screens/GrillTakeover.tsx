@@ -12,6 +12,7 @@ import { demotesFromFrontier, FRONTIER_DEMOTION_WARNING, planReplacementLabel, w
 import type { GrillCompletion } from "../store/worker-client";
 import type { StepDTO, TaskItemDTO } from "../store/protocol";
 import { formatGrillTranscript, type GrillTurn } from "../skills/grill-args";
+import { GrillHistory, type GrillHistoryProps } from "../components/domain/GrillHistory";
 
 /** The Triage row's center-column takeover (#355, ADR-0023): the interview,
  * one typed turn at a time (ADR-0023 decision 1), ending in the editable
@@ -56,6 +57,10 @@ export interface GrillTakeoverProps {
   /** `write-failure.ts`'s `grillCompletionFailureFor`, read by the caller —
    * this component only renders it. */
   completionError: string | null;
+  /** #358: this item's earlier grills, below the interview —
+   * `TaskState.grillsByItem[item.id]` and the transcript fetch. Absent
+   * draws no history. */
+  grillHistory?: Pick<GrillHistoryProps, "grills" | "fetchTranscript">;
 }
 
 const CARD_STYLE = { display: "flex", flexDirection: "column" as const, gap: "var(--space-5)" };
@@ -283,6 +288,7 @@ export function GrillTakeover({
   onBack,
   onDiscard,
   completionError,
+  grillHistory,
 }: GrillTakeoverProps) {
   // Focus moves into the takeover the moment it mounts — otherwise it opens
   // with focus left wherever the "Grill me" button was, which is no longer
@@ -337,6 +343,12 @@ export function GrillTakeover({
               Try again
             </Button>
           </div>
+        </Card>
+      ) : null}
+
+      {grillHistory ? (
+        <Card padding="var(--space-6)">
+          <GrillHistory grills={grillHistory.grills} fetchTranscript={grillHistory.fetchTranscript} />
         </Card>
       ) : null}
     </div>

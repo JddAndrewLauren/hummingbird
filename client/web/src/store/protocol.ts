@@ -672,6 +672,25 @@ export interface FileLinkDTO {
   version: number;
 }
 
+/** One completed Grill (#358, ADR-0023), as the web host's JSON/DTO shape
+ * — a 1:1 field mirror of `hummingbird_domain::GrillWithoutTranscript`,
+ * camelCased. **No transcript**: the sweep never carries one (ADR-0023
+ * decision 4), so the Grill history fetches it from `GET /api/grills/:id`
+ * on expand (`grill/transcript-client.ts`). `modelProposal` and
+ * `appliedPatch` are two separate facts — what was suggested and what was
+ * accepted — and are never merged. */
+export interface GrillDTO {
+  id: string;
+  itemId: string;
+  summary: string;
+  verdict: GrillVerdictName;
+  modelProposal: string;
+  appliedPatch: string;
+  resultingStage: TaskStageName;
+  completedAt: number;
+  version: number;
+}
+
 /** One `routes` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
  * field mirror of `hummingbird_domain::Route`, camelCased. 1:1 with its
  * project (`projectId` is its own key, not a separate `id`) — the dossier's
@@ -1073,6 +1092,10 @@ export type TaskWorkerRequest =
   /** ADR-0036's per-item file-link read — the item panel's
    * `getSteps`-style "only what a view actually asked about" fetch. */
   | { type: "getFileLinks"; itemId: string }
+  /** #358's per-item Grill history read — a mirror read, never a sync or
+   * a fetch; the same "only what a view actually asked about" shape as
+   * `getFileLinks`. */
+  | { type: "getGrills"; itemId: string }
   /** ADR-0036's file-link create: one `POST /api/file_links`, enqueued
    * durably. `path` is already normalized and shape-checked by
    * `dropbox/file-link.ts` before it reaches here; the wasm seam refuses a
@@ -1529,6 +1552,9 @@ export type TaskWorkerResponse =
   /** Answers `getFileLinks` (ADR-0036) — the `steps`-style per-item read,
    * keyed by the requested `itemId`. */
   | { type: "fileLinks"; itemId: string; links: FileLinkDTO[] }
+  /** Answers `getGrills` (#358), newest first (`Core::grills_for`), keyed
+   * by the requested `itemId`. */
+  | { type: "grills"; itemId: string; grills: GrillDTO[] }
   /** ADR-0036's file-link create result, matched back by `seed`. Same
    * broadcast-not-reply, enqueued-not-saved contract as
    * `createProjectLinkResult`. */

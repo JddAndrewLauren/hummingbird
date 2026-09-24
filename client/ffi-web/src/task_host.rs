@@ -37,7 +37,7 @@ use hummingbird_core::{
 use hummingbird_domain::{
     core_field_type, is_valid_deadline, is_valid_github_repo, Alert, Condition, Energy,
     EventKindEntry, FieldType, FileLink, Fog, Item, Project, ProjectLink, Route, Rule, Size,
-    Stage, Step, Tier, CORE_FIELDS, EVENT_KINDS, GrillVerdict,
+    Stage, Step, Tier, CORE_FIELDS, EVENT_KINDS, GrillVerdict, GrillWithoutTranscript,
 };
 
 // The real, target-specific store `Core::init` resolves to internally is a
@@ -473,6 +473,15 @@ pub struct PatchProjectLinkResponse {
 pub struct FileLinkListResponse {
     pub kind: &'static str,
     pub links: Vec<FileLink>,
+}
+
+/// The wrapper around [`TaskHostCore::grills`]'s answer — the Grill
+/// history's read (#358). Same `"busy"` contract as
+/// [`FileLinkListResponse`]; never a transcript (ADR-0023 decision 4).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct GrillListResponse {
+    pub kind: &'static str,
+    pub grills: Vec<GrillWithoutTranscript>,
 }
 
 /// What [`TaskHostCore::create_file_link`] resolves to (ADR-0036). Same
@@ -2318,6 +2327,12 @@ impl TaskHostCore {
     /// (ADR-0036) — the item panel's read.
     pub fn file_links(&self, item_id: &str) -> FileLinkListResponse {
         FileLinkListResponse { kind: "ok", links: self.core.file_links_for(item_id) }
+    }
+
+    /// Every completed Grill on one item, newest first, per
+    /// [`Core::grills_for`] (#358).
+    pub fn grills(&self, item_id: &str) -> GrillListResponse {
+        GrillListResponse { kind: "ok", grills: self.core.grills_for(item_id) }
     }
 
     /// Creates a File link, per [`Core::create_file_link`] (ADR-0036). The
@@ -4606,6 +4621,20 @@ mod triage_tests {
 #[cfg(test)]
 mod grill_tests {
     use super::*;
+
+    /// #358: the Grill history's read serializes under `grills`, the key
+    /// `task-worker.ts` parses, and an item never grilled reads as `[]`.
+    #[tokio::test]
+    async fn an_ungrilled_item_reads_an_empty_grill_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-grills-empty");
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        assert_eq!(
+            serde_json::to_string(&host.grills("i-1")).unwrap(),
+            r#"{"kind":"ok","grills":[]}"#
+        );
+    }
 
     async fn captured_item(host: &mut TaskHostCore) -> String {
         let response = host

@@ -201,6 +201,16 @@ render over a real, drafted `TaskItemDTO`. `screens/GrillTakeover.test.tsx`
 covers the Discard confirm/cancel branches and `item-actions.test.ts`
 covers the label function; a hand pass confirming how the confirm dialog
 and the resumed label actually read is owed alongside #355's own.
+**The Grill history (#358) is photographed in item detail, not in the
+takeover.** `components/domain/GrillHistory.tsx` is drawn in both places,
+but only item detail is reachable under the gate: `projects-dossier-grill-history-*`
+(four widths x two themes) opens `b-f1` on the dossier, expands the history
+and photographs the fixture's one grill, whose applied patch differs from
+the model's proposal so the two labelled blocks stand side by side. The
+takeover's copy is the same component under the exclusion above. No
+transcript is opened in any capture: that is a live `GET /api/grills/:id`,
+and the pending, failure and loaded transcript states are covered by
+`GrillHistory.test.tsx` instead.
 **Now's frontier columns are reached by the default `?demo`** (ADR-0021
 decision 8, #400, closed by #420's board world and #455's flip of which
 spelling is the default) — `now-columns-*` proves the wrap at production

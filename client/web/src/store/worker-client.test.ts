@@ -77,6 +77,7 @@ const initialTask: TaskState = {
   linksByProject: {},
   lastProjectLinkWrite: null,
   fileLinksByItem: {},
+  grillsByItem: {},
   lastFileLinkWrite: null,
   routeByProject: {},
   lastRouteWrite: null,
@@ -984,6 +985,28 @@ describe("attachWorkerClient", () => {
     } as MessageEvent);
 
     expect(store.getSnapshot().task.fileLinksByItem).toEqual({ "item-1": [link], "item-2": [] });
+  });
+
+  it("writes the Grill history for the requested item on a grills message, keyed by item id", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    const grill = {
+      id: "grill-1",
+      itemId: "item-1",
+      summary: "Resolved",
+      verdict: "resolved" as const,
+      modelProposal: "{}",
+      appliedPatch: "{}",
+      resultingStage: "ready" as const,
+      completedAt: 1,
+      version: 1,
+    };
+    worker.onmessage?.({ data: { type: "grills", itemId: "item-1", grills: [grill] } } as MessageEvent);
+    worker.onmessage?.({ data: { type: "grills", itemId: "item-2", grills: [] } } as MessageEvent);
+
+    expect(store.getSnapshot().task.grillsByItem).toEqual({ "item-1": [grill], "item-2": [] });
   });
 
   it("records a createFileLinkResult keyed by seed and re-requests that item's file links on ok", () => {

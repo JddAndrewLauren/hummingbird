@@ -1,4 +1,5 @@
 // The frontier board: the whole of a surface's centre column — the selected
+import { fetchGrillTranscript } from "../shell/grill-transcript-wiring";
 // item's slot, the frontier in columns (`FrontierColumns.tsx`) and the Blocked
 // section under them — plus the render-phase optimistic fallback that keeps
 // item detail standing when an act moves the item out of both queries.
@@ -375,6 +376,7 @@ export function FrontierBoard({
         onBack={handleGrillBack}
         onDiscard={grill.discard}
         completionError={grillCompletionFailureFor(task.lastGrillCompletion, grill.confirmSeed)}
+        grillHistory={{ grills: task.grillsByItem[openItem.id], fetchTranscript: fetchGrillTranscript }}
       />
     );
   }
@@ -479,6 +481,7 @@ export function FrontierBoard({
             fileLinks={task.fileLinksByItem[selectedItem.id] ?? []}
             fileLinksWiring={fileLinks}
             lastFileLinkWrite={task.lastFileLinkWrite}
+            grillHistory={{ grills: task.grillsByItem[selectedItem.id], fetchTranscript: fetchGrillTranscript }}
             // #359: "Grill me" reaches Now — gated by `item-actions.ts`'s
             // `canGrill`, the one deciding function, same as Triage's.
             onGrillMe={grill ? handleGrillMe : undefined}

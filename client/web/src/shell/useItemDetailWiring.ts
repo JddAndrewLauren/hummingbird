@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { requestFileLinks, requestIsPending, requestSteps, type WorkerLike } from "../store/worker-client";
+import { requestFileLinks, requestGrills, requestIsPending, requestSteps, type WorkerLike } from "../store/worker-client";
 
 // Item detail's own small piece of shell wiring (issue #96, S10): which
 // item (if any) is open, and asking the worker for its Steps the moment
@@ -32,6 +32,11 @@ export function useItemDetailWiring(worker: WorkerLike, syncOutcomeSeq: number):
       // same reason — a create has no overlay, so the row appears through
       // this re-read once a cycle pulls it back.
       requestFileLinks(worker, selectedItemId);
+      // #358: its Grill history, same key — a grill confirmed on another
+      // device reaches this panel through the next cycle's re-read. A
+      // mirror read only: nothing here fetches a transcript or asks for a
+      // sync.
+      requestGrills(worker, selectedItemId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedItemId, syncOutcomeSeq]);
