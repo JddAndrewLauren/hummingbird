@@ -91,7 +91,8 @@ internal fun StatusPaneExpanded(pane: MobileRankedPane, nowMs: Long, headline: B
         is MobilePaneFacts.Waste,
         is MobilePaneFacts.Weekend,
         is MobilePaneFacts.Vacation,
-        is MobilePaneFacts.Race ->
+        is MobilePaneFacts.Race,
+        is MobilePaneFacts.Fantasy ->
             error("a Now-surface question reached the Status expanded slot: ${pane.standingQuestion}")
     }
 }

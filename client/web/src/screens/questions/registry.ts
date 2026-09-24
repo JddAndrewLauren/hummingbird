@@ -1,3 +1,4 @@
+import { fantasyQuestion } from "../fantasy-pane/question";
 import { githubQuestion } from "../github-pane/question";
 import { homeworkQuestion } from "../homework-pane/question";
 import { kimiQuestion } from "../kimi-pane/question";
@@ -38,6 +39,7 @@ export const QUESTIONS: Record<StandingQuestion, QuestionDef> = {
   weekend: weekendQuestion,
   vacation: vacationQuestion,
   race: raceQuestion,
+  fantasy: fantasyQuestion,
   kimi: kimiQuestion,
   github: githubQuestion,
   uptime: uptimeQuestion,

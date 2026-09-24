@@ -117,6 +117,7 @@ export type StandingQuestion =
   | "weekend"
   | "vacation"
   | "race"
+  | "fantasy"
   | "kimi"
   | "github"
   | "uptime"
@@ -138,6 +139,8 @@ export type StandingQuestion =
  * `scps` is declared second (#693) — directly after `homework`, before
  * `waste` — the slot ADR-0032's own grilling session settled on.
  *
+ * `fantasy` is declared last of Now's own (#717), directly after `race`.
+ *
  * `poller` is declared **last** (#775): a meta-question over every other
  * source's own freshness, so it reads as the board's final word rather than
  * competing with the content-specific questions ahead of it. */
@@ -148,6 +151,7 @@ export const QUESTION_ORDER: readonly StandingQuestion[] = [
   "weekend",
   "vacation",
   "race",
+  "fantasy",
   "kimi",
   "github",
   "uptime",

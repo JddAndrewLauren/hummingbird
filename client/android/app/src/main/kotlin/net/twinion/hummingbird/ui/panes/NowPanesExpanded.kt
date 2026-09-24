@@ -102,6 +102,10 @@ internal fun NowPaneExpanded(
         // No card by choice, not for want of a lane — see the file header.
         is MobilePaneFacts.Vacation -> Unit
         is MobilePaneFacts.Scps -> ScpsPaneExpanded(facts.resolved, nowMs)
+        // No card yet: #717 ships the question unpolled, and its collapsed
+        // headline already says all there is (not set up / never polled).
+        // The expanded card is #723's.
+        is MobilePaneFacts.Fantasy -> Unit
         is MobilePaneFacts.Kimi,
         is MobilePaneFacts.Github,
         is MobilePaneFacts.Uptime,

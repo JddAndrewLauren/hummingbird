@@ -6225,14 +6225,14 @@ mod question_switch_tests {
     }
 
     #[tokio::test]
-    async fn a_fresh_host_reports_all_eleven_questions_on() {
+    async fn a_fresh_host_reports_all_twelve_questions_on() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-switch-fresh");
         let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
 
         let response = host.question_switches();
         assert_eq!(response.kind, "ok");
-        assert_eq!(response.switches.len(), 11);
+        assert_eq!(response.switches.len(), 12);
         assert!(response.switches.iter().all(|switch| switch.enabled && !switch.pending));
     }
 
@@ -6242,7 +6242,7 @@ mod question_switch_tests {
         let namespace = dir.path().join("ns-switch-unknown");
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
 
-        let response = host.set_question_enabled("seed-1", "fantasy", false, 1_000).await;
+        let response = host.set_question_enabled("seed-1", "cricket", false, 1_000).await;
         assert_eq!(response.kind, "unknown_question");
         // And nothing was written: `settings` has no DELETE, so a key minted
         // from an invented name would be a permanent unreadable row.

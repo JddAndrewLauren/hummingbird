@@ -136,6 +136,7 @@ private fun statusPaneIcon(pane: MobileRankedPane): Int = when (pane.standingQue
     MobileStandingQuestion.WEEKEND,
     MobileStandingQuestion.VACATION,
     MobileStandingQuestion.RACE,
+    MobileStandingQuestion.FANTASY,
     ->
         error("a Now-surface question reached the Status quiet stack: ${pane.standingQuestion}")
 }

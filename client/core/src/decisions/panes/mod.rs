@@ -1,5 +1,5 @@
 //! The standing-question panes' decision half (#533/M4, ADR-0025) — the
-//! pane shell contract, the cross-pane sort, the zone bridge, and all eleven
+//! pane shell contract, the cross-pane sort, the zone bridge, and all twelve
 //! real panes.
 //!
 //! # Why this family exists
@@ -45,6 +45,7 @@
 
 pub mod alarm;
 pub mod contract;
+pub mod fantasy;
 pub mod github;
 pub mod homework;
 pub mod inputs;
@@ -82,14 +83,16 @@ pub use zone::{ZoneFact, ZoneFacts, ZoneQuery};
 /// shape, restated in `scps.rs`'s module header). #775 added an
 /// eleventh — [`poller`], the first question whose subjects are *sources
 /// themselves* rather than keys within one fixed source (that module's own
-/// header).
-pub const SUNK: [(StandingQuestion, Surface); 11] = [
+/// header). #717 added a twelfth — [`fantasy`], the first question with
+/// **two subjects per binding entry**, each reading its own source.
+pub const SUNK: [(StandingQuestion, Surface); 12] = [
     (StandingQuestion::Homework, Surface::Now),
     (StandingQuestion::Scps, Surface::Now),
     (StandingQuestion::Waste, Surface::Now),
     (StandingQuestion::Weekend, Surface::Now),
     (StandingQuestion::Vacation, Surface::Now),
     (StandingQuestion::Race, Surface::Now),
+    (StandingQuestion::Fantasy, Surface::Now),
     (StandingQuestion::Kimi, Surface::Status),
     (StandingQuestion::Github, Surface::Status),
     (StandingQuestion::Uptime, Surface::Status),
@@ -113,11 +116,12 @@ pub const SUNK: [(StandingQuestion, Surface); 11] = [
 /// registry-derived arm is [`poller`], whose subjects *are* the live
 /// sources, which is that question's own definition rather than a
 /// shortcut. Exhaustive over [`StandingQuestion`] with no wildcard arm: a
-/// twelfth question must say what it reads, even if that is nothing.
+/// thirteenth question must say what it reads, even if that is nothing.
 pub fn question_sources(question: StandingQuestion) -> Vec<&'static str> {
     match question {
         StandingQuestion::Waste => vec![waste::SOURCE],
         StandingQuestion::Race => vec![race::SOURCE],
+        StandingQuestion::Fantasy => vec![fantasy::LINEUP_SOURCE, fantasy::WAIVERS_SOURCE],
         StandingQuestion::Kimi => vec![kimi::SOURCE],
         StandingQuestion::Github => vec![github::SOURCE],
         StandingQuestion::Uptime => vec![uptime::SOURCE],
@@ -177,6 +181,7 @@ pub fn zone_queries(surface: Surface, inputs: &PaneInputs) -> Vec<ZoneQuery> {
             StandingQuestion::Waste => waste::waste_zone_queries(inputs),
             StandingQuestion::Weekend => weekend::weekend_zone_queries(inputs.now_ms),
             StandingQuestion::Vacation => vacation::vacation_zone_queries(inputs),
+            StandingQuestion::Fantasy => fantasy::fantasy_zone_queries(inputs),
             // Race, kimi, github, uptime and reachability are all
             // instant-based (no civil-date reasoning), so they ask for
             // nothing on this half of the bridge.
@@ -244,6 +249,13 @@ pub fn rank_panes(
                     (subject, answer)
                 })
                 .collect(),
+            StandingQuestion::Fantasy => fantasy::fantasy_subjects(inputs)
+                .into_iter()
+                .map(|subject| {
+                    let answer = fantasy::fantasy_answer(&subject, inputs);
+                    (subject, answer)
+                })
+                .collect(),
             StandingQuestion::Kimi => {
                 vec![(kimi::SNAPSHOT_KEY.to_string(), kimi::kimi_answer(inputs))]
             }
@@ -297,7 +309,7 @@ mod tests {
     #[test]
     fn required_sources_is_every_sunk_panes_own_declaration_per_surface_deduplicated() {
         let now = required_sources(Surface::Now);
-        assert_eq!(now, vec![waste::SOURCE, race::SOURCE]);
+        assert_eq!(now, vec![waste::SOURCE, race::SOURCE, fantasy::LINEUP_SOURCE, fantasy::WAIVERS_SOURCE]);
 
         let status = required_sources(Surface::Status);
         // The status three each declare their own source, and poller
@@ -310,7 +322,7 @@ mod tests {
             assert!(status.contains(&polled), "{polled}");
         }
         assert_eq!(status.len(), poller::poller_sources().len());
-        // (Now's two are live snapshot writers too, so poller names them
+        // (Now's four are live snapshot writers too, so poller names them
         // from Status as well — today's registry, not a contract.)
     }
 
@@ -320,6 +332,10 @@ mod tests {
     fn question_sources_names_each_panes_own_source_and_nothing_else() {
         assert_eq!(question_sources(StandingQuestion::Waste), vec![waste::SOURCE]);
         assert_eq!(question_sources(StandingQuestion::Race), vec![race::SOURCE]);
+        assert_eq!(
+            question_sources(StandingQuestion::Fantasy),
+            vec![fantasy::LINEUP_SOURCE, fantasy::WAIVERS_SOURCE],
+        );
         assert_eq!(question_sources(StandingQuestion::Kimi), vec![kimi::SOURCE]);
         assert_eq!(question_sources(StandingQuestion::Github), vec![github::SOURCE]);
         assert_eq!(question_sources(StandingQuestion::Uptime), vec![uptime::SOURCE]);
@@ -409,10 +425,11 @@ mod tests {
         // and scps's own calendar read has therefore not landed either; it
         // has no `unbound` arm at all to fall into instead, #693), plus
         // weekend/vacation/race, each unbound in this fixture (no calendar
-        // connected, no race-series binding) — all still ranked, per
+        // connected, no race-series binding), plus fantasy's two setup
+        // panes (#717: no yahoo-leagues binding) — all still ranked, per
         // ADR-0017's "a pane nobody has bound yet must still be
         // discoverable" rule.
-        assert_eq!(ranked.len(), 6);
+        assert_eq!(ranked.len(), 8);
         let homework = ranked.iter().find(|pane| pane.question == "homework").unwrap();
         assert_eq!(homework.answer.answer_state, AnswerState::Answered);
         assert_eq!(homework.answer.band, Band::Dormant);
@@ -422,10 +439,16 @@ mod tests {
         assert_eq!(waste.pane_key, "waste:collection");
         assert_eq!(waste.answer.answer_state, AnswerState::Answered);
         assert_eq!(waste.answer.band, Band::Dormant);
-        for question in ["weekend", "vacation", "race"] {
+        for question in ["weekend", "vacation", "race", "fantasy"] {
             let pane = ranked.iter().find(|pane| pane.question == question).unwrap();
             assert_eq!(pane.answer.answer_state, AnswerState::Unbound, "{question}");
         }
+        let fantasy: Vec<&str> = ranked
+            .iter()
+            .filter(|pane| pane.question == "fantasy")
+            .map(|pane| pane.pane_key.as_str())
+            .collect();
+        assert_eq!(fantasy, ["fantasy:setup:lineup", "fantasy:setup:waivers"]);
     }
 
     #[test]
@@ -435,8 +458,9 @@ mod tests {
         let ranked = rank_panes(Surface::Now, &inputs, &ZoneFacts::default());
         // Every Now question is unanswerable in this fixture (waste's page
         // cleared, no calendar, no race series, and no resolved device
-        // zone) — all six still rank.
-        assert_eq!(ranked.len(), 6);
+        // zone) — all eight still rank (fantasy's two setup panes among
+        // them).
+        assert_eq!(ranked.len(), 8);
         // Homework and scps have no binding to be unset, so their
         // unanswerable state is the bridge's own gap rather than `unbound`:
         // there is no setup prompt to route anyone to (`homework.rs`'s
@@ -515,6 +539,26 @@ mod tests {
         assert_eq!(after, expected, "and the survivors keep their order");
     }
 
+    /// #717: one switch, one question — both of a league's panes go
+    /// together, and no fantasy subject survives on its own.
+    #[test]
+    fn switching_fantasy_off_removes_both_of_every_leagues_panes() {
+        let mut inputs = bound_inputs();
+        inputs.bindings = Some(
+            serde_json::from_value(serde_json::json!([
+                {"key": fantasy::BINDING_KEY, "value": {"state":"text","text":"449.l.1,449.l.2"}}
+            ]))
+            .unwrap(),
+        );
+        let on = rank_panes(Surface::Now, &inputs, &ZoneFacts::default());
+        assert_eq!(on.iter().filter(|pane| pane.question == "fantasy").count(), 4);
+
+        inputs.disabled_questions = vec!["fantasy".to_string()];
+        let off = rank_panes(Surface::Now, &inputs, &ZoneFacts::default());
+        assert!(!off.iter().any(|pane| pane.question == "fantasy"));
+        assert_eq!(off.len(), on.len() - 4);
+    }
+
     #[test]
     fn a_question_switched_off_on_the_other_surface_changes_nothing_here() {
         let mut inputs = PaneInputs { disabled_questions: vec!["kimi".to_string()], ..PaneInputs::default() };
@@ -527,7 +571,7 @@ mod tests {
         // Now is untouched by a Status question's switch.
         inputs.disabled_questions = vec!["kimi".to_string()];
         let now = rank_panes(Surface::Now, &inputs, &ZoneFacts::default());
-        assert_eq!(now.len(), 6);
+        assert_eq!(now.len(), 8);
     }
 
     #[test]
@@ -536,7 +580,7 @@ mod tests {
         // doc): a name from a newer build names a question this one cannot
         // draw anyway, so it must be ignored rather than fail the crossing.
         let inputs = PaneInputs {
-            disabled_questions: vec!["fantasy".to_string(), "".to_string()],
+            disabled_questions: vec!["cricket".to_string(), "".to_string()],
             ..PaneInputs::default()
         };
         // kimi/github/uptime/reachability contribute one pane each, and

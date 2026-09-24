@@ -242,6 +242,21 @@ pub const M365_CALENDAR_V1: &str = "m365-calendar/v1";
 /// poller rather than a source string that quietly keeps resolving.
 pub const RACE_SCHEDULE_V1: &str = "race-schedule/v1";
 
+/// `yahoo-lineup/v1`'s frozen namespace (#717, the fantasy lane of #713):
+/// the lineup subject of the Fantasy question. Named for
+/// [`CITY_WASTE_V2`]'s reason — the registry entry below and the Yahoo
+/// poller (#718) share one literal, so a retirement to `/v2` is a compile
+/// error at the poller. A **separate source** from [`YAHOO_WAIVERS_V1`]
+/// because [`SourceEntry::shape`] is one field and the two subjects differ
+/// in shape: lineup validity is a state that resolves, a waiver deadline is
+/// an occurrence that expires (#713's own table).
+pub const YAHOO_LINEUP_V1: &str = "yahoo-lineup/v1";
+
+/// `yahoo-waivers/v1`'s frozen namespace (#717): the waivers subject of the
+/// Fantasy question, [`YAHOO_LINEUP_V1`]'s sibling for the reason that
+/// constant states.
+pub const YAHOO_WAIVERS_V1: &str = "yahoo-waivers/v1";
+
 /// `kimi-balance/v1`'s frozen namespace (#313, ADR-0017 decision 5): two
 /// consumers share one literal — the registry entry below and
 /// `server/kimi-balance`, the out-of-process poller that mints the one
@@ -397,6 +412,44 @@ pub const REGISTRY: &[SourceEntry] = &[
              not (no source-owned field changes, so nothing restamps)",
         ),
         expires_at: Expiry::Always("the race's start time"),
+        retired_as: None,
+    },
+    // The fantasy lane's two sources (#717, #713). One lane, one ingest
+    // token (`YAHOO_INGEST_TOKEN`, race-poll's precedent), two entries —
+    // because the two subjects differ in shape and `shape` is one field.
+    SourceEntry {
+        source: YAHOO_LINEUP_V1,
+        // State: `source_key` names the team whose lineup it is, and the
+        // alert leaves live when the next poll sees a valid roster.
+        shape: Shape::State,
+        // Both: the lineup snapshot every poll, and the invalid-lineup alert.
+        writes: Writes::Both,
+        key_recipe: Some(
+            "team:<team_key> — the TEAM, never the team-week: a state source \
+             keys on the entity whose state it is and re-enters live when the \
+             condition returns; a per-week key would mint 17 rows a season \
+             for one recurring condition",
+        ),
+        expires_at: Expiry::Always(
+            "the earliest kickoff among the invalid slots' eligible \
+             replacements (the lock the alert warns about)",
+        ),
+        retired_as: None,
+    },
+    SourceEntry {
+        source: YAHOO_WAIVERS_V1,
+        // Event: a weekly waiver deadline is an occurrence; the row never
+        // resolves, it leaves by expiry at the deadline.
+        shape: Shape::Event,
+        // Both: the waivers snapshot every poll, and the deadline alert.
+        writes: Writes::Both,
+        key_recipe: Some(
+            "<season>-<week>, week zero-padded to 2 digits — the WEEK, never \
+             the deadline instant: commissioners move deadlines, and keyed \
+             on the week a move updates one alert rather than minting a \
+             second that rings twice",
+        ),
+        expires_at: Expiry::Always("the waiver deadline instant"),
         retired_as: None,
     },
     // The registry's first live Snapshots-only entry (#313) — the case
@@ -597,6 +650,28 @@ pub fn race_schedule_v1_key(series: &str, starts_at_ms: i64) -> String {
     format!("{series}:{starts_at_ms}")
 }
 
+/// `yahoo-lineup/v1`: `team:<team_key>`, e.g. `team:449.l.123456.t.7`.
+///
+/// **The team, not the team-week** — every state source here keys on the
+/// entity whose state it is (`item:<id>`, a check id, an entity id), so an
+/// invalid lineup that returns next week re-enters the same row's lifecycle
+/// and rings on return, rather than minting one row per week (#713).
+pub fn yahoo_lineup_v1_key(team_key: &str) -> String {
+    format!("team:{team_key}")
+}
+
+/// `yahoo-waivers/v1`: `<season>-<week>`, the week zero-padded to two
+/// digits, e.g. `2026-04`.
+///
+/// **The week, not the deadline instant** — ADR-0014's fixed-coordinate
+/// clause: a commissioner moving the deadline is the same occurrence with a
+/// new `expires_at`, so it must land on the row already minted rather than
+/// ring a second time (`city-waste/v2`'s slide, with the league office
+/// playing the city). The deadline is deliberately not a parameter.
+pub fn yahoo_waivers_v1_key(season: u16, week: u8) -> String {
+    format!("{season}-{week:02}")
+}
+
 /// `item-threshold/v1`: `item:<id>`. Keyed on the item, not
 /// `item:<id>:<deadline>` — a re-committed deadline must re-raise the same
 /// row, never mint a second (ADR-0014).
@@ -711,6 +786,23 @@ mod tests {
                 Shape::Event,
                 Writes::Both,
                 Expiry::Always("the race's start time"),
+                None,
+            ),
+            (
+                "yahoo-lineup/v1",
+                Shape::State,
+                Writes::Both,
+                Expiry::Always(
+                    "the earliest kickoff among the invalid slots' eligible \
+                     replacements (the lock the alert warns about)",
+                ),
+                None,
+            ),
+            (
+                "yahoo-waivers/v1",
+                Shape::Event,
+                Writes::Both,
+                Expiry::Always("the waiver deadline instant"),
                 None,
             ),
             ("kimi-balance/v1", Shape::State, Writes::Snapshots, Expiry::Never, None),
@@ -1222,6 +1314,75 @@ mod tests {
         assert_eq!(item_threshold_v1_item_id(""), None);
         assert_eq!(item_threshold_v1_item_id("item:"), None);
         assert_eq!(item_threshold_v1_item_id("binary_sensor.front_door"), None);
+    }
+
+    /// One sample occurrence the Yahoo poller (#718) will see — a team in a
+    /// league, in a given week — and the two frozen keys it produces.
+    struct FantasyOccurrence {
+        team_key: &'static str,
+        season: u16,
+        week: u8,
+        /// Not a parameter of either recipe, and the point of the waivers
+        /// vector below: a moved deadline is the same occurrence.
+        waiver_deadline_ms: i64,
+    }
+
+    const SAMPLE: FantasyOccurrence = FantasyOccurrence {
+        team_key: "449.l.123456.t.7",
+        season: 2026,
+        week: 4,
+        waiver_deadline_ms: 1_790_406_000_000,
+    };
+
+    /// `yahoo-lineup/v1`'s frozen vector (#717).
+    #[test]
+    fn yahoo_lineup_v1_keys_on_the_team() {
+        assert_eq!(yahoo_lineup_v1_key(SAMPLE.team_key), "team:449.l.123456.t.7");
+    }
+
+    /// The team, never the team-week: next week's invalid lineup for the
+    /// same team is the same row.
+    #[test]
+    fn yahoo_lineup_v1_is_the_same_row_every_week() {
+        let next_week = FantasyOccurrence { week: SAMPLE.week + 1, ..SAMPLE };
+        assert_eq!(yahoo_lineup_v1_key(SAMPLE.team_key), yahoo_lineup_v1_key(next_week.team_key));
+    }
+
+    /// `yahoo-waivers/v1`'s frozen vector (#717): season, a hyphen, and the
+    /// week zero-padded to two digits.
+    #[test]
+    fn yahoo_waivers_v1_keys_on_the_season_and_the_padded_week() {
+        assert_eq!(yahoo_waivers_v1_key(SAMPLE.season, SAMPLE.week), "2026-04");
+        assert_eq!(yahoo_waivers_v1_key(2026, 17), "2026-17");
+    }
+
+    /// The deadline moving is not a new occurrence — and consecutive weeks
+    /// are.
+    #[test]
+    fn yahoo_waivers_v1_ignores_a_moved_deadline_and_separates_weeks() {
+        let moved = FantasyOccurrence {
+            waiver_deadline_ms: SAMPLE.waiver_deadline_ms + 24 * 60 * 60 * 1000,
+            ..SAMPLE
+        };
+        assert_ne!(moved.waiver_deadline_ms, SAMPLE.waiver_deadline_ms);
+        assert_eq!(
+            yahoo_waivers_v1_key(SAMPLE.season, SAMPLE.week),
+            yahoo_waivers_v1_key(moved.season, moved.week),
+        );
+        assert_ne!(
+            yahoo_waivers_v1_key(SAMPLE.season, SAMPLE.week),
+            yahoo_waivers_v1_key(SAMPLE.season, SAMPLE.week + 1),
+        );
+    }
+
+    /// Both fantasy sources are `Writes::Both` — the snapshot every poll and
+    /// the alert under one string, ADR-0009's join constraint intact.
+    #[test]
+    fn both_fantasy_sources_are_registered_for_both_tables() {
+        for source in [YAHOO_LINEUP_V1, YAHOO_WAIVERS_V1] {
+            let entry = find(source).expect("registered");
+            assert!(entry.writes_alerts() && entry.writes_snapshots(), "{source}");
+        }
     }
 
     #[test]

@@ -51,6 +51,7 @@ internal fun rosterPaneLabel(
  * that silently guesses. */
 private fun namesSubject(question: MobileStandingQuestion): Boolean = when (question) {
     MobileStandingQuestion.RACE,
+    MobileStandingQuestion.FANTASY,
     MobileStandingQuestion.GITHUB,
     MobileStandingQuestion.UPTIME,
     MobileStandingQuestion.POLLER -> true

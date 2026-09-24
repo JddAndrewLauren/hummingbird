@@ -30,6 +30,8 @@ export const SOURCES: readonly string[] = [
   "m365-calendar/v1",
   "city-waste/v2",
   "race-schedule/v1",
+  "yahoo-lineup/v1",
+  "yahoo-waivers/v1",
   "kimi-balance/v1",
   "github-hummingbird/v1",
   "uptime/v1",
