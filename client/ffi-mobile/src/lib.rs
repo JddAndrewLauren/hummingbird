@@ -2398,10 +2398,8 @@ pub struct MobileQuestionRosterEntry {
 /// never the three per-question functions behind it, so it cannot hold an
 /// opinion about which questions exist.
 ///
-/// **Android does not render this yet.** ADR-0034 decision 4 splits the
-/// rendering into #716 on purpose — that surface has no emulator matrix, so
-/// a UI change there owes a device run — and this slice lands the door so
-/// #716 is rendering-only.
+/// Android renders it since #716: Settings' `Standing questions` section,
+/// and every Now and Status pane's label (`QuestionLabels.kt`).
 #[uniffi::export]
 pub fn question_roster() -> Vec<MobileQuestionRosterEntry> {
     hummingbird_core::decisions::question_roster()
@@ -3804,9 +3802,8 @@ fn mobile_pane_inputs(
         calendar_connected: calendar.connected,
         items,
         sync: to_sync_facts(sync),
-        // #715: passed straight through as `Core` decided it — the phone
-        // honours a question switched off in the browser without being able
-        // to change it (ADR-0034 decision 4; #716 renders the toggle).
+        // #715: passed straight through as `Core` decided it — a question
+        // switched off on either client (Settings' toggle since #716).
         disabled_questions: core.disabled_questions(),
     }
 }
@@ -4385,8 +4382,7 @@ impl MobileTaskHost {
     /// a constant of the build and this is device state, which is why they
     /// are two doors (`decisions::questions`'s own header).
     ///
-    /// **Android does not render this yet** (#716); the door lands here so
-    /// that slice is rendering-only.
+    /// Settings' question rows draw it since #716.
     pub async fn question_switches(&self) -> Vec<MobileQuestionSwitch> {
         self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await
             .core

@@ -50,9 +50,11 @@ class StatusScreenStructuralTest {
     @Test
     fun `every when over the seam pane enums is exhaustive with no wildcard arm`() {
         val arm = Regex("""MobileStandingQuestion\.[A-Z_]+\s*->""")
+        // #716: the Status panes' labels are the roster's, through the
+        // lookup `NowScreen.kt` shares — no `when` of words left here.
         assertTrue(
-            "StatusScreen.kt must map MobileStandingQuestion by its variants",
-            arm.containsMatchIn(screenSrc),
+            "StatusScreen.kt must label its panes through rosterPaneLabel",
+            screenSrc.contains("rosterPaneLabel(pane, QuestionRosterLabels.labels)"),
         )
         val bandArm = Regex("""MobilePaneBand\.[A-Z_]+\s*->""")
         assertTrue(

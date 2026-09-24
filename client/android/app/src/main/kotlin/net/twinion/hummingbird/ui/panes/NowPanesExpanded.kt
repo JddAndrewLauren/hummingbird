@@ -86,7 +86,7 @@ import uniffi.hummingbird_ffi_mobile.MobileWeekendResolved
 // Exhaustive `when`s with no `else` arm throughout — the house drift gate.
 
 /** The Now surface's `expandedContent` — one dispatcher, exhaustive over
- * every facts arm the way `NowScreen.kt`'s `nowPaneLabel` is. */
+ * every facts arm, with no `else ->` arm. */
 @Composable
 internal fun NowPaneExpanded(
     pane: MobileRankedPane,
