@@ -24,9 +24,9 @@
 # revision runs that revision's code as you (pnpm lifecycle scripts,
 # `build.rs`, `vite.config.ts`, `build-version.node.ts`) with your real
 # `HOME`, and nothing static can stop such code reaching your real token or
-# the production host. The defence there is upstream: `candidate.sh` refuses
-# PRs from forks, so only code already pushed to this repo by its owner is
-# ever built.
+# the production host. The defence there is upstream: `candidate.sh` builds
+# only a same-repo PR's head or a commit some `origin/*` branch contains, so
+# only code someone with push access to this repo put there is ever built.
 #
 # The checks, and why each exists:
 #

@@ -11,7 +11,7 @@
 # which is why PRs from forks are refused).
 #
 #   scripts/candidate/candidate.sh build <rev> [--slot a|b] [--fresh|--keep-state]
-#   scripts/candidate/candidate.sh up <slot>          start worker + preview, verify, print the URL
+#   scripts/candidate/candidate.sh up <slot> [--keep-state]   start worker + preview, verify, print the URL
 #   scripts/candidate/candidate.sh down <slot>        stop what `up` started, confirm the ports are free
 #   scripts/candidate/candidate.sh status [--json]    both slots: sha, PR, build status, running, URL, token
 #   scripts/candidate/candidate.sh mint <slot> [--copy]   a local device token into the slot's state
@@ -71,7 +71,9 @@
 # `<rev>` is either digits (a PR: `gh pr view` for its head, then
 # `git fetch origin pull/<n>/head`, refused if the two disagree or the PR
 # comes from a fork) or a git ref resolved after `git fetch origin` (use
-# `origin/main` for main). The slot checks out the full SHA, detached.
+# `origin/main` for main), refused unless some `origin/*` branch contains
+# it: a local branch can hold a fork's code. The slot checks out the full
+# SHA, detached.
 #
 # The slot (`pick`): one already holding this SHA with status ok, and then
 # the build is a no-op (it says so; `--fresh` there only wipes state); else
@@ -80,10 +82,13 @@
 # older built_at. So the newest good candidate is never the default
 # target and a failed build leaves it running. `--slot` overrides.
 #
-# Steps: preflight (the build lock, tools, the env and root guard, free disk:
-# 900 MB for a cold slot or 300 MB warm, plus a 500 MB floor; tune with
-# HB_CANDIDATE_{COLD,WARM,FLOOR}_MB), resolve, pick, `down` the slot, then
-# checkout (and the file guard, before anything reads a committed env file),
+# Steps: preflight (tools, python3 >= 3.11 for `tomllib`, the env and root
+# guard, the build lock), resolve (which fetches), pick, the state-carry
+# check (below), free disk (900 MB for a cold slot or 300 MB warm, plus a
+# 500 MB floor; tune with HB_CANDIDATE_{COLD,WARM,FLOOR}_MB), `down` the
+# slot, then checkout (a tracked Cargo.lock an earlier build rewrote is
+# restored first; any other local change refuses; then the file guard,
+# before anything reads a committed env file),
 # `pnpm install --frozen-lockfile`, `worker-build --release` (never
 # `cargo install`), `pnpm build`, generate the two configs, and the full
 # static guard. Every child runs from an allowlisted environment (`clean_env`
@@ -98,10 +103,13 @@
 # one refusal: the SHA that last ran against persist/ is not an ancestor of
 # the new one and `server/authority/src/schema.rs` or
 # `server/worker/wrangler.toml` differ between them (old code on migrated
-# SQLite). That SHA is `persist/.written-by`, which `up` writes; it is not
-# the manifest's, since a failed build names a SHA that never ran (and the
-# marker travels with a copied persist/). Then pass `--fresh` (wipe
-# persist/ and device-token; follow with `mint` and `seed`) or `--keep-state`.
+# SQLite). That SHA is `persist/.written-by`; it is not the manifest's,
+# since a failed build names a SHA that never ran. `up` writes it just
+# before starting the worker (whose first request migrates persist/, even
+# if `up` then fails), and first runs the same test against it, so a
+# persist/ copied in from the other slot is checked too. Then pass `build
+# --fresh` (wipe persist/ and device-token; follow with `mint` and `seed`)
+# or `--keep-state` (to `build`, which `up` then honours, or to `up`).
 # Copying state across slots is by hand, both stopped:
 #   down a; down b; rm -rf <root>/b/state/persist; cp -R <root>/a/state/persist <root>/b/state/; up b; mint b
 #
@@ -377,7 +385,7 @@ cmd_down() {
 
 # Sets SHA (and PR, PR_REF, PR_TITLE for a PR) from a build argument.
 resolve_rev() {
-  local rev=$1 info
+  local rev=$1 info branches
   PR='' PR_REF='' PR_TITLE=''
   if [[ $rev =~ ^[0-9]+$ ]]; then
     require_tools gh
@@ -396,6 +404,12 @@ resolve_rev() {
     git -C "$REPO" fetch -q origin
     SHA=$(git -C "$REPO" rev-parse --verify --end-of-options "$rev^{commit}" 2>/dev/null) ||
       die "$rev does not name a commit (use origin/main for main)"
+    # A local ref can hold anyone's code (`gh pr checkout` of a fork PR makes
+    # one); only a commit some origin branch contains was pushed here.
+    # (Captured first: a `grep -q` in the pipe can SIGPIPE git under pipefail.)
+    branches=$(git -C "$REPO" branch -r --contains "$SHA" --format='%(refname)')
+    grep -q '^refs/remotes/origin/' <<<"$branches" ||
+      die "${SHA:0:8} ($rev) is on no origin branch; build a PR by its number so its source is checked"
   fi
 }
 
@@ -409,7 +423,12 @@ step_checkout() {
     run_in "$WT" rm -rf client/target server/target
   fi
   if [ -d "$WT" ]; then
-    local dirty
+    local dirty f
+    # cargo rewrites a stale tracked Cargo.lock during the build (CI does not
+    # pass --locked either); that is build output, not a change to keep.
+    for f in client/Cargo.lock server/Cargo.lock; do
+      git -C "$WT" diff --quiet -- "$f" || run_in "$WT" git checkout -q -- "$f"
+    done
     dirty=$(git -C "$WT" status --porcelain --untracked-files=no)
     [ -z "$dirty" ] || { echo "$WT has local changes to tracked files:"; echo "$dirty"; return 1; }
     run_in "$WT" git checkout -q --detach "$SHA"
@@ -513,7 +532,7 @@ check_state_carry() {
   git -C "$REPO" merge-base --is-ancestor "$old" "$SHA" 2>/dev/null && return 0
   git -C "$REPO" diff --quiet "$old" "$SHA" -- server/authority/src/schema.rs server/worker/wrangler.toml 2>/dev/null &&
     return 0
-  die "slot $SLOT holds state written by ${old:0:8}; ${SHA:0:8} is not its descendant and changes the schema or worker config. Pass --fresh (wipe it) or --keep-state."
+  die "slot $SLOT holds state written by ${old:0:8}; ${SHA:0:8} is not its descendant and changes the schema or worker config. Pass --keep-state to run on it anyway, or wipe it with build --fresh."
 }
 
 check_disk() {
@@ -549,6 +568,7 @@ cmd_build() {
   [ "$FRESH$KEEP_STATE" != 11 ] || die "--fresh and --keep-state contradict each other"
 
   require_tools jq curl git pnpm worker-build python3 openssl perl lsof
+  python3 -c 'import tomllib' 2>/dev/null || die "python3 >= 3.11 is required (tomllib reads wrangler.toml)"
   init_root
   GUARD_FAILS=0
   guard_env
@@ -591,6 +611,7 @@ cmd_build() {
     '{worker_build: $wb, node: $node, pnpm: $pnpm}')
   jq -n --arg slot "$SLOT" --arg sha "$SHA" --arg rev "$rev" --arg pr "$PR" --arg pr_ref "$PR_REF" \
     --arg pr_title "$PR_TITLE" --arg started "$(now_iso)" --argjson fresh "$([ "$FRESH" = 1 ] && echo true || echo false)" \
+    --argjson keep "$([ "$KEEP_STATE" = 1 ] && echo true || echo false)" \
     --argjson w "$WORKER_PORT" --argjson i "$INSPECTOR_PORT" --argjson web "$WEB_PORT" --arg url "$URL" \
     --arg wt "$WT" --arg state "$STATE" --arg log "$BUILD_LOG" --argjson tools "$tools" '
     {schema: 1, slot: $slot, sha: $sha, short: $sha[0:8], rev_arg: $rev,
@@ -598,7 +619,7 @@ cmd_build() {
      pr_head_ref: (if $pr_ref == "" then null else $pr_ref end),
      pr_title: (if $pr_title == "" then null else $pr_title end),
      status: "building", failed_step: null, started_at: $started, built_at: null, build_ms: null,
-     fresh_state: $fresh, ports: {worker: $w, inspector: $i, web: $web}, url: $url,
+     fresh_state: $fresh, keep_state: $keep, ports: {worker: $w, inspector: $i, web: $web}, url: $url,
      worktree: $wt, state_dir: $state, build_log: $log, tools: $tools, target_mb: null}' \
     >"$MANIFEST.tmp.$$"
   mv "$MANIFEST.tmp.$$" "$MANIFEST"
@@ -641,8 +662,12 @@ detach() {
 }
 
 up_fail() {
+  local why
   event up.failed reason="$1"
-  cmd_down "$SLOT" >/dev/null 2>&1 || true
+  # In a subshell: cmd_down's own die (a port still held) must not end this
+  # script before the reason is printed.
+  why=$( (cmd_down "$SLOT") 2>&1 >/dev/null) ||
+    echo "candidate: teardown after the failure did not finish: ${why#candidate: }" >&2
   die "up $SLOT failed: $1"
 }
 
@@ -670,15 +695,24 @@ PY
 }
 
 cmd_up() {
-  [ $# -eq 1 ] || die "usage: up <slot>"
-  require_tools jq curl python3 openssl perl lsof
+  local slot='' keep=0
+  for a in "$@"; do
+    case "$a" in --keep-state) keep=1 ;; -*) die "unknown flag $a" ;; *) [ -z "$slot" ] || die "usage: up <slot> [--keep-state]"; slot=$a ;; esac
+  done
+  [ -n "$slot" ] || die "usage: up <slot> [--keep-state]"
+  require_tools jq curl git python3 openssl perl lsof
   init_root
-  slot_paths "$1"
+  slot_paths "$slot"
   clean_env
   local t0 p code i why
   t0=$(now_ms)
   [ "$(mget "$SLOT" .status)" = ok ] || die "slot $SLOT has no good build (status: $(mget "$SLOT" .status)); build first"
   slot_running && die "slot $SLOT is already running at $URL"
+  # The same test as build's, against whatever persist/ holds now (a copy
+  # from the other slot, say); a build given --keep-state carries it here.
+  SHA=$(mget "$SLOT" .sha) FRESH=0 KEEP_STATE=$keep
+  [ "$(mget "$SLOT" .keep_state)" != true ] || KEEP_STATE=1
+  check_state_carry
   for p in "$WORKER_PORT" "$INSPECTOR_PORT" "$WEB_PORT"; do
     [ -z "$(port_busy "$p")" ] || die "port $p is already in use (pid $(port_busy "$p"))"
   done
@@ -687,6 +721,9 @@ cmd_up() {
     (umask 077 && printf 'ADMIN_SECRET=%s\n' "$(openssl rand -hex 32)" >"$STATE/admin.env")
   fi
   guard_static "$SLOT_DIR" || up_fail guard
+  # Before the worker starts: its first request (the probe below) migrates
+  # persist/ to this revision's schema, whether or not `up` then succeeds.
+  mkdir -p "$STATE/persist" && echo "$SHA" >"$STATE/persist/.written-by"
 
   : >"$LOGS/wrangler.log"
   detach "$LOGS/wrangler.log" "${RUN_ENV[@]}" "$WT/client/web/node_modules/.bin/wrangler" dev \
@@ -721,7 +758,6 @@ cmd_up() {
   done
   [ "$code" = 401 ] || { tail -20 "$LOGS/preview.log" >&2; up_fail "preview /api did not reach the worker (last answer: ${code:-none})"; }
   [ "$(http_code "$URL/")" = 200 ] || up_fail "preview did not serve /"
-  mkdir -p "$STATE/persist" && mget "$SLOT" .sha >"$STATE/persist/.written-by"
 
   event up.ok ms="$(($(now_ms) - t0))"
   local pr
@@ -775,8 +811,17 @@ cmd_mint() {
   event mint token_id="$id"
   say "device token for slot $SLOT ($id): $STATE/device-token"
   if [ "$copy" = 1 ]; then
-    tr -d '\n' <"$STATE/device-token" | pbcopy
-    say "copied to the clipboard; paste it into $URL's Settings"
+    local clip=()
+    if command -v pbcopy >/dev/null; then clip=(pbcopy)
+    elif command -v clip.exe >/dev/null; then clip=(clip.exe)
+    elif command -v wl-copy >/dev/null; then clip=(wl-copy)
+    elif command -v xclip >/dev/null; then clip=(xclip -selection clipboard)
+    fi
+    if [ ${#clip[@]} -gt 0 ] && tr -d '\n' <"$STATE/device-token" | "${clip[@]}"; then
+      say "copied to the clipboard; paste it into $URL's Settings"
+    else
+      say "not copied (no working clipboard tool); the token is in $STATE/device-token"
+    fi
   fi
 }
 

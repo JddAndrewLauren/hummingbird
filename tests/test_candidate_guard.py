@@ -6,8 +6,8 @@ end to end is checked by hand. What is decidable without any of that is
 tested here, against a fake slot tree in a temp dir:
 
 - the production guard (`guard.sh`) passes a clean slot and refuses each
-  route to production it exists to catch -- the plan's "guard refuses a
-  production URL" is the preview-target cases;
+  route to production it exists to catch -- its core promise, a preview
+  proxy aimed at production is refused, is the preview-target cases;
 - the configs `candidate.sh` generates pass that guard, and the wrangler
   generator refuses a revision whose config it has not been taught;
 - the startup binding-table check fails closed;
@@ -326,8 +326,9 @@ class PickTest(SlotCase):
 class StateCarryTest(SlotCase):
     """The state-carry check compares against the SHA that last *ran* on the
     slot's persist/, not the manifest's: a failed build rewrites the manifest
-    with a SHA that never ran (found exercising M3: a refused build made the
-    next build in that slot demand --fresh)."""
+    with a SHA that never ran (found by hand while running two candidates side
+    by side: a refused build made the next build in that slot demand
+    --fresh)."""
 
     BOGUS = "1" * 40
 
@@ -353,6 +354,43 @@ class StateCarryTest(SlotCase):
         r = self.carry()
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("state written by 11111111", r.stderr)
+
+
+class ProvenanceTest(SlotCase):
+    """A ref that is not a PR number builds only if an origin branch holds
+    it: a local branch (`gh pr checkout` of a fork PR) is someone else's
+    code, which would build as you."""
+
+    def git(self, *args, cwd):
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+             "-c", "init.defaultBranch=main", *args],
+            cwd=cwd, env=self.env(), capture_output=True, text=True, check=True).stdout.strip()
+
+    def setUp(self):
+        super().setUp()
+        origin, self.clone = self.tmp / "origin.git", self.tmp / "clone"
+        self.git("init", "-q", "--bare", str(origin), cwd=self.tmp)
+        self.git("clone", "-q", str(origin), str(self.clone), cwd=self.tmp)
+        self.git("commit", "-q", "--allow-empty", "-m", "pushed", cwd=self.clone)
+        self.git("push", "-q", "origin", "HEAD:main", cwd=self.clone)
+        self.git("checkout", "-q", "-b", "contributor/feature", cwd=self.clone)
+        self.git("commit", "-q", "--allow-empty", "-m", "local only", cwd=self.clone)
+
+    def resolve(self, rev):
+        return self.candidate(f'REPO="{self.clone}"; resolve_rev "{rev}" && echo "$SHA"')
+
+    def test_a_commit_on_an_origin_branch_resolves(self):
+        r = self.resolve("origin/main")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), self.git("rev-parse", "origin/main", cwd=self.clone))
+
+    def test_a_local_only_branch_or_its_sha_is_refused(self):
+        for rev in ["contributor/feature", self.git("rev-parse", "HEAD", cwd=self.clone)]:
+            with self.subTest(rev=rev):
+                r = self.resolve(rev)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn("is on no origin branch", r.stderr)
 
 
 class ForbiddenStringsTest(unittest.TestCase):
