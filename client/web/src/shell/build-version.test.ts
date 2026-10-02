@@ -7,6 +7,7 @@ function version(over: Partial<Parameters<typeof computeBuildVersion>[0]> = {}):
     commitCount: 0,
     shallow: false,
     isMainBuild: true,
+    shortSha: null,
     ...over,
   });
 }
@@ -64,5 +65,18 @@ describe("computeBuildVersion", () => {
 
   it("prefers +unknown over +dev when the number itself is not trustworthy", () => {
     expect(version({ shallow: true, isMainBuild: false })).toBe("0.1.0+unknown");
+    expect(version({ shallow: true, isMainBuild: false, shortSha: "15659dff" })).toBe("0.1.0+unknown");
+  });
+
+  it("names the commit on a non-main build, so two candidates cannot read the same", () => {
+    expect(version({ commitCount: 7, isMainBuild: false, shortSha: "15659dff" })).toBe(
+      "0.1.7+dev.15659dff",
+    );
+    // git could not say: the plain marker, never a guessed SHA.
+    expect(version({ commitCount: 7, isMainBuild: false, shortSha: null })).toBe("0.1.7+dev");
+  });
+
+  it("never puts the SHA on a main build", () => {
+    expect(version({ commitCount: 7, isMainBuild: true, shortSha: "c9dd9ec0" })).toBe("0.1.7");
   });
 });
