@@ -95,9 +95,12 @@
 #
 # A slot's state (persist/, admin.env, device-token) carries over to the next
 # revision built in it, so its token and browser session keep working. The
-# one refusal: the slot's previous SHA is not an ancestor of the new one and
-# `server/authority/src/schema.rs` or `server/worker/wrangler.toml` differ
-# between them (old code on migrated SQLite). Then pass `--fresh` (wipe
+# one refusal: the SHA that last ran against persist/ is not an ancestor of
+# the new one and `server/authority/src/schema.rs` or
+# `server/worker/wrangler.toml` differ between them (old code on migrated
+# SQLite). That SHA is `persist/.written-by`, which `up` writes; it is not
+# the manifest's, since a failed build names a SHA that never ran (and the
+# marker travels with a copied persist/). Then pass `--fresh` (wipe
 # persist/ and device-token; follow with `mint` and `seed`) or `--keep-state`.
 # Copying state across slots is by hand, both stopped:
 #   down a; down b; rm -rf <root>/b/state/persist; cp -R <root>/a/state/persist <root>/b/state/; up b; mint b
@@ -501,7 +504,9 @@ step() {
 # Refuses to carry state backwards across a schema change (see the header).
 check_state_carry() {
   local old
-  old=$(mget "$SLOT" .sha)
+  old=$(cat "$STATE/persist/.written-by" 2>/dev/null || true)
+  # A slot from before the marker: its manifest's SHA is the best guess.
+  [ -n "$old" ] || old=$(mget "$SLOT" .sha)
   [ -n "$old" ] && [ "$old" != "$SHA" ] || return 0
   [ -d "$STATE/persist" ] && [ -n "$(ls -A "$STATE/persist" 2>/dev/null)" ] || return 0
   [ "$FRESH" = 1 ] || [ "$KEEP_STATE" = 1 ] && return 0
@@ -716,6 +721,7 @@ cmd_up() {
   done
   [ "$code" = 401 ] || { tail -20 "$LOGS/preview.log" >&2; up_fail "preview /api did not reach the worker (last answer: ${code:-none})"; }
   [ "$(http_code "$URL/")" = 200 ] || up_fail "preview did not serve /"
+  mkdir -p "$STATE/persist" && mget "$SLOT" .sha >"$STATE/persist/.written-by"
 
   event up.ok ms="$(($(now_ms) - t0))"
   local pr

@@ -323,6 +323,38 @@ class PickTest(SlotCase):
         self.assertEqual(self.pick(self.SHA1), "a")
 
 
+class StateCarryTest(SlotCase):
+    """The state-carry check compares against the SHA that last *ran* on the
+    slot's persist/, not the manifest's: a failed build rewrites the manifest
+    with a SHA that never ran (found exercising M3: a refused build made the
+    next build in that slot demand --fresh)."""
+
+    BOGUS = "1" * 40
+
+    def setUp(self):
+        super().setUp()
+        self.head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+                                   capture_output=True, text=True, check=True).stdout.strip()
+        (self.slot / "state/persist/do").mkdir(parents=True)
+        (self.slot / "state/persist/do/db.sqlite").write_text("x")
+        (self.slot / "manifest.json").write_text(json.dumps(
+            {"slot": "a", "sha": self.BOGUS, "status": "failed"}))
+
+    def carry(self):
+        return self.candidate(
+            f"init_root; slot_paths a; SHA={self.head} FRESH=0 KEEP_STATE=0; check_state_carry")
+
+    def test_the_sha_that_ran_wins_over_a_failed_builds_sha(self):
+        (self.slot / "state/persist/.written-by").write_text(self.head + "\n")
+        r = self.carry()
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_without_the_marker_the_manifest_sha_is_used(self):
+        r = self.carry()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("state written by 11111111", r.stderr)
+
+
 class ForbiddenStringsTest(unittest.TestCase):
     NEVER = ["mint-device-token", "mint-hb-token", "hb.twinion.net",
              "wrangler deploy", "wrangler publish", "wrangler login",
