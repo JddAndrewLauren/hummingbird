@@ -91,6 +91,10 @@ pnpm dev            # build the wasm core, then vite dev
 - `pnpm wrangler:dev` — build, then `wrangler dev`, serving `dist/` through
   `csp-worker/worker.ts` (adds the strict CSP header) with the `wrangler.toml`
   `[assets]` config (SPA fallback via `not_found_handling`).
+- `scripts/candidate/candidate.sh` (repo root) — not a pnpm script: builds
+  a PR head or main into a local review slot, the production bundle under
+  `vite preview` beside its own local authority, two slots side by side.
+  Its header is the doc.
 
 ## Demo mode
 
