@@ -1,0 +1,49 @@
+version: 1
+rigs:
+  web-demo:
+    what: The web app from this checkout under Vite on port 5180, showing the seeded demo board (no authority)
+    start:
+      - rustup target add wasm32-unknown-unknown
+      - (cd client/web && pnpm install --frozen-lockfile)
+      - (cd client/web && pnpm dev --host 127.0.0.1 --port 5180 --strictPort)
+    ready: curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:5180/src/main.tsx
+    open: http://127.0.0.1:5180/?demo
+    data: The seed is client/web/src/fixtures/demo.ts; ?demo=kit shows the design-kit alerts. Reload to reset.
+    needs: ["[device] wasm-pack 0.13, pnpm 11 and Node 22 on PATH"]
+  authority-local:
+    what: The authority Worker under wrangler dev on 127.0.0.1:8787 with an empty local store and a throwaway admin secret
+    start:
+      - rustup target add wasm32-unknown-unknown
+      - (cd server/worker && rm -rf .wrangler/state && cargo install -q worker-build && worker-build --release)
+      - (cd server/worker && npx --yes wrangler@4 dev --ip 127.0.0.1 --port 8787 --var ADMIN_SECRET:local-rig-admin)
+    ready: test "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 'http://127.0.0.1:8787/api/changes?since=0')" = 401
+    open: http://127.0.0.1:8787/api/changes?since=0
+    data: "Fresh store on every boot. Mint a device token: curl -sX POST http://127.0.0.1:8787/api/admin/tokens -H 'Authorization: Bearer local-rig-admin' -d '{\"id\":\"rig-device\",\"name\":\"rig\",\"scope\":\"device\"}' | jq -r .token"
+    needs: ["[device] Node 22 (npx wrangler@4), jq and curl"]
+    exclusive: true
+  web-local:
+    what: The web app under Vite on port 5181, proxied to authority-local, syncing real data from an empty store
+    uses: [authority-local]
+    start:
+      - (cd client/web && pnpm install --frozen-lockfile)
+      - (cd client/web && pnpm dev --host 127.0.0.1 --port 5181 --strictPort)
+    ready: test "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 'http://127.0.0.1:5181/api/changes?since=0')" = 401
+    open: http://127.0.0.1:5181/
+    data: Paste the token from authority-local's data command into Settings > device token.
+    needs: ["[device] wasm-pack 0.13, pnpm 11 and Node 22 on PATH"]
+    exclusive: true
+  phone-live:
+    what: The debug Android app from this checkout on the Pixel_10_Pro_Fold emulator, against production hb.twinion.net
+    start:
+      - rustup target add aarch64-linux-android
+      - (cd client/android && ./gradlew --quiet :app:assembleDebug)
+      - ./client/android/emulator.sh Pixel_10_Pro_Fold 5584
+    ready: adb -s emulator-5584 shell pidof net.twinion.hummingbird
+    open: The emulator window (adb -s emulator-5584)
+    data: The device token persists in the AVD; re-paste it in Settings only after a wipe.
+    needs:
+      - env:Mac
+      - "[device] Android SDK with the Pixel_10_Pro_Fold AVD (Google Play image), an NDK and cargo-ndk"
+      - "[login] the emulator's own device token (not the phone's) pasted once into Settings > device token"
+      - "[live] production hb.twinion.net: captures and acks are real, and its FCM registration makes it a push target"
+    exclusive: true
