@@ -35,7 +35,7 @@ rigs:
   phone-live:
     what: The debug Android app from this checkout on the Pixel_10_Pro_Fold emulator, against production hb.twinion.net
     start:
-      - rustup target add aarch64-linux-android
+      - rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
       - (cd client/android && ./gradlew --quiet :app:assembleDebug)
       - ./client/android/emulator.sh Pixel_10_Pro_Fold 5584
     ready: adb -s emulator-5584 shell pidof net.twinion.hummingbird

@@ -27,8 +27,9 @@ adb="$sdk/platform-tools/adb"
 "$sdk/emulator/emulator" -avd "$avd" -port "$port" -no-snapshot-save -no-boot-anim &
 emu=$!
 
-"$adb" -s "$serial" wait-for-device
-until [ "$("$adb" -s "$serial" shell getprop sys.boot_completed | tr -d '\r')" = 1 ]; do
+# No `adb wait-for-device`: it never returns when the emulator dies before
+# registering (the AVD already open elsewhere), so this loop does the waiting.
+until [ "$("$adb" -s "$serial" shell getprop sys.boot_completed 2> /dev/null | tr -d '\r')" = 1 ]; do
   kill -0 "$emu" 2> /dev/null || { echo "emulator exited before boot completed" >&2; exit 1; }
   sleep 2
 done
