@@ -1,5 +1,4 @@
 // The frontier board: the whole of a surface's centre column — the selected
-import { fetchGrillTranscript } from "../shell/grill-transcript-wiring";
 // item's slot, the frontier in columns (`FrontierColumns.tsx`) and the Blocked
 // section under them — plus the render-phase optimistic fallback that keeps
 // item detail standing when an act moves the item out of both queries.
@@ -31,6 +30,7 @@ import type {
   TaskItemDTO,
 } from "../store/protocol";
 import { obsidianVaultName } from "../obsidian/vault-uri";
+import { fetchGrillTranscript } from "../shell/grill-transcript-wiring";
 import type { TaskState } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
 import { blockedReasonLabel } from "./blocked-reason";
