@@ -414,9 +414,10 @@ pub const REGISTRY: &[SourceEntry] = &[
         expires_at: Expiry::Always("the race's start time"),
         retired_as: None,
     },
-    // The fantasy lane's two sources (#717, #713). One lane, one ingest
-    // token (`YAHOO_INGEST_TOKEN`, race-poll's precedent), two entries —
-    // because the two subjects differ in shape and `shape` is one field.
+    // The fantasy lane's two sources (#717, #713). One lane, two entries —
+    // because the two subjects differ in shape and `shape` is one field —
+    // and so two ingest tokens, one bound to each (`YAHOO_LINEUP_INGEST_TOKEN`,
+    // `YAHOO_WAIVERS_INGEST_TOKEN`; ADR-0011's #717 amendment).
     SourceEntry {
         source: YAHOO_LINEUP_V1,
         // State: `source_key` names the team whose lineup it is, and the
