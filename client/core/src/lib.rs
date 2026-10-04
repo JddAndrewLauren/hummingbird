@@ -76,7 +76,7 @@ use question_switch::{
 use hummingbird_domain::{
     resulting_stage, Alert, AlertPatch, Condition, CreateFileLink, CreateFog, CreateGrill,
     CreateItem, CreateProject, CreateProjectLink, CreateRule, CreateStep, Energy, FileLink,
-    FileLinkPatch, Fog, FogPatch, GrillVerdict, Item, Project, ProjectLink, ProjectLinkPatch,
+    FileLinkPatch, Fog, FogPatch, GrillVerdict, GrillWithoutTranscript, Item, Project, ProjectLink, ProjectLinkPatch,
     ProjectPatch, Route, RoutePatch, Rule, RulePatch, Setting, Size, Stage, Step, StepPatch, Tier,
 };
 
@@ -1385,6 +1385,18 @@ where
             self.cycle.mirror().file_links_for_item(item_id).cloned().collect();
         links.sort_by_key(|link| link.version);
         links
+    }
+
+    /// Every completed Grill on one item, newest first — the Grill
+    /// history's read (#358, ADR-0023). Order is `completed_at` descending,
+    /// ties broken by id so two devices never disagree. Never a
+    /// transcript: the sweep does not carry one (decision 4), and a caller
+    /// wanting it reads `GET /api/grills/:id` for that one grill.
+    pub fn grills_for(&self, item_id: &str) -> Vec<GrillWithoutTranscript> {
+        let mut grills: Vec<GrillWithoutTranscript> =
+            self.cycle.mirror().grills_for_item(item_id).cloned().collect();
+        grills.sort_by(|a, b| b.completed_at.cmp(&a.completed_at).then_with(|| a.id.cmp(&b.id)));
+        grills
     }
 
     /// Creates a File link (ADR-0036): enqueues a `POST /api/file_links`
@@ -7719,6 +7731,46 @@ mod tests {
             core.file_links_for("i-1").iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
             vec!["fl-a", "fl-b"],
         );
+    }
+
+    /// #358: an item's completed Grills read newest first, scoped to the
+    /// item, ties broken by id.
+    #[tokio::test]
+    async fn grills_for_lists_an_items_grills_newest_first() {
+        let mut core = Core::new();
+        let grill = |id: &str, item: &str, completed_at: i64| GrillWithoutTranscript {
+            id: id.into(),
+            item_id: item.into(),
+            summary: format!("summary {id}"),
+            verdict: GrillVerdict::FogRemains,
+            model_proposal: "{}".into(),
+            applied_patch: "{}".into(),
+            resulting_stage: Stage::Grilling,
+            completed_at,
+            version: 1,
+        };
+        core.push_api_key("token-1");
+        let sweep_body = serde_json::to_string(&hummingbird_domain::ChangesResponse {
+            version: 9,
+            grills: vec![
+                grill("g-old", "i-1", 1_000),
+                grill("g-new-b", "i-1", 5_000),
+                grill("g-new-a", "i-1", 5_000),
+                grill("g-other", "i-2", 9_000),
+            ],
+            ..hummingbird_domain::ChangesResponse::empty(9)
+        })
+        .unwrap();
+        let read = ScriptedRead::sweep_only(vec![Ok(sweep_body)]);
+        let outcome = core
+            .run(&read, &ScriptedWrite::new(vec![]), 1_000, Trigger::User, true, 0.0)
+            .await;
+        assert!(matches!(outcome, CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })));
+        assert_eq!(
+            core.grills_for("i-1").iter().map(|g| g.id.as_str()).collect::<Vec<_>>(),
+            vec!["g-new-a", "g-new-b", "g-old"],
+        );
+        assert!(core.grills_for("i-unknown").is_empty());
     }
 
     /// #628 acceptance: "the core gains fog ... patch (question, position,

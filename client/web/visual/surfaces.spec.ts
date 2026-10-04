@@ -670,6 +670,22 @@ for (const theme of THEMES) {
         fullPage: false,
       });
 
+      // #358: the item's Grill history, expanded — the fixture's one grill
+      // applied a patch that differs from the model's proposal, so the two
+      // labelled blocks are photographed side by side at every width. No
+      // transcript is opened: that is a live `GET /api/grills/:id`, and the
+      // collapsed and expanded list fetch nothing.
+      await page.getByRole("button", { name: "Show 1 grill" }).click();
+      const applied = page.getByRole("region", { name: "Applied" });
+      await expect(page.getByRole("region", { name: "Proposed by the model" })).toBeVisible();
+      await expect(applied).toBeVisible();
+      await applied.scrollIntoViewIfNeeded();
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({
+        path: `visual/.captures/projects-dossier-grill-history-${testInfo.project.name}-${theme}.png`,
+        fullPage: false,
+      });
+
       // Shut again, so the archive capture below is the ordinary dossier and
       // not the dossier with a panel open across it.
       await page.getByRole("button", { name: "Close item detail" }).click();

@@ -18,6 +18,7 @@ import type {
   PollOutcomeName,
   ProjectDTO,
   FileLinkDTO,
+  GrillDTO,
   ProjectLinkDTO,
   RecallRowDTO,
   RouteDTO,
@@ -291,6 +292,11 @@ export interface TaskState {
   /** The result of the most recent file-link create/remove request this
    * view issued (ADR-0036) — `null` until the first one resolves. */
   lastFileLinkWrite: TaskFileLinkResult | null;
+  /** The Grill history, keyed by item id (#358), newest first — only ever
+   * grows entries a view actually asked about via `getGrills`, the same
+   * `stepsByItem` shape. A missing entry means "not read yet", which the
+   * history never draws as "never grilled". */
+  grillsByItem: Record<string, GrillDTO[]>;
   /** The dossier's reading column's Route, keyed by project id (#627) —
    * only ever grows entries a view actually asked about via `getRoute`,
    * the same `linksByProject` shape. A missing entry means "not read yet";
@@ -498,6 +504,7 @@ const initialTaskState: TaskState = {
   linksByProject: {},
   lastProjectLinkWrite: null,
   fileLinksByItem: {},
+  grillsByItem: {},
   lastFileLinkWrite: null,
   routeByProject: {},
   lastRouteWrite: null,
@@ -597,6 +604,11 @@ export function createCoreStore() {
     setTaskState({ fileLinksByItem: { ...state.task.fileLinksByItem, [itemId]: links } });
   }
 
+  // Same idea for `grillsByItem` (the Grill history, #358).
+  function setTaskGrills(itemId: string, grills: GrillDTO[]): void {
+    setTaskState({ grillsByItem: { ...state.task.grillsByItem, [itemId]: grills } });
+  }
+
   // Same idea for `routeByProject` (the dossier's reading column, #627).
   function setTaskRoute(projectId: string, route: RouteDTO): void {
     setTaskState({ routeByProject: { ...state.task.routeByProject, [projectId]: route } });
@@ -633,6 +645,7 @@ export function createCoreStore() {
     setTaskSteps,
     setTaskProjectLinks,
     setTaskFileLinks,
+    setTaskGrills,
     setTaskRoute,
     setTaskPaneRead,
     setTaskGrillDraft,

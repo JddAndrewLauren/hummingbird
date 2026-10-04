@@ -454,6 +454,7 @@ mod wasm_bindings {
     // ADR-0036: the file-link trio, same three shapes as the project-link
     // trio just above.
     const BUSY_FILE_LINK_LIST: &str = r#"{"kind":"busy","links":[]}"#;
+    const BUSY_GRILL_LIST: &str = r#"{"kind":"busy","grills":[]}"#;
     const BUSY_CREATE_FILE_LINK: &str = r#"{"kind":"busy","id":null,"error":null}"#;
     const BUSY_REMOVE_FILE_LINK: &str = r#"{"kind":"busy","error":null}"#;
     // #627: `route: null` here means the same thing it means when the
@@ -845,6 +846,16 @@ mod wasm_bindings {
         pub fn file_links(&self, item_id: String) -> String {
             self.inner.core.read(js_sys::Date::now() as i64, BUSY_FILE_LINK_LIST.to_string(), |host| serde_json::to_string(&host.file_links(&item_id))
                     .expect("FileLinkListResponse serializes"))
+        }
+
+        /// Every completed Grill on one item, newest first, as JSON:
+        /// `{"kind": "ok"|"busy", "grills": [GrillWithoutTranscript]}` —
+        /// the Grill history's read (#358). No transcript: that is
+        /// `GET /api/grills/:id`, fetched by the web on expand.
+        #[wasm_bindgen(js_name = grills)]
+        pub fn grills(&self, item_id: String) -> String {
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_GRILL_LIST.to_string(), |host| serde_json::to_string(&host.grills(&item_id))
+                    .expect("GrillListResponse serializes"))
         }
 
         /// Creates a File link (ADR-0036). Resolves to JSON:

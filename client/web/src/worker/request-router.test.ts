@@ -46,6 +46,7 @@ describe("isTaskWorkerRequest", () => {
     { type: "getProjects" },
     { type: "getProjectLinks", projectId: "p" },
     { type: "getFileLinks", itemId: "i" },
+    { type: "getGrills", itemId: "i" },
     { type: "createFileLink", seed: "s", itemId: "i", path: "Finance/receipt.pdf", nowMs: 1 },
     {
       type: "removeFileLink",

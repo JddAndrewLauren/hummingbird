@@ -25,6 +25,7 @@
 import { cleanup } from "@testing-library/react";
 import { afterEach } from "vitest";
 import type {
+  GrillDTO,
   BindingDTO,
   BlockedFrontierEntryDTO,
   LedgerRowDTO,
@@ -205,6 +206,21 @@ export function fileLinkDTO(overrides: Partial<FileLinkDTO> = {}): FileLinkDTO {
   };
 }
 
+export function grillDTO(overrides: Partial<GrillDTO> = {}): GrillDTO {
+  return {
+    id: "grill-1",
+    itemId: "item-1",
+    summary: "Done means the tap stops dripping.",
+    verdict: "resolved",
+    modelProposal: '{"title":"Fit the new tap washer"}',
+    appliedPatch: '{"title":"Fit the new tap washer"}',
+    resultingStage: "ready",
+    completedAt: 1_000,
+    version: 1,
+    ...overrides,
+  };
+}
+
 export function routeDTO(overrides: Partial<RouteDTO> = {}): RouteDTO {
   return {
     projectId: "project-1",
@@ -251,6 +267,7 @@ export function taskState(overrides: Partial<TaskState> = {}): TaskState {
     linksByProject: {},
     lastProjectLinkWrite: null,
     fileLinksByItem: {},
+    grillsByItem: {},
     lastFileLinkWrite: null,
     routeByProject: {},
     lastRouteWrite: null,

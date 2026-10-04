@@ -152,6 +152,8 @@ describe("useGrillTakeoverWiring", () => {
 
     expect(screen.getByTestId("open").textContent).toBe("item-1");
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "getSteps", itemId: "item-1" });
+    // #358: the takeover draws the item's Grill history, a mirror read.
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getGrills", itemId: "item-1" });
 
     fireEvent.click(screen.getByText("back"));
     expect(screen.getByTestId("open").textContent).toBe("none");

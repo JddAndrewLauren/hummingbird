@@ -985,6 +985,24 @@ export function buildDemoTaskState(): TaskState {
       ],
     },
     lastFileLinkWrite: null,
+    // #358: the Grill history on the same opened item — one grill whose
+    // applied patch differs from the model's proposal, so the visual gate
+    // photographs the two blocks side by side (once the list is expanded).
+    grillsByItem: {
+      "b-f1": [
+        {
+          id: "b-f1-grill-1",
+          itemId: "b-f1",
+          summary: "Done means the kitchen tap stops dripping; the washer is already bought.",
+          verdict: "resolved",
+          modelProposal: '{"title":"Fit the new tap washer","size":"quick"}',
+          appliedPatch: '{"title":"Fit the new tap washer","size":"quick","context":"home"}',
+          resultingStage: "ready",
+          completedAt: loadedAt - 2 * DAY,
+          version: 1,
+        },
+      ],
+    },
     // #627: the reading column's Route card — one filled row on the
     // dossier the links fixture above also seeds, so the visual gate
     // photographs the card holding real destination/notes text rather than

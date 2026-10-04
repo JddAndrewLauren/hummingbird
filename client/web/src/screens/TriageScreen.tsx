@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { fetchGrillTranscript } from "../shell/grill-transcript-wiring";
 import { Card } from "../components/core/Card";
 import { Icon } from "../components/core/Icon";
 import { EmptyState } from "../components/feedback/EmptyState";
@@ -128,6 +129,7 @@ export function TriageScreen({
           onBack={handleGrillBack}
           onDiscard={grill.discard}
           completionError={grillCompletionFailureFor(task.lastGrillCompletion, grill.confirmSeed)}
+          grillHistory={{ grills: task.grillsByItem[openItem.id], fetchTranscript: fetchGrillTranscript }}
         />
       </SingleColumn>
     );

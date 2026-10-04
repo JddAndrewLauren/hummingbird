@@ -6,7 +6,7 @@
 // failure mode `src/test/component.tsx`'s header exists for.
 
 import { describe, expect, it, vi } from "vitest";
-import { cleanup, fileLinkDTO, fireEvent, itemDTO, projectDTO, render, screen, stepDTO } from "../../test/component";
+import { cleanup, fileLinkDTO, fireEvent, grillDTO, itemDTO, projectDTO, render, screen, stepDTO } from "../../test/component";
 import { IDLE, reduceRun, type SkillEvent, type SkillRunState } from "../../skills/run-state";
 import type { TaskItemDTO } from "../../store/protocol";
 import { VAULT_PATH_PROBLEM } from "../../screens/triage-form";
@@ -1156,5 +1156,40 @@ describe("the Link affordance", () => {
     fireEvent.click(screen.getByRole("button", { name: "Promote to ready" }));
     expect(onTriage).not.toHaveBeenCalled();
     expect(screen.getByText("A link name needs a URL")).toBeTruthy();
+  });
+});
+
+// #358: item detail draws the Grill history when its host wired one, and
+// only in detail mode; an unwired host draws none at all.
+describe("the Grill history in item detail", () => {
+  it("renders collapsed in detail mode when wired, and fetches nothing", () => {
+    const fetchTranscript = vi.fn();
+    render(
+      <ItemPanel
+        mode="detail"
+        item={itemDTO({ id: "item-1" })}
+        projects={[]}
+        grillHistory={{ grills: [grillDTO()], fetchTranscript }}
+      />,
+    );
+    expect(screen.getByRole("region", { name: "Grill history" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Show 1 grill" }).getAttribute("aria-expanded")).toBe("false");
+    expect(fetchTranscript).not.toHaveBeenCalled();
+  });
+
+  it("is absent in triage mode and when no host wired it", () => {
+    render(
+      <ItemPanel
+        mode="triage"
+        item={itemDTO({ id: "item-1", stage: "triage" })}
+        projects={[]}
+        grillHistory={{ grills: [grillDTO()], fetchTranscript: vi.fn() }}
+      />,
+    );
+    expect(screen.queryByRole("region", { name: "Grill history" })).toBeNull();
+    cleanup();
+
+    render(<ItemPanel mode="detail" item={itemDTO({ id: "item-1" })} projects={[]} />);
+    expect(screen.queryByRole("region", { name: "Grill history" })).toBeNull();
   });
 });
