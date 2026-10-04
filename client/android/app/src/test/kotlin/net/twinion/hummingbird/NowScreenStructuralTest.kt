@@ -379,7 +379,7 @@ class NowScreenStructuralTest {
             ?.get(1)
             ?: error("could not locate namesSubject's when block in QuestionLabels.kt")
         assertFalse("namesSubject must not carry an else arm", block.contains("else ->"))
-        for (variant in listOf("HOMEWORK", "SCPS", "WASTE", "WEEKEND", "VACATION", "RACE", "KIMI", "GITHUB", "UPTIME", "REACHABILITY", "POLLER")) {
+        for (variant in listOf("HOMEWORK", "SCPS", "WASTE", "WEEKEND", "VACATION", "RACE", "FANTASY", "KIMI", "GITHUB", "UPTIME", "REACHABILITY", "POLLER")) {
             assertTrue("namesSubject is missing the $variant arm", block.contains("MobileStandingQuestion.$variant"))
         }
         assertTrue(

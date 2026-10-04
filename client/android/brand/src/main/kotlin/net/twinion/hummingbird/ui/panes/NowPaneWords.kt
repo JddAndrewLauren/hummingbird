@@ -17,7 +17,7 @@ import uniffi.hummingbird_ffi_mobile.MobileWeekendGap
 
 // The Now surface's pure word helpers — every sentence, label and clock the
 // expanded cards say, with no Compose in them. They were `NowPanesExpanded.kt`'s
-// private half until ADR-0039: the watch renders the same six Now questions
+// private half until ADR-0039: the watch renders the same Now questions
 // and must say exactly what the phone says, so the words moved into `:brand`
 // where both device apps read them, and the phone's Material3 composables
 // stayed behind in `:app`. Each helper's own doc names the web function it

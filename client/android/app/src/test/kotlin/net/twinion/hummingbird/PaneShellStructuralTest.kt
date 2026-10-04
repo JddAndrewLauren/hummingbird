@@ -64,6 +64,7 @@ class PaneShellStructuralTest {
             "MobilePaneFacts.Weekend",
             "MobilePaneFacts.Vacation",
             "MobilePaneFacts.Race",
+            "MobilePaneFacts.Fantasy",
             "MobilePaneFacts.Kimi",
             "MobilePaneFacts.Github",
             "MobilePaneFacts.Uptime",

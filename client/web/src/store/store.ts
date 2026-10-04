@@ -326,7 +326,7 @@ export interface TaskState {
    * `bindings` answer arrives: an empty array is a real answer ("the table
    * is empty"), and the editor must not render it before one exists. */
   bindings: BindingDTO[] | null;
-  /** Every standing question's off switch (#715, ADR-0034) — all eleven,
+  /** Every standing question's off switch (#715, ADR-0034) — all twelve,
    * whether they have a `settings` row or not. `null` until the first
    * `questionSwitches` answer arrives, on [`TaskState.bindings`]' contract
    * and for a sharper version of its reason: an unread switch list

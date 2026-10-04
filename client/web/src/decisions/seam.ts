@@ -233,6 +233,13 @@ export interface DecisionsModule {
   race_facts_json(series: string, inputsJson: string): string;
   race_answer_json(subjectKey: string, inputsJson: string): string;
   race_constants_json(): string;
+  fantasy_leagues_from_binding_json(text: string): string;
+  fantasy_setup_json(inputsJson: string): string;
+  fantasy_subjects_json(inputsJson: string): string;
+  fantasy_parse_subject_key_json(subjectKey: string): string;
+  fantasy_facts_json(subjectKey: string, inputsJson: string): string;
+  fantasy_answer_json(subjectKey: string, inputsJson: string): string;
+  fantasy_constants_json(): string;
   homework_zone_queries_json(inputsJson: string): string;
   homework_facts_json(inputsJson: string, zoneFactsJson: string): string;
   homework_answer_json(inputsJson: string, zoneFactsJson: string): string;
@@ -2155,6 +2162,69 @@ export interface RaceConstants {
 
 export function raceConstantsFromCore(): RaceConstants {
   return JSON.parse(required().race_constants_json()) as RaceConstants;
+}
+
+// -- fantasy (#717) --------------------------------------------------------
+
+export type FantasySubjectCore = "lineup" | "waivers";
+
+export type FantasySetupCore =
+  | { kind: "bound"; leagues: string[] }
+  | { kind: "unread" }
+  | { kind: "unusable" }
+  | { kind: "unset" };
+
+export type FantasyGap =
+  | { gap: "notFetched" }
+  | { gap: "malformed"; reason: string }
+  | { gap: "unknownSchema"; schema: string }
+  | { gap: "bodyNotRead" };
+
+/** Only the gap arm exists yet — the fact sets arrive with #718/#719. */
+export type FantasyResolved = { kind: "gap"; gap: FantasyGap };
+
+export function fantasyLeaguesFromBindingFromCore(text: string): string[] {
+  return JSON.parse(required().fantasy_leagues_from_binding_json(text)) as string[];
+}
+
+export function fantasySetupFromCore(inputs: PaneInputsSource): FantasySetupCore {
+  return JSON.parse(required().fantasy_setup_json(paneInputsPayload(inputs))) as FantasySetupCore;
+}
+
+export function fantasySubjectsFromCore(inputs: PaneInputsSource): string[] {
+  return JSON.parse(required().fantasy_subjects_json(paneInputsPayload(inputs))) as string[];
+}
+
+export function fantasyParseSubjectKeyFromCore(
+  subjectKey: string,
+): { league: string; subject: FantasySubjectCore } | null {
+  return JSON.parse(required().fantasy_parse_subject_key_json(subjectKey)) as {
+    league: string;
+    subject: FantasySubjectCore;
+  } | null;
+}
+
+export function fantasyFactsFromCore(subjectKey: string, inputs: PaneInputsSource): FantasyResolved {
+  return JSON.parse(
+    required().fantasy_facts_json(subjectKey, paneInputsPayload(inputs)),
+  ) as FantasyResolved;
+}
+
+export function fantasyAnswerFromCore(subjectKey: string, inputs: PaneInputsSource): PaneAnswerCore {
+  return JSON.parse(
+    required().fantasy_answer_json(subjectKey, paneInputsPayload(inputs)),
+  ) as PaneAnswerCore;
+}
+
+export interface FantasyConstants {
+  lineupSource: string;
+  waiversSource: string;
+  bindingKey: string;
+  setupLeague: string;
+}
+
+export function fantasyConstantsFromCore(): FantasyConstants {
+  return JSON.parse(required().fantasy_constants_json()) as FantasyConstants;
 }
 
 // -- homework (#675) --------------------------------------------------------

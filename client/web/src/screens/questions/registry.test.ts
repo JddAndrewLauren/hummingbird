@@ -73,8 +73,13 @@ describe("requiredSources", () => {
     }
   });
 
-  it("names the now surface's two snapshot lanes and nothing else", () => {
-    expect(requiredSources("now")).toEqual(["city-waste/v2", "race-schedule/v1"]);
+  it("names the now surface's four snapshot lanes and nothing else", () => {
+    expect(requiredSources("now")).toEqual([
+      "city-waste/v2",
+      "race-schedule/v1",
+      "yahoo-lineup/v1",
+      "yahoo-waivers/v1",
+    ]);
   });
 
   it("reads every source the poller watches from the status surface, once each", () => {
@@ -259,7 +264,7 @@ describe("rankPanes — the off switch (#715, ADR-0034)", () => {
   });
 
   it("ignores a question name this build does not know", () => {
-    const inputs = { ...emptyInputs(), disabledQuestions: ["fantasy", ""] };
+    const inputs = { ...emptyInputs(), disabledQuestions: ["cricket", ""] };
     expect(rankPanes(inputs, "now").map((pane) => pane.question)).toEqual(
       rankPanes(emptyInputs(), "now").map((pane) => pane.question),
     );

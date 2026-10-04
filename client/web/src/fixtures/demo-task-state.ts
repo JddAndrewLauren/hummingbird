@@ -156,6 +156,7 @@
 import { TRIPS_CALENDAR_BINDING_KEY } from "../calendar/selection";
 import { LINK_BINDING_KEY } from "../screens/homework-pane/homework";
 import { OBSIDIAN_VAULT_BINDING_KEY } from "../obsidian/vault-uri";
+import { BINDING_KEY as FANTASY_BINDING_KEY } from "../screens/fantasy-pane/fantasy";
 import { DEFAULT_CONTEXTS } from "../screens/field-vocabulary";
 import { QUESTION_ORDER } from "../screens/questions/contract";
 import type { BindingDTO, LedgerRowDTO, ProjectDTO, RecallRowDTO, TaskItemDTO } from "../store/protocol";
@@ -769,6 +770,17 @@ const boundVaultBinding: BindingDTO = {
   value: { state: "text", text: "Demo vault" },
 };
 
+/** #717's league list, seeded so the board world photographs the fantasy
+ * question's **bound, never-polled** arm (a lineup and a waivers pane, both
+ * gaps — nothing polls Yahoo yet), while the empty world's captures keep
+ * its unbound setup prompt. The league key is fictional. */
+const boundFantasyBinding: BindingDTO = {
+  key: FANTASY_BINDING_KEY,
+  known: true,
+  pending: false,
+  value: { state: "text", text: "449.l.123456" },
+};
+
 /** The seeded state, typed as the real `TaskState` so a field added to that
  * interface fails this file at build time rather than shipping a fixture that
  * silently omits it.
@@ -901,6 +913,7 @@ export function buildDemoTaskState(): TaskState {
       boundTripsBinding,
       boundHomeworkLinkBinding,
       boundVaultBinding,
+      boundFantasyBinding,
     ],
     // #715: every question on, which is production's own steady state (a
     // switched-off question is the exception, and one seeded here would

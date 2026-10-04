@@ -232,6 +232,7 @@ describe("buildDemoTaskState — #452 grows the seed past the frontier and the i
       "obsidian-vault",
       "race-series",
       "trips-calendar",
+      "yahoo-leagues",
     ]);
     expect(state.bindings?.every((b) => b.known)).toBe(true);
   });

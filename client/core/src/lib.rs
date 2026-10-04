@@ -6983,6 +6983,7 @@ mod tests {
                 "homework-link",
                 "scps-quest",
                 "obsidian-vault",
+                "yahoo-leagues",
             ],
         );
         assert_eq!(binding(&bindings, "race-series").value, BindingValue::Unset);
@@ -7024,6 +7025,7 @@ mod tests {
                 "homework-link",
                 "scps-quest",
                 "obsidian-vault",
+                "yahoo-leagues",
                 "a-non-string-one",
                 "some-future-binding",
             ],

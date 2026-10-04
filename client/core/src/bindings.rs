@@ -97,6 +97,13 @@ pub enum BindingKey {
     /// for the ordinary sync-it-once reason — set on one device, present on
     /// the next.
     ObsidianVault,
+    /// Which Yahoo fantasy football leagues the Fantasy question follows
+    /// (#717) — comma-separated league keys inside the JSON string
+    /// (`"449.l.123456,449.l.789012"`), `race-series`' shape for its reason:
+    /// a JSON array would land as [`BindingValue::Other`], which this editor
+    /// cannot write. League keys are season-scoped, so this is re-typed
+    /// each August (#713).
+    Fantasy,
 }
 
 impl BindingKey {
@@ -110,6 +117,7 @@ impl BindingKey {
         BindingKey::HomeworkLink,
         BindingKey::ScpsQuest,
         BindingKey::ObsidianVault,
+        BindingKey::Fantasy,
     ];
 
     /// The `settings.key` this binding is stored under — the wire spelling
@@ -122,6 +130,7 @@ impl BindingKey {
             BindingKey::HomeworkLink => "homework-link",
             BindingKey::ScpsQuest => "scps-quest",
             BindingKey::ObsidianVault => "obsidian-vault",
+            BindingKey::Fantasy => "yahoo-leagues",
         }
     }
 
@@ -245,7 +254,8 @@ mod tests {
                 "city-waste-page",
                 "homework-link",
                 "scps-quest",
-                "obsidian-vault"
+                "obsidian-vault",
+                "yahoo-leagues"
             ]
         );
     }
