@@ -103,8 +103,6 @@ private val NO_ANSWER = PaneGlyph.Icon(R.drawable.ic_cloud_fog, "no answer yet")
 private val CHECKING_SETUP = PaneGlyph.Icon(R.drawable.ic_cloud_fog, "checking setup")
 private val SETUP_NEEDS_A_LOOK = PaneGlyph.Icon(R.drawable.ic_help_circle, "setup needs a look")
 
-/** `ageWords` in `github.ts`/`uptime.ts`, ported — internal since the
- * pane-content slice: the expanded cards speak the same ages. */
 /** The web's shared stale caveat line — "stale — as of Nh ago", or the
  * honest no-number arm (`WastePaneExpanded.tsx`'s own note: an unknown age
  * has no hours to name, so it says that instead of fabricating one). Here
@@ -115,6 +113,8 @@ fun staleWords(freshness: MobilePaneFreshness): String = when (freshness) {
     MobilePaneFreshness.Unknown -> "stale — age unknown"
 }
 
+/** `ageWords` in `github.ts`/`uptime.ts`, ported — internal since the
+ * pane-content slice: the expanded cards speak the same ages. */
 fun ageWords(ageMs: Long): String {
     val hours = ageMs / 3_600_000
     if (hours < 1) return "under an hour ago"
