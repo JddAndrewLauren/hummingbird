@@ -207,6 +207,10 @@ mirroring `ffi-web`'s two: the core holds *both* the synced binding and
 the per-device selection, so `effectiveSelection` runs entirely inside
 Rust and Kotlin never carries the fact across a seam the way `App.tsx`
 must.
+**Amended 2026-09-23 (#820):** which question reads which
+`context_snapshots` source is declared once, in the core — see
+[Each question's snapshot sources are declared once (#820)](#each-questions-snapshot-sources-are-declared-once-820)
+below.
 **Context:** the Android-client grilling of 2026-08-14, opened on
 [#141](https://github.com/JddAndrewLauren/hummingbird/issues/141) when the
 build went from planned to started — core maturity (the #95/#114 stack) is
@@ -643,3 +647,12 @@ unchanged for every other pane: if no decision reads it, it stays home.
 | `decisions::share` — `parse_share_payload`, `first_http_url`, `url_host`, `link_display_label` | **sunk on arrival**, with one caller (Android's `ACTION_SEND` alias) and no web share target yet. The tie-breaker is satisfied prospectively: a PWA `share_target` is a known later slice, and the alternative was a Kotlin URL regex in `CaptureActivity` — the kind of hand-copied decision `CaptureFieldSetStructuralTest` already bans in `ui/forms` (date regexes, vocabulary literals) and `ManifestAliasTest` now bans there by name (`Regex(`, `indexOf("http`). What crossed is a mapping (which *field* each piece of a share starts in), a display rule (name → host → URL) and a safety rule (`is_followable_link`: only an `http(s)` URL with a host is drawn as a tap that leaves the app — the web's anchor and Android's `ACTION_VIEW` read the same answer); what did not cross is the seeding itself — `CaptureViewModel.seedFromShare` is a form action, and `Core::capture` still receives the human's title verbatim (ADR-0022) |
 | `capture.rs`'s `parse_seam` | untouched. The share mapping seeds a *draft* the human edits; it is not a capture parser, and lives in its own module so that #42's guard stays a named no-op |
 | `decisions::share::link_label_problem` — "a name needs a URL" | **sunk** (review finding on #782's own PR). The first cut stated the rule as a form check in five client-side places — `capture-meta.ts`'s `linkProblem`, `CaptureViewModel.canSubmitDraft`, `ItemDetailViewModel.canSave`, and both seams' `capture` guards — each a two-string comparison that looked too small to drift. That is exactly the shape #500 sank `capture_meta_problems` for: the rule and its message now live once, both seams export it (`link_label_problem`/`linkLabelProblem`), the web's capture box and triage/item-panel drafts read it through `seam.ts`, and Android's two ViewModels take it injected beside `metaProblemsFn`, with `CaptureSubmitRefusalTest` gating that production passes the real binding. The authority's own 400 for the same shape stays — it is the wire's rule, and a client cannot be trusted to have asked |
+
+## Each question's snapshot sources are declared once (#820)
+
+*Amended 2026-09-23 (#820).*
+
+| Module | Verdict |
+|---|---|
+| `decisions::panes::question_sources` / `required_sources` | **the only declaration** of which standing question reads which `context_snapshots` source, and of each surface's union. #779 had written the core's copy as a restatement of the web's per-question `QuestionDef.sources`; two exhaustive matches meant a new *question* broke both compiles, but a source added to one and not the other drifted silently. The mobile seam's pane-read loop (`mobile_pane_inputs`) reads `required_sources` directly; the web's `usePaneReadsWiring.ts` reads it through `ffi-web`'s `required_sources_json` and `seam.ts`'s `requiredSourcesFromCore`, which `registry.ts`'s `requiredSources` now simply returns. It is read inside an effect after `initDecisions()`, so the module-evaluation-order constraint that keeps the rows above literal does not reach it |
+| `QuestionDef.sources` and every `*-pane/question.ts`'s `sources: […]` | **deleted.** The rows above that cite `question.ts`'s `sources: [SOURCE]` as the reason a pane's `SOURCE` stays literal TS now describe history; those constants stay literal and pinned by `seam.test.ts` for their other module-evaluation readers, and `poller.ts`'s `SOURCES` is read by tests alone |

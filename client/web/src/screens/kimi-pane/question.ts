@@ -1,5 +1,5 @@
 import type { QuestionDef } from "../questions/contract";
-import { SNAPSHOT_KEY, SOURCE, kimiAnswer } from "./kimi";
+import { SNAPSHOT_KEY, kimiAnswer } from "./kimi";
 import { KimiPaneExpanded } from "./KimiPaneExpanded";
 
 /** "What's left of my Moonshot balance?" as the shell's registry sees it
@@ -13,7 +13,6 @@ import { KimiPaneExpanded } from "./KimiPaneExpanded";
  * header for why this question has no per-device setup at all. */
 export const kimiQuestion: QuestionDef = {
   surface: "status",
-  sources: [SOURCE],
   subjects: () => [SNAPSHOT_KEY],
   answer: (_subjectKey, inputs) => kimiAnswer(inputs),
   Expanded: KimiPaneExpanded,

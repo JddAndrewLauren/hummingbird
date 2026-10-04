@@ -1,5 +1,5 @@
 import type { QuestionDef } from "../questions/contract";
-import { SOURCES, pollerAnswer, pollerSubjects } from "./poller";
+import { pollerAnswer, pollerSubjects } from "./poller";
 import { PollerPaneExpanded } from "./PollerPaneExpanded";
 
 /** "Is this poller writing on time?" (#775) — one pane per source
@@ -9,7 +9,6 @@ import { PollerPaneExpanded } from "./PollerPaneExpanded";
  * header). */
 export const pollerQuestion: QuestionDef = {
   surface: "status",
-  sources: SOURCES,
   subjects: pollerSubjects,
   answer: pollerAnswer,
   Expanded: PollerPaneExpanded,
