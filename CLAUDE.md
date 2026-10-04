@@ -87,7 +87,8 @@ gates them.
 
 Working docs: `docs/agents/issue-tracker.md` (issues are GitHub issues driven
 via `gh`; the wayfinder map is issue #1), `docs/agents/triage-labels.md`,
-`docs/agents/domain.md`.
+`docs/agents/domain.md`, `docs/agents/rigs.yaml` (Human Check rigs), and the
+root `AGENTS.md` (the test commands, per stack).
 
 ## Repo-wide rules
 
