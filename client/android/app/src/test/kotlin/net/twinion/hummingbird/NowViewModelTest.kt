@@ -11,6 +11,10 @@ import org.junit.Test
 import uniffi.hummingbird_ffi_mobile.MobileCalmOrder
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 import uniffi.hummingbird_ffi_mobile.MobilePaneAnswer
+import uniffi.hummingbird_ffi_mobile.MobileFantasyGap
+import uniffi.hummingbird_ffi_mobile.MobileFantasyResolved
+import uniffi.hummingbird_ffi_mobile.MobileFantasySetup
+import uniffi.hummingbird_ffi_mobile.MobileFantasySubject
 import uniffi.hummingbird_ffi_mobile.MobileKimiGap
 import uniffi.hummingbird_ffi_mobile.MobileKimiResolved
 import uniffi.hummingbird_ffi_mobile.MobileHomeworkFacts
@@ -117,6 +121,12 @@ class NowViewModelTest {
             MobilePaneFacts.Race(
                 setup = MobileRaceSetup.UNSET,
                 resolved = MobileRaceResolved.Gap(gap = MobileRaceGap.NotFetched),
+            )
+        MobileStandingQuestion.FANTASY ->
+            MobilePaneFacts.Fantasy(
+                setup = MobileFantasySetup.UNSET,
+                subject = MobileFantasySubject.LINEUP,
+                resolved = MobileFantasyResolved.Gap(gap = MobileFantasyGap.NotFetched),
             )
         MobileStandingQuestion.KIMI ->
             MobilePaneFacts.Kimi(resolved = MobileKimiResolved.Gap(gap = MobileKimiGap.NotFetched))

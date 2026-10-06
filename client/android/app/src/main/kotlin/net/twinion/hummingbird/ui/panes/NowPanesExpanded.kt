@@ -86,7 +86,7 @@ import uniffi.hummingbird_ffi_mobile.MobileWeekendResolved
 // Exhaustive `when`s with no `else` arm throughout — the house drift gate.
 
 /** The Now surface's `expandedContent` — one dispatcher, exhaustive over
- * every facts arm the way `NowScreen.kt`'s `nowPaneLabel` is. */
+ * every facts arm, with no `else ->` arm. */
 @Composable
 internal fun NowPaneExpanded(
     pane: MobileRankedPane,
@@ -102,6 +102,10 @@ internal fun NowPaneExpanded(
         // No card by choice, not for want of a lane — see the file header.
         is MobilePaneFacts.Vacation -> Unit
         is MobilePaneFacts.Scps -> ScpsPaneExpanded(facts.resolved, nowMs)
+        // No card yet: #717 ships the question unpolled, and its collapsed
+        // headline already says all there is (not set up / never polled).
+        // The expanded card is #723's.
+        is MobilePaneFacts.Fantasy -> Unit
         is MobilePaneFacts.Kimi,
         is MobilePaneFacts.Github,
         is MobilePaneFacts.Uptime,

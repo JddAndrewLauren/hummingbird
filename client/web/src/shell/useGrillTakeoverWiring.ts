@@ -7,6 +7,7 @@ import type { TaskGrillCompletionResult } from "../store/store";
 import {
   discardGrillDraft,
   requestGrillDraft,
+  requestGrills,
   requestSteps,
   saveGrillDraft,
   type GrillCompletion,
@@ -223,6 +224,9 @@ export function useGrillTakeoverWiring(
       setConfirmSeed(null);
       confirming.current.delete(itemId);
       requestSteps(worker, itemId);
+      // #358: the takeover draws this item's Grill history — a mirror read,
+      // asked once per session like the Steps snapshot above.
+      requestGrills(worker, itemId);
 
       if (grillDraftItemIds.includes(itemId)) {
         // A draft exists — wait for its content before asking anything, so

@@ -97,7 +97,8 @@ use hummingbird_core::decisions::panes::inputs::{
 use hummingbird_core::freshness::Freshness;
 use hummingbird_core::decisions::panes::zone::{ZoneFact, ZoneFacts, ZoneQuery};
 use hummingbird_core::decisions::panes::{
-    github, homework, kimi, poller, race, reachability, scps, uptime, vacation, waste, weekend,
+    fantasy, github, homework, kimi, poller, race, reachability, scps, uptime, vacation, waste,
+    weekend,
 };
 use hummingbird_core::diagnostics::{DiagnosticClock, DiagnosticSession, DiagnosticsContext};
 use hummingbird_core::pane::PaneEnvelope;
@@ -2280,10 +2281,13 @@ fn to_backtest_item(item: &Item, occurred_at_utc: String) -> rules::BacktestItem
 // with a `debug_assert!`, which compiles out of the APK: the guarantee held
 // in CI and nowhere the phone runs. The decision: the mobile seam carries
 // the guarantee **at runtime, by construction, in the web's shape** —
-// [`mobile_pane_inputs`] reads `panes::required_sources`, the core's
-// restatement of the web's per-question `requiredSources`, where each pane
-// declares its own source and only the poller question derives from the
-// registry. A retirement therefore cannot blank an Android pane in any
+// [`mobile_pane_inputs`] reads `panes::required_sources`, the union of
+// `panes::question_sources`, where each pane declares its own source and
+// only the poller question derives from the registry. **Since #820 that is
+// the only declaration**: the web's `usePaneReadsWiring.ts` reads the same
+// union through `ffi-web`'s `required_sources_json`, and its per-question
+// TS `sources` copy is gone, so the two clients' pane-read sets cannot
+// drift. A retirement therefore cannot blank an Android pane in any
 // build: the loop never consulted the registry for the sunk five, so it
 // has nothing to lose there, and there is no assertion left to compile
 // out. The core's own test pins that the union names every sunk pane's
@@ -2335,6 +2339,7 @@ pub enum MobileStandingQuestion {
     Weekend,
     Vacation,
     Race,
+    Fantasy,
     Kimi,
     Github,
     Uptime,
@@ -2352,6 +2357,7 @@ fn map_standing_question(question: StandingQuestion) -> MobileStandingQuestion {
         StandingQuestion::Weekend => MobileStandingQuestion::Weekend,
         StandingQuestion::Vacation => MobileStandingQuestion::Vacation,
         StandingQuestion::Race => MobileStandingQuestion::Race,
+        StandingQuestion::Fantasy => MobileStandingQuestion::Fantasy,
         StandingQuestion::Kimi => MobileStandingQuestion::Kimi,
         StandingQuestion::Github => MobileStandingQuestion::Github,
         StandingQuestion::Uptime => MobileStandingQuestion::Uptime,
@@ -2370,6 +2376,7 @@ fn unmap_standing_question(question: MobileStandingQuestion) -> StandingQuestion
         MobileStandingQuestion::Weekend => StandingQuestion::Weekend,
         MobileStandingQuestion::Vacation => StandingQuestion::Vacation,
         MobileStandingQuestion::Race => StandingQuestion::Race,
+        MobileStandingQuestion::Fantasy => StandingQuestion::Fantasy,
         MobileStandingQuestion::Kimi => StandingQuestion::Kimi,
         MobileStandingQuestion::Github => StandingQuestion::Github,
         MobileStandingQuestion::Uptime => StandingQuestion::Uptime,
@@ -2398,10 +2405,8 @@ pub struct MobileQuestionRosterEntry {
 /// never the three per-question functions behind it, so it cannot hold an
 /// opinion about which questions exist.
 ///
-/// **Android does not render this yet.** ADR-0034 decision 4 splits the
-/// rendering into #716 on purpose — that surface has no emulator matrix, so
-/// a UI change there owes a device run — and this slice lands the door so
-/// #716 is rendering-only.
+/// Android renders it since #716: Settings' `Standing questions` section,
+/// and every Now and Status pane's label (`QuestionLabels.kt`).
 #[uniffi::export]
 pub fn question_roster() -> Vec<MobileQuestionRosterEntry> {
     hummingbird_core::decisions::question_roster()
@@ -3136,6 +3141,70 @@ fn map_race_resolved(resolved: race::RaceResolved) -> MobileRaceResolved {
     }
 }
 
+/// [`fantasy::FantasySetup`]'s **kind**, mirrored — [`MobileRaceSetup`]'s
+/// twin, with the payload (`leagues`) dropped for its reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileFantasySetup {
+    Bound,
+    Unread,
+    Unusable,
+    Unset,
+}
+
+fn map_fantasy_setup(setup: fantasy::FantasySetup) -> MobileFantasySetup {
+    match setup {
+        fantasy::FantasySetup::Bound { .. } => MobileFantasySetup::Bound,
+        fantasy::FantasySetup::Unread => MobileFantasySetup::Unread,
+        fantasy::FantasySetup::Unusable => MobileFantasySetup::Unusable,
+        fantasy::FantasySetup::Unset => MobileFantasySetup::Unset,
+    }
+}
+
+/// [`fantasy::FantasySubject`], mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileFantasySubject {
+    Lineup,
+    Waivers,
+}
+
+fn map_fantasy_subject(subject: fantasy::FantasySubject) -> MobileFantasySubject {
+    match subject {
+        fantasy::FantasySubject::Lineup => MobileFantasySubject::Lineup,
+        fantasy::FantasySubject::Waivers => MobileFantasySubject::Waivers,
+    }
+}
+
+/// [`fantasy::FantasyGap`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobileFantasyGap {
+    NotFetched,
+    Malformed { reason: String },
+    UnknownSchema { schema: String },
+    BodyNotRead,
+}
+
+/// [`fantasy::FantasyResolved`], mirrored — only its gap arm exists yet
+/// (#717; the fact sets arrive with #718/#719).
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobileFantasyResolved {
+    Gap { gap: MobileFantasyGap },
+}
+
+fn map_fantasy_resolved(resolved: fantasy::FantasyResolved) -> MobileFantasyResolved {
+    match resolved {
+        fantasy::FantasyResolved::Gap { gap } => MobileFantasyResolved::Gap {
+            gap: match gap {
+                fantasy::FantasyGap::NotFetched => MobileFantasyGap::NotFetched,
+                fantasy::FantasyGap::Malformed { reason } => MobileFantasyGap::Malformed { reason },
+                fantasy::FantasyGap::UnknownSchema { schema } => {
+                    MobileFantasyGap::UnknownSchema { schema }
+                }
+                fantasy::FantasyGap::BodyNotRead => MobileFantasyGap::BodyNotRead,
+            },
+        },
+    }
+}
+
 /// [`kimi::KimiGap`], mirrored.
 #[derive(Debug, Clone, PartialEq, uniffi::Enum)]
 pub enum MobileKimiGap {
@@ -3494,6 +3563,14 @@ pub enum MobilePaneFacts {
     Weekend { resolved: MobileWeekendResolved },
     Vacation { resolved: Option<MobileVacationResolved> },
     Race { setup: MobileRaceSetup, resolved: MobileRaceResolved },
+    /// One per `(league, subject)` — `subjectKey` on the enclosing
+    /// [`MobileRankedPane`] names which; `subject` is that key's parse, so
+    /// a host never splits the string itself.
+    Fantasy {
+        setup: MobileFantasySetup,
+        subject: Option<MobileFantasySubject>,
+        resolved: MobileFantasyResolved,
+    },
     Kimi { resolved: MobileKimiResolved },
     Github { resolved: MobileWorkflowResolved },
     Uptime { resolved: MobileProbeResolved },
@@ -3804,9 +3881,8 @@ fn mobile_pane_inputs(
         calendar_connected: calendar.connected,
         items,
         sync: to_sync_facts(sync),
-        // #715: passed straight through as `Core` decided it — the phone
-        // honours a question switched off in the browser without being able
-        // to change it (ADR-0034 decision 4; #716 renders the toggle).
+        // #715: passed straight through as `Core` decided it — a question
+        // switched off on either client (Settings' toggle since #716).
         disabled_questions: core.disabled_questions(),
     }
 }
@@ -3862,6 +3938,14 @@ fn mobile_pane_facts_of(
             // unacquired) plus the setup kind above are what route the
             // rendering.
             resolved: map_race_resolved(race::race_facts(subject_key, inputs)),
+        },
+        StandingQuestion::Fantasy => MobilePaneFacts::Fantasy {
+            setup: map_fantasy_setup(fantasy::fantasy_setup(inputs)),
+            subject: fantasy::parse_subject_key(subject_key)
+                .map(|(_, subject)| map_fantasy_subject(subject)),
+            // A sentinel subject has no row, so it resolves to its own
+            // honest `NotFetched`; the setup kind routes the rendering.
+            resolved: map_fantasy_resolved(fantasy::fantasy_facts(subject_key, inputs)),
         },
         StandingQuestion::Kimi => {
             MobilePaneFacts::Kimi { resolved: map_kimi_resolved(kimi::kimi_facts(inputs)) }
@@ -4385,8 +4469,7 @@ impl MobileTaskHost {
     /// a constant of the build and this is device state, which is why they
     /// are two doors (`decisions::questions`'s own header).
     ///
-    /// **Android does not render this yet** (#716); the door lands here so
-    /// that slice is rendering-only.
+    /// Settings' question rows draw it since #716.
     pub async fn question_switches(&self) -> Vec<MobileQuestionSwitch> {
         self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await
             .core
@@ -10742,6 +10825,7 @@ mod settings_tests {
                 MobileStandingQuestion::Weekend,
                 MobileStandingQuestion::Vacation,
                 MobileStandingQuestion::Race,
+                MobileStandingQuestion::Fantasy,
                 MobileStandingQuestion::Kimi,
                 MobileStandingQuestion::Github,
                 MobileStandingQuestion::Uptime,
@@ -10766,7 +10850,7 @@ mod settings_tests {
         let host = pane_host("switches-fresh").await;
         let switches = host.question_switches().await;
 
-        assert_eq!(switches.len(), 11);
+        assert_eq!(switches.len(), 12);
         // Same order as the roster, so #716 can zip the two lists.
         let questions: Vec<MobileStandingQuestion> =
             switches.iter().map(|switch| switch.question).collect();
@@ -11170,7 +11254,7 @@ mod settings_tests {
     }
 
     #[tokio::test]
-    async fn a_fresh_device_ranks_the_now_five_with_only_homework_answered() {
+    async fn a_fresh_device_ranks_every_now_pane_with_only_homework_answered() {
         // Nothing bound (waste/race), no calendar connected (weekend/
         // vacation) — those four are `unbound`, still ranked rather than
         // vanishing (`panes::mod`'s own "a pane nobody has bound yet must
@@ -11182,9 +11266,12 @@ mod settings_tests {
         // nothing, which is the honest "this host answered no queries" case
         // and not a setup prompt (scps has no setup prompt at all —
         // `scps.rs`'s own "never unbound" rule).
+        //
+        // Fantasy (#717) adds two more, both `unbound`: one setup pane per
+        // subject, since nothing names a league yet.
         let host = pane_host("panes-now-fresh").await;
         let ranked = host.rank_panes(MobileSurface::Now, 1_000, Vec::new(), MobileSyncFacts::default()).await;
-        assert_eq!(ranked.len(), 6);
+        assert_eq!(ranked.len(), 8);
         let questions: Vec<MobileStandingQuestion> = ranked.iter().map(|pane| pane.standing_question).collect();
         assert_eq!(
             questions,
@@ -11195,6 +11282,8 @@ mod settings_tests {
                 MobileStandingQuestion::Weekend,
                 MobileStandingQuestion::Vacation,
                 MobileStandingQuestion::Race,
+                MobileStandingQuestion::Fantasy,
+                MobileStandingQuestion::Fantasy,
             ],
         );
         assert!(ranked
@@ -12153,6 +12242,9 @@ mod settings_tests {
                     MobileStandingQuestion::Weekend => matches!(pane.facts, MobilePaneFacts::Weekend { .. }),
                     MobileStandingQuestion::Vacation => matches!(pane.facts, MobilePaneFacts::Vacation { .. }),
                     MobileStandingQuestion::Race => matches!(pane.facts, MobilePaneFacts::Race { .. }),
+                    MobileStandingQuestion::Fantasy => {
+                        matches!(pane.facts, MobilePaneFacts::Fantasy { .. })
+                    }
                     MobileStandingQuestion::Kimi => matches!(pane.facts, MobilePaneFacts::Kimi { .. }),
                     MobileStandingQuestion::Github => matches!(pane.facts, MobilePaneFacts::Github { .. }),
                     MobileStandingQuestion::Uptime => matches!(pane.facts, MobilePaneFacts::Uptime { .. }),
@@ -12190,6 +12282,25 @@ mod settings_tests {
             facts_of(MobileStandingQuestion::Vacation),
             MobilePaneFacts::Vacation { resolved: None }
         ));
+        // #717: no `yahoo-leagues` row, so both setup panes cross — one per
+        // subject, each unset and never fetched.
+        let fantasy: Vec<&MobileRankedPane> = ranked
+            .iter()
+            .filter(|pane| pane.standing_question == MobileStandingQuestion::Fantasy)
+            .collect();
+        assert_eq!(fantasy.len(), 2);
+        for (pane, subject) in
+            fantasy.iter().zip([MobileFantasySubject::Lineup, MobileFantasySubject::Waivers])
+        {
+            assert_eq!(
+                pane.facts,
+                MobilePaneFacts::Fantasy {
+                    setup: MobileFantasySetup::Unset,
+                    subject: Some(subject),
+                    resolved: MobileFantasyResolved::Gap { gap: MobileFantasyGap::NotFetched },
+                }
+            );
+        }
     }
 }
 

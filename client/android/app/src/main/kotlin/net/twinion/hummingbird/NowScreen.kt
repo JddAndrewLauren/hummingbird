@@ -70,7 +70,6 @@ import net.twinion.hummingbird.ui.theme.LocalHbDark
 import uniffi.hummingbird_ffi_mobile.MobileCalmOrder
 import uniffi.hummingbird_ffi_mobile.MobileFrontierAxis
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
-import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
 import uniffi.hummingbird_ffi_mobile.NowBlockedEntryRecord
 import uniffi.hummingbird_ffi_mobile.NowBoardRecord
 import uniffi.hummingbird_ffi_mobile.NowColumnRecord
@@ -214,28 +213,6 @@ internal fun selectedPaneIsEmitted(
     return inOpenColumn || board.blocked.any { it.item.id == selectedId }
 }
 
-/** One Now-surface pane's label, from its [MobileStandingQuestion] —
- * `StatusScreen.kt`'s own `paneLabel`, this surface's twin: a rendering
- * choice, never a decision. The Status four's arms cannot reach a
- * Now-surface list (`rank_panes(Now, ..)` never emits them, `panes::mod`'s
- * own test); named individually rather than behind a wildcard so a real
- * ninth question still trips this `when`. */
-private fun nowPaneLabel(pane: MobileRankedPane): String = when (pane.standingQuestion) {
-    MobileStandingQuestion.HOMEWORK -> "What's my homework"
-    // ADR-0032 part 5's own decision table names this literal.
-    MobileStandingQuestion.SCPS -> "SCPS"
-    MobileStandingQuestion.WASTE -> "Bin collection"
-    MobileStandingQuestion.WEEKEND -> "This weekend"
-    MobileStandingQuestion.VACATION -> "Next trip"
-    MobileStandingQuestion.RACE -> "Next race — ${pane.subjectKey}"
-    MobileStandingQuestion.KIMI,
-    MobileStandingQuestion.GITHUB,
-    MobileStandingQuestion.UPTIME,
-    MobileStandingQuestion.REACHABILITY,
-    MobileStandingQuestion.POLLER ->
-        error("a Status-surface question reached the Now screen: ${pane.standingQuestion}")
-}
-
 /** Now's own standing-question panes (#537), below the queue — through the
  * same [PaneRow] shell `StatusScreen.kt` renders its own four through
  * (`PaneShell.kt`'s [rankedPaneItems]). Adds nothing while [panes] is empty
@@ -264,7 +241,7 @@ private fun LazyListScope.nowPaneSection(
         Text("This week", style = MaterialTheme.typography.titleMedium)
     }
     rankedPaneItems(panes,
-        paneLabel = ::nowPaneLabel,
+        paneLabel = { pane -> rosterPaneLabel(pane, QuestionRosterLabels.labels) },
         nowMs = nowMs,
         collapsed = collapsed,
         onToggle = onToggle,

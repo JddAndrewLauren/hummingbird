@@ -156,6 +156,7 @@
 import { TRIPS_CALENDAR_BINDING_KEY } from "../calendar/selection";
 import { LINK_BINDING_KEY } from "../screens/homework-pane/homework";
 import { OBSIDIAN_VAULT_BINDING_KEY } from "../obsidian/vault-uri";
+import { BINDING_KEY as FANTASY_BINDING_KEY } from "../screens/fantasy-pane/fantasy";
 import { DEFAULT_CONTEXTS } from "../screens/field-vocabulary";
 import { QUESTION_ORDER } from "../screens/questions/contract";
 import type { BindingDTO, LedgerRowDTO, ProjectDTO, RecallRowDTO, TaskItemDTO } from "../store/protocol";
@@ -769,6 +770,17 @@ const boundVaultBinding: BindingDTO = {
   value: { state: "text", text: "Demo vault" },
 };
 
+/** #717's league list, seeded so the board world photographs the fantasy
+ * question's **bound, never-polled** arm (a lineup and a waivers pane, both
+ * gaps — nothing polls Yahoo yet), while the empty world's captures keep
+ * its unbound setup prompt. The league key is fictional. */
+const boundFantasyBinding: BindingDTO = {
+  key: FANTASY_BINDING_KEY,
+  known: true,
+  pending: false,
+  value: { state: "text", text: "449.l.123456" },
+};
+
 /** The seeded state, typed as the real `TaskState` so a field added to that
  * interface fails this file at build time rather than shipping a fixture that
  * silently omits it.
@@ -901,6 +913,7 @@ export function buildDemoTaskState(): TaskState {
       boundTripsBinding,
       boundHomeworkLinkBinding,
       boundVaultBinding,
+      boundFantasyBinding,
     ],
     // #715: every question on, which is production's own steady state (a
     // switched-off question is the exception, and one seeded here would
@@ -985,6 +998,24 @@ export function buildDemoTaskState(): TaskState {
       ],
     },
     lastFileLinkWrite: null,
+    // #358: the Grill history on the same opened item — one grill whose
+    // applied patch differs from the model's proposal, so the visual gate
+    // photographs the two blocks side by side (once the list is expanded).
+    grillsByItem: {
+      "b-f1": [
+        {
+          id: "b-f1-grill-1",
+          itemId: "b-f1",
+          summary: "Done means the kitchen tap stops dripping; the washer is already bought.",
+          verdict: "resolved",
+          modelProposal: '{"title":"Fit the new tap washer","size":"quick"}',
+          appliedPatch: '{"title":"Fit the new tap washer","size":"quick","context":"home"}',
+          resultingStage: "ready",
+          completedAt: loadedAt - 2 * DAY,
+          version: 1,
+        },
+      ],
+    },
     // #627: the reading column's Route card — one filled row on the
     // dossier the links fixture above also seeds, so the visual gate
     // photographs the card holding real destination/notes text rather than

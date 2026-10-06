@@ -54,6 +54,7 @@ import type {
 import type { TaskFileLinkResult, TaskProjectResult, TaskTriageResult } from "../../store/store";
 import type { TriageEdits } from "../../store/worker-client";
 import { FileAttach } from "./FileAttach";
+import { GrillHistory, type GrillHistoryProps } from "./GrillHistory";
 import { LinkAttach, linkAttachVisible } from "./LinkAttach";
 import { NoteLink, noteLinkVisible } from "./NoteLink";
 import { StageBadge } from "./StageBadge";
@@ -169,6 +170,11 @@ export interface ItemPanelProps {
    * (`TaskState.lastFileLinkWrite`), scoped to this panel's own outstanding
    * write by seed before it is ever shown. */
   lastFileLinkWrite?: TaskFileLinkResult | null;
+  /** #358: the item's Grill history — `TaskState.grillsByItem[item.id]`
+   * and the transcript fetch. Detail mode only. Absent draws no history at
+   * all, the `showSteps={false}` reasoning: a host that never asked the
+   * mirror for this item's grills has no honest "never grilled" to state. */
+  grillHistory?: Pick<GrillHistoryProps, "grills" | "fetchTranscript">;
   /** Detail mode's close control. Triage mode has none: the row's own
    * collapsed header is its close control, so a second one inside the panel
    * would be two ways to do one thing. */
@@ -253,6 +259,7 @@ export function ItemPanel({
   showFileLinks = true,
   fileLinksWiring,
   lastFileLinkWrite = null,
+  grillHistory,
   id,
   grillMeId,
   microtask,
@@ -1027,6 +1034,10 @@ export function ItemPanel({
           </div>
         ) : null}
       </div>
+      ) : null}
+
+      {mode === "detail" && grillHistory ? (
+        <GrillHistory grills={grillHistory.grills} fetchTranscript={grillHistory.fetchTranscript} />
       ) : null}
     </Card>
   );

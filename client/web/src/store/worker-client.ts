@@ -119,6 +119,7 @@ type Store = Pick<
   | "setTaskSteps"
   | "setTaskProjectLinks"
   | "setTaskFileLinks"
+  | "setTaskGrills"
   | "setTaskRoute"
   | "setTaskPaneRead"
   | "setTaskGrillDraft"
@@ -538,6 +539,9 @@ export function attachWorkerClient(
         return;
       case "fileLinks":
         store.setTaskFileLinks(message.itemId, message.links);
+        return;
+      case "grills":
+        store.setTaskGrills(message.itemId, message.grills);
         return;
       case "createFileLinkResult":
       case "removeFileLinkResult":
@@ -1182,6 +1186,12 @@ export function patchProject(
  * style per-id fetch. */
 export function requestFileLinks(worker: WorkerLike, itemId: string): void {
   worker.postMessage({ type: "getFileLinks", itemId });
+}
+
+/** #358's per-item Grill history read — a mirror read only; it never
+ * triggers a sync and never fetches a transcript. */
+export function requestGrills(worker: WorkerLike, itemId: string): void {
+  worker.postMessage({ type: "getGrills", itemId });
 }
 
 /** ADR-0036's file-link create. `seed` mints `Core::create_file_link`'s

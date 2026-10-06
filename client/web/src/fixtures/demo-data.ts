@@ -296,6 +296,8 @@ export const DEMO_DATA: DemoData = {
       { source: "city-waste/v1", retiredAs: "city-waste/v2" },
       { source: "city-waste/v2", retiredAs: null },
       { source: "race-schedule/v1", retiredAs: null },
+      { source: "yahoo-lineup/v1", retiredAs: null },
+      { source: "yahoo-waivers/v1", retiredAs: null },
       { source: "kimi-balance/v1", retiredAs: null },
       { source: "github-hummingbird/v1", retiredAs: null },
       { source: "uptime/v1", retiredAs: null },

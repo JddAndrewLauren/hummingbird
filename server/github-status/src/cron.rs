@@ -13,11 +13,13 @@
 //! probe behind it was in fact running hourly and finding all three
 //! services healthy. The refusal was honest, but it was honest about the
 //! parser rather than about the deployment, and a tile that is always
-//! yellow is a tile nobody reads. `MM * * * *` is unambiguous — a fixed
-//! minute against a wildcard hour fires once an hour, on that minute, with
-//! nothing to infer — so reading it is not the guessing this module's
-//! caution is aimed at. What that caution still refuses is below:
-//! `* * * * *`, and anything naming a day or a month.
+//! yellow is a tile nobody reads. That consumer is gone — #792 moved the
+//! probe onto the sweeper's supercronic clock, so no workflow this crate
+//! reads carries the shape today — but the arm stays: `MM * * * *` is
+//! unambiguous — a fixed minute against a wildcard hour fires once an hour,
+//! on that minute, with nothing to infer — so reading it is not the
+//! guessing this module's caution is aimed at. What that caution still
+//! refuses is below: `* * * * *`, and anything naming a day or a month.
 //!
 //! A workflow whose cadence cannot be read this way still gets a pane
 //! (its conclusion is still reported, see `runs.rs`) — it simply cannot
@@ -121,12 +123,12 @@ mod tests {
         assert_eq!(declared_cadence_ms("40 13 * * *"), Some(DAY_MS));
     }
 
-    /// `uptime-probe.yml`'s own shape. This assertion used to read `None`,
-    /// and that `None` was the whole reason its tile sat permanently
-    /// `distant` while the probe behind it ran fine — see the module
-    /// header. The offset minute is not incidental: it is what keeps the
-    /// probe off the top of the hour, and it must not change the cadence
-    /// this reads.
+    /// `uptime-probe.yml`'s shape while it ran on Actions (before #792).
+    /// This assertion used to read `None`, and that `None` was the whole
+    /// reason its tile sat permanently `distant` while the probe behind it
+    /// ran fine — see the module header. The offset minute is not
+    /// incidental: it is what keeps the probe off the top of the hour, and
+    /// it must not change the cadence this reads.
     #[test]
     fn an_hourly_fixed_minute_shape_is_read_as_hourly_whatever_the_minute() {
         assert_eq!(declared_cadence_ms("5 * * * *"), Some(HOUR_MS));

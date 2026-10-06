@@ -58,6 +58,11 @@ const BINDING_COPY: Record<string, BindingCopy> = {
     label: "SCPS Photo Quest",
     help: "This month's Photo Quest phrase, as \"YYYY-MM phrase\" — normally set by the agent from forwarded club email.",
   },
+  // #717: league keys are season-scoped, so this is re-typed each August.
+  "yahoo-leagues": {
+    label: "Yahoo leagues",
+    help: "Yahoo fantasy football league keys, separated by commas — e.g. 449.l.123456. They change every season.",
+  },
 };
 
 /** Copy for one binding row. A key this build cannot write still gets a row

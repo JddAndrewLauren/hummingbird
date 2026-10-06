@@ -244,6 +244,19 @@ the single predicate all three call; no consumer re-spells it in SQL.
 | `item-threshold/v1` | **state** | `item:<id>` |
 | `healthchecks/v1`, `home-assistant/v1` | **state** | the check or entity id, authored in the webhook body |
 | `github/v1`, `photo-site/v1`, `gmail-alert/v1` | event | the source's own event or message id |
+| `yahoo-lineup/v1` ***(#717)*** | **state** | `team:<team_key>` — `team:449.l.123456.t.7` |
+| `yahoo-waivers/v1` ***(#717)*** | event | `<season>-<week>`, week zero-padded — `2026-04` |
+
+*Amended 2026-09-23 ([#717](https://github.com/JddAndrewLauren/hummingbird/issues/717)):
+the fantasy lane (#713) enrolls **two** sources, not one, because its two
+subjects differ in shape and a registry entry holds one `Shape`. The lineup
+keys on the **team**, not the team-week — every state source keys on the
+entity whose state it is and re-enters live when the condition returns, and
+a per-week key would mint seventeen rows a season for one recurring
+condition. The waivers key on the **week**, not the deadline instant — this
+ADR's own fixed-coordinate clause: a commissioner moving the deadline is the
+same occurrence with a new `expires_at`, not a second ring. Both are
+`Writes::Both` and both are pinned by frozen key vectors in `sources.rs`.*
 
 Two of these are judgment calls rather than consequences:
 
@@ -423,6 +436,8 @@ swipe-equals-ack, which ADR-0012 rejected outright.
 | `city-waste/v2` ***(#120)*** | end of the **later** of the scheduled and the slid-to collection date |
 | `gmail/v1`, `m365-mail/v1` | none, ever |
 | `github/v1`, `photo-site/v1` | none unless the event carries one |
+| `yahoo-lineup/v1` ***(#717)*** | the earliest kickoff among the invalid slots' eligible replacements (the lock the alert warns about) |
+| `yahoo-waivers/v1` ***(#717)*** | the waiver deadline instant |
 
 A "meeting starts in 15 min" alert is genuinely meaningless once the meeting
 ends, and a slide alert once the pickup happened — both have a referent to

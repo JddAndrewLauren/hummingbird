@@ -13,6 +13,7 @@ mod calendar_token;
 mod changes;
 mod delivery;
 mod diagnostics;
+mod fantasy_sources;
 mod fcm;
 mod file_links;
 mod fog;

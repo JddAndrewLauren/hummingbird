@@ -8,6 +8,8 @@ import type {
   DeadLetterEntryDTO,
   FieldTypeName,
   GrillDraftTurnDTO,
+  GrillDTO,
+  GrillVerdictName,
   KindEntryDTO,
   KindRegistryDTO,
   LedgerRowDTO,
@@ -23,6 +25,7 @@ import type {
   StepDTO,
   TaskEventDTO,
   TaskItemDTO,
+  TaskStageName,
   TaskRunOutcomeKind,
   TaskWorkerRequest,
   TaskWorkerResponse,
@@ -237,6 +240,10 @@ export interface TaskHostLike {
   /** ADR-0036's per-item file-link read. Mirrors `TaskHost::fileLinks`,
    * resolved to JSON: `{"kind": "ok"|"busy", "links": [FileLink]}`. */
   fileLinks(itemId: string): string;
+  /** #358's per-item Grill history read. Mirrors `TaskHost::grills`,
+   * resolved to JSON: `{"kind": "ok"|"busy", "grills": [Grill]}`, newest
+   * first, never a transcript. */
+  grills(itemId: string): string;
   /** ADR-0036's file-link create. Mirrors `TaskHost::createFileLink`,
    * resolved to JSON: `{"kind": "ok"|"failed"|"busy", "id": string|null,
    * "error": string|null}`. A blank path is refused at the seam. */
@@ -573,6 +580,23 @@ interface RawFileLink {
 interface RawFileLinkListResponse {
   kind: "ok" | "busy";
   links: RawFileLink[];
+}
+
+interface RawGrill {
+  id: string;
+  item_id: string;
+  summary: string;
+  verdict: GrillVerdictName;
+  model_proposal: string;
+  applied_patch: string;
+  resulting_stage: TaskStageName;
+  completed_at: number;
+  version: number;
+}
+
+interface RawGrillListResponse {
+  kind: "ok" | "busy";
+  grills: RawGrill[];
 }
 
 interface RawCreateFileLinkResponse {
@@ -920,6 +944,20 @@ function mapFileLink(raw: RawFileLink): FileLinkDTO {
     itemId: raw.item_id,
     path: raw.path,
     removedAt: raw.removed_at,
+    version: raw.version,
+  };
+}
+
+function mapGrill(raw: RawGrill): GrillDTO {
+  return {
+    id: raw.id,
+    itemId: raw.item_id,
+    summary: raw.summary,
+    verdict: raw.verdict,
+    modelProposal: raw.model_proposal,
+    appliedPatch: raw.applied_patch,
+    resultingStage: raw.resulting_stage,
+    completedAt: raw.completed_at,
     version: raw.version,
   };
 }
@@ -1579,6 +1617,14 @@ export async function handleTaskRequest(
         return;
       }
       post({ type: "fileLinks", itemId: request.itemId, links: raw.links.map(mapFileLink) });
+      return;
+    }
+    case "getGrills": {
+      const raw = JSON.parse(host.grills(request.itemId)) as RawGrillListResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "grills", itemId: request.itemId, grills: raw.grills.map(mapGrill) });
       return;
     }
     case "createFileLink": {

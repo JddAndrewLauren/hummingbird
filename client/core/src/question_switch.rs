@@ -44,12 +44,12 @@
 //!
 //! `settings` has no DELETE, so respelling a key later orphans every row
 //! written under the old one — permanently, and invisibly, since the
-//! orphan reads as "absent" and the question comes back on. The eleven
+//! orphan reads as "absent" and the question comes back on. The twelve
 //! spellings in [`question_switch_key`] are therefore written out as
 //! literals rather than derived with `format!` from
 //! [`StandingQuestion::as_str`]: a rename of a *question's* wire word (the
 //! kind #714 already made once, to a label) must not silently re-key rows
-//! the operator has already written. `the_eleven_keys_are_frozen` is the
+//! the operator has already written. `the_twelve_keys_are_frozen` is the
 //! pin.
 
 use std::collections::BTreeSet;
@@ -74,6 +74,7 @@ pub fn question_switch_key(question: StandingQuestion) -> &'static str {
         StandingQuestion::Weekend => "question-enabled-weekend",
         StandingQuestion::Vacation => "question-enabled-vacation",
         StandingQuestion::Race => "question-enabled-race",
+        StandingQuestion::Fantasy => "question-enabled-fantasy",
         StandingQuestion::Kimi => "question-enabled-kimi",
         StandingQuestion::Github => "question-enabled-github",
         StandingQuestion::Uptime => "question-enabled-uptime",
@@ -154,7 +155,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_eleven_keys_are_frozen() {
+    fn the_twelve_keys_are_frozen() {
         // Written out rather than derived, and pinned rather than trusted:
         // `settings` has no DELETE, so a respelling orphans every row an
         // operator has already written and silently turns the question back
@@ -169,6 +170,7 @@ mod tests {
                 "question-enabled-weekend",
                 "question-enabled-vacation",
                 "question-enabled-race",
+                "question-enabled-fantasy",
                 "question-enabled-kimi",
                 "question-enabled-github",
                 "question-enabled-uptime",
@@ -190,7 +192,7 @@ mod tests {
         for key in crate::bindings::BindingKey::ALL {
             assert_eq!(parse_question_switch_key(key.as_str()), None);
         }
-        for key in ["", "question-enabled-", "question-enabled-fantasy", "race", "questionEnabledRace"] {
+        for key in ["", "question-enabled-", "question-enabled-cricket", "race", "questionEnabledRace"] {
             assert_eq!(parse_question_switch_key(key), None, "{key}");
         }
     }
@@ -230,7 +232,7 @@ mod tests {
 
         let mut mixed = all_on;
         mixed[3].enabled = false;
-        mixed[8].enabled = false;
+        mixed[9].enabled = false;
         assert_eq!(disabled_questions(&mixed), vec!["weekend", "uptime"]);
     }
 

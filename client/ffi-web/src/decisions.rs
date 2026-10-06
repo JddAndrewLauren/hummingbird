@@ -1428,6 +1428,19 @@ pub fn pane_zone_queries_json(inputs_json: &str, surface: &str) -> String {
     }
 }
 
+/// [`panes::required_sources`] — every `context_snapshots` source one
+/// surface's questions read, as a JSON string array (#820). The web's
+/// `usePaneReadsWiring.ts` reads this rather than declaring its own
+/// per-question list, so it and the mobile seam's pane-read loop read one
+/// declaration. An unrecognised surface reads nothing.
+#[wasm_bindgen]
+pub fn required_sources_json(surface: &str) -> String {
+    let Some(surface) = Surface::parse(surface) else {
+        return "[]".to_string();
+    };
+    serde_json::to_string(&panes::required_sources(surface)).unwrap()
+}
+
 /// [`panes::rank_panes`] — phase two for a whole surface, already in
 /// display order. An unrecognised surface ranks nothing.
 #[wasm_bindgen]
@@ -1635,7 +1648,7 @@ pub fn sync_status_summary_json(input_json: &str) -> String {
 // values, never a rendered sentence; each pane's own TS module composes its
 // words from these.
 
-use hummingbird_core::decisions::panes::{kimi, github, homework, poller, scps, uptime, reachability, race, vacation, weekend, zone};
+use hummingbird_core::decisions::panes::{fantasy, kimi, github, homework, poller, scps, uptime, reachability, race, vacation, weekend, zone};
 
 /// `hummingbird_core::decisions::panes::zone::DEVICE_ZONE` — the sentinel
 /// `zone-bridge.ts`'s `resolveZone` special-cases to mean "the reader's own
@@ -1979,6 +1992,68 @@ pub fn race_constants_json() -> String {
         "bindingKey": race::BINDING_KEY,
         "staleAfterMs": race::STALE_AFTER_MS,
         "setupSubject": race::SETUP_SUBJECT,
+    })
+    .to_string()
+}
+
+// -- fantasy (#717) --------------------------------------------------------
+// The no-data arms only: setup, subjects and the gap kind. `waste_facts_json`'s
+// shape, one export per decision, structured values and never a sentence.
+
+#[wasm_bindgen]
+pub fn fantasy_leagues_from_binding_json(text: &str) -> String {
+    serde_json::to_string(&fantasy::leagues_from_binding(text)).unwrap()
+}
+
+#[wasm_bindgen]
+pub fn fantasy_setup_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&fantasy::fantasy_setup(&inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn fantasy_subjects_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&fantasy::fantasy_subjects(&inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+/// [`fantasy::parse_subject_key`] — `{league, subject}`, or `null` for a key
+/// that is not this question's, so no client splits the string itself.
+#[wasm_bindgen]
+pub fn fantasy_parse_subject_key_json(subject_key: &str) -> String {
+    serde_json::to_string(&fantasy::parse_subject_key(subject_key).map(|(league, subject)| {
+        serde_json::json!({ "league": league, "subject": subject })
+    }))
+    .unwrap()
+}
+
+#[wasm_bindgen]
+pub fn fantasy_facts_json(subject_key: &str, inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&fantasy::fantasy_facts(subject_key, &inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn fantasy_answer_json(subject_key: &str, inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&fantasy::fantasy_answer(subject_key, &inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn fantasy_constants_json() -> String {
+    serde_json::json!({
+        "lineupSource": fantasy::LINEUP_SOURCE,
+        "waiversSource": fantasy::WAIVERS_SOURCE,
+        "bindingKey": fantasy::BINDING_KEY,
+        "setupLeague": fantasy::SETUP_LEAGUE,
     })
     .to_string()
 }
@@ -2775,12 +2850,13 @@ mod tests {
         let now: serde_json::Value =
             serde_json::from_str(&rank_panes_json(&inputs, FACTS, "now")).unwrap();
         // #534 grew Now to four questions (waste/weekend/vacation/race),
-        // #675 added homework as a fifth, and #693 added scps as a sixth;
-        // this fixture only binds waste's own page, so the rest rank
-        // unbound (or, for homework/scps, on the zone bridge's own gap)
-        // rather than vanishing — ADR-0017's own rule.
+        // #675 added homework as a fifth, #693 added scps as a sixth, and
+        // #717 added fantasy's two setup panes; this fixture only binds
+        // waste's own page, so the rest rank unbound (or, for homework/scps,
+        // on the zone bridge's own gap) rather than vanishing — ADR-0017's
+        // own rule.
         let now = now.as_array().unwrap();
-        assert_eq!(now.len(), 6);
+        assert_eq!(now.len(), 8);
         assert!(now.iter().any(|pane| pane["question"] == "homework"));
         let waste = now.iter().find(|pane| pane["question"] == "waste").unwrap();
         assert_eq!(waste["paneKey"], serde_json::json!("waste:collection"));
@@ -2795,6 +2871,18 @@ mod tests {
         );
         assert_eq!(rank_panes_json(&inputs, FACTS, "not-a-surface"), "[]");
         assert_eq!(pane_zone_queries_json(&inputs, "not-a-surface"), "[]");
+    }
+
+    /// #820: the web's door answers exactly the core's declaration, per
+    /// surface and in order — the same `panes::required_sources` the mobile
+    /// seam's pane-read loop is pinned to (`ffi-mobile`'s own test).
+    #[test]
+    fn required_sources_json_is_the_cores_declaration_per_surface() {
+        for (wire, surface) in [("now", Surface::Now), ("status", Surface::Status)] {
+            let crossed: Vec<String> = serde_json::from_str(&required_sources_json(wire)).unwrap();
+            assert_eq!(crossed, panes::required_sources(surface), "{wire}");
+        }
+        assert_eq!(required_sources_json("elsewhere"), "[]");
     }
 
     #[test]
@@ -2865,7 +2953,7 @@ mod tests {
         assert_eq!(pane_band_order_json(), r#"["live","imminent","near","distant","dormant"]"#);
         assert_eq!(
             pane_question_order_json(),
-            r#"["homework","scps","waste","weekend","vacation","race","kimi","github","uptime","reachability","poller"]"#,
+            r#"["homework","scps","waste","weekend","vacation","race","fantasy","kimi","github","uptime","reachability","poller"]"#,
         );
         let constants: serde_json::Value =
             serde_json::from_str(&waste_constants_json()).unwrap();
@@ -3388,6 +3476,32 @@ mod tests {
     }
 
     #[test]
+    fn fantasy_crosses_its_setup_subjects_and_gap_as_data() {
+        let inputs = serde_json::json!({
+            "nowMs": 0,
+            "bindings": [{"key":"yahoo-leagues","value":{"state":"text","text":" 449.l.1, "}}],
+            "paneReads": {},
+        })
+        .to_string();
+        assert_eq!(fantasy_subjects_json(&inputs), r#"["449.l.1:lineup","449.l.1:waivers"]"#);
+        assert_eq!(fantasy_setup_json(&inputs), r#"{"kind":"bound","leagues":["449.l.1"]}"#);
+        assert_eq!(
+            fantasy_facts_json("449.l.1:waivers", &inputs),
+            r#"{"kind":"gap","gap":{"gap":"notFetched"}}"#
+        );
+        assert_eq!(
+            fantasy_answer_json("449.l.1:lineup", &inputs),
+            r#"{"answerState":"bound-but-unacquired","band":"dormant","withinBand":null}"#
+        );
+        assert_eq!(
+            fantasy_parse_subject_key_json("449.l.1:lineup"),
+            r#"{"league":"449.l.1","subject":"lineup"}"#
+        );
+        assert_eq!(fantasy_parse_subject_key_json("nope"), "null");
+        assert_eq!(fantasy_leagues_from_binding_json("a, b,,"), r#"["a","b"]"#);
+    }
+
+    #[test]
     fn the_question_roster_crosses_as_the_cores_own_list_in_order() {
         let crossed: Vec<serde_json::Value> =
             serde_json::from_str(&question_roster_json()).unwrap();
@@ -3404,6 +3518,7 @@ mod tests {
                 "weekend",
                 "vacation",
                 "race",
+                "fantasy",
                 "kimi",
                 "github",
                 "uptime",
@@ -3416,8 +3531,11 @@ mod tests {
         assert_eq!(crossed[5]["label"], "When is the next race");
         assert_eq!(crossed[5]["surface"], "now");
         assert_eq!(crossed[5]["bindings"], serde_json::json!(["race-series"]));
-        assert_eq!(crossed[8]["question"], "uptime");
-        assert_eq!(crossed[8]["surface"], "status");
-        assert_eq!(crossed[8]["bindings"], serde_json::json!([]));
+        assert_eq!(crossed[6]["label"], "Fantasy football");
+        assert_eq!(crossed[6]["surface"], "now");
+        assert_eq!(crossed[6]["bindings"], serde_json::json!(["yahoo-leagues"]));
+        assert_eq!(crossed[9]["question"], "uptime");
+        assert_eq!(crossed[9]["surface"], "status");
+        assert_eq!(crossed[9]["bindings"], serde_json::json!([]));
     }
 }

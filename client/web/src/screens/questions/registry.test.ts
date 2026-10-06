@@ -11,6 +11,7 @@ import {
 } from "./contract";
 import { QUESTIONS, panesFrom, rankPanes, requiredCalendarRequests, requiredSources } from "./registry";
 import { questionLabel, questionRoster } from "./roster";
+import { requiredSourcesFromCore } from "../../decisions/seam";
 import { SOURCES } from "../poller-pane/poller";
 
 // The registry, and the two properties that keep it honest: it names every
@@ -63,38 +64,28 @@ describe("QUESTION_ORDER", () => {
 });
 
 describe("requiredSources", () => {
-  it("unions every 'now' question's sources without repeating one", () => {
-    const sources = requiredSources("now");
-    expect(new Set(sources).size).toBe(sources.length);
-    for (const question of QUESTION_ORDER) {
-      if (QUESTIONS[question].surface !== "now") {
-        continue;
-      }
-      for (const source of QUESTIONS[question].sources) {
-        expect(sources).toContain(source);
-      }
+  // #820: the web declares no per-question sources of its own any more —
+  // this is the core's `required_sources`, the same union the mobile seam's
+  // pane-read loop reads, so the two clients cannot request different lanes.
+  it("is the core's declaration, per surface", () => {
+    for (const surface of ["now", "status"] as const) {
+      expect(requiredSources(surface)).toEqual(requiredSourcesFromCore(surface));
     }
   });
 
-  it("never asks for a source no question on this surface reads (ADR-0017, #311)", () => {
-    // Not "never a source the other surface's questions read": poller
-    // (#775, status) legitimately shares sources with waste/race (now) —
-    // it watches every registered snapshot source's own freshness, which
-    // is a fact independent of which surface answers content questions
-    // about the same rows. The real invariant is narrower: a surface's
-    // required sources are always a subset of what its OWN questions
-    // declare.
-    for (const surface of ["now", "status"] as const) {
-      const sources = requiredSources(surface);
-      const ownSources = new Set(
-        QUESTION_ORDER.filter((question) => QUESTIONS[question].surface === surface).flatMap(
-          (question) => QUESTIONS[question].sources,
-        ),
-      );
-      for (const source of sources) {
-        expect(ownSources).toContain(source);
-      }
-    }
+  it("names the now surface's four snapshot lanes and nothing else", () => {
+    expect(requiredSources("now")).toEqual([
+      "city-waste/v2",
+      "race-schedule/v1",
+      "yahoo-lineup/v1",
+      "yahoo-waivers/v1",
+    ]);
+  });
+
+  it("reads every source the poller watches from the status surface, once each", () => {
+    const sources = requiredSources("status");
+    expect(new Set(sources).size).toBe(sources.length);
+    expect([...sources].sort()).toEqual([...SOURCES].sort());
   });
 });
 
@@ -189,7 +180,6 @@ describe("rankPanes", () => {
     // them would test the sort a second time and the expansion not at all.
     const multi: QuestionDef = {
       surface: "now",
-      sources: [],
       subjects: () => ["b", "a"],
       answer: (subjectKey) => ({
         answerState: "answered",
@@ -274,7 +264,7 @@ describe("rankPanes — the off switch (#715, ADR-0034)", () => {
   });
 
   it("ignores a question name this build does not know", () => {
-    const inputs = { ...emptyInputs(), disabledQuestions: ["fantasy", ""] };
+    const inputs = { ...emptyInputs(), disabledQuestions: ["cricket", ""] };
     expect(rankPanes(inputs, "now").map((pane) => pane.question)).toEqual(
       rankPanes(emptyInputs(), "now").map((pane) => pane.question),
     );

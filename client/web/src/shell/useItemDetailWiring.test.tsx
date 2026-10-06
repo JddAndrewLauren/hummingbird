@@ -76,6 +76,23 @@ describe("useItemDetailWiring", () => {
     expect(fileLinkRequests(worker)).toHaveLength(2);
   });
 
+  it("opening an item requests its Grill history on the same key, and never a sync", () => {
+    // #358: a mirror read beside the steps and file links — the anti-goal
+    // is that nothing here asks for a cycle or widens what one carries.
+    const worker = fakeWorker();
+    const { rerender } = render(<Harness worker={worker} syncOutcomeSeq={0} />);
+    const grillRequests = () =>
+      worker.postMessage.mock.calls.map(([message]) => message).filter((message) => message.type === "getGrills");
+    expect(grillRequests()).toEqual([{ type: "getGrills", itemId: "item-1" }]);
+
+    rerender(<Harness worker={worker} syncOutcomeSeq={1} />);
+    expect(grillRequests()).toHaveLength(2);
+    const types = worker.postMessage.mock.calls.map(([message]) => message.type);
+    for (const sync of ["runSync", "syncFocusTrigger", "manualSyncTrigger"]) {
+      expect(types).not.toContain(sync);
+    }
+  });
+
   it("opening the item already open closes it — the card is the toggle", () => {
     // The gesture a reader tries first to put an expanded card away, and the
     // one the triage rows have always had.

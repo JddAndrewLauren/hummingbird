@@ -37,7 +37,7 @@ use hummingbird_core::{
 use hummingbird_domain::{
     core_field_type, is_valid_deadline, is_valid_github_repo, Alert, Condition, Energy,
     EventKindEntry, FieldType, FileLink, Fog, Item, Project, ProjectLink, Route, Rule, Size,
-    Stage, Step, Tier, CORE_FIELDS, EVENT_KINDS, GrillVerdict,
+    Stage, Step, Tier, CORE_FIELDS, EVENT_KINDS, GrillVerdict, GrillWithoutTranscript,
 };
 
 // The real, target-specific store `Core::init` resolves to internally is a
@@ -473,6 +473,15 @@ pub struct PatchProjectLinkResponse {
 pub struct FileLinkListResponse {
     pub kind: &'static str,
     pub links: Vec<FileLink>,
+}
+
+/// The wrapper around [`TaskHostCore::grills`]'s answer — the Grill
+/// history's read (#358). Same `"busy"` contract as
+/// [`FileLinkListResponse`]; never a transcript (ADR-0023 decision 4).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct GrillListResponse {
+    pub kind: &'static str,
+    pub grills: Vec<GrillWithoutTranscript>,
 }
 
 /// What [`TaskHostCore::create_file_link`] resolves to (ADR-0036). Same
@@ -2318,6 +2327,12 @@ impl TaskHostCore {
     /// (ADR-0036) — the item panel's read.
     pub fn file_links(&self, item_id: &str) -> FileLinkListResponse {
         FileLinkListResponse { kind: "ok", links: self.core.file_links_for(item_id) }
+    }
+
+    /// Every completed Grill on one item, newest first, per
+    /// [`Core::grills_for`] (#358).
+    pub fn grills(&self, item_id: &str) -> GrillListResponse {
+        GrillListResponse { kind: "ok", grills: self.core.grills_for(item_id) }
     }
 
     /// Creates a File link, per [`Core::create_file_link`] (ADR-0036). The
@@ -4607,6 +4622,20 @@ mod triage_tests {
 mod grill_tests {
     use super::*;
 
+    /// #358: the Grill history's read serializes under `grills`, the key
+    /// `task-worker.ts` parses, and an item never grilled reads as `[]`.
+    #[tokio::test]
+    async fn an_ungrilled_item_reads_an_empty_grill_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-grills-empty");
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        assert_eq!(
+            serde_json::to_string(&host.grills("i-1")).unwrap(),
+            r#"{"kind":"ok","grills":[]}"#
+        );
+    }
+
     async fn captured_item(host: &mut TaskHostCore) -> String {
         let response = host
             .capture_test("seed-cap", "book flights", "triage", CaptureFields::default(), 1_000)
@@ -6225,14 +6254,14 @@ mod question_switch_tests {
     }
 
     #[tokio::test]
-    async fn a_fresh_host_reports_all_eleven_questions_on() {
+    async fn a_fresh_host_reports_all_twelve_questions_on() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-switch-fresh");
         let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
 
         let response = host.question_switches();
         assert_eq!(response.kind, "ok");
-        assert_eq!(response.switches.len(), 11);
+        assert_eq!(response.switches.len(), 12);
         assert!(response.switches.iter().all(|switch| switch.enabled && !switch.pending));
     }
 
@@ -6242,7 +6271,7 @@ mod question_switch_tests {
         let namespace = dir.path().join("ns-switch-unknown");
         let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
 
-        let response = host.set_question_enabled("seed-1", "fantasy", false, 1_000).await;
+        let response = host.set_question_enabled("seed-1", "cricket", false, 1_000).await;
         assert_eq!(response.kind, "unknown_question");
         // And nothing was written: `settings` has no DELETE, so a key minted
         // from an invented name would be a permanent unreadable row.

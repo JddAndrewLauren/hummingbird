@@ -67,7 +67,7 @@ private fun GapBody(reason: String) {
 }
 
 /** The Status surface's `expandedContent` — one dispatcher, exhaustive
- * over every facts arm the way `StatusScreen.kt`'s `paneLabel` is, so a
+ * over every facts arm with no `else ->` arm, so a
  * Now-surface question reaching this slot is a loud error, never a blank
  * expansion. */
 /** @param headline whether this content draws the pane's own headline.
@@ -91,7 +91,8 @@ internal fun StatusPaneExpanded(pane: MobileRankedPane, nowMs: Long, headline: B
         is MobilePaneFacts.Waste,
         is MobilePaneFacts.Weekend,
         is MobilePaneFacts.Vacation,
-        is MobilePaneFacts.Race ->
+        is MobilePaneFacts.Race,
+        is MobilePaneFacts.Fantasy ->
             error("a Now-surface question reached the Status expanded slot: ${pane.standingQuestion}")
     }
 }

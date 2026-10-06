@@ -1421,8 +1421,9 @@ costs the device token every run.
 22. **Status against the web** (#536's own proof line). Compare **set,
     order and band** — never the wording: `RankedPaneRecord` carries
     `question`, `subject_key`, `pane_key` and the answer, and no copy at
-    all, so "Kimi balance" against "Model credit balance" is two renderings
-    of one record. Expect Uptime to fan out one row per subject
+    all. (Since #716 both clients name a pane by the core's roster label,
+    so the words should now agree too; the phone appends a per-subject
+    pane's subject, the web puts it in the tile's headline.) Expect Uptime to fan out one row per subject
     (`uptime_subjects` → authority, runner, web) on both clients, and
     `pending` (`NEVER_POLLED_SUBJECT`) wherever a source is unprovisioned —
     #416/#486 are open, so unprovisioned is the normal reading and does not

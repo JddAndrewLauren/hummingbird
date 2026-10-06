@@ -14,9 +14,11 @@ import { requestPaneRead, type WorkerLike } from "../store/worker-client";
 // `Date.now()` below is the request's own `nowMs` — the instant the ages and
 // the alert-liveness filter are resolved against, core-side — not a timer.
 //
-// Which sources to ask for is `registry.ts`'s answer, unioned over every
-// registered question: a question added to the registry is requested here
-// without this file changing, which is what stops the two lists drifting.
+// Which sources to ask for is the core's answer (#820), reached through
+// `registry.ts`'s `requiredSources`: `panes::question_sources` is the one
+// declaration of which question reads which source, and the mobile seam's
+// pane-read loop reads the same union, so a source added there is requested
+// here without this file — or any per-question TS list — changing.
 //
 // This hook is not screen-scoped — it fires once, regardless of which
 // screen is showing — so it asks `requiredSources` for BOTH surfaces
