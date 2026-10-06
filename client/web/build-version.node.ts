@@ -64,5 +64,6 @@ export function readBuildVersion(): string {
     // first and refuse the number rather than shipping a wrong one.
     shallow: git("rev-parse", "--is-shallow-repository") !== "false",
     isMainBuild: isMainBuild(),
+    shortSha: git("rev-parse", "--short=8", "HEAD") || null,
   });
 }
