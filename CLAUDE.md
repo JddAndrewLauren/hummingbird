@@ -76,6 +76,7 @@ grepping it.
 | Surfaces registry (visual gate) | `client/web/visual/` | `docs/SURFACES.md` |
 | The suggested contexts are an edited list (ADR-0038) — the third `settings` vocabulary (one ordered `contexts` row, defaults until edited), the two Core doors and the removal cascade (list first, then one clear per live item and per project default, archived never), both seams, Settings' `Contexts` section and the live list reaching capture, the item panel and the frontier chips. Web edits it; the phone reads it through an injected door beside `captureFormMeta` | `client/core/src/contexts.rs`, `client/core/src/lib.rs`'s `suggested_contexts`/`add_context`/`remove_context`, `client/ffi-web/src/task_host.rs`, `client/ffi-mobile/src/lib.rs`'s `suggested_contexts`, `client/web/src/screens/{contexts.ts,SettingsScreen.tsx,field-vocabulary.ts}`, `client/android/.../{CaptureViewModel,ItemDetailViewModel}.kt` | `contexts.rs`, then ADR-0038 |
 | The diagnostics lane (#705/#712) — the shared wire contract, the PWA journal/export, Android's recorder/export, and the authority's correlated request events | `server/domain/src/diagnostics.rs`, `client/core/src/diagnostics/`, `client/web/src/{worker/diagnostics-*.ts,shell/diagnostics-download.ts}`, `client/android/.../diagnostics/`, `server/authority/src/diagnostics.rs` | `docs/diagnostics.md`, then `server/domain/src/diagnostics.rs`'s module header |
+| One sign-in per device, devices managed in-app, calendar choices synced (ADR-0040, **being built under plan #834** — until its pieces land, devices are still pasted and calendar choices are still per device) — `POST /api/auth/google` verifies a Google ID token against a one-subject allowlist and mints an ordinary per-device `device` token (no session); `/api/devices` lists and revokes; Settings' Signed-in devices on web and phone; the extension's Options page signs in too; `calendar-connected`/`calendar-selection` are a synced vocabulary | ADR-0040 names the pieces; each sub-issue of #834 names its own files | ADR-0040, then plan issue #834 |
 
 Agent skills live in `.claude/skills/`, each with its own `SKILL.md`:
 `/next-up-hb` (select and delegate), `/to-actions` (project → actions),
@@ -112,8 +113,16 @@ spend*, via `POST /api/skills/run`, and since #577 it can also mint a Google
 against a server-held credential shared by every device (ADR-0028) —
 **and since #564 the phone is one of the minters**, over that same route
 with that same credential, so the sentence above is a statement about every
-device token rather than about browsers. The
-population of `device` tokens is: one per operator device (a browser
+device token rather than about browsers. **Since ADR-0040 (plan #834, as its pieces land) a `device` token can also
+list the operator's devices and revoke any of them** (`/api/devices`) except
+`runner` and `openclaw-agent` — denial of service only: it cannot mint, and
+the fix is signing in again. **And the operator's Google account is now a
+minting root for `device` tokens**: `POST /api/auth/google` mints one for any
+Google ID token whose `sub` matches the `GOOGLE_SIGNIN_ALLOWED_SUB` Worker
+secret, so for that one scope the account is as sensitive as `ADMIN_SECRET`,
+and its protection is its own second factor. The
+population of `device` tokens is: one per operator device, minted by
+signing in (ADR-0040) or by the admin lane (a browser
 profile running the capture extension is one — `device-chrome-<machine>`,
 ADR-0037; the watch is one — `device-watch`, ADR-0039, delivered from the
 phone's Settings over the Wearable Data Layer and held on the watch alone),
