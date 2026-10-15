@@ -14,6 +14,8 @@ import uniffi.hummingbird_ffi_mobile.MobileTaskHost
 // namespace is app-local files — the host's one init-time contribution
 // (ADR-0003) — and the stored device token is rehydrated (not pushed:
 // rehydration never resumes a credential hold; see Core::rehydrate_api_key).
+// With no token stored, or a store that cannot be read, the absence is
+// reported instead, so the core's credential always leaves `unknown` (#846).
 object CoreHolder {
     @Volatile
     private var host: MobileTaskHost? = null
@@ -28,11 +30,11 @@ object CoreHolder {
 
     private suspend fun create(context: Context): MobileTaskHost {
         val namespace = File(context.filesDir, "hummingbird-core").absolutePath
-        // Init with no key, then rehydrate the stored one: MobileTaskHost.init
-        // treats its api_key as a push (first entry), and app start is a
-        // reload of a token we already had.
-        val core = MobileTaskHost.init(namespace, BuildConfig.AUTHORITY_BASE_URL, "")
-        TokenStore.load(context)?.let { core.rehydrateApiKey(it) }
+        // Init takes no key (#846); app start is a reload of a token we
+        // already had, or a report that there is none.
+        val core = MobileTaskHost.init(namespace, BuildConfig.AUTHORITY_BASE_URL)
+        val stored = runCatching { TokenStore.load(context) }.getOrNull()
+        if (stored != null) core.rehydrateApiKey(stored) else core.reportNoApiKey()
         // The mobile FFI host's own diagnostic touch point (#709): this is
         // the moment the app's one durable core handle for this process
         // comes into existence, which is what `session.started` means here

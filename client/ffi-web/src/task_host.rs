@@ -55,20 +55,29 @@ type TaskStore = hummingbird_core::storage::IndexedDbSnapshotStore;
 type TaskStore = hummingbird_core::storage::FsSnapshotStore;
 
 /// One drained [`CoreEvent`], as the web host's JSON shape
-/// (`client/web/src/store/protocol.ts`'s `TaskEventDTO`).
+/// (`client/web/src/store/protocol.ts`'s `TaskEventDTO`). `arm` is the
+/// [`hummingbird_core::CredentialArm`]'s wire name (#846) — never the token.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct TaskEventDTO {
     pub kind: &'static str,
-    pub at_ms: i64,
+    pub arm: &'static str,
 }
 
 fn map_event(event: CoreEvent) -> TaskEventDTO {
     match event {
-        CoreEvent::CredentialNeeded { at_ms } => TaskEventDTO {
-            kind: "credential_needed",
-            at_ms,
+        CoreEvent::CredentialChanged { arm } => TaskEventDTO {
+            kind: "credential_changed",
+            arm: arm.as_str(),
         },
     }
+}
+
+/// [`TaskHostCore::credential_arm`]'s JSON shape (#846): `arm` is one of
+/// `unknown` / `unset` / `resting` / `reprompt`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CredentialArmResponse {
+    pub kind: &'static str,
+    pub arm: &'static str,
 }
 
 /// What [`TaskHostCore::capture`] resolves to. `"failed"` covers both an
@@ -1322,6 +1331,12 @@ impl DiagnosticSink for DiagnosticBuffer {
 /// and its sibling `a_later_push_supersedes_an_earlier_queued_rehydrate` —
 /// the concrete claim this PR's own review round 1 found asserted in prose
 /// but untested.
+///
+/// **A queued `ReportAbsent` (#846) only ever fills an empty slot.** Every
+/// other op already takes the arm out of `unknown`, and "as if not busy" an
+/// absence report arriving after any of them changes nothing, so it never
+/// supersedes one; any of them arriving after it supersedes it, since each
+/// lands in the same or a later arm the report would have.
 #[derive(Debug, PartialEq)]
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub enum PendingApiKeyOp {
@@ -1329,6 +1344,8 @@ pub enum PendingApiKeyOp {
     /// Issue #196 (shape 2): the rehydration counterpart to `Push`.
     Rehydrate(String),
     Clear,
+    /// #846: the host read its storage and found no token.
+    ReportAbsent,
 }
 
 /// The bundle [`TaskCoreCell`] hands a checkout or a read: the session
@@ -1664,6 +1681,7 @@ impl TaskCoreCell {
             Some(PendingApiKeyOp::Clear) => host.clear_api_key(),
             Some(PendingApiKeyOp::Push(api_key)) => host.push_api_key(api_key),
             Some(PendingApiKeyOp::Rehydrate(api_key)) => host.rehydrate_api_key(api_key),
+            Some(PendingApiKeyOp::ReportAbsent) => host.report_no_api_key(),
             None => {}
         }
     }
@@ -1705,6 +1723,21 @@ impl TaskCoreCell {
         match self.host.borrow_mut().as_mut() {
             Some(host) => host.clear_api_key(),
             None => *self.pending_op.borrow_mut() = Some(PendingApiKeyOp::Clear),
+        }
+    }
+
+    /// #846: the absence report — applies immediately if the host is
+    /// present, or queues otherwise, but only into an empty slot (see
+    /// [`PendingApiKeyOp`]'s doc for why it never supersedes another op).
+    pub fn report_no_api_key(&self) {
+        match self.host.borrow_mut().as_mut() {
+            Some(host) => host.report_no_api_key(),
+            None => {
+                let mut pending = self.pending_op.borrow_mut();
+                if pending.is_none() {
+                    *pending = Some(PendingApiKeyOp::ReportAbsent);
+                }
+            }
         }
     }
 }
@@ -1784,19 +1817,16 @@ impl Drop for CoreGuard<'_> {
 
 impl TaskHostCore {
     /// `base_url` is the authority's origin, host-supplied per ADR-0003 —
-    /// this crate invents no deployment address of its own. `api_key` is
-    /// whatever credential the host already holds at construction time
-    /// (empty until #106/S8 lands a device-token entry flow); it is never
-    /// persisted by `Core::init` (see that method's own doc), and
-    /// [`TaskHostCore::push_api_key`] is how a host supplies — or rotates —
-    /// a real one afterwards.
+    /// this crate invents no deployment address of its own. Takes no
+    /// credential (#846): the core starts in `unknown`, and the host's
+    /// start-up token load calls [`TaskHostCore::rehydrate_api_key`] or
+    /// [`TaskHostCore::report_no_api_key`] — see [`Core::init`].
     pub async fn init(
         namespace: impl Into<String>,
         base_url: impl Into<String>,
-        api_key: impl Into<String>,
     ) -> Result<Self, CoreInitError> {
         let base_url = base_url.into();
-        let core = Core::init(namespace, api_key).await?;
+        let core = Core::init(namespace).await?;
         let client = reqwest::Client::new();
         let read_transport = ReqwestSyncTransport::new(client.clone(), base_url.clone());
         let write_transport = ReqwestMutationTransport::new(client, base_url);
@@ -1830,6 +1860,21 @@ impl TaskHostCore {
     /// `held`, on the next [`TaskHostCore::run`].
     pub fn clear_api_key(&mut self) {
         self.core.clear_api_key();
+    }
+
+    /// #846: the host's start-up load found no stored token — see
+    /// [`Core::report_no_api_key`].
+    pub fn report_no_api_key(&mut self) {
+        self.core.report_no_api_key();
+    }
+
+    /// Where this device's credential stands (#846) — see
+    /// [`Core::credential_arm`].
+    pub fn credential_arm(&self) -> CredentialArmResponse {
+        CredentialArmResponse {
+            kind: "ok",
+            arm: self.core.credential_arm().as_str(),
+        }
     }
 
     /// Whether `item_id` currently has an unconfirmed capture overlaid on
@@ -3520,7 +3565,7 @@ mod core_checkout_tests {
     /// exactly what a `SharedWorker` restart builds (ADR-0010).
     async fn fresh_cell_in_session(dir: &tempfile::TempDir, name: &str, session_id: &str) -> TaskCoreCell {
         let namespace = dir.path().join(name);
-        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
         TaskCoreCell::new(host, session_id.to_string())
     }
 
@@ -3806,7 +3851,7 @@ mod core_checkout_tests {
     async fn a_successful_capture_emits_local_commit_before_finished_and_no_http_started() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-op-1");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
         let sink = DiagnosticBuffer::default();
         let session = DiagnosticSession::new("s", 0);
         let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
@@ -3842,7 +3887,7 @@ mod core_checkout_tests {
 
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-op-2");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
         std::fs::set_permissions(&namespace, std::fs::Permissions::from_mode(0o500)).unwrap();
 
         let sink = DiagnosticBuffer::default();
@@ -3892,7 +3937,7 @@ mod core_checkout_tests {
     async fn a_triage_rejected_before_the_seam_emits_requested_then_finished_failure() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-op-4");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
         let sink = DiagnosticBuffer::default();
         let session = DiagnosticSession::new("s", 0);
         let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
@@ -3931,9 +3976,10 @@ mod core_checkout_tests {
     async fn a_held_credential_emits_a_visible_sync_finished_credential_needed() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-sync-1");
-        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
+        host.push_api_key("device-token".to_string());
         // Force the credential into `held` without a real 401: this
         // module's own `clear_api_key` test already establishes
         // `clear_api_key` does not reach `held` — a genuine hold needs a
@@ -3988,9 +4034,10 @@ mod core_checkout_tests {
     async fn a_connection_error_during_run_emits_a_cycle_scoped_sync_finished_pull_failed() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-sync-2");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
+        host.push_api_key("device-token".to_string());
         let sink = DiagnosticBuffer::default();
         let session = DiagnosticSession::new("s", 0);
         let diagnostics = OperationDiagnostics { session: &session, sink: &sink };
@@ -4035,9 +4082,10 @@ mod core_checkout_tests {
     async fn a_queued_write_drained_by_run_emits_http_started_carrying_its_operation_id() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-sync-http-started");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
+        host.push_api_key("device-token".to_string());
         host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000)
             .await;
 
@@ -4107,6 +4155,40 @@ mod core_checkout_tests {
             "a later Push must supersede an earlier queued Rehydrate"
         );
     }
+
+    /// #846: a queued absence report never supersedes an op that already
+    /// takes the arm out of `unknown` — "as if not busy", it would have
+    /// changed nothing arriving after any of them.
+    #[tokio::test]
+    async fn a_queued_absence_report_never_supersedes_another_queued_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let cell = fresh_cell(&dir, "ns-pending-absent-1").await;
+
+        let _guard = cell.checkout(CoreOwner::Sync, 1_000).unwrap();
+        cell.rehydrate_api_key("tok-rehydrate".to_string());
+        cell.report_no_api_key();
+
+        assert_eq!(
+            *cell.pending_op.borrow(),
+            Some(PendingApiKeyOp::Rehydrate("tok-rehydrate".to_string())),
+        );
+    }
+
+    /// #846: a queued absence report is applied at check-in, so the core
+    /// leaves `unknown` even when the report arrived mid-cycle.
+    #[tokio::test]
+    async fn a_queued_absence_report_lands_at_check_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let cell = fresh_cell(&dir, "ns-pending-absent-2").await;
+
+        {
+            let _guard = cell.checkout(CoreOwner::Sync, 1_000).unwrap();
+            cell.report_no_api_key();
+            assert_eq!(*cell.pending_op.borrow(), Some(PendingApiKeyOp::ReportAbsent));
+        }
+
+        assert_eq!(cell.host.borrow().as_ref().unwrap().credential_arm().arm, "unset");
+    }
 }
 
 #[cfg(test)]
@@ -4132,7 +4214,7 @@ mod act_tests {
     async fn acting_with_an_unrecognised_action_never_reaches_core_act() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-act-1");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
@@ -4151,7 +4233,7 @@ mod act_tests {
     async fn acting_on_an_unknown_item_id_is_not_found() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-act-2");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
@@ -4165,7 +4247,7 @@ mod act_tests {
     async fn completing_a_captured_item_shows_done_immediately_offline() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-act-3");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
@@ -4187,7 +4269,7 @@ mod act_tests {
     async fn blocking_an_item_never_shows_up_as_a_relation_block() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-act-4");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
@@ -4207,7 +4289,7 @@ mod act_tests {
     async fn cancelling_an_item_drops_it_from_the_frontier() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-act-5");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
@@ -4234,7 +4316,7 @@ mod triage_tests {
     async fn triaging_with_an_unrecognised_destination_never_reaches_core_triage() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-triage-1");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         host.capture_test("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
@@ -4257,7 +4339,7 @@ mod triage_tests {
     async fn triaging_with_an_unrecognised_size_never_reaches_core_triage() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-triage-2");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         host.capture_test("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
@@ -4364,7 +4446,7 @@ mod triage_tests {
     async fn capturing_rejects_every_invalid_field_value_before_reaching_core_capture() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-capture-invalid");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
@@ -4414,7 +4496,7 @@ mod triage_tests {
     async fn capturing_with_every_field_set_puts_them_all_on_the_item() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-capture-full");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
@@ -4460,7 +4542,7 @@ mod triage_tests {
     async fn triaging_rejects_every_invalid_field_value_before_reaching_core_triage() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-triage-validation");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         host.capture_test("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
@@ -4542,7 +4624,7 @@ mod triage_tests {
     async fn a_triage_clears_the_fields_it_nulls_and_leaves_the_rest_alone() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-triage-clear");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         host.capture_test("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
@@ -4584,7 +4666,7 @@ mod triage_tests {
     async fn triaging_on_an_unknown_item_id_is_not_found() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-triage-3");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
@@ -4603,7 +4685,7 @@ mod triage_tests {
     async fn promoting_to_ready_moves_the_item_from_triage_to_the_frontier() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-triage-4");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         host.capture_test("seed-1", "someday maybe", "triage", CaptureFields::default(), 1_000).await;
@@ -4654,7 +4736,7 @@ mod triage_tests {
     async fn a_none_destination_edits_scheduled_date_without_touching_stage() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-triage-6");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
@@ -4686,7 +4768,7 @@ mod triage_tests {
     async fn clearing_scheduled_date_through_this_seam_is_a_real_null() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-triage-7");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
@@ -4727,7 +4809,7 @@ mod grill_tests {
     async fn an_ungrilled_item_reads_an_empty_grill_list() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-grills-empty");
-        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         assert_eq!(
             serde_json::to_string(&host.grills("i-1")).unwrap(),
@@ -4746,7 +4828,7 @@ mod grill_tests {
     async fn resolving_a_triage_item_promotes_it_off_the_triage_inbox() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-grill-1");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         let item_id = captured_item(&mut host).await;
@@ -4776,7 +4858,7 @@ mod grill_tests {
     async fn an_unrecognised_verdict_is_rejected_before_reaching_core_complete_grill() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-grill-2");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         let item_id = captured_item(&mut host).await;
@@ -4807,7 +4889,7 @@ mod grill_tests {
     async fn unreadable_session_steps_json_is_rejected_before_reaching_core_complete_grill() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-grill-3");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         let item_id = captured_item(&mut host).await;
@@ -4835,7 +4917,7 @@ mod grill_tests {
     async fn completing_a_grill_on_an_unknown_item_id_is_not_found() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-grill-4");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
@@ -4865,7 +4947,7 @@ mod grill_tests {
     async fn fog_remains_demotes_a_triage_item_to_grilling() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-grill-5");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         let item_id = captured_item(&mut host).await;
@@ -4896,7 +4978,7 @@ mod grill_tests {
     async fn fog_remains_moves_the_item_from_triage_inbox_to_grilling_items() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-grill-6");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         let item_id = captured_item(&mut host).await;
@@ -4928,7 +5010,7 @@ mod grill_tests {
     async fn a_saved_draft_is_readable_and_listed() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-grill-draft-1");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         let item_id = captured_item(&mut host).await;
@@ -4953,7 +5035,7 @@ mod grill_tests {
     async fn unreadable_turns_json_is_rejected_before_reaching_core_save_grill_draft() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-grill-draft-2");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         let item_id = captured_item(&mut host).await;
@@ -4968,7 +5050,7 @@ mod grill_tests {
     async fn discarding_removes_the_draft_and_is_a_no_op_when_absent() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-grill-draft-3");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         let item_id = captured_item(&mut host).await;
@@ -4987,7 +5069,7 @@ mod grill_tests {
     async fn an_item_with_no_draft_reads_as_not_existing() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-grill-draft-4");
-        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
@@ -5011,7 +5093,7 @@ mod ledger_tests {
     async fn a_ledger_row_serializes_item_fields_flat_beside_the_row_facts() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-ledger-1");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
@@ -5047,7 +5129,7 @@ mod ledger_tests {
     async fn completing_an_item_moves_it_onto_done_and_keeps_it_in_the_ledger() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-ledger-2");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
@@ -5080,7 +5162,7 @@ mod search_tests {
     async fn a_search_row_serializes_item_fields_flat_beside_group() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-search-1");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         host.capture_test("seed-1", "buy stamps", "ready", CaptureFields::default(), 1_000).await;
@@ -5104,7 +5186,7 @@ mod search_tests {
     async fn search_reaches_an_archived_item_and_labels_it() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-search-2");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         host.capture_test("seed-1", "widget report", "ready", CaptureFields::default(), 1_000).await;
@@ -5124,7 +5206,7 @@ mod search_tests {
     async fn an_empty_query_returns_no_rows_and_zero_total() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-search-3");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
         host.capture_test("seed-1", "anything at all", "ready", CaptureFields::default(), 1_000).await;
@@ -5144,7 +5226,7 @@ mod tests {
     async fn a_fresh_host_has_no_snapshot_and_no_pending_items() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-1");
-        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
@@ -5166,7 +5248,7 @@ mod tests {
         // so in a shape TS cannot mistake for a fresh, zero-age answer.
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-freshness");
-        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
@@ -5196,7 +5278,7 @@ mod tests {
     async fn capturing_with_an_unrecognised_stage_never_reaches_core_capture() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-2");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
@@ -5217,7 +5299,7 @@ mod tests {
     async fn capturing_with_an_unrecognised_size_never_reaches_core_capture() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-capture-size");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
@@ -5245,7 +5327,7 @@ mod tests {
     async fn capturing_with_an_unrecognised_energy_never_reaches_core_capture() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-capture-energy");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
@@ -5275,7 +5357,7 @@ mod tests {
     async fn capturing_with_size_energy_and_context_sets_them_on_the_item() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-capture-meta");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
@@ -5305,7 +5387,7 @@ mod tests {
     async fn a_capture_is_readable_from_the_frontier_and_marked_pending() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-3");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
@@ -5340,7 +5422,7 @@ mod tests {
     async fn a_triage_stage_capture_lands_on_the_inbox_not_the_frontier() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-4");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
@@ -5354,7 +5436,7 @@ mod tests {
     async fn a_fresh_host_reports_no_blocked_items_and_no_steps() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-blocked-1");
-        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
@@ -5368,41 +5450,33 @@ mod tests {
 
     #[tokio::test]
     async fn no_api_key_ever_pushed_reports_no_credential_without_touching_the_network() {
-        // `TaskHostCore::init`'s `api_key` argument is empty here — the
-        // pre-#106 provisional value `core.worker.ts` starts every task
-        // host with — so this is the real "device has never connected"
-        // state as `Core::run` sees it... except `Core::init` always pushes
-        // *something* (even ""), so this actually exercises the pull-failure
-        // path below, not `CoreCycleOutcome::NoCredential` (which only
-        // `Core::new` — never `Core::init` — can produce). See the finding
-        // posted on #105.
+        // A fresh host is the real "device has never connected" state:
+        // `TaskHostCore::init` takes no credential (#846), so `Core::run`
+        // answers `no_credential` without building a request. Before #846,
+        // `Core::init` pushed the worker's provisional `""` as a key and
+        // this path answered `pull_failed` instead (the finding on #105).
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-5");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
         let response = host.run_test(1_000, "user", true, 0.0).await;
 
-        // An empty `base_url` builds a relative URL, which `reqwest` rejects
-        // before ever opening a socket — deterministic and network-free.
-        assert_eq!(response.kind, "pull_failed");
+        assert_eq!(response.kind, "no_credential");
     }
 
     #[tokio::test]
     async fn clearing_the_key_reports_a_genuine_no_credential_without_touching_the_network() {
-        // Unlike the fresh-init case above (`Core::init`'s `""` still counts
-        // as *a* pushed key, so a fresh host actually exercises
-        // `pull_failed`), `clear_api_key` removes the key outright — this is
-        // the one path in this file that reaches a real
-        // `CoreCycleOutcome::NoCredential`, network-free even though
-        // `base_url` here is a real, well-formed relative path that would
-        // otherwise be attempted.
+        // Like the fresh-init case above, but from a key that was really
+        // there: `clear_api_key` removes it outright, so this reaches a real
+        // `CoreCycleOutcome::NoCredential`, network-free.
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-clear-1");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
+        host.push_api_key("device-token".to_string());
 
         host.clear_api_key();
         let response = host.run_test(1_000, "user", true, 0.0).await;
@@ -5414,9 +5488,10 @@ mod tests {
     async fn clearing_never_touches_a_pending_capture() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-clear-2");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
+        host.push_api_key("device-token".to_string());
         let response = host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
         let id = response.id.unwrap();
 
@@ -5430,9 +5505,13 @@ mod tests {
     async fn a_timer_trigger_is_accepted_and_a_user_trigger_is_the_default() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-6");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
+        // A real key, so the cycle reaches the transport — an empty
+        // `base_url` builds a relative URL, which `reqwest` rejects before
+        // ever opening a socket, deterministic and network-free.
+        host.push_api_key("device-token".to_string());
 
         // Both trigger spellings reach `Core::run` rather than panicking on
         // an unrecognised string; the exact cycle outcome is `client/core`'s
@@ -5449,9 +5528,10 @@ mod tests {
     async fn a_fresh_host_reports_zero_queue_depth_and_no_dead_letters() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-queue-1");
-        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
+        host.push_api_key("device-token".to_string());
 
         assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 0 });
         assert_eq!(
@@ -5464,9 +5544,10 @@ mod tests {
     async fn a_capture_raises_the_queue_depth() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-queue-2");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
+        host.push_api_key("device-token".to_string());
 
         host.capture_test("seed-1", "buy milk", "ready", CaptureFields::default(), 1_000).await;
 
@@ -5477,9 +5558,10 @@ mod tests {
     async fn a_fresh_host_serializes_a_readable_mirror_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-mirror-1");
-        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "device-token")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
+        host.push_api_key("device-token".to_string());
 
         let response = host.mirror_snapshot();
         assert_eq!(response.kind, "ok");
@@ -5490,12 +5572,64 @@ mod tests {
     async fn draining_events_twice_yields_nothing_new() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-7");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
         assert_eq!(host.take_events(), Vec::new());
         assert_eq!(host.take_events(), Vec::new());
+    }
+
+    // ------------------------------------------- #846: the credential's arm
+
+    fn arm_of(host: &TaskHostCore) -> &'static str {
+        let response = host.credential_arm();
+        assert_eq!(response.kind, "ok");
+        response.arm
+    }
+
+    #[tokio::test]
+    async fn the_seam_starts_unknown_and_an_absence_report_moves_it_to_unset_without_a_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-arm");
+        // `base_url` is unroutable on purpose: a cycle that sent a request
+        // would answer `pull_failed`, not `no_credential`.
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "http://127.0.0.1:9")
+            .await
+            .unwrap();
+        assert_eq!(arm_of(&host), "unknown");
+        assert_eq!(host.run_test(1_000, "user", true, 0.0).await.kind, "no_credential");
+
+        host.report_no_api_key();
+        assert_eq!(arm_of(&host), "unset");
+        assert_eq!(host.run_test(2_000, "user", true, 0.0).await.kind, "no_credential");
+        assert_eq!(
+            host.take_events(),
+            vec![TaskEventDTO { kind: "credential_changed", arm: "unset" }]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_seams_doors_move_the_arm_and_each_emits_one_event_never_the_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-arm-doors");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
+
+        host.push_api_key(String::new());
+        assert_eq!(arm_of(&host), "unset", "an empty push is not a credential");
+        host.rehydrate_api_key("sk-secret".to_string());
+        assert_eq!(arm_of(&host), "resting");
+        host.push_api_key("sk-secret".to_string());
+        assert_eq!(arm_of(&host), "resting");
+        host.clear_api_key();
+        assert_eq!(arm_of(&host), "unset");
+
+        let events = host.take_events();
+        assert_eq!(
+            events.iter().map(|event| event.arm).collect::<Vec<_>>(),
+            vec!["unset", "resting", "resting", "unset"]
+        );
+        assert!(!serde_json::to_string(&events).unwrap().contains("sk-secret"));
     }
 
     // ---------------------------------------------------- map_run_outcome
@@ -5946,12 +6080,21 @@ mod tests {
     #[test]
     fn task_event_dto_serializes_with_the_exact_keys_task_worker_ts_parses() {
         let event = TaskEventDTO {
-            kind: "credential_needed",
-            at_ms: 5_000,
+            kind: "credential_changed",
+            arm: "reprompt",
         };
         assert_eq!(
             serde_json::to_string(&event).unwrap(),
-            r#"{"kind":"credential_needed","at_ms":5000}"#
+            r#"{"kind":"credential_changed","arm":"reprompt"}"#
+        );
+    }
+
+    #[test]
+    fn credential_arm_response_serializes_with_the_exact_keys_task_worker_ts_parses() {
+        let response = CredentialArmResponse { kind: "ok", arm: "unset" };
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"kind":"ok","arm":"unset"}"#
         );
     }
 
@@ -6144,7 +6287,7 @@ mod pane_read_tests {
         // the shim's, and the host must never conflate the two.
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-pane-1");
-        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
@@ -6195,7 +6338,7 @@ mod binding_tests {
     async fn setting_a_binding_with_an_unrecognised_key_never_reaches_core_set_binding() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-binding-1");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
@@ -6217,7 +6360,7 @@ mod binding_tests {
     async fn a_binding_set_through_the_seam_reads_back_from_the_same_seam() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-binding-2");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "")
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "")
             .await
             .unwrap();
 
@@ -6282,7 +6425,7 @@ mod calendar_prefs_tests {
     async fn a_toggle_reads_back_pending_and_seeding_waits_for_a_sweep() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-calendar-prefs");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         let fresh = host.calendar_prefs();
         assert_eq!(fresh.kind, "ok");
@@ -6329,7 +6472,7 @@ mod context_list_tests {
     async fn a_fresh_host_reports_the_six_defaults_not_pending() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-contexts-fresh");
-        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         let response = host.suggested_contexts();
         assert_eq!(response.kind, "ok");
@@ -6341,7 +6484,7 @@ mod context_list_tests {
     async fn an_invalid_name_never_reaches_core_and_a_valid_one_reads_back_pending() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-contexts-add");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         assert_eq!(host.add_context("seed-0", "   ", 1_000).await.kind, "invalid");
         assert_eq!(host.add_context("seed-0", "@Home", 1_000).await.kind, "invalid");
@@ -6358,7 +6501,7 @@ mod context_list_tests {
     async fn removing_clears_a_captured_item_and_reports_the_count() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-contexts-remove");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         let id = host
             .core
@@ -6409,7 +6552,7 @@ mod question_switch_tests {
     async fn a_fresh_host_reports_all_twelve_questions_on() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-switch-fresh");
-        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         let response = host.question_switches();
         assert_eq!(response.kind, "ok");
@@ -6421,7 +6564,7 @@ mod question_switch_tests {
     async fn an_unrecognised_question_never_reaches_core_set_question_enabled() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-switch-unknown");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         let response = host.set_question_enabled("seed-1", "cricket", false, 1_000).await;
         assert_eq!(response.kind, "unknown_question");
@@ -6439,7 +6582,7 @@ mod question_switch_tests {
     async fn a_question_switched_off_through_the_seam_reads_back_from_the_same_seam() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-switch-roundtrip");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         assert_eq!(
             host.set_question_enabled("seed-1", "weekend", false, 1_000).await.kind,
@@ -6468,7 +6611,7 @@ mod rule_tests {
     async fn kind_registry_lists_every_launch_kind_and_the_core_fields() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-kind-registry");
-        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         let _ = host; // the registry needs no host state at all
         let response = TaskHostCore::kind_registry();
@@ -6524,7 +6667,7 @@ mod rule_tests {
     async fn creating_a_rule_with_an_unrecognised_tier_never_reaches_core_create_rule() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-create-rule-bad-tier");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         let response = host
             .create_rule("seed-1", "trash slide", None, "[]", "high", "not-a-tier", true, 1_000)
@@ -6539,7 +6682,7 @@ mod rule_tests {
     async fn creating_a_rule_enqueues_it_and_lists_it_in_the_queue_depth() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-create-rule-ok");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         let response = host
             .create_rule(
@@ -6563,7 +6706,7 @@ mod rule_tests {
     async fn patching_a_rules_enabled_field_touches_only_that_field() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-patch-rule");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         let rule = hummingbird_domain::Rule {
             id: "r-1".to_string(),
@@ -6605,7 +6748,7 @@ mod rule_tests {
     async fn deleting_a_rule_crosses_as_the_same_patch_call() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-delete-rule");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         let rule = hummingbird_domain::Rule {
             id: "r-1".to_string(),
@@ -6645,7 +6788,7 @@ mod rule_tests {
     async fn patching_a_rule_with_an_unrecognised_tier_never_reaches_core_patch_rule() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-patch-rule-bad-tier");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         let rule = hummingbird_domain::Rule {
             id: "r-1".to_string(),
@@ -6695,7 +6838,7 @@ mod project_tests {
     async fn creating_a_project_rejects_an_empty_name_before_reaching_core() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-create-project-empty");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         for name in ["", "   ", "\t\n"] {
             let response = host.create_project("seed-1", name, 1_000).await;
@@ -6718,7 +6861,7 @@ mod project_tests {
     async fn creating_a_project_enqueues_it_and_overlays_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-create-project-ok");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         let response = host.create_project("seed-1", "  Rebuild the deck  ", 1_000).await;
 
@@ -6750,7 +6893,7 @@ mod project_tests {
     async fn patching_a_projects_repo_and_context_enqueues_one_patch() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-patch-project");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
         let project = fixture_project();
 
         let response = host
@@ -6780,7 +6923,7 @@ mod project_tests {
     async fn patching_a_malformed_github_repo_never_reaches_core_patch_project() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-patch-project-bad-repo");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
         let project = fixture_project();
 
         let response = host
@@ -6809,7 +6952,7 @@ mod project_tests {
     async fn patching_clears_repo_and_context_without_validation_tripping() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-patch-project-clear");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
         let project = fixture_project();
 
         let response = host
@@ -6832,7 +6975,7 @@ mod file_link_tests {
     async fn creating_a_file_link_rejects_a_blank_path_before_reaching_core() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-create-file-link-empty");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         for path in ["", "   ", "\t\n"] {
             let response = host.create_file_link("seed-1", "i-1", path, 1_000).await;
@@ -6852,7 +6995,7 @@ mod file_link_tests {
     async fn creating_a_file_link_enqueues_it_and_overlays_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-create-file-link-ok");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         let response = host.create_file_link("seed-1", "i-1", "  Finance/2026/receipt.pdf  ", 1_000).await;
 
@@ -6871,7 +7014,7 @@ mod file_link_tests {
     async fn removing_a_file_link_enqueues_one_patch() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-remove-file-link");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
         let current = FileLink {
             id: "fl-1".to_string(),
             item_id: "i-1".to_string(),
@@ -6900,7 +7043,7 @@ mod project_link_tests {
     async fn creating_a_link_rejects_an_empty_url_before_reaching_core() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-create-link-empty");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         for url in ["", "   ", "\t\n"] {
             let response = host
@@ -6924,7 +7067,7 @@ mod project_link_tests {
     async fn creating_a_link_enqueues_it_and_overlays_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-create-link-ok");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         let response = host
             .create_project_link("seed-1", "p-1", "  https://example.com  ", Some("  Docs  ".to_string()), 1, 1_000)
@@ -6945,7 +7088,7 @@ mod project_link_tests {
     async fn creating_a_link_trims_a_blank_label_to_none() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-create-link-blank-label");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         let response = host
             .create_project_link("seed-1", "p-1", "https://example.com", Some("   ".to_string()), 1, 1_000)
@@ -6972,7 +7115,7 @@ mod project_link_tests {
     async fn patching_a_links_url_label_and_position_enqueues_one_patch() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-patch-link");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
         let link = fixture_link();
 
         let response = host
@@ -7001,7 +7144,7 @@ mod project_link_tests {
     async fn patching_a_link_to_a_blank_url_never_reaches_core() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-patch-link-bad-url");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
         let link = fixture_link();
 
         let response = host
@@ -7019,7 +7162,7 @@ mod project_link_tests {
     async fn removing_and_un_removing_a_link_each_enqueue_one_patch() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-patch-link-remove");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
         let link = fixture_link();
 
         let response = host
@@ -7046,7 +7189,7 @@ mod route_tests {
     async fn an_unread_route_answers_none() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-route-unread");
-        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         assert_eq!(host.route("p-1"), RouteResponse { kind: "ok", route: None });
     }
@@ -7066,7 +7209,7 @@ mod route_tests {
     async fn patching_a_routes_destination_and_notes_enqueues_one_patch() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-patch-route");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
         let route = fixture_route();
 
         let response = host
@@ -7092,7 +7235,7 @@ mod route_tests {
     async fn patching_clears_destination_and_notes() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-patch-route-clear");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
         let route = fixture_route();
 
         let response = host.patch_route("seed-1", &route, true, None, true, None, 2_000).await;
@@ -7108,7 +7251,7 @@ mod route_tests {
     async fn leaving_notes_untouched_mints_no_extra_field() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-patch-route-partial");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
         let route = fixture_route();
 
         let response = host
@@ -7130,7 +7273,7 @@ mod fog_tests {
     async fn an_unread_projects_fog_answers_empty() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-fog-unread");
-        let host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         assert_eq!(host.open_fog("p-1"), FogListResponse { kind: "ok", fog: Vec::new() });
     }
@@ -7144,7 +7287,7 @@ mod fog_tests {
     async fn creating_fog_rejects_an_empty_question_before_reaching_core() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-create-fog-empty");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         for question in ["", "   ", "\t\n"] {
             let response = host.create_fog("seed-1", "p-1", question, 0, 1_000).await;
@@ -7166,7 +7309,7 @@ mod fog_tests {
     async fn creating_fog_enqueues_it_and_overlays_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-create-fog-ok");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
 
         let response = host
             .create_fog("seed-1", "p-1", "  What permit does this need?  ", 0, 1_000)
@@ -7198,7 +7341,7 @@ mod fog_tests {
     async fn patching_fogs_question_and_position_enqueues_one_patch() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-patch-fog");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
         let fog = fixture_fog();
 
         let response = host
@@ -7224,7 +7367,7 @@ mod fog_tests {
     async fn patching_fog_to_a_blank_question_never_reaches_core() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-patch-fog-bad-question");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
         let fog = fixture_fog();
 
         let response = host.patch_fog("seed-1", &fog, Some("   ".to_string()), None, false, None, 2_000).await;
@@ -7241,7 +7384,7 @@ mod fog_tests {
     async fn resolving_and_reopening_fog_each_enqueue_one_patch() {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-patch-fog-resolve");
-        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "").await.unwrap();
         let fog = fixture_fog();
 
         let response = host.patch_fog("seed-1", &fog, None, None, true, Some(9_000), 2_000).await;

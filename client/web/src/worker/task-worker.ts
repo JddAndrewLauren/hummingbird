@@ -1,5 +1,6 @@
 import type {
   BindingDTO,
+  CredentialArmName,
   QuestionSwitchDTO,
   SuggestedContextsDTO,
   CalendarPrefsDTO,
@@ -52,6 +53,9 @@ export interface TaskHostLike {
    * `protocol.ts`'s `initTaskApiKey` doc for the full contract. */
   rehydrateApiKey(apiKey: string): void;
   clearApiKey(): void;
+  /** #846: the start-up token load found no stored token — moves the core
+   * from `unknown` to `unset`. */
+  reportNoApiKey(): void;
   /** #208's capture fields as one JSON object (`ffi-web`'s `CaptureFields`),
    * for the same reason `triage` below takes one: the list had grown past the
    * point where positional scalars read. `size`/`energy` inside it are the
@@ -771,8 +775,8 @@ interface RawGrillDraftItemIdsResponse {
 }
 
 interface RawTaskEvent {
-  kind: "credential_needed";
-  at_ms: number;
+  kind: "credential_changed";
+  arm: CredentialArmName;
 }
 
 interface RawRunResponse {
@@ -1046,7 +1050,7 @@ function unmapStep(step: StepDTO): RawStep {
 }
 
 function mapEvents(raw: RawTaskEvent[]): TaskEventDTO[] {
-  return raw.map((event) => ({ kind: event.kind, atMs: event.at_ms }));
+  return raw.map((event) => ({ kind: event.kind, arm: event.arm }));
 }
 
 function mapDeadLetters(raw: RawDeadLetterEntry[]): DeadLetterEntryDTO[] {
@@ -1136,6 +1140,10 @@ export async function handleTaskRequest(
       // reply — there is nothing to reply with, and the host already
       // updated its own local state before sending this.
       host.clearApiKey();
+      return;
+    case "reportNoTaskApiKey":
+      // #846: same fire-and-forget shape as `clearTaskApiKey`.
+      host.reportNoApiKey();
       return;
     case "capture": {
       const raw = JSON.parse(

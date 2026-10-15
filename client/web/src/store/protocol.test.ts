@@ -37,6 +37,7 @@ describe("protocol round-trips", () => {
     { type: "pushTaskApiKey", apiKey: "device-token-1" },
     { type: "initTaskApiKey", apiKey: "device-token-1" },
     { type: "clearTaskApiKey" },
+    { type: "reportNoTaskApiKey" },
     {
       type: "capture",
       seed: "seed-1",
@@ -95,7 +96,7 @@ describe("protocol round-trips", () => {
       deadLettered: 0,
       atMs: 5_000,
     },
-    { type: "taskEvents", events: [{ kind: "credential_needed", atMs: 5_000 }] },
+    { type: "taskEvents", events: [{ kind: "credential_changed", arm: "reprompt" }] },
     { type: "queueDepth", depth: 3 },
     {
       type: "deadLetters",
@@ -166,6 +167,7 @@ describe("protocol round-trips", () => {
       "pushTaskApiKey",
       "initTaskApiKey",
       "clearTaskApiKey",
+      "reportNoTaskApiKey",
       "capture",
       "getFrontier",
       "getTriageInbox",

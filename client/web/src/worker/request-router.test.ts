@@ -16,6 +16,7 @@ describe("isTaskWorkerRequest", () => {
     { type: "pushTaskApiKey", apiKey: "k" },
     { type: "initTaskApiKey", apiKey: "k" },
     { type: "clearTaskApiKey" },
+    { type: "reportNoTaskApiKey" },
     {
       type: "capture",
       seed: "s",

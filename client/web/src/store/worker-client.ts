@@ -672,16 +672,19 @@ export function attachWorkerClient(
           lastSyncAtMs: message.atMs,
         });
         return;
-      case "taskEvents":
-        // Same contract as the calendar binding's `credentialEvents`: at
-        // least one credential-needed event landed, so reconnecting is now
-        // needed. `Core::take_events` today only ever produces this one
-        // kind, but the switch stays exhaustive over `TaskEventDTO["kind"]`
-        // rather than assuming that never changes.
-        if (message.events.some((event) => event.kind === "credential_needed")) {
+      case "taskEvents": {
+        // Same contract as the calendar binding's `credentialEvents`: the
+        // newest credential event leaving the core in `reprompt` (a 401, or
+        // a rehydration that could not resume one) means reconnecting is
+        // now needed. Every credential mutation emits its own event (#846),
+        // so the newest one is the arm the core is in — a push that already
+        // resolved an undrained 401 lands after it and supersedes it.
+        const newest = message.events.filter((event) => event.kind === "credential_changed").at(-1);
+        if (newest?.arm === "reprompt") {
           store.setTaskState({ needsReconnect: true });
         }
         return;
+      }
       case "queueDepth":
         // Arrives both in reply to `getQueueDepth` (once, on becoming
         // ready) and unsolicited at the tail of every cycle (issue #191,
@@ -803,6 +806,12 @@ export function initTaskApiKey(worker: WorkerLike, apiKey: string): void {
  * `clearTaskApiKey`. */
 export function clearTaskApiKey(worker: WorkerLike): void {
   worker.postMessage({ type: "clearTaskApiKey" });
+}
+
+/** #846: the core-start token load found no stored token — see
+ * `protocol.ts`'s `reportNoTaskApiKey`. */
+export function reportNoTaskApiKey(worker: WorkerLike): void {
+  worker.postMessage({ type: "reportNoTaskApiKey" });
 }
 
 /** `seed` mints the deterministic id `Core::capture` derives from it; the

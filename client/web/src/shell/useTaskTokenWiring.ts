@@ -12,6 +12,7 @@ import {
   clearTaskApiKey,
   initTaskApiKey,
   pushTaskApiKey,
+  reportNoTaskApiKey,
   type WorkerLike,
 } from "../store/worker-client";
 
@@ -45,15 +46,16 @@ export function useTaskTokenWiring(
       pushApiKey: (token) => pushTaskApiKey(worker, token),
       initApiKey: (token) => initTaskApiKey(worker, token),
       clearApiKey: () => clearTaskApiKey(worker),
+      reportNoApiKey: () => reportNoTaskApiKey(worker),
     };
   }
 
   // Core-start wiring: load whatever token is stored, if any, and rehydrate
-  // it into the core immediately (`Core::init` starts with an empty key —
-  // `core.worker.ts`'s provisional `""` — so a real device token only
-  // reaches it once this fires). `loadTaskToken` itself resolves a failed
-  // read to the honest "unset" state rather than rejecting, so nothing
-  // here needs its own try/catch.
+  // it into the core immediately (`Core::init` takes no credential and starts
+  // `unknown` — #846 — so a real device token only reaches it once this
+  // fires, and a device with none reports that absence here too).
+  // `loadTaskToken` itself resolves a failed read to the honest "unset"
+  // state rather than rejecting, so nothing here needs its own try/catch.
   //
   // This effect keys on THIS VIEW's own `status`, so it fires again on
   // every additional view (tab / PWA window) that reaches `ready` under

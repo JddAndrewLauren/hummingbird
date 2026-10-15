@@ -67,11 +67,12 @@ describe("useTaskTokenWiring", () => {
     });
   });
 
-  it("a never-entered device stays tokenless once ready, without pushing anything to the worker", async () => {
+  it("a never-entered device stays tokenless once ready, reporting the absence and pushing no token", async () => {
     const worker = fakeWorker();
     const { result } = mount(worker, "ready", fakeStore(null));
     await act(async () => {});
-    expect(worker.postMessage).not.toHaveBeenCalled();
+    // #846: the core hears "no token" as explicitly as it would hear one.
+    expect(types(worker)).toEqual(["reportNoTaskApiKey"]);
     expect(result.current.hasToken).toBe(false);
     expect(result.current.enteredAtMs).toBeNull();
   });

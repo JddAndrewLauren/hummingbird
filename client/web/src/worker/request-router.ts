@@ -32,6 +32,7 @@ const TASK_REQUEST_TYPES: Record<TaskWorkerRequest["type"], true> = {
   pushTaskApiKey: true,
   initTaskApiKey: true,
   clearTaskApiKey: true,
+  reportNoTaskApiKey: true,
   capture: true,
   act: true,
   triage: true,
