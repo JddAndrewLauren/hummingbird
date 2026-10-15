@@ -583,6 +583,13 @@ pub struct AlertPatch {
 /// ADR-0008's "one token per ingest source"): required when `scope` is
 /// `ingest`, rejected for every other scope. The mint handler validates the
 /// pairing; this shape just carries it.
+///
+/// `allowed_origin` (#845, ADR-0014's 2026-10-15 amendment) holds an
+/// `ingest` token's alerts to one `https` origin — `https://host[:port]`,
+/// nothing else. Optional, except for a source whose registry entry
+/// [requires one](crate::SourceEntry::requires_link_origin); rejected for
+/// every other scope. Set from the operator's terminal at mint, never
+/// checked in.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MintToken {
@@ -591,6 +598,8 @@ pub struct MintToken {
     pub scope: Scope,
     #[serde(default)]
     pub source: Option<String>,
+    #[serde(default)]
+    pub allowed_origin: Option<String>,
 }
 
 /// `POST /api/auth/google` body (ADR-0040): a Google ID token, plus the

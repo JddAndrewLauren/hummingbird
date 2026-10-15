@@ -213,7 +213,7 @@ fn mint(
     }
     let base = device_id_base(pending.platform, &pending.name);
     let id = first_unused_id(&base, sql)?;
-    let token = insert_token(sql, ctx, &id, &pending.name, Scope::Device, None)?;
+    let token = insert_token(sql, ctx, &id, &pending.name, Scope::Device, None, None)?;
     Ok(json(201, &SignedInDevice { id, token }))
 }
 

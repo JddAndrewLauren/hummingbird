@@ -147,7 +147,17 @@ use crate::sql::{Sql, SqlError, SqlValue};
 /// no [`add_missing_columns`] arm — and, because it references `items`,
 /// it joins [`FK_CHILDREN`]: an `items` rebuild has to stand it aside like
 /// `steps`, `blocked_by` and `grills`.
-pub const SCHEMA_VERSION: i64 = 15;
+///
+/// 16 adds `tokens.allowed_origin` (#845, ADR-0014's 2026-10-15
+/// amendment): the one `https` origin an ingest token's alert links must
+/// sit on. The 9→10 shape — one nullable column on an existing table — so
+/// [`add_missing_columns`] gains a ninth arm. `tokens` carries no table
+/// constraint, so the column splices immediately before [`CREATE_TOKENS`]'
+/// closing paren, as `rules.deleted_at` does on [`CREATE_RULES`] —
+/// verified against a real migrated store's `sqlite_master`, not reasoned
+/// out. Every token minted before it reads back `NULL`: links anywhere, as
+/// before.
+pub const SCHEMA_VERSION: i64 = 16;
 
 /// meta: the workspace version counter (one row), bumped by every write.
 /// Every mutated row stamps its `version` from this counter; the delta pull
@@ -336,7 +346,9 @@ CREATE TABLE IF NOT EXISTS settings (
 /// like the test rig still write rows directly), but the mint handler
 /// requires it for `ingest` and rejects it for every other scope, and the
 /// alert-ingest handler 403s a payload naming a different source than the
-/// token is bound to.
+/// token is bound to. `allowed_origin` (#845) holds an ingest token's
+/// alert links to one canonical `https` origin; `NULL` links anywhere. It
+/// was added by `ALTER` (15→16), which is why it sits on the closing line.
 pub const CREATE_TOKENS: &str = "\
 CREATE TABLE IF NOT EXISTS tokens (
   id         TEXT PRIMARY KEY,
@@ -347,7 +359,7 @@ CREATE TABLE IF NOT EXISTS tokens (
   created_at INTEGER NOT NULL,
   last_seen  INTEGER,
   revoked_at INTEGER
-)";
+, allowed_origin TEXT)";
 
 /// The notification lane (ADR-0012, amended by ADR-0013). `event_kind` is
 /// nullable with **no `CHECK`** — an open registry key, `NULL` = any kind;
@@ -630,10 +642,10 @@ fn archive_unaddressable_items(sql: &dyn Sql, now_ms: i64) -> Result<(), SqlErro
 /// Every column added to an already-existing table since the schema was
 /// first written — `alerts.subject_key` (3→4, ADR-0015), `items.agent`
 /// (4→5, #115), `projects`' pair (8→9, #625), `rules.deleted_at`
-/// (9→10), `items.vault_path` (12→13, #771) and `items`' Link pair
-/// (13→14, #782). The arms are independent and each reads its own
-/// column's presence, so a store at any starting version reaches the same
-/// shape.
+/// (9→10), `items.vault_path` (12→13, #771), `items`' Link pair
+/// (13→14, #782) and `tokens.allowed_origin` (15→16, #845). The arms are
+/// independent and each reads its own column's presence, so a store at
+/// any starting version reaches the same shape.
 ///
 /// Runs **after** the create loop, which is what makes one rule cover every
 /// starting shape: by this point `alerts` certainly exists, either because
@@ -671,6 +683,9 @@ fn add_missing_columns(sql: &dyn Sql) -> Result<(), SqlError> {
     }
     if !column_exists(sql, "items", "link_label")? {
         sql.exec("ALTER TABLE items ADD COLUMN link_label TEXT", &[])?;
+    }
+    if !column_exists(sql, "tokens", "allowed_origin")? {
+        sql.exec("ALTER TABLE tokens ADD COLUMN allowed_origin TEXT", &[])?;
     }
     Ok(())
 }

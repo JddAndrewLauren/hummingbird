@@ -7,6 +7,7 @@ mod rig;
 
 mod admin_tokens;
 mod alerts;
+mod auk_source;
 mod auth_google;
 mod auth;
 mod blocked_by;

@@ -39,6 +39,10 @@ impl Scope {
 ///
 /// `source` (#145) binds an `ingest` token to exactly one webhook source —
 /// `Some` for every `ingest` token, always `None` for `device`/`sweeper`.
+///
+/// `allowed_origin` (#845) is the one `https` origin an `ingest` token's
+/// alert links must sit on, in the canonical form the mint stored — `None`
+/// for a token that may link anywhere, and always for `device`/`sweeper`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenInfo {
     pub id: String,
@@ -46,6 +50,8 @@ pub struct TokenInfo {
     pub name: String,
     pub scope: Scope,
     pub source: Option<String>,
+    #[serde(default)]
+    pub allowed_origin: Option<String>,
     pub created_at: i64,
     pub last_seen: Option<i64>,
     pub revoked_at: Option<i64>,
@@ -60,6 +66,8 @@ pub struct MintedToken {
     pub name: String,
     pub scope: Scope,
     pub source: Option<String>,
+    #[serde(default)]
+    pub allowed_origin: Option<String>,
     pub created_at: i64,
     pub token: String,
 }

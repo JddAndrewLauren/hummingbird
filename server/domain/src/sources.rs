@@ -159,6 +159,12 @@ pub struct SourceEntry {
     /// age out through their normal lifecycle; nothing new should be
     /// minted under it. `None` means the source is live.
     pub retired_as: Option<&'static str>,
+    /// Whether an ingest token bound to this source must be minted with an
+    /// allowed link origin (ADR-0014's #845 amendment) — the mint gate
+    /// (`admin_tokens.rs::mint`) refuses one without. Any source's token
+    /// *may* carry an origin; this says only which ones must. `true` for
+    /// `auk/v1` alone today.
+    pub requires_link_origin: bool,
 }
 
 impl SourceEntry {
@@ -302,6 +308,18 @@ pub const GITHUB_HUMMINGBIRD_V1: &str = "github-hummingbird/v1";
 /// source never mints an `alerts` row and carries no `key_recipe`.
 pub const UPTIME_V1: &str = "uptime/v1";
 
+/// `auk/v1`'s frozen namespace (#845, ADR-0014's 2026-10-15 amendment):
+/// the operator's software factory, Auk, pushing one alert per thing that
+/// waits on the operator. A **pushed state source** — Auk raises when a
+/// wait begins, resolves it itself when the wait ends, and re-raises the
+/// same row with a later `raised_at` when the same thing waits again, so
+/// the key names the thing and never the wait episode. Named as a `const`
+/// for [`ITEM_THRESHOLD_V1`]'s reason: the registry entry and the
+/// authority's own tests share one literal. Its tokens must carry an
+/// allowed link origin ([`SourceEntry::requires_link_origin`]), so a
+/// stolen one cannot point the operator at a page of its choosing.
+pub const AUK_V1: &str = "auk/v1";
+
 /// `starling/v1`'s frozen namespace (#830): the Starling cockpit's "waiting
 /// on you" alerts — a batch stopped at a gate or on a question. Named for
 /// [`CITY_WASTE_V2`]'s reason, though its second consumer lives outside this
@@ -327,6 +345,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         key_recipe: Some("the Gmail message id"),
         expires_at: Expiry::Never,
         retired_as: None,
+        requires_link_origin: false,
     },
     SourceEntry {
         source: M365_MAIL_V1,
@@ -338,6 +357,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         ),
         expires_at: Expiry::Never,
         retired_as: None,
+        requires_link_origin: false,
     },
     SourceEntry {
         source: GOOGLE_CALENDAR_V1,
@@ -349,6 +369,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         key_recipe: Some("<eventId or recurringEventId>:<originalStartTime>"),
         expires_at: Expiry::Always("the instance's end time"),
         retired_as: None,
+        requires_link_origin: false,
     },
     SourceEntry {
         source: M365_CALENDAR_V1,
@@ -357,6 +378,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         key_recipe: Some("<seriesMasterId or id>:<originalStart>"),
         expires_at: Expiry::Always("the instance's end time"),
         retired_as: None,
+        requires_link_origin: false,
     },
     // Retired, deliberately, to give ADR-0014's second registry job (a
     // rule or an ingest token naming a retired source is flagged, never
@@ -386,6 +408,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         ),
         expires_at: Expiry::Always("end of the affected collection date"),
         retired_as: Some(CITY_WASTE_V2),
+        requires_link_origin: false,
     },
     SourceEntry {
         source: CITY_WASTE_V2,
@@ -404,6 +427,7 @@ pub const REGISTRY: &[SourceEntry] = &[
             "end of the LATER of the scheduled and the slid-to collection date",
         ),
         retired_as: None,
+        requires_link_origin: false,
     },
     SourceEntry {
         source: RACE_SCHEDULE_V1,
@@ -423,6 +447,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         ),
         expires_at: Expiry::Always("the race's start time"),
         retired_as: None,
+        requires_link_origin: false,
     },
     // The fantasy lane's two sources (#717, #713). One lane, two entries —
     // because the two subjects differ in shape and `shape` is one field —
@@ -446,6 +471,7 @@ pub const REGISTRY: &[SourceEntry] = &[
              replacements (the lock the alert warns about)",
         ),
         retired_as: None,
+        requires_link_origin: false,
     },
     SourceEntry {
         source: YAHOO_WAIVERS_V1,
@@ -462,6 +488,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         ),
         expires_at: Expiry::Always("the waiver deadline instant"),
         retired_as: None,
+        requires_link_origin: false,
     },
     // The registry's first live Snapshots-only entry (#313) — the case
     // `a_snapshot_only_entry_is_representable_and_not_alert_writing` below
@@ -476,6 +503,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         key_recipe: None,
         expires_at: Expiry::Never,
         retired_as: None,
+        requires_link_origin: false,
     },
     // The registry's second Snapshots-only entry (#314) — one row per
     // scheduled workflow, keyed by the workflow's file name, under this one
@@ -488,6 +516,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         key_recipe: None,
         expires_at: Expiry::Never,
         retired_as: None,
+        requires_link_origin: false,
     },
     // The registry's third Snapshots-only entry (#315) — one row per
     // manifest-declared service (`authority`, `web`, `runner`), keyed by the
@@ -502,6 +531,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         key_recipe: None,
         expires_at: Expiry::Never,
         retired_as: None,
+        requires_link_origin: false,
     },
     SourceEntry {
         source: ITEM_THRESHOLD_V1,
@@ -512,6 +542,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         key_recipe: Some("item:<id>"),
         expires_at: Expiry::Never,
         retired_as: None,
+        requires_link_origin: false,
     },
     SourceEntry {
         source: "healthchecks/v1",
@@ -520,6 +551,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         key_recipe: Some("the check id, authored in the webhook body"),
         expires_at: Expiry::Never,
         retired_as: None,
+        requires_link_origin: false,
     },
     SourceEntry {
         source: "home-assistant/v1",
@@ -528,6 +560,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         key_recipe: Some("the entity id, authored in the webhook body"),
         expires_at: Expiry::Never,
         retired_as: None,
+        requires_link_origin: false,
     },
     SourceEntry {
         source: "github/v1",
@@ -536,6 +569,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         key_recipe: Some("the source's own event id"),
         expires_at: Expiry::IfProvided("an expiry carried in the event payload, if any"),
         retired_as: None,
+        requires_link_origin: false,
     },
     SourceEntry {
         source: "photo-site/v1",
@@ -544,6 +578,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         key_recipe: Some("the source's own event id"),
         expires_at: Expiry::IfProvided("an expiry carried in the event payload, if any"),
         retired_as: None,
+        requires_link_origin: false,
     },
     SourceEntry {
         source: "gmail-alert/v1",
@@ -552,6 +587,20 @@ pub const REGISTRY: &[SourceEntry] = &[
         key_recipe: Some("the source's own message id"),
         expires_at: Expiry::Never,
         retired_as: None,
+        requires_link_origin: false,
+    },
+    // The factory (#845). Alerts only — it answers no standing question,
+    // so it writes no context_snapshots row — and never expires: an alert
+    // leaves live when Auk resolves it, or by the operator's ack. The one
+    // entry whose tokens must carry an allowed link origin.
+    SourceEntry {
+        source: AUK_V1,
+        shape: Shape::State,
+        writes: Writes::Alerts,
+        key_recipe: Some("machine, record id and cause, authored by Auk — never the wait episode"),
+        expires_at: Expiry::Never,
+        retired_as: None,
+        requires_link_origin: true,
     },
     // Pushed by the Starling cockpit (#830), not polled: no snapshot to
     // write, so alerts only. State, because the key names the thing that
@@ -566,6 +615,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         ),
         expires_at: Expiry::Never,
         retired_as: None,
+        requires_link_origin: false,
     },
 ];
 
@@ -744,6 +794,13 @@ pub fn gmail_alert_v1_key(message_id: &str) -> String {
     message_id.to_string()
 }
 
+/// `auk/v1`: machine, record id and cause, authored by Auk in the request
+/// body — never the wait episode, so a thing that waits again re-raises
+/// its own row.
+pub fn auk_v1_key(source_key: &str) -> String {
+    source_key.to_string()
+}
+
 /// `starling/v1`: the cockpit's own attention item id, verbatim — the kind
 /// prefix (`gate:`, `question:`) is the cockpit's, and stays part of the key
 /// so a gate and a question sharing an id are two occurrences.
@@ -858,6 +915,7 @@ mod tests {
                 None,
             ),
             ("gmail-alert/v1", Shape::Event, Writes::Alerts, Expiry::Never, None),
+            ("auk/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
             ("starling/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
         ];
 
@@ -933,6 +991,7 @@ mod tests {
             key_recipe: None,
             expires_at: Expiry::Never,
             retired_as: None,
+            requires_link_origin: false,
         };
         assert!(!entry.writes_alerts(), "a snapshot-only entry must not declare alerts");
         assert!(entry.writes_snapshots());
@@ -1019,6 +1078,27 @@ mod tests {
         assert!(!entry.writes_snapshots());
     }
 
+    /// `auk/v1` (#845) is a pushed state source writing alerts only — the
+    /// factory resolves its own alerts, so nothing about it expires.
+    #[test]
+    fn auk_v1_is_a_state_source_writing_alerts_only() {
+        let entry = find(AUK_V1).expect("auk/v1 is registered");
+        assert_eq!(entry.shape, Shape::State);
+        assert!(entry.writes_alerts());
+        assert!(!entry.writes_snapshots());
+        assert_eq!(entry.expires_at, Expiry::Never);
+        assert!(!entry.is_retired());
+    }
+
+    /// The link-origin requirement is `auk/v1`'s alone (#845): every other
+    /// source's tokens may carry an origin and mint as before without one.
+    #[test]
+    fn only_auk_v1_requires_a_link_origin() {
+        let requiring: Vec<_> =
+            REGISTRY.iter().filter(|e| e.requires_link_origin).map(|e| e.source).collect();
+        assert_eq!(requiring, vec![AUK_V1]);
+    }
+
     /// A duplicate `source` string would shadow silently in [`find`]
     /// (`iter().find` returns only the first match) — every source must be
     /// unique.
@@ -1076,6 +1156,7 @@ mod tests {
             key_recipe: Some("<stream>:<scheduled-date>"),
             expires_at: Expiry::Always("end of the affected collection date"),
             retired_as: Some("city-waste/v2"),
+            requires_link_origin: false,
         };
         assert!(retired.is_retired());
         assert_eq!(retired.retired_as, Some("city-waste/v2"));
@@ -1439,6 +1520,11 @@ mod tests {
     #[test]
     fn photo_site_v1_keys_on_the_event_id() {
         assert_eq!(photo_site_v1_key("evt-456"), "evt-456");
+    }
+
+    #[test]
+    fn auk_v1_keys_on_the_key_auk_authors() {
+        assert_eq!(auk_v1_key("mac-mini:rec-42:awaiting-review"), "mac-mini:rec-42:awaiting-review");
     }
 
     #[test]
