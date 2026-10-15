@@ -41,7 +41,8 @@
 //! string** (`"449.l.123456"`, later `"449.l.123456,449.l.789012"`). A JSON
 //! array would land as `BindingValue::Other`, which the binding editor
 //! cannot write — `server/race-poll/src/binding.rs`'s header says why at
-//! length, and [`leagues_from_binding`] mirrors its parse.
+//! length, and [`leagues_from_binding`] — shared with the poller through
+//! `hummingbird_domain` since #853 — mirrors its parse.
 
 use serde::{Deserialize, Serialize};
 
@@ -131,22 +132,10 @@ pub enum FantasySetup {
 }
 
 /// The followed leagues, read out of the `yahoo-leagues` binding's text:
-/// trimmed, blanks dropped, repeats dropped, order kept.
-///
-/// `race-poll/src/binding.rs`'s reading, less its lowercasing: a race
-/// series is a name a human types in any case, a league key is an
-/// identifier copied from Yahoo and is taken exactly as written.
-pub fn leagues_from_binding(text: &str) -> Vec<String> {
-    let mut leagues: Vec<String> = Vec::new();
-    for entry in text.split(',') {
-        let key = entry.trim();
-        if key.is_empty() || leagues.iter().any(|league| league == key) {
-            continue;
-        }
-        leagues.push(key.to_string());
-    }
-    leagues
-}
+/// trimmed, blanks dropped, repeats dropped, order kept. Lives in
+/// `hummingbird_domain` since #853, so the Yahoo poller (`server/fantasy-poll`)
+/// splits the binding through this one parse rather than a twin.
+pub use hummingbird_domain::yahoo_leagues_from_binding as leagues_from_binding;
 
 /// Whether the `yahoo-leagues` binding has been set, and if not, which kind
 /// of not-set it is.

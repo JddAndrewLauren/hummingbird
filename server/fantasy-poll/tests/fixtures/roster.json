@@ -1,0 +1,166 @@
+{
+  "team": {
+    "team_key": "449.l.123456.t.7",
+    "league_key": "449.l.123456",
+    "team_name": "Gridiron Hummingbirds",
+    "league_name": "Twinion Family League"
+  },
+  "week": 4,
+  "starters": [
+    {
+      "position": "QB",
+      "occupant": {
+        "player_key": "449.p.30123",
+        "name": "Quinn Arrow",
+        "eligible_positions": [
+          "QB"
+        ],
+        "bye_week": 9,
+        "designation": null,
+        "kickoff_ms": 1791133200000
+      }
+    },
+    {
+      "position": "WR",
+      "occupant": {
+        "player_key": "449.p.31001",
+        "name": "Wade Byeman",
+        "eligible_positions": [
+          "WR",
+          "W/R/T"
+        ],
+        "bye_week": 4,
+        "designation": null,
+        "kickoff_ms": null
+      }
+    },
+    {
+      "position": "RB",
+      "occupant": null
+    },
+    {
+      "position": "RB",
+      "occupant": {
+        "player_key": "449.p.32010",
+        "name": "Rex Maybe",
+        "eligible_positions": [
+          "RB",
+          "W/R/T"
+        ],
+        "bye_week": 7,
+        "designation": "questionable",
+        "kickoff_ms": 1791145500000
+      }
+    },
+    {
+      "position": "TE",
+      "occupant": {
+        "player_key": "449.p.33020",
+        "name": "Ty Steady",
+        "eligible_positions": [
+          "TE",
+          "W/R/T"
+        ],
+        "bye_week": 10,
+        "designation": null,
+        "kickoff_ms": 1791159600000
+      }
+    },
+    {
+      "position": "W/R/T",
+      "occupant": {
+        "player_key": "449.p.31050",
+        "name": "Owen Sidelined",
+        "eligible_positions": [
+          "WR",
+          "W/R/T"
+        ],
+        "bye_week": 12,
+        "designation": "out",
+        "kickoff_ms": 1791133200000
+      }
+    },
+    {
+      "position": "K",
+      "occupant": {
+        "player_key": "449.p.34001",
+        "name": "Kip Boot",
+        "eligible_positions": [
+          "K"
+        ],
+        "bye_week": 6,
+        "designation": null,
+        "kickoff_ms": 1791145500000
+      }
+    },
+    {
+      "position": "DEF",
+      "occupant": {
+        "player_key": "449.p.100024",
+        "name": "Twinion Defense",
+        "eligible_positions": [
+          "DEF"
+        ],
+        "bye_week": 8,
+        "designation": null,
+        "kickoff_ms": 1791133200000
+      }
+    }
+  ],
+  "bench": [
+    {
+      "player_key": "449.p.30200",
+      "name": "Backup Signal",
+      "eligible_positions": [
+        "QB"
+      ],
+      "bye_week": 5,
+      "designation": null,
+      "kickoff_ms": 1791159600000
+    },
+    {
+      "player_key": "449.p.32300",
+      "name": "Benny Sunday",
+      "eligible_positions": [
+        "RB",
+        "W/R/T"
+      ],
+      "bye_week": 11,
+      "designation": null,
+      "kickoff_ms": 1791133200000
+    },
+    {
+      "player_key": "449.p.31400",
+      "name": "Thor Thursday",
+      "eligible_positions": [
+        "WR",
+        "W/R/T"
+      ],
+      "bye_week": 13,
+      "designation": null,
+      "kickoff_ms": 1790900100000
+    },
+    {
+      "player_key": "449.p.33500",
+      "name": "Lon Don",
+      "eligible_positions": [
+        "TE",
+        "W/R/T"
+      ],
+      "bye_week": 14,
+      "designation": "doubtful",
+      "kickoff_ms": 1791120600000
+    },
+    {
+      "player_key": "449.p.31600",
+      "name": "Monty Night",
+      "eligible_positions": [
+        "WR",
+        "W/R/T"
+      ],
+      "bye_week": 9,
+      "designation": null,
+      "kickoff_ms": 1791245700000
+    }
+  ]
+}

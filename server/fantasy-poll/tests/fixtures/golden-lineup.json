@@ -1,0 +1,104 @@
+{
+  "body": {
+    "league_key": "449.l.123456",
+    "league_name": "Twinion Family League",
+    "slots": [
+      {
+        "invalid": null,
+        "occupant": {
+          "bye_week": 9,
+          "designation": null,
+          "kickoff_ms": 1791133200000,
+          "name": "Quinn Arrow",
+          "player_key": "449.p.30123"
+        },
+        "position": "QB"
+      },
+      {
+        "invalid": {
+          "deadline_ms": 1790900100000,
+          "reason": "bye"
+        },
+        "occupant": {
+          "bye_week": 4,
+          "designation": null,
+          "kickoff_ms": null,
+          "name": "Wade Byeman",
+          "player_key": "449.p.31001"
+        },
+        "position": "WR"
+      },
+      {
+        "invalid": {
+          "deadline_ms": 1791133200000,
+          "reason": "empty"
+        },
+        "occupant": null,
+        "position": "RB"
+      },
+      {
+        "invalid": null,
+        "occupant": {
+          "bye_week": 7,
+          "designation": "questionable",
+          "kickoff_ms": 1791145500000,
+          "name": "Rex Maybe",
+          "player_key": "449.p.32010"
+        },
+        "position": "RB"
+      },
+      {
+        "invalid": null,
+        "occupant": {
+          "bye_week": 10,
+          "designation": null,
+          "kickoff_ms": 1791159600000,
+          "name": "Ty Steady",
+          "player_key": "449.p.33020"
+        },
+        "position": "TE"
+      },
+      {
+        "invalid": {
+          "deadline_ms": 1790900100000,
+          "reason": "out"
+        },
+        "occupant": {
+          "bye_week": 12,
+          "designation": "out",
+          "kickoff_ms": 1791133200000,
+          "name": "Owen Sidelined",
+          "player_key": "449.p.31050"
+        },
+        "position": "W/R/T"
+      },
+      {
+        "invalid": null,
+        "occupant": {
+          "bye_week": 6,
+          "designation": null,
+          "kickoff_ms": 1791145500000,
+          "name": "Kip Boot",
+          "player_key": "449.p.34001"
+        },
+        "position": "K"
+      },
+      {
+        "invalid": null,
+        "occupant": {
+          "bye_week": 8,
+          "designation": null,
+          "kickoff_ms": 1791133200000,
+          "name": "Twinion Defense",
+          "player_key": "449.p.100024"
+        },
+        "position": "DEF"
+      }
+    ],
+    "team_key": "449.l.123456.t.7",
+    "team_name": "Gridiron Hummingbirds",
+    "week": 4
+  },
+  "polled_every_ms": 21600000,
+  "schema": "yahoo-lineup/v1"
+}
