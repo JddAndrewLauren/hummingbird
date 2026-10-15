@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
@@ -56,6 +57,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.twinion.hummingbird.brand.R
 import net.twinion.hummingbird.core.NetworkStatus
+import net.twinion.hummingbird.signin.GoogleCredentialSource
 import net.twinion.hummingbird.skills.BackendPreference
 import net.twinion.hummingbird.theme.ThemePreference
 import net.twinion.hummingbird.watch.SendOutcome
@@ -72,6 +74,7 @@ import uniffi.hummingbird_ffi_mobile.MobileCalendarPrefs
 import uniffi.hummingbird_ffi_mobile.MobileCalendarState
 import uniffi.hummingbird_ffi_mobile.MobileDeadLetterReason
 import uniffi.hummingbird_ffi_mobile.MobileDeadLetterRecord
+import uniffi.hummingbird_ffi_mobile.MobileDeviceRow
 import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
 import uniffi.hummingbird_ffi_mobile.MobileSurface
 import uniffi.hummingbird_ffi_mobile.MobileSyncStatusInput
@@ -84,7 +87,9 @@ import uniffi.hummingbird_ffi_mobile.syncStatusSummary
 // dead-letter rows, a theme preference, and — since #564 — a real Calendar
 // section in place of #535's "not on this device yet" card: Connect,
 // Disconnect, a picker over `list_calendars()`, and one sentence of state
-// per the four Source-connection states.
+// per the four Source-connection states. Since #841 (ADR-0040) the Device
+// token card leads with Sign in with Google, the paste field behind "Paste a
+// token instead", and a Signed-in devices section lists the core's rows.
 //
 // **This file decides nothing about sync status or a binding write's
 // outcome.** `syncSummary`/`SettingsViewModel.deadLetterHeadingText` arrive
@@ -144,6 +149,10 @@ fun SettingsScreen(
     val calendars by viewModel.calendars.collectAsState()
     val calendarPrefs by viewModel.calendarPrefs.collectAsState()
     val watchSend by viewModel.watchSend.collectAsState()
+    val signingIn by viewModel.signingIn.collectAsState()
+    val signInNotice by viewModel.signInNotice.collectAsState()
+    val devices by viewModel.devices.collectAsState()
+    val deviceError by viewModel.deviceError.collectAsState()
 
     suspend fun reload() = viewModel.load()
 
@@ -195,6 +204,15 @@ fun SettingsScreen(
 
     LaunchedEffect(syncTick) {
         if (syncTick > 0) reload()
+    }
+
+    // The devices list is a network read, not a mirror read, so it rides
+    // entry, resume and the credential changing (a sign-in, a paste, a
+    // sign-out) — never the 60-second sync tick.
+    LaunchedEffect(needsToken) { viewModel.loadDevices() }
+    LifecycleResumeEffect(Unit) {
+        val resumed = scope.launch { viewModel.loadDevices() }
+        onPauseOrDispose { resumed.cancel() }
     }
 
     // `hummingbird_core::decisions::settings::sync_status_summary`, called
@@ -317,7 +335,20 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     if (needsToken) {
-                        TokenEntry(onSave = onSaveToken)
+                        SignInEntry(
+                            signingIn = signingIn,
+                            notice = signInNotice,
+                            onSignIn = {
+                                scope.launch {
+                                    viewModel.signIn(
+                                        credential = { GoogleCredentialSource.request(context) },
+                                        deviceName = android.os.Build.MODEL,
+                                        saveToken = { token -> onSaveToken(token) },
+                                    )
+                                }
+                            },
+                            onSaveToken = onSaveToken,
+                        )
                     } else {
                         Text(
                             "This device has a token.",
@@ -327,6 +358,14 @@ fun SettingsScreen(
                     }
                 }
             }
+
+            SectionTitle("Signed-in devices")
+            SignedInDevicesCard(
+                state = devices,
+                error = deviceError,
+                confirmation = viewModel::signOutConfirmationText,
+                onSignOut = { row -> scope.launch { viewModel.signOut(row, onSignedOut = { onForgetToken() }) } },
+            )
 
             SectionTitle("Watch")
             Card(
@@ -762,6 +801,124 @@ private fun BackendOption(label: String, selected: Boolean, onClick: () -> Unit)
         Button(onClick = onClick) { Text(label) }
     } else {
         OutlinedButton(onClick = onClick) { Text(label) }
+    }
+}
+
+/** The Device token card while this device holds no usable token (#841):
+ * Sign in with Google first, the paste field behind "Paste a token
+ * instead" — the fallback for an authority with no sign-in client, and for
+ * when Google is unreachable (ADR-0040 decision 7). Both end in the same
+ * [onSaveToken]: the screen hands the sign-in's minted token to it too. */
+@Composable
+private fun SignInEntry(
+    signingIn: Boolean,
+    notice: SignInNotice?,
+    onSignIn: () -> Unit,
+    onSaveToken: (String) -> Unit,
+) {
+    var pasting by rememberSaveable { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(
+            "Sign in with Google to give this device its own token. It is " +
+                "stored in the Android Keystore and sent only to the authority.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Button(onClick = onSignIn, enabled = !signingIn) {
+            Text(if (signingIn) "Signing in…" else "Sign in with Google")
+        }
+        notice?.let {
+            Text(it.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        if (pasting) {
+            TokenEntry(onSave = onSaveToken)
+        } else {
+            TextButton(onClick = { pasting = true }) { Text("Paste a token instead") }
+        }
+    }
+}
+
+/** Signed-in devices (#841, ADR-0040 decision 7): the core's rows as they
+ * arrive — revoked rows already gone, this device first, every label
+ * worded — with a sign-out control only where the authority's own
+ * `revocable` says the route will accept it. Every sign-out asks first;
+ * this device's question is the core's, naming what stays queued.
+ *
+ * Internal rather than private so `SignedInDevicesCardTest` can compose it
+ * with fakes: everything it needs arrives as arguments, nothing native. */
+@Composable
+internal fun SignedInDevicesCard(
+    state: DevicesState,
+    error: Pair<String, String>?,
+    confirmation: (MobileDeviceRow) -> String,
+    onSignOut: (MobileDeviceRow) -> Unit,
+) {
+    var confirming by remember { mutableStateOf<MobileDeviceRow?>(null) }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            when (state) {
+                DevicesState.NotLoaded -> CircularProgressIndicator()
+                is DevicesState.Unavailable -> Text(
+                    state.message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                is DevicesState.Listed -> for (row in state.rows) {
+                    key(row.id) {
+                        DeviceRowView(
+                            row = row,
+                            error = error?.takeIf { it.first == row.id }?.second,
+                            onSignOut = { confirming = row },
+                        )
+                    }
+                }
+            }
+        }
+    }
+    confirming?.let { row ->
+        AlertDialog(
+            onDismissRequest = { confirming = null },
+            text = { Text(confirmation(row)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirming = null
+                        onSignOut(row)
+                    },
+                ) {
+                    Text("Sign out", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirming = null }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun DeviceRowView(row: MobileDeviceRow, error: String?, onSignOut: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(row.name, style = MaterialTheme.typography.bodyLarge)
+        Text(
+            listOfNotNull(row.thisDevice, row.platformLabel, row.lastSeenLabel).joinToString(" · "),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        error?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        if (row.revocable) {
+            OutlinedButton(onClick = onSignOut) {
+                Text(if (row.isCurrent) "Sign out of this device" else "Sign out")
+            }
+        }
     }
 }
 

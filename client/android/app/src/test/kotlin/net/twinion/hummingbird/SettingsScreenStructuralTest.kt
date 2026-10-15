@@ -256,4 +256,63 @@ class SettingsScreenStructuralTest {
                 Regex("""when\s*\(val reason = entry\.reason\)[\s\S]*?else ->""").containsMatchIn(screenSrc),
         )
     }
+
+    /** #841: a sign-in that mints a token takes the paste's save path, not
+     * a second one — `AppRoot.saveToken` stores it, pushes it into the
+     * core, re-registers push and runs the first sync, and a sign-in path
+     * of its own would drift from that the first time either changed.
+     * `GoogleSignInTest` holds that the token reaches the callback; this
+     * holds that the callback is the paste's. */
+    @Test
+    fun `a signed-in token takes the pasted token's save path`() {
+        assertTrue(
+            "the sign-in hands its token to onSaveToken",
+            screenSrc.contains("saveToken = { token -> onSaveToken(token) }"),
+        )
+        assertTrue(
+            "the paste fallback saves through the same callback",
+            screenSrc.contains("TokenEntry(onSave = onSaveToken)"),
+        )
+        val mainSrc = source("MainActivity.kt")
+        assertTrue(
+            "MainActivity wires that callback to saveToken",
+            mainSrc.contains("onSaveToken = { token -> scope.launch { saveToken(token) } }"),
+        )
+        assertFalse(
+            "nothing on Settings writes the token store directly",
+            screenSrc.contains("TokenStore") || viewModelSrc.contains("TokenStore"),
+        )
+    }
+
+    /** Every refusal the seam can give is its own sentence: the `when` over
+     * `MobileSignInOutcome` carries no `else ->`, so an arm the seam grows is
+     * a compile error rather than a refusal worded as another one. */
+    @Test
+    fun `the sign-in refusal sentences are exhaustive over the seam's arms`() {
+        val signIn = source("signin/GoogleSignIn.kt")
+        val body = Regex(
+            """fun exchangeMessage\(outcome: MobileSignInOutcome\): String\? = when \(outcome\)\s*\{([\s\S]*?)
+\}""",
+        ).find(signIn)?.groupValues?.get(1) ?: error("exchangeMessage not found — has it been renamed?")
+        assertFalse(body.contains("else ->"))
+        for (arm in listOf("SignedIn", "NotAllowed", "RateLimited", "Unconfigured", "Unavailable", "Invalid", "Failed")) {
+            assertTrue("$arm needs its own sentence", body.contains("MobileSignInOutcome.$arm"))
+        }
+    }
+
+    /** The devices rows are the core's (ADR-0040 decision 7): Settings
+     * neither sorts them nor words the sign-out warning for this device. */
+    @Test
+    fun `the devices section re-derives no order and no warning`() {
+        for ((name, src) in both) {
+            assertFalse("$name must not sort device rows", Regex("""sortedBy|sortedWith|sortBy|sortWith""").containsMatchIn(src))
+            assertFalse("$name must not word the queued-changes warning", src.contains("stays queued"))
+        }
+        assertTrue(viewModelSrc.contains("deviceRowsFn(outcome.devices, nowMsFn())"))
+        assertTrue(viewModelSrc.contains("signOutConfirmationFn(_queueDepth.value)"))
+        assertTrue(
+            "the sign-out control is drawn only where the authority will accept it",
+            screenSrc.contains("if (row.revocable)"),
+        )
+    }
 }

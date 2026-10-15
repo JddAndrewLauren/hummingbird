@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import net.twinion.hummingbird.core.CoreHolder
 import net.twinion.hummingbird.diagnostics.DiagnosticsRecorder
+import net.twinion.hummingbird.signin.GoogleCredential
+import net.twinion.hummingbird.signin.signInWithGoogle
 import net.twinion.hummingbird.watch.SendOutcome
 import net.twinion.hummingbird.watch.WatchTokenSender
 import uniffi.hummingbird_ffi_mobile.MobileBindingRecord
@@ -17,13 +19,20 @@ import uniffi.hummingbird_ffi_mobile.MobileCalendarList
 import uniffi.hummingbird_ffi_mobile.MobileCalendarEditException
 import uniffi.hummingbird_ffi_mobile.MobileCalendarPrefs
 import uniffi.hummingbird_ffi_mobile.MobileDeadLetterRecord
+import uniffi.hummingbird_ffi_mobile.MobileDeviceInfo
+import uniffi.hummingbird_ffi_mobile.MobileDeviceRow
+import uniffi.hummingbird_ffi_mobile.MobileDevicesOutcome
+import uniffi.hummingbird_ffi_mobile.MobileRevokeOutcome
 import uniffi.hummingbird_ffi_mobile.MobileQuestionRosterEntry
 import uniffi.hummingbird_ffi_mobile.MobileQuestionSwitch
 import uniffi.hummingbird_ffi_mobile.MobileSetBindingException
+import uniffi.hummingbird_ffi_mobile.MobileSignInOutcome
 import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
 import uniffi.hummingbird_ffi_mobile.MobileSurface
 import uniffi.hummingbird_ffi_mobile.deadLetterHeading
+import uniffi.hummingbird_ffi_mobile.deviceRows
 import uniffi.hummingbird_ffi_mobile.questionRoster
+import uniffi.hummingbird_ffi_mobile.signOutConfirmation
 
 /** Settings' own read of the seam (#535/M4) — bindings, the dead-letter
  * journal and the outbound queue's depth. Token entry/forget, the theme
@@ -42,6 +51,23 @@ data class SettingsRead(
      * both. */
     val switches: List<MobileQuestionSwitch> = emptyList(),
 )
+
+/** The Device token card's last sign-in sentence (#841) — wrapped rather
+ * than a bare `String` so no `String`-typed flow sits on this class, the
+ * rule `SettingsScreenStructuralTest` holds for the watch token. */
+data class SignInNotice(val message: String)
+
+/** The Signed-in devices section (#841, ADR-0040 decision 7). */
+sealed interface DevicesState {
+    /** Nothing asked yet. */
+    data object NotLoaded : DevicesState
+
+    /** The core's rows, already ordered and worded (`device_rows`). */
+    data class Listed(val rows: List<MobileDeviceRow>) : DevicesState
+
+    /** Why there is no list to show. */
+    data class Unavailable(val message: String) : DevicesState
+}
 
 /** One question's group in Settings' `Standing questions` section (#716) —
  * `bindings.ts`'s `QuestionBindingGroup`, field for field. */
@@ -162,6 +188,20 @@ class SettingsViewModel(
     /** `MobileTaskHost.setQuestionEnabled` (#715) — which overlays, so the
      * reload after it reads the new state as `pending`. */
     private val setQuestionEnabledFn: suspend (MobileStandingQuestion, Boolean, Long) -> Unit = { _, _, _ -> },
+    /** `MobileTaskHost.signInWithGoogle` (#841): the ID token and this
+     * device's name in, the authority's answer out. Holds nothing. */
+    private val signInFn: suspend (idToken: String, name: String) -> MobileSignInOutcome =
+        { _, _ -> MobileSignInOutcome.Failed("no seam wired") },
+    /** `MobileTaskHost.devices` (#841). */
+    private val listDevicesFn: suspend () -> MobileDevicesOutcome = { MobileDevicesOutcome.NoCredential },
+    /** `MobileTaskHost.revokeDevice` (#841). */
+    private val revokeDeviceFn: suspend (String) -> MobileRevokeOutcome = { MobileRevokeOutcome.NoCredential },
+    /** The core's devices decision — `deviceRows` in production: which rows
+     * show, in what order, in what words. */
+    private val deviceRowsFn: (List<MobileDeviceInfo>, Long) -> List<MobileDeviceRow> = ::deviceRows,
+    /** The core's sign-out warning for this device's own row. */
+    private val signOutConfirmationFn: (UInt) -> String = ::signOutConfirmation,
+    private val nowMsFn: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
 
     private val roster: List<MobileQuestionRosterEntry> by lazy { rosterFn() }
@@ -215,6 +255,23 @@ class SettingsViewModel(
      * any write. */
     private val _bindingError = MutableStateFlow<Pair<String, String>?>(null)
     val bindingError: StateFlow<Pair<String, String>?> = _bindingError.asStateFlow()
+
+    private val _signingIn = MutableStateFlow(false)
+    /** A sign-in is between the tap and its answer — the button waits. */
+    val signingIn: StateFlow<Boolean> = _signingIn.asStateFlow()
+
+    private val _signInNotice = MutableStateFlow<SignInNotice?>(null)
+    /** Why the last sign-in minted no token; `null` before any attempt and
+     * after one that signed in. */
+    val signInNotice: StateFlow<SignInNotice?> = _signInNotice.asStateFlow()
+
+    private val _devices = MutableStateFlow<DevicesState>(DevicesState.NotLoaded)
+    val devices: StateFlow<DevicesState> = _devices.asStateFlow()
+
+    /** The last sign-out's failure, matched by device id — [bindingError]'s
+     * rule: it shows on the row it belongs to and nowhere else. */
+    private val _deviceError = MutableStateFlow<Pair<String, String>?>(null)
+    val deviceError: StateFlow<Pair<String, String>?> = _deviceError.asStateFlow()
 
     /** The dead-letter affordance's heading, off the real count — never a
      * fixed "1 edit didn't apply" string. */
@@ -316,6 +373,71 @@ class SettingsViewModel(
         load()
     }
 
+    /** Signs this device in with Google (#841): [credential] shows the
+     * Credential Manager sheet, and a minted token goes to [saveToken] —
+     * the screen passes the pasted token's own save callback, so storage,
+     * push re-registration and the first sync are the paste's. A refusal
+     * leaves its sentence in [signInNotice] and calls nothing else. A tap
+     * while one is in flight is dropped. */
+    suspend fun signIn(
+        credential: suspend () -> GoogleCredential,
+        deviceName: String,
+        saveToken: suspend (String) -> Unit,
+    ) {
+        if (_signingIn.value) return
+        _signingIn.value = true
+        try {
+            _signInNotice.value = signInWithGoogle(credential(), deviceName, signInFn, saveToken)
+                ?.let(::SignInNotice)
+        } finally {
+            _signingIn.value = false
+        }
+    }
+
+    /** Re-lists the operator's devices through the core. */
+    suspend fun loadDevices() {
+        _devices.value = when (val outcome = listDevicesFn()) {
+            is MobileDevicesOutcome.Listed -> DevicesState.Listed(deviceRowsFn(outcome.devices, nowMsFn()))
+            MobileDevicesOutcome.NoCredential ->
+                DevicesState.Unavailable("Sign in to see the devices signed in to this account.")
+            MobileDevicesOutcome.CredentialRejected ->
+                DevicesState.Unavailable("The authority refused this device's token. Sign in again to see devices.")
+            is MobileDevicesOutcome.Failed -> DevicesState.Unavailable("Devices couldn't be listed — ${outcome.detail}")
+        }
+    }
+
+    /** The sentence the sign-out dialog asks. This device's own is the
+     * core's, naming what stays queued; another device's says what the
+     * tap does to it. */
+    fun signOutConfirmationText(row: MobileDeviceRow): String =
+        if (row.isCurrent) {
+            signOutConfirmationFn(_queueDepth.value)
+        } else {
+            "Sign out ${row.name}? It stops syncing until it signs in again."
+        }
+
+    /** Signs [row]'s device out, after the screen's confirmation. When it
+     * was this device the core has already dropped the credential, and
+     * [onSignedOut] — the screen's Forget token — deletes the stored copy;
+     * the queue stays (ADR-0004). The list is re-read either way. */
+    suspend fun signOut(row: MobileDeviceRow, onSignedOut: suspend () -> Unit) {
+        val failure = when (val outcome = revokeDeviceFn(row.id)) {
+            is MobileRevokeOutcome.Revoked -> null
+            is MobileRevokeOutcome.SignedOut -> {
+                onSignedOut()
+                null
+            }
+            MobileRevokeOutcome.NotRevocable -> "This device can't be signed out from here."
+            MobileRevokeOutcome.NotFound -> "The authority has no such device any more."
+            MobileRevokeOutcome.NoCredential -> "Sign in first to sign a device out."
+            MobileRevokeOutcome.CredentialRejected ->
+                "The authority refused this device's token. Sign in again first."
+            is MobileRevokeOutcome.Failed -> "Not signed out — ${outcome.detail}"
+        }
+        _deviceError.value = failure?.let { row.id to it }
+        loadDevices()
+    }
+
     companion object {
         fun create(context: Context): SettingsViewModel {
             suspend fun core() = CoreHolder.get(context.applicationContext)
@@ -361,6 +483,9 @@ class SettingsViewModel(
                 setQuestionEnabledFn = { question, enabled, nowMs ->
                     core().setQuestionEnabled(question, enabled, nowMs)
                 },
+                signInFn = { idToken, name -> core().signInWithGoogle(idToken, name) },
+                listDevicesFn = { core().devices() },
+                revokeDeviceFn = { id -> core().revokeDevice(id) },
             )
         }
 

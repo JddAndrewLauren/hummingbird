@@ -3,6 +3,7 @@ package net.twinion.hummingbird
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -10,11 +11,18 @@ import uniffi.hummingbird_ffi_mobile.MobileBindingRecord
 import uniffi.hummingbird_ffi_mobile.MobileBindingValue
 import uniffi.hummingbird_ffi_mobile.MobileDeadLetterReason
 import uniffi.hummingbird_ffi_mobile.MobileDeadLetterRecord
+import uniffi.hummingbird_ffi_mobile.MobileDeviceInfo
+import uniffi.hummingbird_ffi_mobile.MobileDeviceListPlatform
+import uniffi.hummingbird_ffi_mobile.MobileDeviceRow
+import uniffi.hummingbird_ffi_mobile.MobileDevicesOutcome
 import uniffi.hummingbird_ffi_mobile.MobileQuestionRosterEntry
 import uniffi.hummingbird_ffi_mobile.MobileQuestionSwitch
+import uniffi.hummingbird_ffi_mobile.MobileRevokeOutcome
 import uniffi.hummingbird_ffi_mobile.MobileSetBindingException
+import uniffi.hummingbird_ffi_mobile.MobileSignInOutcome
 import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
 import uniffi.hummingbird_ffi_mobile.MobileSurface
+import net.twinion.hummingbird.signin.GoogleCredential
 
 // Behavioural, driving the injected fns with fakes — `RulesViewModelTest`'s
 // own house shape. What is *not* tested here, deliberately: the dead-letter
@@ -292,5 +300,154 @@ class SettingsViewModelTest {
         viewModel.setQuestionEnabled(MobileStandingQuestion.KIMI, false, 1_000)
 
         assertEquals(MobileStandingQuestion.KIMI to "disk full", viewModel.questionSwitchError.value)
+    }
+
+    // -- sign-in and Signed-in devices (#841) -----------------------------
+
+    private fun emptyRead() = SettingsRead(bindings = emptyList(), deadLetters = emptyList(), queueDepth = 0u)
+
+    @Test
+    fun `a sign-in that mints a token saves it through the callback it was handed, and says nothing`() =
+        runBlocking {
+            val saved = mutableListOf<String>()
+            val viewModel = SettingsViewModel(
+                fetchFn = { emptyRead() },
+                setBindingFn = { _, _, _ -> },
+                signInFn = { _, _ -> MobileSignInOutcome.SignedIn(id = "device-android-pixel", token = "hb_minted") },
+            )
+
+            viewModel.signIn({ GoogleCredential.IdToken("jwt") }, "Pixel") { token -> saved += token }
+
+            assertEquals(listOf("hb_minted"), saved)
+            assertNull(viewModel.signInNotice.value)
+            assertFalse(viewModel.signingIn.value)
+        }
+
+    @Test
+    fun `a refused sign-in leaves its sentence and saves nothing`() = runBlocking {
+        val saved = mutableListOf<String>()
+        val viewModel = SettingsViewModel(
+            fetchFn = { emptyRead() },
+            setBindingFn = { _, _, _ -> },
+            signInFn = { _, _ -> MobileSignInOutcome.RateLimited },
+        )
+
+        viewModel.signIn({ GoogleCredential.IdToken("jwt") }, "Pixel") { token -> saved += token }
+
+        assertTrue(saved.isEmpty())
+        assertNotNull(viewModel.signInNotice.value)
+        assertFalse(viewModel.signingIn.value)
+    }
+
+    private fun deviceInfo(id: String, lastSeen: Long?, isCurrent: Boolean, revocable: Boolean = true) =
+        MobileDeviceInfo(
+            id = id,
+            name = "$id name",
+            platform = MobileDeviceListPlatform.OTHER,
+            createdAt = 0,
+            lastSeen = lastSeen,
+            revokedAt = null,
+            isCurrent = isCurrent,
+            revocable = revocable,
+        )
+
+    /** The real core decision (`deviceRows`, through the host cdylib), not a
+     * fake: the claim is that this device leads whatever order the
+     * authority answered in, and that `revocable` arrives as the route said. */
+    @Test
+    fun `the devices section lists this device first and carries each row's revocable verdict`() = runBlocking {
+        val now = 100L * 3_600_000
+        val viewModel = SettingsViewModel(
+            fetchFn = { emptyRead() },
+            setBindingFn = { _, _, _ -> },
+            listDevicesFn = {
+                MobileDevicesOutcome.Listed(
+                    listOf(
+                        deviceInfo("runner", lastSeen = now, isCurrent = false, revocable = false),
+                        deviceInfo("device-web-laptop", lastSeen = now - 60_000, isCurrent = false),
+                        deviceInfo("device-android-pixel", lastSeen = now - 3_600_000, isCurrent = true),
+                    ),
+                )
+            },
+            nowMsFn = { now },
+        )
+
+        viewModel.loadDevices()
+
+        val rows = (viewModel.devices.value as DevicesState.Listed).rows
+        assertEquals("device-android-pixel", rows.first().id)
+        assertTrue(rows.first().isCurrent)
+        assertNotNull("this device's row is labelled as such", rows.first().thisDevice)
+        assertEquals(false, rows.single { it.id == "runner" }.revocable)
+    }
+
+    @Test
+    fun `no credential reads as a sentence, not an empty list`() = runBlocking {
+        val viewModel = SettingsViewModel(
+            fetchFn = { emptyRead() },
+            setBindingFn = { _, _, _ -> },
+            listDevicesFn = { MobileDevicesOutcome.NoCredential },
+        )
+
+        viewModel.loadDevices()
+
+        assertTrue(viewModel.devices.value is DevicesState.Unavailable)
+    }
+
+    private fun row(id: String, isCurrent: Boolean) = MobileDeviceRow(
+        id = id,
+        name = "$id name",
+        isCurrent = isCurrent,
+        thisDevice = if (isCurrent) "This device" else null,
+        platformLabel = "Android",
+        lastSeenLabel = "Last seen just now",
+        revocable = true,
+    )
+
+    @Test
+    fun `this device's confirmation is the core's, off the real queue depth`() = runBlocking {
+        val viewModel = SettingsViewModel(
+            fetchFn = { SettingsRead(bindings = emptyList(), deadLetters = emptyList(), queueDepth = 3u) },
+            setBindingFn = { _, _, _ -> },
+            signOutConfirmationFn = { depth -> "core sentence for $depth" },
+        )
+        viewModel.load()
+
+        assertEquals("core sentence for 3", viewModel.signOutConfirmationText(row("me", isCurrent = true)))
+        assertTrue(viewModel.signOutConfirmationText(row("other", isCurrent = false)).contains("other name"))
+    }
+
+    @Test
+    fun `signing this device out forgets the stored token, another device does not`() = runBlocking {
+        var forgotten = 0
+        var answer: MobileRevokeOutcome = MobileRevokeOutcome.SignedOut(deviceInfo("me", null, true))
+        val viewModel = SettingsViewModel(
+            fetchFn = { emptyRead() },
+            setBindingFn = { _, _, _ -> },
+            revokeDeviceFn = { answer },
+        )
+
+        viewModel.signOut(row("me", isCurrent = true)) { forgotten += 1 }
+        assertEquals(1, forgotten)
+
+        answer = MobileRevokeOutcome.Revoked(deviceInfo("other", null, false))
+        viewModel.signOut(row("other", isCurrent = false)) { forgotten += 1 }
+        assertEquals("revoking another device leaves this one's token", 1, forgotten)
+        assertNull(viewModel.deviceError.value)
+    }
+
+    @Test
+    fun `a refused sign-out shows on its own row and forgets nothing`() = runBlocking {
+        var forgotten = false
+        val viewModel = SettingsViewModel(
+            fetchFn = { emptyRead() },
+            setBindingFn = { _, _, _ -> },
+            revokeDeviceFn = { MobileRevokeOutcome.NotRevocable },
+        )
+
+        viewModel.signOut(row("runner", isCurrent = false)) { forgotten = true }
+
+        assertFalse(forgotten)
+        assertEquals("runner", viewModel.deviceError.value?.first)
     }
 }
