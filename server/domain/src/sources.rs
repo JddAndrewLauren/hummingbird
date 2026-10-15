@@ -302,6 +302,16 @@ pub const GITHUB_HUMMINGBIRD_V1: &str = "github-hummingbird/v1";
 /// source never mints an `alerts` row and carries no `key_recipe`.
 pub const UPTIME_V1: &str = "uptime/v1";
 
+/// `starling/v1`'s frozen namespace (#830): the Starling cockpit's "waiting
+/// on you" alerts — a batch stopped at a gate or on a question. Named for
+/// [`CITY_WASTE_V2`]'s reason, though its second consumer lives outside this
+/// repo: the cockpit's notifier (JddAndrewLauren/starling) posts under this
+/// exact string, so a retirement to `/v2` is a change both sides must make.
+/// **State, alerts only, never expires**: the key names the cockpit's own
+/// attention item, the cockpit resolves it when the batch moves on, and
+/// nothing about a waiting batch becomes untrue with time.
+pub const STARLING_V1: &str = "starling/v1";
+
 /// The frozen registry. Every entry's `source` carries a version suffix
 /// (enforced by `tests::every_registered_source_is_versioned`); every
 /// source below has at least one frozen key-vector test in this module,
@@ -543,6 +553,20 @@ pub const REGISTRY: &[SourceEntry] = &[
         expires_at: Expiry::Never,
         retired_as: None,
     },
+    // Pushed by the Starling cockpit (#830), not polled: no snapshot to
+    // write, so alerts only. State, because the key names the thing that
+    // is waiting, and it leaves live when the cockpit posts a resolve.
+    SourceEntry {
+        source: STARLING_V1,
+        shape: Shape::State,
+        writes: Writes::Alerts,
+        key_recipe: Some(
+            "the cockpit's own attention item id, kind prefix included — \
+             `gate:<id>` or `question:<id>`",
+        ),
+        expires_at: Expiry::Never,
+        retired_as: None,
+    },
 ];
 
 /// Looks a source string up in the registry. `None` means the registry has
@@ -720,6 +744,13 @@ pub fn gmail_alert_v1_key(message_id: &str) -> String {
     message_id.to_string()
 }
 
+/// `starling/v1`: the cockpit's own attention item id, verbatim — the kind
+/// prefix (`gate:`, `question:`) is the cockpit's, and stays part of the key
+/// so a gate and a question sharing an id are two occurrences.
+pub fn starling_v1_key(attention_id: &str) -> String {
+    attention_id.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -827,6 +858,7 @@ mod tests {
                 None,
             ),
             ("gmail-alert/v1", Shape::Event, Writes::Alerts, Expiry::Never, None),
+            ("starling/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
         ];
 
         assert_eq!(
@@ -1412,5 +1444,26 @@ mod tests {
     #[test]
     fn gmail_alert_v1_keys_on_the_message_id() {
         assert_eq!(gmail_alert_v1_key("msg-789"), "msg-789");
+    }
+
+    /// `starling/v1`'s frozen vector (#830): the cockpit's own attention
+    /// item id, verbatim — whatever kind prefix the cockpit gave it rides
+    /// through untouched.
+    #[test]
+    fn starling_v1_keys_on_the_attention_item_id() {
+        assert_eq!(starling_v1_key("gate:batch-1014"), "gate:batch-1014");
+        assert_eq!(starling_v1_key("question:msg_c177"), "question:msg_c177");
+    }
+
+    /// A state source that writes alerts only and never expires: a batch
+    /// waiting on the operator stays live until the cockpit resolves it.
+    #[test]
+    fn starling_v1_is_an_alerts_only_state_source_that_never_expires() {
+        let entry = find(STARLING_V1).expect("starling/v1 is registered");
+        assert_eq!(entry.shape, Shape::State);
+        assert!(entry.writes_alerts());
+        assert!(!entry.writes_snapshots());
+        assert_eq!(entry.expires_at, Expiry::Never);
+        assert!(!entry.is_retired());
     }
 }

@@ -246,6 +246,7 @@ the single predicate all three call; no consumer re-spells it in SQL.
 | `github/v1`, `photo-site/v1`, `gmail-alert/v1` | event | the source's own event or message id |
 | `yahoo-lineup/v1` ***(#717)*** | **state** | `team:<team_key>` — `team:449.l.123456.t.7` |
 | `yahoo-waivers/v1` ***(#717)*** | event | `<season>-<week>`, week zero-padded — `2026-04` |
+| `starling/v1` ***(#830)*** | **state** | the cockpit's own attention item id, kind prefix included — `gate:<id>`, `question:<id>` |
 
 *Amended 2026-09-23 ([#717](https://github.com/JddAndrewLauren/hummingbird/issues/717)):
 the fantasy lane (#713) enrolls **two** sources, not one, because its two
@@ -257,6 +258,19 @@ condition. The waivers key on the **week**, not the deadline instant — this
 ADR's own fixed-coordinate clause: a commissioner moving the deadline is the
 same occurrence with a new `expires_at`, not a second ring. Both are
 `Writes::Both` and both are pinned by frozen key vectors in `sources.rs`.*
+
+*Amended 2026-10-14 ([#830](https://github.com/JddAndrewLauren/hummingbird/issues/830)):
+the Starling cockpit pushes its "waiting on you" alerts — a batch stopped at a
+gate or on a question — under `starling/v1`. It is a **state** source keyed on
+the cockpit's own attention item id, verbatim, so a re-post at a higher
+severity with the same `raised_at` escalates the one live row rather than
+minting a second, and a re-post carrying `resolved_at` takes it off the live
+stack. `Writes::Alerts` only (a pushed source has no snapshot to write) and no
+`expires_at`, ever: nothing about a waiting batch becomes untrue with time, so
+it stays live until the cockpit resolves it or the operator acks it — the
+expiry table below gains no row, as no state source's does. ADR-0012's
+delivery rules are unchanged; this is one more pushed source. Pinned by the
+frozen table and a key vector in `sources.rs`.*
 
 Two of these are judgment calls rather than consequences:
 
