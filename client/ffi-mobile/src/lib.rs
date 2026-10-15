@@ -4671,12 +4671,7 @@ impl MobileTaskHost {
     /// [`MobileTaskHost::push_api_key`] with it.
     pub async fn sign_in_with_google(&self, id_token: String, name: String) -> MobileSignInOutcome {
         let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
-        map_sign_in_outcome(
-            inner
-                .core
-                .sign_in_with_google(&inner.write_transport, &id_token, &name, DevicePlatform::Android)
-                .await,
-        )
+        sign_in_in(&inner, &inner.write_transport, &id_token, &name).await
     }
 
     /// The operator's devices (#839, ADR-0040 decision 6) — the
@@ -7512,6 +7507,23 @@ fn map_revoke_outcome(outcome: RevokeOutcome) -> MobileRevokeOutcome {
         RevokeOutcome::CredentialRejected => MobileRevokeOutcome::CredentialRejected,
         RevokeOutcome::Failed { message } => MobileRevokeOutcome::Failed { detail: message },
     }
+}
+
+/// [`MobileTaskHost::sign_in_with_google`]'s body, over any transport and
+/// under the caller's lock — the seam's tests script the authority
+/// through this, as through the two below.
+async fn sign_in_in(
+    inner: &Inner,
+    transport: &impl DirectTransport,
+    id_token: &str,
+    name: &str,
+) -> MobileSignInOutcome {
+    map_sign_in_outcome(
+        inner
+            .core
+            .sign_in_with_google(transport, id_token, name, DevicePlatform::Android)
+            .await,
+    )
 }
 
 /// [`MobileTaskHost::devices`]' body, over any transport and under the
@@ -13009,6 +13021,41 @@ mod settings_tests {
         ] {
             assert_eq!(map_sign_in_outcome(outcome), mobile);
         }
+    }
+
+    #[tokio::test]
+    async fn each_sign_in_status_reaches_kotlin_as_its_own_arm_and_holds_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = device_host(&dir).await;
+        let authority = ScriptedAuthority::answering(&[
+            (201, r#"{"id":"device-android-pixel","token":"hb_new"}"#),
+            (403, ""),
+            (429, r#"{"error":"rate_limited","message":"later"}"#),
+            (503, r#"{"error":"signin_unconfigured","message":"unset"}"#),
+            (503, r#"{"error":"signin_unavailable","message":"retry"}"#),
+            (503, "Service Unavailable"),
+        ]);
+        let mut outcomes = Vec::new();
+        for _ in 0..6 {
+            let inner = host.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
+            outcomes.push(sign_in_in(&inner, &authority, "jwt", "Pixel").await);
+        }
+        assert_eq!(
+            outcomes,
+            [
+                MobileSignInOutcome::SignedIn {
+                    id: "device-android-pixel".to_string(),
+                    token: "hb_new".to_string(),
+                },
+                MobileSignInOutcome::NotAllowed,
+                MobileSignInOutcome::RateLimited,
+                MobileSignInOutcome::Unconfigured,
+                MobileSignInOutcome::Unavailable,
+                MobileSignInOutcome::Unavailable,
+            ]
+        );
+        assert!(authority.bearers.lock().unwrap().iter().all(Option::is_none));
+        assert_eq!(host.credential_arm().await, "unknown", "a sign-in holds nothing");
     }
 
     #[tokio::test]

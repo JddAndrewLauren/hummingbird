@@ -7604,14 +7604,19 @@ mod device_tests {
             (429, r#"{"error":"rate_limited","message":"later"}"#),
             (503, r#"{"error":"signin_unconfigured","message":"unset"}"#),
             (503, r#"{"error":"signin_unavailable","message":"retry"}"#),
+            (503, "Service Unavailable"),
         ]);
         let mut kinds = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..5 {
             let response = host.sign_in_with_google_via(&authority, "jwt", "Pixel", "android").await;
             assert_eq!(response.token, None);
             kinds.push(response.kind);
         }
-        assert_eq!(kinds, ["not_allowed", "rate_limited", "unconfigured", "unavailable"]);
+        assert_eq!(
+            kinds,
+            ["not_allowed", "rate_limited", "unconfigured", "unavailable", "unavailable"],
+            "only signin_unconfigured reads as not set up"
+        );
     }
 
     #[tokio::test]

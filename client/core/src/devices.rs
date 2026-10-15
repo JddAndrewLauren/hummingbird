@@ -52,11 +52,13 @@ pub enum SignInOutcome {
     NotAllowed,
     /// 429: more than the route's hourly mint cap.
     RateLimited,
-    /// 503 for any reason but [`SignInOutcome::Unavailable`]'s: the
-    /// server has no sign-in client ids or allowed subject configured.
+    /// 503 `signin_unconfigured`: the server has no sign-in client ids or
+    /// allowed subject configured.
     Unconfigured,
-    /// 503 `signin_unavailable`: the server could not fetch Google's
-    /// signing keys. Nothing was refused; try again.
+    /// Any other 503 — `signin_unavailable` (the server could not fetch
+    /// Google's signing keys), or one whose body names no code this lane
+    /// knows. Nothing was refused; try again. Only the one explicit code
+    /// reads as "not set up", so an outage never does (#839's ruling).
     Unavailable,
     /// 400: the server refused the body — in practice the device name
     /// (empty, or longer than the server allows). `message` is the
@@ -204,10 +206,10 @@ pub(crate) fn sign_in_outcome(response: Result<RawResponse, TransportError>) -> 
         },
         403 => SignInOutcome::NotAllowed,
         429 => SignInOutcome::RateLimited,
-        503 if error_code(&response.body).as_deref() == Some("signin_unavailable") => {
-            SignInOutcome::Unavailable
+        503 if error_code(&response.body).as_deref() == Some("signin_unconfigured") => {
+            SignInOutcome::Unconfigured
         }
-        503 => SignInOutcome::Unconfigured,
+        503 => SignInOutcome::Unavailable,
         _ => SignInOutcome::Failed {
             message: unexpected(&response),
         },
@@ -304,7 +306,13 @@ mod tests {
             sign_in_outcome(response(503, r#"{"error":"signin_unavailable","message":"x"}"#)),
             SignInOutcome::Unavailable
         );
-        assert_eq!(sign_in_outcome(response(503, "")), SignInOutcome::Unconfigured);
+        for unrecognised in ["", "Service Unavailable", r#"{"error":"overloaded","message":"x"}"#] {
+            assert_eq!(
+                sign_in_outcome(response(503, unrecognised)),
+                SignInOutcome::Unavailable,
+                "an unrecognised 503 never reads as not set up: {unrecognised:?}"
+            );
+        }
         assert_eq!(
             sign_in_outcome(response(
                 400,
