@@ -421,6 +421,10 @@ mod wasm_bindings {
         fn clear_api_key(&self) {
             self.core.clear_api_key();
         }
+
+        fn report_no_api_key(&self) {
+            self.core.report_no_api_key();
+        }
     }
 
     /// `"busy"` for every JSON response shape this host resolves to, when
@@ -524,6 +528,8 @@ mod wasm_bindings {
     const BUSY_GRILL_DRAFT_ITEM_IDS: &str = r#"{"kind":"busy","item_ids":[]}"#;
     const BUSY_RUN: &str = r#"{"kind":"busy","retry_after_ms":null,"active_item_count":null,"was_full_sweep":null,"dead_lettered":null}"#;
     const BUSY_QUEUE_DEPTH: &str = r#"{"kind":"busy","depth":0}"#;
+    // No answer, not a guessed arm — a busy core must not claim `unknown`.
+    const BUSY_CREDENTIAL_ARM: &str = r#"{"kind":"busy","arm":null}"#;
     const BUSY_DEAD_LETTERS: &str = r#"{"kind":"busy","entries":[]}"#;
     const BUSY_MIRROR_SNAPSHOT: &str = r#"{"kind":"busy","mirror":null}"#;
 
@@ -543,13 +549,13 @@ mod wasm_bindings {
     /// itself. Rejects if the durable load fails (a corrupt snapshot) — the
     /// worker surfaces that the same way it surfaces a wasm import failure
     /// (see `core.worker.ts`).
+    ///
+    /// Takes no credential (#846): the core starts in `unknown`, and the
+    /// host's start-up token load calls `rehydrateApiKey` or
+    /// `reportNoApiKey`.
     #[wasm_bindgen(js_name = createTaskHost)]
-    pub async fn create_task_host(
-        namespace: String,
-        base_url: String,
-        api_key: String,
-    ) -> Result<TaskHost, JsValue> {
-        let host = TaskHostCore::init(namespace, base_url, api_key)
+    pub async fn create_task_host(namespace: String, base_url: String) -> Result<TaskHost, JsValue> {
+        let host = TaskHostCore::init(namespace, base_url)
             .await
             .map_err(|error| JsValue::from_str(&error.to_string()))?;
         Ok(TaskHost {
@@ -593,6 +599,25 @@ mod wasm_bindings {
         #[wasm_bindgen(js_name = clearApiKey)]
         pub fn clear_api_key(&self) {
             self.inner.clear_api_key();
+        }
+
+        /// #846: the host's start-up token load read its storage and found
+        /// nothing (empty or unreadable alike) — moves the core from
+        /// `unknown` to `unset`. Fire and forget, like `clearApiKey`, and
+        /// queued rather than dropped if the host is currently checked out
+        /// — see [`TaskShared`]'s doc.
+        #[wasm_bindgen(js_name = reportNoApiKey)]
+        pub fn report_no_api_key(&self) {
+            self.inner.report_no_api_key();
+        }
+
+        /// Where this device's credential stands (#846), as JSON:
+        /// `{"kind": "ok"|"busy", "arm": "unknown"|"unset"|"resting"|"reprompt"|null}`.
+        #[wasm_bindgen(js_name = credentialArm)]
+        pub fn credential_arm(&self) -> String {
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_CREDENTIAL_ARM.to_string(), |host| {
+                serde_json::to_string(&host.credential_arm()).expect("CredentialArmResponse serializes")
+            })
         }
 
         /// The frontier, as JSON: `{"kind": "ok"|"busy", "items": [Item & {"pending": bool}]}`
@@ -1663,8 +1688,9 @@ mod wasm_bindings {
                 })
         }
 
-        /// Drains every credential-needed event since the last drain, as
-        /// JSON: `[{"kind": "credential_needed", "at_ms": number}]`.
+        /// Drains every credential-mutation event since the last drain, as
+        /// JSON: `[{"kind": "credential_changed", "arm": "unknown"|"unset"|"resting"|"reprompt"}]`
+        /// (#846) — never the token.
         #[wasm_bindgen(js_name = takeEvents)]
         pub fn take_events(&self) -> String {
             let events = self.inner.core.read_mut(js_sys::Date::now() as i64, Vec::new(), |host| host.take_events());

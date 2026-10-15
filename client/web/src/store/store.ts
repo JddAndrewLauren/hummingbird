@@ -467,8 +467,8 @@ export interface TaskState {
    * doc), so this only ever grows until a re-apply flow exists to shrink
    * it. */
   deadLetters: DeadLetterEntryDTO[];
-  /** Set once a `taskEvents` broadcast carries a `credential_needed` event;
-   * mirrors `CalendarState.needsReconnect`'s own contract. */
+  /** Set once a `taskEvents` broadcast's newest credential event is in
+   * `reprompt`; mirrors `CalendarState.needsReconnect`'s own contract. */
   needsReconnect: boolean;
   /** The task host failed to construct in the shared worker, so every task
    * request this core ever receives is dropped (`taskHostUnavailable`,

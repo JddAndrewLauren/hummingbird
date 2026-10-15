@@ -653,19 +653,20 @@ impl std::fmt::Display for MobilePushRegistrationError {
 impl std::error::Error for MobilePushRegistrationError {}
 
 /// One drained [`CoreEvent`], as the mobile hosts' shape — the same
-/// `kind`/`at_ms` pair `ffi-web`'s `TaskEventDTO` carries, so the two FFI
-/// surfaces stay nameable in one breath.
+/// `kind`/`arm` pair `ffi-web`'s `TaskEventDTO` carries, so the two FFI
+/// surfaces stay nameable in one breath. `arm` is the
+/// [`hummingbird_core::CredentialArm`]'s wire name (#846) — never the token.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct MobileEvent {
     pub kind: String,
-    pub at_ms: i64,
+    pub arm: String,
 }
 
 fn map_event(event: CoreEvent) -> MobileEvent {
     match event {
-        CoreEvent::CredentialNeeded { at_ms } => MobileEvent {
-            kind: "credential_needed".to_string(),
-            at_ms,
+        CoreEvent::CredentialChanged { arm } => MobileEvent {
+            kind: "credential_changed".to_string(),
+            arm: arm.as_str().to_string(),
         },
     }
 }
@@ -4388,33 +4389,19 @@ impl MobileTaskHost {
     /// a directory path on mobile targets; the host supplies its app-local
     /// files dir (ADR-0003: the namespace is the one thing the host
     /// contributes at init). `base_url` is the authority's origin,
-    /// host-supplied for the same reason. `api_key` is whatever device
-    /// token the host already holds — often empty at first launch; it is
-    /// never persisted by the core ([`Core::init`]'s own doc), and
-    /// [`MobileTaskHost::push_api_key`] /
-    /// [`MobileTaskHost::rehydrate_api_key`] supply it afterwards.
+    /// host-supplied for the same reason. Takes no credential (#846): the
+    /// core starts in `unknown`, and the host's start-up token load calls
+    /// [`MobileTaskHost::rehydrate_api_key`] with a stored token or
+    /// [`MobileTaskHost::report_no_api_key`] without one — see
+    /// [`Core::init`].
     #[uniffi::constructor]
-    pub async fn init(
-        namespace: String,
-        base_url: String,
-        api_key: String,
-    ) -> Result<Arc<Self>, MobileInitError> {
-        let empty_key = api_key.is_empty();
-        let shadow_key = (!empty_key).then(|| api_key.clone());
+    pub async fn init(namespace: String, base_url: String) -> Result<Arc<Self>, MobileInitError> {
         let namespace_path = namespace.clone();
-        let mut core = Core::init(namespace, api_key)
+        let core = Core::init(namespace)
             .await
             .map_err(|error| MobileInitError::InitFailed {
                 detail: error.to_string(),
             })?;
-        // `Core::init` holds whatever string it is given — including `""`,
-        // which would then be *sent* as a bearer token. An empty key from
-        // the host means "no token yet", so map it to the core's explicit
-        // no-credential state: `run` answers `no_credential` and reaches no
-        // transport, instead of `pull_failed` after a doomed request.
-        if empty_key {
-            core.clear_api_key();
-        }
         let client = reqwest_client();
         let read_transport = ReqwestSyncTransport::new(client.clone(), base_url.clone());
         let write_transport = ReqwestMutationTransport::new(client.clone(), base_url.clone());
@@ -4440,7 +4427,7 @@ impl MobileTaskHost {
                 core,
                 read_transport,
                 write_transport,
-                api_key: shadow_key,
+                api_key: None,
             }),
             calendar: tokio::sync::Mutex::new(calendar),
             core_owner: core_lock::CoreOwnershipTracker::new(),
@@ -4624,11 +4611,12 @@ impl MobileTaskHost {
     }
 
     /// A fresh device token from the person (first entry, or rotation
-    /// after a `credential_needed` event). Always resumes a hold — see
+    /// after a `credential_changed` event in `reprompt`). Always resumes a hold — see
     /// [`Core::push_api_key`].
     pub async fn push_api_key(&self, api_key: String) {
         let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
-        inner.api_key = Some(api_key.clone());
+        // An empty key is a clear, in the shadow as in the core (#846).
+        inner.api_key = (!api_key.is_empty()).then(|| api_key.clone());
         inner.core.push_api_key(api_key);
     }
 
@@ -4636,7 +4624,10 @@ impl MobileTaskHost {
     /// resuming a hold — see [`Core::rehydrate_api_key`].
     pub async fn rehydrate_api_key(&self, api_key: String) {
         let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
-        inner.api_key = Some(api_key.clone());
+        // An empty key is an absence report, which withdraws nothing (#846).
+        if !api_key.is_empty() {
+            inner.api_key = Some(api_key.clone());
+        }
         inner.core.rehydrate_api_key(api_key);
     }
 
@@ -4646,6 +4637,27 @@ impl MobileTaskHost {
         let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
         inner.api_key = None;
         inner.core.clear_api_key();
+    }
+
+    /// #846: the host's start-up token load read its storage and found
+    /// nothing (empty or unreadable alike) — moves the core from `unknown`
+    /// to `unset`. See [`Core::report_no_api_key`].
+    pub async fn report_no_api_key(&self) {
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings)
+            .await
+            .core
+            .report_no_api_key();
+    }
+
+    /// Where this device's credential stands (#846): one of `unknown`,
+    /// `unset`, `resting`, `reprompt` — see [`Core::credential_arm`].
+    pub async fn credential_arm(&self) -> String {
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read)
+            .await
+            .core
+            .credential_arm()
+            .as_str()
+            .to_string()
     }
 
     /// Runs one observed sync cycle against the live transports (#769).
@@ -4882,8 +4894,9 @@ impl MobileTaskHost {
             .collect()
     }
 
-    /// Drains queued [`CoreEvent`]s (today: `credential_needed`) — a
-    /// pull-based drain, never a host-implemented callback (ADR-0003).
+    /// Drains queued [`CoreEvent`]s (today: `credential_changed`, carrying
+    /// the arm, #846) — a pull-based drain, never a host-implemented
+    /// callback (ADR-0003).
     pub async fn take_events(&self) -> Vec<MobileEvent> {
         self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
             .core
@@ -7553,7 +7566,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://authority.example".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -7599,7 +7611,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://authority.example".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -7693,10 +7704,10 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             String::new(),
-            "device-token".to_string(),
         )
         .await
         .unwrap();
+        host.push_api_key("device-token".to_string()).await;
 
         host.capture(title_only_draft("drain me"), 1_000).await.unwrap();
         let before_run: Vec<DiagnosticEventV1> = host
@@ -7739,13 +7750,14 @@ mod tests {
     /// A host whose base URL refuses connections, so every mint answers
     /// `authority_unreachable` without a network of any kind.
     async fn unreachable_host(dir: &tempfile::TempDir, api_key: &str) -> Arc<MobileTaskHost> {
-        MobileTaskHost::init(
+        let host = MobileTaskHost::init(
             dir.path().join("cal-ns").to_str().unwrap().to_string(),
             "http://127.0.0.1:1".to_string(),
-            api_key.to_string(),
         )
         .await
-        .unwrap()
+        .unwrap();
+        host.push_api_key(api_key.to_string()).await;
+        host
     }
 
     /// Opts the device in the only way there is now (ADR-0040 decision 8):
@@ -8196,7 +8208,6 @@ mod tests {
             // A base URL that would fail DNS if any request were attempted:
             // `no_credential` short-circuits before the transports.
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8204,6 +8215,70 @@ mod tests {
         let outcome = host.run(1_000, "user".to_string(), false, 0.0).await;
         assert_eq!(outcome.kind, "no_credential");
         assert!(host.take_events().await.is_empty());
+    }
+
+    // ------------------------------------------- #846: the credential's arm
+
+    async fn arm_host(dir: &tempfile::TempDir, name: &str) -> Arc<MobileTaskHost> {
+        MobileTaskHost::init(
+            dir.path().join(name).to_str().unwrap().to_string(),
+            // Would fail DNS if any request were attempted.
+            "https://invalid.invalid".to_string(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_seam_starts_unknown_and_an_absence_report_moves_it_to_unset_without_a_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = arm_host(&dir, "arm-ns-1").await;
+        assert_eq!(host.credential_arm().await, "unknown");
+
+        host.report_no_api_key().await;
+        assert_eq!(host.credential_arm().await, "unset");
+        assert_eq!(host.run(1_000, "user".to_string(), false, 0.0).await.kind, "no_credential");
+        assert_eq!(
+            host.take_events().await,
+            vec![MobileEvent { kind: "credential_changed".to_string(), arm: "unset".to_string() }]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_seams_doors_move_the_arm_and_each_emits_one_event_never_the_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = arm_host(&dir, "arm-ns-2").await;
+
+        host.push_api_key(String::new()).await;
+        assert_eq!(host.credential_arm().await, "unset", "an empty push is not a credential");
+        assert_eq!(host.run(1_000, "user".to_string(), false, 0.0).await.kind, "no_credential");
+        host.rehydrate_api_key("sk-secret".to_string()).await;
+        assert_eq!(host.credential_arm().await, "resting");
+        host.push_api_key("sk-secret".to_string()).await;
+        assert_eq!(host.credential_arm().await, "resting");
+        host.clear_api_key().await;
+        assert_eq!(host.credential_arm().await, "unset");
+
+        let events = host.take_events().await;
+        assert_eq!(
+            events.iter().map(|event| event.arm.as_str()).collect::<Vec<_>>(),
+            vec!["unset", "resting", "resting", "unset"]
+        );
+        assert!(!format!("{events:?}").contains("sk-secret"));
+    }
+
+    /// The shadow `register_push_target` sends with follows the core's
+    /// slot: an empty push leaves no bearer to send.
+    #[tokio::test]
+    async fn an_empty_push_leaves_no_shadow_token_to_register_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = arm_host(&dir, "arm-ns-3").await;
+        host.push_api_key(String::new()).await;
+
+        let result = host
+            .register_push_target("id".to_string(), "name".to_string(), "fcm".to_string())
+            .await;
+        assert!(matches!(result, Err(MobilePushRegistrationError::Unauthorized)));
     }
 
     // ------------------------------------------------------- M1-5 (#503)
@@ -8317,7 +8392,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8337,7 +8411,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8375,7 +8448,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8427,7 +8499,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8575,7 +8646,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8621,7 +8691,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8674,7 +8743,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8708,7 +8776,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8732,7 +8799,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9240,7 +9306,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9302,7 +9367,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9329,7 +9393,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9358,7 +9421,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9385,7 +9447,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9406,7 +9467,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9424,7 +9484,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9465,7 +9524,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9482,7 +9540,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9631,7 +9688,6 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("triage-board-ns").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9657,7 +9713,6 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("triage-item-ns").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9694,7 +9749,6 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("triage-item-ns-2").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9723,7 +9777,6 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("triage-item-ns-3").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9761,13 +9814,14 @@ mod tests {
         // it here keeps the durable namespace alive for the whole test
         // without threading the guard through every call site.
         std::mem::forget(dir);
-        MobileTaskHost::init(
+        let host = MobileTaskHost::init(
             path.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            api_key.to_string(),
         )
         .await
-        .unwrap()
+        .unwrap();
+        host.push_api_key(api_key.to_string()).await;
+        host
     }
 
     /// The two verdicts this record exists to carry. A settled row is not
@@ -10081,7 +10135,6 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("edit-ns").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -10115,7 +10168,6 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("edit-ns-2").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -10861,7 +10913,7 @@ mod skills_tests {
         // (the same trade every other tempdir-backed test here already
         // makes implicitly by never calling `.close()`).
         std::mem::forget(dir);
-        MobileTaskHost::init(path.to_str().unwrap().to_string(), "https://invalid.invalid".to_string(), String::new())
+        MobileTaskHost::init(path.to_str().unwrap().to_string(), "https://invalid.invalid".to_string())
             .await
             .unwrap()
     }
@@ -11290,13 +11342,14 @@ mod settings_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(namespace);
         std::mem::forget(dir);
-        MobileTaskHost::init(
+        let host = MobileTaskHost::init(
             path.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            "token".to_string(),
         )
         .await
-        .unwrap()
+        .unwrap();
+        host.push_api_key("token".to_string()).await;
+        host
     }
 
     /// #779: the read loop is exactly the panes' own declaration, unioned
@@ -11725,10 +11778,10 @@ mod settings_tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "http://127.0.0.1:1".to_string(),
-            "token".to_string(),
         )
         .await
         .unwrap();
+        host.push_api_key("token".to_string()).await;
         // Noon UTC on 2030-03-01, in `resolve_zone_facts`'s own UTC civil days.
         let now_ms = civil_days_between("1970-01-01", "2030-03-01").unwrap() * DAY_MS + 12 * 3_600_000;
         host.set_binding(
@@ -12693,7 +12746,6 @@ mod diagnostic_ffi_tests {
         let host = MobileTaskHost::init(
             dir.path().join("seq-ns").to_str().unwrap().to_string(),
             "https://authority.example".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -12760,7 +12812,6 @@ mod diagnostic_ffi_tests {
             MobileTaskHost::init(
                 dir.path().join("drain-during-hang-ns").to_str().unwrap().to_string(),
                 "https://authority.example".to_string(),
-                String::new(),
             )
             .await
             .unwrap(),

@@ -13,6 +13,7 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     pushApiKey: vi.fn(),
     rehydrateApiKey: vi.fn(),
     clearApiKey: vi.fn(),
+    reportNoApiKey: vi.fn(),
     capture: vi.fn().mockResolvedValue('{"kind":"ok","id":"item-1","error":null}'),
     act: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     triage: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
@@ -191,6 +192,14 @@ describe("handleTaskRequest", () => {
     const posted = await run({ type: "clearTaskApiKey" }, host);
 
     expect(host.clearApiKey).toHaveBeenCalledTimes(1);
+    expect(posted).toEqual([]);
+  });
+
+  it("reportNoTaskApiKey forwards the absence report to the host and posts nothing back", async () => {
+    const host = fakeHost();
+    const posted = await run({ type: "reportNoTaskApiKey" }, host);
+
+    expect(host.reportNoApiKey).toHaveBeenCalledTimes(1);
     expect(posted).toEqual([]);
   });
 
@@ -634,7 +643,7 @@ describe("handleTaskRequest", () => {
 
   it("capture also drains and posts any credential event the cycle recorded", async () => {
     const host = fakeHost({
-      takeEvents: vi.fn().mockReturnValue('[{"kind":"credential_needed","at_ms":5000}]'),
+      takeEvents: vi.fn().mockReturnValue('[{"kind":"credential_changed","arm":"reprompt"}]'),
     });
     const posted = await run(
       {
@@ -650,7 +659,7 @@ describe("handleTaskRequest", () => {
 
     expect(posted).toEqual([
       { type: "captureResult", seed: "seed-1", kind: "ok", id: "item-1", error: null },
-      { type: "taskEvents", events: [{ kind: "credential_needed", atMs: 5000 }] },
+      { type: "taskEvents", events: [{ kind: "credential_changed", arm: "reprompt" }] },
     ]);
   });
 
@@ -1207,7 +1216,7 @@ describe("handleTaskRequest", () => {
       runSync: vi.fn().mockResolvedValue(
         '{"kind":"credential_needed","retry_after_ms":null,"active_item_count":null,"was_full_sweep":null,"dead_lettered":0}',
       ),
-      takeEvents: vi.fn().mockReturnValue('[{"kind":"credential_needed","at_ms":9000}]'),
+      takeEvents: vi.fn().mockReturnValue('[{"kind":"credential_changed","arm":"reprompt"}]'),
     });
 
     const posted = await run(
@@ -1225,7 +1234,7 @@ describe("handleTaskRequest", () => {
         deadLettered: 0,
         atMs: 9_000,
       },
-      { type: "taskEvents", events: [{ kind: "credential_needed", atMs: 9000 }] },
+      { type: "taskEvents", events: [{ kind: "credential_changed", arm: "reprompt" }] },
       { type: "queueDepth", depth: 0 },
       { type: "deadLetters", entries: [] },
     ]);

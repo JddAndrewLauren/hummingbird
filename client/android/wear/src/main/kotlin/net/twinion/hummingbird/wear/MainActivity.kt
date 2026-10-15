@@ -119,7 +119,9 @@ private fun WearAppRoot(initialRoute: String?) {
         val host = core ?: return
         val nowMs = System.currentTimeMillis()
         val outcome = host.run(nowMs, trigger, false, Random.nextDouble())
-        val credentialEvent = host.takeEvents().any { it.kind == "credential_needed" }
+        // The newest credential event is the arm the core is in (#846).
+        val credentialEvent =
+            host.takeEvents().lastOrNull { it.kind == "credential_changed" }?.arm == "reprompt"
         credentialRefused = credentialEvent ||
             outcome.kind == "no_credential" || outcome.kind == "held"
         if (isInformativeSyncOutcome(outcome.kind)) {

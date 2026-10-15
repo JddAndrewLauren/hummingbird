@@ -427,8 +427,10 @@ private fun AppRoot(
             false,
             Random.nextDouble(),
         )
+        // The newest credential event is the arm the core is in (#846); a
+        // push that resolved an undrained 401 lands after it.
         val credentialEvent =
-            host.takeEvents().any { it.kind == "credential_needed" }
+            host.takeEvents().lastOrNull { it.kind == "credential_changed" }?.arm == "reprompt"
         needsToken = credentialEvent ||
             outcome.kind == "no_credential" || outcome.kind == "held"
         if (isInformativeSyncOutcome(outcome.kind)) {
