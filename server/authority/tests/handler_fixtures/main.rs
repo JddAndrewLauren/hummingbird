@@ -13,6 +13,7 @@ mod blocked_by;
 mod calendar_token;
 mod changes;
 mod delivery;
+mod devices;
 mod diagnostics;
 mod fantasy_sources;
 mod fcm;

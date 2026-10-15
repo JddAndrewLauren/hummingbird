@@ -63,7 +63,9 @@ pub use sources::{
     YAHOO_WAIVERS_V1,
 };
 pub use step::{BlockedBy, Step};
-pub use token::{DevicePlatform, MintedToken, Scope, SignedInDevice, TokenInfo};
+pub use token::{
+    DeviceInfo, DeviceListPlatform, DevicePlatform, MintedToken, Scope, SignedInDevice, TokenInfo,
+};
 
 #[cfg(test)]
 mod tests {
