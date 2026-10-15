@@ -491,6 +491,7 @@ swipe-equals-ack, which ADR-0012 rejected outright.
 | `github/v1`, `photo-site/v1` | none unless the event carries one |
 | `yahoo-lineup/v1` ***(#717)*** | the earliest kickoff among the invalid slots' eligible replacements (the lock the alert warns about) |
 | `yahoo-waivers/v1` ***(#717)*** | the waiver deadline instant |
+| `auk/v1` ***(#845)*** | none, ever |
 | `starling/v1` ***(#830)*** | none, ever |
 
 *Amended 2026-10-15 (#853, operator ruling): the `yahoo-lineup/v1` row's
@@ -501,6 +502,10 @@ Out or IR starter whose game kicks off before every replacement's shuts the
 slot at his own kickoff. Over eligible replacements alone, that expiry would
 come after the slot could no longer be fixed. A starter already locked in at
 the fetch leaves his slot with no lock to name.
+
+*Amended 2026-10-15 (#845, a correction): the `auk/v1` row. The #845
+amendment above enrolls the source as one that never expires, but landed
+without the row that says so here.*
 
 A "meeting starts in 15 min" alert is genuinely meaningless once the meeting
 ends, and a slide alert once the pickup happened — both have a referent to
