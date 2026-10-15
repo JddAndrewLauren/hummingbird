@@ -40,7 +40,7 @@ use worker::*;
 use crate::http::post;
 
 /// The RS256 key/signature algorithm, spelled as WebCrypto names it.
-const RSASSA_PKCS1_V1_5: &str = "RSASSA-PKCS1-v1_5";
+pub(crate) const RSASSA_PKCS1_V1_5: &str = "RSASSA-PKCS1-v1_5";
 
 /// Holds the operator credential and caches the access token it buys.
 pub struct FcmSender {
@@ -138,12 +138,7 @@ impl FcmSender {
 /// out or repurpose it.
 async fn sign_rs256(pkcs8_der: &[u8], signing_input: &str) -> Result<Vec<u8>> {
     let subtle = subtle_crypto()?;
-
-    let hash = js_sys::Object::new();
-    js_sys::Reflect::set(&hash, &"name".into(), &"SHA-256".into()).map_err(js_err)?;
-    let algorithm = js_sys::Object::new();
-    js_sys::Reflect::set(&algorithm, &"name".into(), &RSASSA_PKCS1_V1_5.into()).map_err(js_err)?;
-    js_sys::Reflect::set(&algorithm, &"hash".into(), &hash).map_err(js_err)?;
+    let algorithm = rs256_import_algorithm()?;
 
     // `Uint8Array::from` copies into the JS heap. A wasm-memory *view*
     // would be the alternative, and would dangle if the allocator moved
@@ -172,9 +167,21 @@ async fn sign_rs256(pkcs8_der: &[u8], signing_input: &str) -> Result<Vec<u8>> {
     Ok(js_sys::Uint8Array::new(&signature).to_vec())
 }
 
+/// `{name: "RSASSA-PKCS1-v1_5", hash: {name: "SHA-256"}}` — RS256 as
+/// `importKey` wants it, for this module's signing key and `signin.rs`'s
+/// verifying one alike.
+pub(crate) fn rs256_import_algorithm() -> Result<js_sys::Object> {
+    let hash = js_sys::Object::new();
+    js_sys::Reflect::set(&hash, &"name".into(), &"SHA-256".into()).map_err(js_err)?;
+    let algorithm = js_sys::Object::new();
+    js_sys::Reflect::set(&algorithm, &"name".into(), &RSASSA_PKCS1_V1_5.into()).map_err(js_err)?;
+    js_sys::Reflect::set(&algorithm, &"hash".into(), &hash).map_err(js_err)?;
+    Ok(algorithm)
+}
+
 /// `crypto.subtle` off the worker global. Reached through `Reflect` rather
 /// than `web_sys::window()`: a Worker has no `window`, and no `document`.
-fn subtle_crypto() -> Result<web_sys::SubtleCrypto> {
+pub(crate) fn subtle_crypto() -> Result<web_sys::SubtleCrypto> {
     let crypto = js_sys::Reflect::get(&js_sys::global(), &"crypto".into())
         .map_err(js_err)?
         .dyn_into::<web_sys::Crypto>()
@@ -182,6 +189,6 @@ fn subtle_crypto() -> Result<web_sys::SubtleCrypto> {
     Ok(crypto.subtle())
 }
 
-fn js_err(value: JsValue) -> Error {
+pub(crate) fn js_err(value: JsValue) -> Error {
     Error::RustError(format!("{value:?}"))
 }

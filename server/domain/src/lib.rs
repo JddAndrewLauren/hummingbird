@@ -32,7 +32,7 @@ pub use api::{
     AlertIngest, AlertPatch, ApiError, BlockedByPatch, CalendarTokenResponse, ChangesResponse,
     ConflictResponse, CreateBlockedBy, CreateFog, CreateGrill, CreateItem, CreateProject,
     CreateFileLink, CreateProjectLink, CreatePushTarget, CreateRule, CreateStep, FileLinkPatch,
-    FogPatch, ItemPatch, MintToken, ProjectLinkPatch, ProjectPatch, PutSetting, RoutePatch, RulePatch, SnapshotIngest, StepPatch,
+    FogPatch, GoogleSignIn, ItemPatch, MintToken, ProjectLinkPatch, ProjectPatch, PutSetting, RoutePatch, RulePatch, SnapshotIngest, StepPatch,
     VERSION_CONFLICT,
 };
 pub use context::{Alert, ContextSnapshot, EnvelopeProblem, Setting, SnapshotEnvelope};
@@ -63,7 +63,7 @@ pub use sources::{
     YAHOO_WAIVERS_V1,
 };
 pub use step::{BlockedBy, Step};
-pub use token::{MintedToken, Scope, TokenInfo};
+pub use token::{DevicePlatform, MintedToken, Scope, SignedInDevice, TokenInfo};
 
 #[cfg(test)]
 mod tests {

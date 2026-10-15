@@ -14,6 +14,8 @@ mod calendar;
 mod fcm;
 #[cfg(target_arch = "wasm32")]
 mod http;
+#[cfg(target_arch = "wasm32")]
+mod signin;
 
 #[cfg(target_arch = "wasm32")]
 mod shim {
@@ -38,6 +40,7 @@ mod shim {
 
     use crate::calendar::CalendarMinter;
     use crate::fcm::FcmSender;
+    use crate::signin::GoogleSignin;
 
     /// [`Entropy`] over the platform CSPRNG (`crypto.getRandomValues` via
     /// `getrandom`'s js backend) — token minting's randomness source.
@@ -129,6 +132,11 @@ mod shim {
         /// A minter of its own, so its cached bearer can never be handed to
         /// a caller of the readonly route.
         calendar_write: Option<CalendarMinter>,
+        /// `POST /api/auth/google` (ADR-0040), over the
+        /// `GOOGLE_SIGNIN_CLIENT_IDS` var and the `GOOGLE_SIGNIN_ALLOWED_SUB`
+        /// secret. Always present: with either unset, the route itself
+        /// answers 503. Holds the cached Google JWKS.
+        signin: GoogleSignin,
         /// #711: the `seq` counter `request_received_event`/
         /// `request_finished_event` need — `DiagnosticEventV1::seq` is
         /// monotonic *within one session*, and a Durable Object instance is
@@ -156,6 +164,7 @@ mod shim {
                 fcm: FcmSender::from_env(&env).map(Rc::new),
                 calendar: CalendarMinter::from_env(&env),
                 calendar_write: CalendarMinter::write_from_env(&env),
+                signin: GoogleSignin::from_env(&env),
                 request_seq: Cell::new(0),
                 session_origin_ms: Cell::new(None),
             }
@@ -250,12 +259,34 @@ mod shim {
                 }
             };
             let now_ms = Date::now().as_millis() as i64;
+            let body = if body.is_empty() { None } else { Some(body.as_str()) };
+
+            // The sign-in mint (ADR-0040): unauthenticated, and answered
+            // here rather than by `handle()`, because verifying the Google
+            // ID token awaits a JWKS fetch and `crypto.subtle.verify`. Every
+            // decision is the pure crate's (`auth_google`); `signin` only
+            // supplies the two awaits. No `token_id` on its log line — the
+            // caller held no token.
+            if path == "/api/auth/google" {
+                let ctx = HandleContext {
+                    now_ms,
+                    admin_secret: self.admin_secret.as_deref(),
+                    entropy: &WorkersEntropy,
+                };
+                let api = self.signin.respond(&method, body, &ctx, &sql).await;
+                self.log_finished(
+                    cycle_id, request_id.clone(), route, &method, &path, api.status, start_ms,
+                    api.body.len(), None,
+                );
+                return with_request_id_header(json_response(api.status, api.body), &request_id);
+            }
+
             let mut api = handle(
                 &ApiRequest {
                     method: &method,
                     path: &path,
                     query: url.query(),
-                    body: if body.is_empty() { None } else { Some(&body) },
+                    body,
                     authorization: authorization.as_deref(),
                     cycle_id: cycle_id_header.as_deref(),
                     request_id: Some(&request_id),
