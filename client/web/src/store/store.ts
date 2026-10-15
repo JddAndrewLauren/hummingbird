@@ -9,6 +9,7 @@ import type {
   SuggestedContextsDTO,
   CalendarPrefsDTO,
   CalendarSeedOutcome,
+  DevicesDTO,
   BlockedFrontierEntryDTO,
   CalendarListEntryDTO,
   CalendarReadDTO,
@@ -354,6 +355,10 @@ export interface TaskState {
    * by `seed` — `useCalendarWiring.ts` deletes the old `localStorage` copy
    * on any settled answer. `null` before any seed. */
   lastCalendarSeed: { seed: string; outcome: CalendarSeedOutcome | null } | null;
+  /** The last `devices` answer (#840, ADR-0040 decision 6) — the
+   * operator's devices as the authority lists them, or why there are none.
+   * `null` until the first answer; Settings asks whenever it is shown. */
+  devices: DevicesDTO | null;
   /** The kind registry export (#133/#140, ADR-0013) — `null` until the
    * first `getKindRegistry` answer arrives. Never answers `"busy"`
    * core-side, but a view can still ask before the worker's port is ready,
@@ -530,6 +535,7 @@ const initialTaskState: TaskState = {
   suggestedContexts: null,
   calendarPrefs: null,
   lastCalendarSeed: null,
+  devices: null,
   kindRegistry: null,
   rules: null,
   lastRuleWrite: null,

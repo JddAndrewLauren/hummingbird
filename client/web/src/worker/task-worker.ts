@@ -4,6 +4,10 @@ import type {
   QuestionSwitchDTO,
   SuggestedContextsDTO,
   CalendarPrefsDTO,
+  DeviceInfoDTO,
+  DevicesDTO,
+  RevokeDeviceKind,
+  SignInKind,
   CalendarSeedOutcome,
   BindingValueDTO,
   BlockedFrontierEntryDTO,
@@ -168,6 +172,13 @@ export interface TaskHostLike {
     selectionJson: string,
     nowMs: number,
   ): Promise<string>;
+  /** #840's three doors. Mirror `TaskHost::signInWithGoogle` (`{"kind",
+   * "id", "token", "error"}`), `TaskHost::devices` (`{"kind", "devices",
+   * "error"}`, the authority's snake_case rows) and `TaskHost::revokeDevice`
+   * (`{"kind", "device", "error"}`), each resolved to JSON. */
+  signInWithGoogle(idToken: string, name: string, platform: string, nowMs: number): Promise<string>;
+  devices(nowMs: number): Promise<string>;
+  revokeDevice(id: string, nowMs: number): Promise<string>;
   /** #140's kind registry export. Mirrors `hummingbird-ffi-web`'s
    * `TaskHost::kindRegistry` — never `"busy"`, so this resolves
    * synchronously to `{"kind":"ok",…}` always. */
@@ -432,6 +443,24 @@ interface RawCalendarPrefsResponse {
 
 interface RawEditCalendarPrefsResponse {
   kind: "ok" | "locked" | "not_selected" | "failed" | "busy";
+  error: string | null;
+}
+
+interface RawSignInResponse {
+  kind: SignInKind;
+  id: string | null;
+  token: string | null;
+  error: string | null;
+}
+
+interface RawDevicesResponse {
+  kind: DevicesDTO["kind"] | "busy";
+  devices: DeviceInfoDTO[];
+  error: string | null;
+}
+
+interface RawRevokeDeviceResponse {
+  kind: RevokeDeviceKind;
   error: string | null;
 }
 
@@ -1127,7 +1156,10 @@ export async function handleTaskRequest(
   switch (request.type) {
     case "pushTaskApiKey":
       // Forwarded and never echoed: no branch below, or anywhere else in
-      // this module, ever posts a message carrying an API key.
+      // this module, ever posts a message carrying an API key — except
+      // `signInWithGoogle`'s answer, which hands a freshly minted one back
+      // to the view that asked for it (#840; `protocol.ts`'s
+      // `signInResult` says why that is safe).
       host.pushApiKey(request.apiKey);
       return;
     case "initTaskApiKey":
@@ -1388,6 +1420,35 @@ export async function handleTaskRequest(
         ),
       ) as RawSeedCalendarPrefsResponse;
       post({ type: "seedCalendarPrefsResult", seed: request.seed, kind: raw.kind, outcome: raw.seed });
+      return;
+    }
+    case "signInWithGoogle": {
+      // ADR-0040 decision 1: the web always signs in as platform `web`.
+      const raw = JSON.parse(
+        await host.signInWithGoogle(request.idToken, request.name, "web", request.nowMs),
+      ) as RawSignInResponse;
+      post({
+        type: "signInResult",
+        seed: request.seed,
+        kind: raw.kind,
+        token: raw.kind === "signed_in" ? raw.token : null,
+        error: raw.error,
+      });
+      return;
+    }
+    case "getDevices": {
+      const raw = JSON.parse(await host.devices(request.nowMs)) as RawDevicesResponse;
+      if (raw.kind === "busy") {
+        // No answer, not "no devices": the busy placeholder's empty list
+        // would render as a section with nobody signed in.
+        return;
+      }
+      post({ type: "devices", devices: { kind: raw.kind, devices: raw.devices, error: raw.error } });
+      return;
+    }
+    case "revokeDevice": {
+      const raw = JSON.parse(await host.revokeDevice(request.id, request.nowMs)) as RawRevokeDeviceResponse;
+      post({ type: "revokeDeviceResult", seed: request.seed, id: request.id, kind: raw.kind, error: raw.error });
       return;
     }
     case "getQuestionSwitches": {

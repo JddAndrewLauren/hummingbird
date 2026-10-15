@@ -33,6 +33,8 @@ import {
   Mails,
   ListChecks,
   LoaderCircle,
+  LogIn,
+  LogOut,
   Mic,
   Moon,
   NotebookText,
@@ -123,6 +125,9 @@ export const ICON_MAP = {
   mails: Mails,
   "list-checks": ListChecks,
   "loader-circle": LoaderCircle,
+  // #840: Sign in with Google, and signing a device out.
+  "log-in": LogIn,
+  "log-out": LogOut,
   // The capture box's dictation control (#379). One glyph for both states:
   // listening is `IconButton`'s `active` (the design system's own toggled-on
   // treatment — ember tint plus brand foreground), not a second icon.

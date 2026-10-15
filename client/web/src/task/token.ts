@@ -144,3 +144,13 @@ export async function forgetTaskToken(deps: TaskTokenDeps): Promise<TaskTokenLoa
   deps.clearApiKey();
   return NO_TOKEN;
 }
+
+/** After this device signed itself out from Signed-in devices (#840,
+ * ADR-0040 decision 6): `Core::revoke_device` already cleared the live
+ * credential, keeping the queue, so only the stored copy goes — clearing
+ * the core's slot again would announce a second credential change for the
+ * one that already happened. */
+export async function clearSignedOutToken(deps: TaskTokenDeps): Promise<TaskTokenLoadResult> {
+  await deps.store.clear();
+  return NO_TOKEN;
+}

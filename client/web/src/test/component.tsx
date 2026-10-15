@@ -262,6 +262,7 @@ export function taskState(overrides: Partial<TaskState> = {}): TaskState {
     suggestedContexts: null,
     calendarPrefs: null,
     lastCalendarSeed: null,
+    devices: null,
     kindRegistry: null,
     rules: null,
     lastRuleWrite: null,
