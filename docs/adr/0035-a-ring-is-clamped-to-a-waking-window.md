@@ -88,3 +88,16 @@ because the core has no tzdb and this decision does not give it one.
   deliberately: the next obligation this system watches whose deadline can
   land at 05:30 inherits it, and should not have to rediscover the London
   case to get it right.
+
+*Amended 2026-10-15 ([#845](https://github.com/JddAndrewLauren/hummingbird/issues/845)):
+the clamp governs rings the system **times** itself, off a deadline it
+knows. A ring caused by an alert **pushed** in from outside is sent when the
+alert is raised, at any hour, and is never held for the window. Holding one
+would put civil time in the worker, which the thin-build rule quoted above
+forbids, and it is not needed: what keeps a pushed ring quiet overnight is
+the **Tier** its Rule names — a `normal` ring yields to the phone's own Do
+Not Disturb, and only an `urgent` one cuts through it. The cost, accepted: a
+pushed alert raised at 03:00 lands silently and does not ring again at
+08:00; it stays live in the app until it resolves or is acked. Settled for
+the factory's `auk/v1` source, which keeps no quiet hours of its own on the
+understanding that Hummingbird owns when the operator is rung.*

@@ -231,6 +231,26 @@ shows acked alerts (visible, annoying) rather than hiding live ones
 enforce it. The mitigation is that it is written **once, in `domain`**, as
 the single predicate all three call; no consumer re-spells it in SQL.
 
+*Amended 2026-10-15 ([#845](https://github.com/JddAndrewLauren/hummingbird/issues/845)):
+**an occurrence's lifecycle only moves forward.** The predicate above is
+sound, but the write path could overtake it: a re-raise sets `resolved_at`
+absolutely like every other source-owned field, so an omitted resolution
+clears the stored one, and an explicit `raised_at` is written even when it
+is earlier than the stored stamp. A pushed source that sends one request at
+a time can still have a timed-out request land after its successor — and
+then a raise that preceded a resolution clears it (the alert is live
+again, and rings), or a resolution that preceded a re-raise moves
+`raised_at` backwards and settles a condition that has returned (silence,
+the worse failure). So a write that **carries an explicit `raised_at`** is
+**stale** when that stamp is earlier than the stored `raised_at`, or equal
+to it while the write carries no resolution and the stored alert is
+resolved. A stale write is answered as success, changes no field, and
+rings nothing. Occurrences are ordered by `raised_at`; within one, a
+resolution is final. A write with no explicit `raised_at` behaves exactly
+as before — the shipped pollers send none — and a source honouring the
+wiring-time obligation above, stamping the moment its condition began,
+only ever meets this rule on a genuinely reordered delivery.*
+
 ## The conventions
 
 | Source | Shape | `source_key` |
@@ -247,6 +267,7 @@ the single predicate all three call; no consumer re-spells it in SQL.
 | `yahoo-lineup/v1` ***(#717)*** | **state** | `team:<team_key>` — `team:449.l.123456.t.7` |
 | `yahoo-waivers/v1` ***(#717)*** | event | `<season>-<week>`, week zero-padded — `2026-04` |
 | `starling/v1` ***(#830)*** | **state** | the cockpit's own attention item id, kind prefix included — `gate:<id>`, `question:<id>` |
+| `auk/v1` ***(#845)*** | **state** | machine, record id and cause, authored by Auk — never the wait episode |
 
 *Amended 2026-09-23 ([#717](https://github.com/JddAndrewLauren/hummingbird/issues/717)):
 the fantasy lane (#713) enrolls **two** sources, not one, because its two
@@ -271,6 +292,24 @@ it stays live until the cockpit resolves it or the operator acks it — the
 expiry table below gains no row, as no state source's does. ADR-0012's
 delivery rules are unchanged; this is one more pushed source. Pinned by the
 frozen table and a key vector in `sources.rs`.*
+
+*Amended 2026-10-15 ([#845](https://github.com/JddAndrewLauren/hummingbird/issues/845)):
+the operator's software factory, Auk, enrolls as `auk/v1` — a pushed state
+source that writes alerts only and never expires. Its key names the thing
+that waits, so a new wait on the same thing re-raises the same row, and the
+factory resolves the alert itself when the wait ends. Its severity is always
+`normal`; whether it rings is the operator's own Rule. With it comes a
+**per-token allowed link origin**: an ingest token may be minted with one
+`https` origin, and an alert it writes whose `url` is outside that origin
+(scheme, host and port, exactly) is refused with a validation error naming
+the source, so a stolen token cannot point the operator at a page of its
+choosing. The origin is set at mint, from the operator's terminal, and lives
+on the token's row — never checked in, since this repository is public, and
+replaced whenever the token is. An `auk/v1` token cannot be minted without
+one; every other source may carry one and behaves as before without it.
+Tapping such an alert lands on the alert, per
+[ADR-0027](0027-an-alert-opens-the-thing-it-is-about.md), whose link then
+opens the factory's map.*
 
 Two of these are judgment calls rather than consequences:
 
