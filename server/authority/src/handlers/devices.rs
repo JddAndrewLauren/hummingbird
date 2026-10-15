@@ -86,4 +86,3 @@ fn device_from_row(row: &Row, caller_id: &str) -> Result<DeviceInfo, SqlError> {
         id,
     })
 }
-

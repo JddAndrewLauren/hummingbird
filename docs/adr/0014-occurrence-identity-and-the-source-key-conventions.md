@@ -289,7 +289,7 @@ minting a second, and a re-post carrying `resolved_at` takes it off the live
 stack. `Writes::Alerts` only (a pushed source has no snapshot to write) and no
 `expires_at`, ever: nothing about a waiting batch becomes untrue with time, so
 it stays live until the cockpit resolves it or the operator acks it — the
-expiry table below gains no row, as no state source's does. ADR-0012's
+expiry table below carries it as `none, ever`. ADR-0012's
 delivery rules are unchanged; this is one more pushed source. Pinned by the
 frozen table and a key vector in `sources.rs`.*
 
@@ -491,6 +491,7 @@ swipe-equals-ack, which ADR-0012 rejected outright.
 | `github/v1`, `photo-site/v1` | none unless the event carries one |
 | `yahoo-lineup/v1` ***(#717)*** | the earliest kickoff among the invalid slots' eligible replacements (the lock the alert warns about) |
 | `yahoo-waivers/v1` ***(#717)*** | the waiver deadline instant |
+| `starling/v1` ***(#830)*** | none, ever |
 
 A "meeting starts in 15 min" alert is genuinely meaningless once the meeting
 ends, and a slide alert once the pickup happened — both have a referent to
