@@ -446,6 +446,24 @@ export interface ContextEntryDTO {
   itemCount: number;
 }
 
+/** The calendar choices (ADR-0040 decision 8) — the wire shape of
+ * `hummingbird_core::calendar_prefs::CalendarPrefs`, two synced `settings`
+ * rows every device reads: whether the operator's devices poll Google
+ * Calendar, and which calendars at which horizon. `selection` is the ticked
+ * calendars only; the polled set adds the bound Trips calendar
+ * (`decisions/seam.ts`'s `effectiveCalendarSelection`). An unreadable row
+ * arrives already read as not connected / empty. */
+export interface CalendarPrefsDTO {
+  connected: boolean;
+  selection: CalendarSelectionDTO[];
+  pending: boolean;
+}
+
+/** What the one-time seed of this browser's old `localStorage` calendar
+ * choices did (`hummingbird_core::calendar_prefs::CalendarSeed`): only
+ * `"not_yet"` means keep the local values and ask again after a cycle. */
+export type CalendarSeedOutcome = "not_yet" | "seeded" | "adopted";
+
 // -- rules (#140, ADR-0012/0013) --------------------------------------------
 //
 // The rules screen: condition rows, a per-row "not" toggle, the
@@ -672,6 +690,25 @@ export interface FileLinkDTO {
   version: number;
 }
 
+/** One completed Grill (#358, ADR-0023), as the web host's JSON/DTO shape
+ * — a 1:1 field mirror of `hummingbird_domain::GrillWithoutTranscript`,
+ * camelCased. **No transcript**: the sweep never carries one (ADR-0023
+ * decision 4), so the Grill history fetches it from `GET /api/grills/:id`
+ * on expand (`grill/transcript-client.ts`). `modelProposal` and
+ * `appliedPatch` are two separate facts — what was suggested and what was
+ * accepted — and are never merged. */
+export interface GrillDTO {
+  id: string;
+  itemId: string;
+  summary: string;
+  verdict: GrillVerdictName;
+  modelProposal: string;
+  appliedPatch: string;
+  resultingStage: TaskStageName;
+  completedAt: number;
+  version: number;
+}
+
 /** One `routes` row (ADR-0009), as the web host's JSON/DTO shape — a 1:1
  * field mirror of `hummingbird_domain::Route`, camelCased. 1:1 with its
  * project (`projectId` is its own key, not a separate `id`) — the dossier's
@@ -687,11 +724,17 @@ export interface RouteDTO {
   version: number;
 }
 
+/** Where this device's credential stands — `Core`'s `CredentialArm`
+ * (`client/core/src/lib.rs`, #846). */
+export type CredentialArmName = "unknown" | "unset" | "resting" | "reprompt";
+
 /** One drained `CoreEvent` (`client/core/src/lib.rs`), as the web host's
- * JSON shape. `"credential_needed"` is the only kind `Core` produces today. */
+ * JSON shape. `"credential_changed"` is the only kind `Core` produces today:
+ * one per credential mutation (push, rehydrate, clear, absence report, or a
+ * 401), carrying the arm it left — never the token (#846). */
 export interface TaskEventDTO {
-  kind: "credential_needed";
-  atMs: number;
+  kind: "credential_changed";
+  arm: CredentialArmName;
 }
 
 /** One field a dead-lettered conflict disagreed on — S9's "1 edit didn't
@@ -781,6 +824,10 @@ export type TaskWorkerRequest =
    * Carries nothing — there is no key to carry — and gets no reply; the
    * host fires this and moves on. Never touches the mirror or the queue. */
   | { type: "clearTaskApiKey" }
+  /** #846: the core-start token load read storage and found no token (empty
+   * or unreadable alike) — moves the core's credential from `unknown` to
+   * `unset`. Carries nothing and gets no reply, like `clearTaskApiKey`. */
+  | { type: "reportNoTaskApiKey" }
   /** `seed` mints the deterministic id `Core::capture` derives from it
    * (`client/core/src/sync/write/id.rs`) — caller-supplied so the view that
    * issued the capture can match its own seed back against the
@@ -911,6 +958,22 @@ export type TaskWorkerRequest =
   | { type: "getSuggestedContexts" }
   | { type: "addContext"; seed: string; name: string; nowMs: number }
   | { type: "removeContext"; seed: string; name: string; nowMs: number }
+  /** ADR-0040 decision 8: the calendar choices' read and writes, all
+   * through the core. `toggleCalendar` keeps every other calendar's horizon
+   * and is refused for the bound Trips calendar; `seedCalendarPrefs` carries
+   * this browser's old `localStorage` values, once (`selectedIds` is the
+   * bare id list the web always stored). Same caller-mints-`seed` contract
+   * as `"setBinding"`. */
+  | { type: "getCalendarPrefs" }
+  | { type: "toggleCalendar"; seed: string; id: string; nowMs: number }
+  | { type: "setCalendarConnected"; seed: string; connected: boolean; nowMs: number }
+  | {
+      type: "seedCalendarPrefs";
+      seed: string;
+      connected: boolean;
+      selectedIds: string[];
+      nowMs: number;
+    }
   /** #140: the kind registry export. Carries no argument and needs no
    * `Core` state — see `TaskHostCore::kind_registry`'s own doc. */
   | { type: "getKindRegistry" }
@@ -1073,6 +1136,10 @@ export type TaskWorkerRequest =
   /** ADR-0036's per-item file-link read — the item panel's
    * `getSteps`-style "only what a view actually asked about" fetch. */
   | { type: "getFileLinks"; itemId: string }
+  /** #358's per-item Grill history read — a mirror read, never a sync or
+   * a fetch; the same "only what a view actually asked about" shape as
+   * `getFileLinks`. */
+  | { type: "getGrills"; itemId: string }
   /** ADR-0036's file-link create: one `POST /api/file_links`, enqueued
    * durably. `path` is already normalized and shape-checked by
    * `dropbox/file-link.ts` before it reaches here; the wasm seam refuses a
@@ -1412,6 +1479,22 @@ export type TaskWorkerResponse =
       error: string | null;
       cleared: number | null;
     }
+  /** ADR-0040 decision 8's read, the result of a toggle or connect write
+   * (`"locked"` is the bound Trips calendar, refused before anything was
+   * enqueued), and the seed's outcome — `null` on `"failed"`/`"busy"`. */
+  | { type: "calendarPrefs"; prefs: CalendarPrefsDTO }
+  | {
+      type: "calendarPrefsEditResult";
+      seed: string;
+      kind: "ok" | "locked" | "not_selected" | "failed" | "busy";
+      error: string | null;
+    }
+  | {
+      type: "seedCalendarPrefsResult";
+      seed: string;
+      kind: "ok" | "failed" | "busy";
+      outcome: CalendarSeedOutcome | null;
+    }
   /** #140's rule create result, matched back by `seed` — same
    * broadcast-not-reply contract as `captureResult`. `"failed"` covers both
    * a rejected wire vocabulary (an unrecognised `tier`) and a durability
@@ -1529,6 +1612,9 @@ export type TaskWorkerResponse =
   /** Answers `getFileLinks` (ADR-0036) — the `steps`-style per-item read,
    * keyed by the requested `itemId`. */
   | { type: "fileLinks"; itemId: string; links: FileLinkDTO[] }
+  /** Answers `getGrills` (#358), newest first (`Core::grills_for`), keyed
+   * by the requested `itemId`. */
+  | { type: "grills"; itemId: string; grills: GrillDTO[] }
   /** ADR-0036's file-link create result, matched back by `seed`. Same
    * broadcast-not-reply, enqueued-not-saved contract as
    * `createProjectLinkResult`. */

@@ -91,12 +91,32 @@ routes = [
 # Either one unset (the state of every local `wrangler dev` and of CI) fails
 # the lane closed with a 503 naming the gap in prose — deliberately not a
 # 401, which would make the client re-prompt a device token that is fine.
+#
+# GOOGLE_SIGNIN_CLIENT_IDS and GOOGLE_SIGNIN_ALLOWED_SUB configure
+# `POST /api/auth/google`, the sign-in mint (ADR-0040). The client ids are
+# the Google OAuth Web client every surface signs in through — the
+# audiences an ID token may name — and are public by design, so they are a
+# **var**, set in `[vars]` below (comma-separated; set them there, not in
+# the dashboard: a deploy replaces dashboard vars with this file's). The
+# allowed sub is the operator's stable Google subject id, the one identity
+# that may sign in, and is a **secret**:
+# `wrangler secret put GOOGLE_SIGNIN_ALLOWED_SUB`. Either one unset or
+# blank, the route fails closed with a 503. A refused sign-in logs the
+# `sub` it refused, which is how the operator finds their own. Locally,
+# `wrangler dev` reads both from `server/worker/.dev.vars` when it exists
+# (gitignored), which overrides the empty var below.
 name = "hummingbird-authority"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-08-08"
 
 [build]
 command = "cargo install -q worker-build && worker-build --release"
+
+[vars]
+# The `hummingbird-signin` Web client (#836). The Android clients are not
+# listed: they are never an audience (ADR-0040 decision 3). The route
+# still answers 503 until GOOGLE_SIGNIN_ALLOWED_SUB is set.
+GOOGLE_SIGNIN_CLIENT_IDS = "309477759674-d169knsap6cuig582ii1mhv032u3ovb2.apps.googleusercontent.com"
 
 [durable_objects]
 bindings = [{ name = "AUTHORITY", class_name = "Authority" }]

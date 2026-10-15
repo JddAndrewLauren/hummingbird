@@ -315,3 +315,26 @@ secret, so the trust boundary this resolution reasoned about is not the one
 it rests behind. Whether an Application Access Policy bounds the app
 registration is untouched by where the key is held —
 `.github/workflows/graph-mail-poll.yml`'s header carries that record.*
+
+## Amendment: the fantasy lane holds two ingest tokens, one per source
+
+*Amended 2026-10-04 (#717): the Fantasy football question (plan #713)
+registers two sources, and the authority binds an `ingest` token to exactly
+one source (#145) — `server/authority/tests/handler_fixtures/fantasy_sources.rs`
+pins that the waivers source answers the lineup's token with a 403. So the
+lane holds one token per source, the operator's answer on #717 and
+ADR-0008's one-token-per-ingest-source rule; race-poll's single
+`RACE_INGEST_TOKEN` is one source written by two binaries, not a precedent
+for two sources sharing a token.*
+
+| Source | Credential | Notes |
+| --- | --- | --- |
+| `yahoo-lineup/v1` | `YAHOO_LINEUP_INGEST_TOKEN`, `ingest` scope, bound to `yahoo-lineup/v1` | minted from the operator's terminal against `ADMIN_SECRET`, never Actions; stored in 1Password `dev` as part of `hummingbird-yahoo-fantasy` |
+| `yahoo-waivers/v1` | `YAHOO_WAIVERS_INGEST_TOKEN`, `ingest` scope, bound to `yahoo-waivers/v1` | same mint, same 1Password item |
+
+Each sits on `CITY_WASTE_INGEST_TOKEN`'s side of CLAUDE.md's blast-radius
+line: the worst a leak can do is a wrong lineup or waiver tile, and
+`DELETE /api/admin/tokens/:id` revokes it. Where each one is held at run
+time is the poller's decision (#718/#719), not this one: nothing polls
+Yahoo yet. As of this amendment both are named, not minted — the mint is
+owed by the operator after #717 merges.

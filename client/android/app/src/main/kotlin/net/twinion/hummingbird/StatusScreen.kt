@@ -38,7 +38,6 @@ import net.twinion.hummingbird.ui.theme.Moss600
 import net.twinion.hummingbird.ui.theme.StatusDoneFgDark
 import net.twinion.hummingbird.ui.theme.StatusWarnFgDark
 import uniffi.hummingbird_ffi_mobile.MobileRankedPane
-import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
 import uniffi.hummingbird_ffi_mobile.MobileSyncStatusInput
 import uniffi.hummingbird_ffi_mobile.MobileSyncStatusTone
 import uniffi.hummingbird_ffi_mobile.syncStatusSummary
@@ -56,14 +55,11 @@ import uniffi.hummingbird_ffi_mobile.syncStatusSummary
 // the seam's order survives in both halves.
 //
 // **This file decides nothing about a pane.** `answerState` and `band`
-// arrive already decided (`MobileTaskHost.rankPanes`); the [paneLabel] `when`
-// below carries no `else ->` arm on purpose — a ninth standing question
-// added core-side is a Kotlin compile error here rather than a row that
-// silently renders as nothing (this file's own drift gate, `ffi-mobile::
-// MobileStandingQuestion`'s own doc). The band/status-words/dot rendering
-// this screen used to own directly moved to `PaneShell.kt` (#537), which
-// `NowScreen.kt`'s own three panes now share — see that file's own header
-// for why `paneLabel` alone stays per-caller.
+// arrive already decided (`MobileTaskHost.rankPanes`), and each pane's
+// label is the core's roster word (`QuestionLabels.kt`, #716) — this file
+// spells no question's name. The band/status-words/dot rendering this
+// screen used to own directly moved to `PaneShell.kt` (#537), which
+// `NowScreen.kt`'s own panes now share.
 //
 // Replaces the debug `ProofScreen`. Its affordances all live in Settings
 // now: the standing "Manage device token in Settings" link this screen
@@ -75,28 +71,6 @@ import uniffi.hummingbird_ffi_mobile.syncStatusSummary
 // its own "Open Settings" (`StatusQuietStack`'s `ProblemCard`), which is
 // exactly the credential gap worth offering it for, so [onGoToSettings]
 // stays a parameter.
-
-/** One pane's label, from its [MobileStandingQuestion] and its subject —
- * a rendering choice, never a decision: which words name "the GitHub pane"
- * is per-client on the same footing `contract.rs`'s header gives every
- * headline. The six `Homework`/`Scps`/`Waste`/`Weekend`/`Vacation`/`Race` arms
- * cannot reach a Status-surface list (`rank_panes(Status, ..)` never emits them,
- * `panes::mod`'s own test); named individually rather than behind a
- * wildcard so a real tenth question still trips this `when`. */
-private fun paneLabel(pane: MobileRankedPane): String = when (pane.standingQuestion) {
-    MobileStandingQuestion.KIMI -> "Model credit balance"
-    MobileStandingQuestion.GITHUB -> "GitHub workflow — ${pane.subjectKey}"
-    MobileStandingQuestion.UPTIME -> "Uptime — ${pane.subjectKey}"
-    MobileStandingQuestion.REACHABILITY -> "Device reachability"
-    MobileStandingQuestion.POLLER -> "Poller freshness — ${pane.subjectKey}"
-    MobileStandingQuestion.HOMEWORK,
-    MobileStandingQuestion.SCPS,
-    MobileStandingQuestion.WASTE,
-    MobileStandingQuestion.WEEKEND,
-    MobileStandingQuestion.VACATION,
-    MobileStandingQuestion.RACE ->
-        error("a Now-surface question reached the Status screen: ${pane.standingQuestion}")
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -247,7 +221,7 @@ fun StatusScreen(
                             statusQuietStack(
                                 problems = problems,
                                 quiet = quiet,
-                                paneLabel = ::paneLabel,
+                                paneLabel = { pane -> rosterPaneLabel(pane, QuestionRosterLabels.labels) },
                                 nowMs = current.rankedAtMs,
                                 expandedKey = expandedKey,
                                 onToggleChip = { pane ->

@@ -69,6 +69,8 @@ internal fun WearPaneExpanded(pane: MobileRankedPane, nowMs: Long) {
         is MobilePaneFacts.Race -> RaceBody(pane, facts.resolved, nowMs)
         is MobilePaneFacts.Weekend -> WeekendBody(pane, facts.resolved)
         is MobilePaneFacts.Vacation -> Unit
+        // Unpolled until #718; the phone draws no card for it yet either.
+        is MobilePaneFacts.Fantasy -> Unit
         is MobilePaneFacts.Kimi,
         is MobilePaneFacts.Github,
         is MobilePaneFacts.Uptime,

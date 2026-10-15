@@ -298,10 +298,10 @@ function failedTaskEnqueue(
  * task requests is preserved either way — see `dispatch` below, the one
  * caller. */
 function createTaskEnqueueDeferred(
-  createTaskHost: (namespace: string, baseUrl: string, apiKey: string) => Promise<TaskHostLike>,
+  createTaskHost: (namespace: string, baseUrl: string) => Promise<TaskHostLike>,
 ): Promise<TaskEnqueue> {
   const broadcast = (response: TaskWorkerResponse) => registry.broadcast(response);
-  return createTaskHost(TASK_NAMESPACE, TASK_BASE_URL, "")
+  return createTaskHost(TASK_NAMESPACE, TASK_BASE_URL)
     .then((taskHost) => createTaskRequestQueue(taskHost, broadcast, taskDiagnostics))
     .catch((taskErr: unknown) => {
       const message = taskErr instanceof Error ? taskErr.message : String(taskErr);

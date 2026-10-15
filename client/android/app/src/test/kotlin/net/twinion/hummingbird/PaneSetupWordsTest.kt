@@ -8,6 +8,10 @@ import uniffi.hummingbird_ffi_mobile.MobilePaneAnswer
 import uniffi.hummingbird_ffi_mobile.MobilePaneAnswerState
 import uniffi.hummingbird_ffi_mobile.MobilePaneBand
 import uniffi.hummingbird_ffi_mobile.MobilePaneFacts
+import uniffi.hummingbird_ffi_mobile.MobileFantasyGap
+import uniffi.hummingbird_ffi_mobile.MobileFantasyResolved
+import uniffi.hummingbird_ffi_mobile.MobileFantasySetup
+import uniffi.hummingbird_ffi_mobile.MobileFantasySubject
 import uniffi.hummingbird_ffi_mobile.MobileRaceGap
 import uniffi.hummingbird_ffi_mobile.MobileRaceResolved
 import uniffi.hummingbird_ffi_mobile.MobileRaceSetup
@@ -73,6 +77,35 @@ class PaneSetupWordsTest {
         // about the setup, which names no series because none is
         // established.
         assertEquals("F1 · Never polled", paneHeadline(racePane(MobileRaceSetup.BOUND), 0L))
+    }
+
+    private fun fantasyPane(setup: MobileFantasySetup, subject: MobileFantasySubject, key: String) =
+        pane(
+            MobileStandingQuestion.FANTASY,
+            MobilePaneFacts.Fantasy(
+                setup = setup,
+                subject = subject,
+                resolved = MobileFantasyResolved.Gap(gap = MobileFantasyGap.NotFetched),
+            ),
+        ).copy(subjectKey = key)
+
+    @Test
+    fun `the fantasy panes' no-data words are fantasy_ts's`() {
+        assertEquals(
+            "Lineup · Not set up",
+            paneHeadline(fantasyPane(MobileFantasySetup.UNSET, MobileFantasySubject.LINEUP, "setup:lineup"), 0L),
+        )
+        assertEquals(
+            "Waivers · Checking setup",
+            paneHeadline(fantasyPane(MobileFantasySetup.UNREAD, MobileFantasySubject.WAIVERS, "setup:waivers"), 0L),
+        )
+        assertEquals(
+            "League 123456 · Waivers · Never polled",
+            paneHeadline(
+                fantasyPane(MobileFantasySetup.BOUND, MobileFantasySubject.WAIVERS, "449.l.123456:waivers"),
+                0L,
+            ),
+        )
     }
 
     @Test

@@ -21,7 +21,7 @@ import {
 // quest classification. This file renders — composes sentences off already
 // -decided facts, the same split `vacation.ts`'s own header states.
 //
-// **`sources: []`, no per-question calendar binding.** Unlike `vacation.ts`
+// **No snapshot source, no per-question calendar binding.** Unlike `vacation.ts`
 // (a designated Trips calendar) this pane reads every non-cancelled event
 // on every calendar the device already polls, filtered only by the
 // `SCPS ` title prefix — so there is no "which calendar" setup step, and

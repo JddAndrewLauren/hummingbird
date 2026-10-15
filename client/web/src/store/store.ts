@@ -7,6 +7,8 @@ import type {
   BindingDTO,
   QuestionSwitchDTO,
   SuggestedContextsDTO,
+  CalendarPrefsDTO,
+  CalendarSeedOutcome,
   BlockedFrontierEntryDTO,
   CalendarListEntryDTO,
   CalendarReadDTO,
@@ -18,6 +20,7 @@ import type {
   PollOutcomeName,
   ProjectDTO,
   FileLinkDTO,
+  GrillDTO,
   ProjectLinkDTO,
   RecallRowDTO,
   RouteDTO,
@@ -30,18 +33,20 @@ import type {
 
 export type CoreStatus = "loading" | "ready" | "error";
 
-/** Issue #73's calendar opt-in/tile state. A never-opted-in device starts
- * and stays at `connected: false` — the context tile renders nothing and
- * `/next-up-personal`-style ranking stays unconstrained (see the Agent
- * Brief's "opt-in is per-device" note). */
+/** Issue #73's calendar connection/tile state, on this device. Whether to
+ * connect at all is the synced `calendar-connected` row since ADR-0040
+ * decision 8 (`TaskState.calendarPrefs`); `connected` here is this page's
+ * live answer to it. A device whose row is off starts and stays at
+ * `connected: false` — the context tile renders nothing and
+ * `/next-up-personal`-style ranking stays unconstrained. */
 export interface CalendarState {
   connected: boolean;
   needsReconnect: boolean;
-  selectedCalendarIds: string[];
-  /** The picker's options, as last listed by the core. Distinct from
-   * `selectedCalendarIds`, which is persisted and survives a listing that
-   * never happened (offline start, held credential) — a selected id absent
-   * from here is rendered as unavailable rather than silently dropped. */
+  /** The picker's options, as last listed by the core. Distinct from the
+   * ticked calendars (`TaskState.calendarPrefs`), which are synced and
+   * survive a listing that never happened (offline start, held credential)
+   * — a ticked id absent from here is rendered as unavailable rather than
+   * silently dropped. */
   availableCalendars: CalendarListEntryDTO[];
   lastPollOutcome: PollOutcomeName | null;
   /** A Connect/Reconnect press that has not come back yet. The interactive
@@ -291,6 +296,11 @@ export interface TaskState {
   /** The result of the most recent file-link create/remove request this
    * view issued (ADR-0036) — `null` until the first one resolves. */
   lastFileLinkWrite: TaskFileLinkResult | null;
+  /** The Grill history, keyed by item id (#358), newest first — only ever
+   * grows entries a view actually asked about via `getGrills`, the same
+   * `stepsByItem` shape. A missing entry means "not read yet", which the
+   * history never draws as "never grilled". */
+  grillsByItem: Record<string, GrillDTO[]>;
   /** The dossier's reading column's Route, keyed by project id (#627) —
    * only ever grows entries a view actually asked about via `getRoute`,
    * the same `linksByProject` shape. A missing entry means "not read yet";
@@ -320,7 +330,7 @@ export interface TaskState {
    * `bindings` answer arrives: an empty array is a real answer ("the table
    * is empty"), and the editor must not render it before one exists. */
   bindings: BindingDTO[] | null;
-  /** Every standing question's off switch (#715, ADR-0034) — all eleven,
+  /** Every standing question's off switch (#715, ADR-0034) — all twelve,
    * whether they have a `settings` row or not. `null` until the first
    * `questionSwitches` answer arrives, on [`TaskState.bindings`]' contract
    * and for a sharper version of its reason: an unread switch list
@@ -333,6 +343,17 @@ export interface TaskState {
    * `suggestedContexts` answer arrives, on [`TaskState.bindings`]' contract;
    * until then the forms fall back to `DEFAULT_CONTEXTS`. */
   suggestedContexts: SuggestedContextsDTO | null;
+  /** The calendar choices (ADR-0040 decision 8) — synced, so the same on
+   * every device. `null` until the first `calendarPrefs` answer arrives, on
+   * [`TaskState.bindings`]' contract and for a sharper reason: a calendar
+   * lane that read "not connected" off a list it never read would stop
+   * polling, and one that read "nothing ticked" would poll zero calendars
+   * and overwrite the last good snapshot with an empty one. */
+  calendarPrefs: CalendarPrefsDTO | null;
+  /** The last one-time seed's outcome (`seedCalendarPrefsResult`), matched
+   * by `seed` — `useCalendarWiring.ts` deletes the old `localStorage` copy
+   * on any settled answer. `null` before any seed. */
+  lastCalendarSeed: { seed: string; outcome: CalendarSeedOutcome | null } | null;
   /** The kind registry export (#133/#140, ADR-0013) — `null` until the
    * first `getKindRegistry` answer arrives. Never answers `"busy"`
    * core-side, but a view can still ask before the worker's port is ready,
@@ -446,8 +467,8 @@ export interface TaskState {
    * doc), so this only ever grows until a re-apply flow exists to shrink
    * it. */
   deadLetters: DeadLetterEntryDTO[];
-  /** Set once a `taskEvents` broadcast carries a `credential_needed` event;
-   * mirrors `CalendarState.needsReconnect`'s own contract. */
+  /** Set once a `taskEvents` broadcast's newest credential event is in
+   * `reprompt`; mirrors `CalendarState.needsReconnect`'s own contract. */
   needsReconnect: boolean;
   /** The task host failed to construct in the shared worker, so every task
    * request this core ever receives is dropped (`taskHostUnavailable`,
@@ -477,7 +498,6 @@ type Listener = () => void;
 const initialCalendarState: CalendarState = {
   connected: false,
   needsReconnect: false,
-  selectedCalendarIds: [],
   availableCalendars: [],
   lastPollOutcome: null,
   connectPending: false,
@@ -498,6 +518,7 @@ const initialTaskState: TaskState = {
   linksByProject: {},
   lastProjectLinkWrite: null,
   fileLinksByItem: {},
+  grillsByItem: {},
   lastFileLinkWrite: null,
   routeByProject: {},
   lastRouteWrite: null,
@@ -507,6 +528,8 @@ const initialTaskState: TaskState = {
   bindings: null,
   questionSwitches: null,
   suggestedContexts: null,
+  calendarPrefs: null,
+  lastCalendarSeed: null,
   kindRegistry: null,
   rules: null,
   lastRuleWrite: null,
@@ -597,6 +620,11 @@ export function createCoreStore() {
     setTaskState({ fileLinksByItem: { ...state.task.fileLinksByItem, [itemId]: links } });
   }
 
+  // Same idea for `grillsByItem` (the Grill history, #358).
+  function setTaskGrills(itemId: string, grills: GrillDTO[]): void {
+    setTaskState({ grillsByItem: { ...state.task.grillsByItem, [itemId]: grills } });
+  }
+
   // Same idea for `routeByProject` (the dossier's reading column, #627).
   function setTaskRoute(projectId: string, route: RouteDTO): void {
     setTaskState({ routeByProject: { ...state.task.routeByProject, [projectId]: route } });
@@ -633,6 +661,7 @@ export function createCoreStore() {
     setTaskSteps,
     setTaskProjectLinks,
     setTaskFileLinks,
+    setTaskGrills,
     setTaskRoute,
     setTaskPaneRead,
     setTaskGrillDraft,

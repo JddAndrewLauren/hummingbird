@@ -9,6 +9,7 @@ import {
   pollStart,
   pollTimer,
   clearTaskApiKey,
+  reportNoTaskApiKey,
   discardGrillDraft,
   removeFileLink,
   initTaskApiKey,
@@ -46,7 +47,6 @@ import type { SyncStorageLike } from "./sync-persistence";
 const initialCalendar: CalendarState = {
   connected: false,
   needsReconnect: false,
-  selectedCalendarIds: [],
   availableCalendars: [],
   lastPollOutcome: null,
   connectPending: false,
@@ -70,6 +70,8 @@ const initialTask: TaskState = {
   bindings: null,
   questionSwitches: null,
   suggestedContexts: null,
+  calendarPrefs: null,
+  lastCalendarSeed: null,
   kindRegistry: null,
   rules: null,
   lastRuleWrite: null,
@@ -77,6 +79,7 @@ const initialTask: TaskState = {
   linksByProject: {},
   lastProjectLinkWrite: null,
   fileLinksByItem: {},
+  grillsByItem: {},
   lastFileLinkWrite: null,
   routeByProject: {},
   lastRouteWrite: null,
@@ -986,6 +989,28 @@ describe("attachWorkerClient", () => {
     expect(store.getSnapshot().task.fileLinksByItem).toEqual({ "item-1": [link], "item-2": [] });
   });
 
+  it("writes the Grill history for the requested item on a grills message, keyed by item id", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    const grill = {
+      id: "grill-1",
+      itemId: "item-1",
+      summary: "Resolved",
+      verdict: "resolved" as const,
+      modelProposal: "{}",
+      appliedPatch: "{}",
+      resultingStage: "ready" as const,
+      completedAt: 1,
+      version: 1,
+    };
+    worker.onmessage?.({ data: { type: "grills", itemId: "item-1", grills: [grill] } } as MessageEvent);
+    worker.onmessage?.({ data: { type: "grills", itemId: "item-2", grills: [] } } as MessageEvent);
+
+    expect(store.getSnapshot().task.grillsByItem).toEqual({ "item-1": [grill], "item-2": [] });
+  });
+
   it("records a createFileLinkResult keyed by seed and re-requests that item's file links on ok", () => {
     const worker = fakeWorker();
     const store = createCoreStore();
@@ -1534,16 +1559,42 @@ describe("attachWorkerClient", () => {
     });
   });
 
-  it("flags task needsReconnect on a taskEvents message carrying a credential_needed event", () => {
+  it("flags task needsReconnect when the newest credential event leaves the core in reprompt", () => {
     const worker = fakeWorker();
     const store = createCoreStore();
     attachWorkerClient(worker, store);
 
     worker.onmessage?.({
-      data: { type: "taskEvents", events: [{ kind: "credential_needed", atMs: 1_000 }] },
+      data: {
+        type: "taskEvents",
+        events: [
+          { kind: "credential_changed", arm: "resting" },
+          { kind: "credential_changed", arm: "reprompt" },
+        ],
+      },
     } as MessageEvent);
 
     expect(store.getSnapshot().task.needsReconnect).toBe(true);
+  });
+
+  it("does not flag task needsReconnect when a later credential event supersedes a reprompt", () => {
+    // #846: every credential mutation emits an event, so a push that
+    // resolved an undrained 401 lands after it in the same drain.
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "taskEvents",
+        events: [
+          { kind: "credential_changed", arm: "reprompt" },
+          { kind: "credential_changed", arm: "resting" },
+        ],
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.needsReconnect).toBe(false);
   });
 
   it("does not flag task needsReconnect on an empty taskEvents message", () => {
@@ -1659,6 +1710,12 @@ describe("the task send helpers (#105/S7)", () => {
     const worker = fakeWorker();
     clearTaskApiKey(worker);
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "clearTaskApiKey" });
+  });
+
+  it("reportNoTaskApiKey posts a reportNoTaskApiKey request carrying nothing", () => {
+    const worker = fakeWorker();
+    reportNoTaskApiKey(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "reportNoTaskApiKey" });
   });
 
   it("captureTask posts a capture request carrying its seed, with every field absent by default", () => {

@@ -284,7 +284,7 @@ mod tests {
             .collect();
         assert_eq!(poller_sources(), expected);
         // Pinned by name too, so a registry edit that silently drops one of
-        // today's nine sources fails a readable assertion rather than only
+        // today's eleven sources fails a readable assertion rather than only
         // the structural comparison above.
         assert_eq!(
             poller_sources(),
@@ -295,6 +295,8 @@ mod tests {
                 "m365-calendar/v1",
                 "city-waste/v2",
                 "race-schedule/v1",
+                "yahoo-lineup/v1",
+                "yahoo-waivers/v1",
                 "kimi-balance/v1",
                 "github-hummingbird/v1",
                 "uptime/v1",

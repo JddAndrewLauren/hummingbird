@@ -29,12 +29,13 @@ function deps(
   pushApiKey: ReturnType<typeof vi.fn>;
   initApiKey: ReturnType<typeof vi.fn>;
   clearApiKey: ReturnType<typeof vi.fn>;
+  reportNoApiKey: ReturnType<typeof vi.fn>;
 } {
-  return { store, pushApiKey: vi.fn(), initApiKey: vi.fn(), clearApiKey: vi.fn() };
+  return { store, pushApiKey: vi.fn(), initApiKey: vi.fn(), clearApiKey: vi.fn(), reportNoApiKey: vi.fn() };
 }
 
 describe("loadTaskToken", () => {
-  it("reports no token on a device that has never stored one, without touching the worker", async () => {
+  it("reports the absence to the core on a device that has never stored one, and supplies no token", async () => {
     const d = deps(fakeStore(null));
 
     const result = await loadTaskToken(d);
@@ -42,6 +43,9 @@ describe("loadTaskToken", () => {
     expect(result).toEqual({ hasToken: false, enteredAtMs: null });
     expect(d.pushApiKey).not.toHaveBeenCalled();
     expect(d.initApiKey).not.toHaveBeenCalled();
+    // #846: absence is reported as explicitly as presence, so the core's
+    // credential leaves `unknown`.
+    expect(d.reportNoApiKey).toHaveBeenCalledTimes(1);
   });
 
   it("rehydrates a stored token into the core (via initApiKey, never pushApiKey) and reports when it was entered", async () => {
@@ -61,6 +65,7 @@ describe("loadTaskToken", () => {
 
     expect(d.initApiKey).toHaveBeenCalledWith("secret-token");
     expect(d.pushApiKey).not.toHaveBeenCalled();
+    expect(d.reportNoApiKey).not.toHaveBeenCalled();
   });
 
   it("reports the unset state (not an unhandled rejection) when the store read fails", async () => {
@@ -76,6 +81,8 @@ describe("loadTaskToken", () => {
     expect(result).toEqual({ hasToken: false, enteredAtMs: null });
     expect(d.pushApiKey).not.toHaveBeenCalled();
     expect(d.initApiKey).not.toHaveBeenCalled();
+    // #846: an unreadable store is "unset" to the core, same as an empty one.
+    expect(d.reportNoApiKey).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -92,7 +99,7 @@ describe("the two-view rehydration sequence never sends a resuming push", () => 
     const pushApiKey = vi.fn();
     const initApiKey = vi.fn();
     const clearApiKey = vi.fn();
-    const sharedDeps: TaskTokenDeps = { store, pushApiKey, initApiKey, clearApiKey };
+    const sharedDeps: TaskTokenDeps = { store, pushApiKey, initApiKey, clearApiKey, reportNoApiKey: vi.fn() };
 
     // View A reaches `ready` and rehydrates. (Its cycle going on to 401 and
     // holding is core-side state this layer never observes directly — see
@@ -114,7 +121,7 @@ describe("the two-view rehydration sequence never sends a resuming push", () => 
     const pushApiKey = vi.fn();
     const initApiKey = vi.fn();
     const clearApiKey = vi.fn();
-    const sharedDeps: TaskTokenDeps = { store, pushApiKey, initApiKey, clearApiKey };
+    const sharedDeps: TaskTokenDeps = { store, pushApiKey, initApiKey, clearApiKey, reportNoApiKey: vi.fn() };
 
     const outcome = await submitTaskToken(sharedDeps, "fresh-token", 5_000);
 

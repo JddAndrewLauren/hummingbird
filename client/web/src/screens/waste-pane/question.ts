@@ -1,5 +1,5 @@
 import type { QuestionDef } from "../questions/contract";
-import { SNAPSHOT_KEY, SOURCE, wasteAnswer } from "./waste";
+import { SNAPSHOT_KEY, wasteAnswer } from "./waste";
 import { WastePaneExpanded } from "./WastePaneExpanded";
 
 /** "Which cans go out?" as the shell's registry sees it (#120 over #245).
@@ -10,7 +10,6 @@ import { WastePaneExpanded } from "./WastePaneExpanded";
  * was configured could never be configured. */
 export const wasteQuestion: QuestionDef = {
   surface: "now",
-  sources: [SOURCE],
   subjects: () => [SNAPSHOT_KEY],
   answer: (_subjectKey, inputs) => wasteAnswer(inputs),
   Expanded: WastePaneExpanded,

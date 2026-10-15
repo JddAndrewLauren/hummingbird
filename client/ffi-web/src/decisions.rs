@@ -569,6 +569,25 @@ pub fn contexts_of_json(items_json: &str, suggested_json: &str) -> String {
     serde_json::to_string(&frontier::contexts_of(&entries, &suggested)).unwrap()
 }
 
+/// What a device actually polls (ADR-0040 decision 8, #843):
+/// [`hummingbird_core::calendar::effective_selection`] over the synced
+/// selection the worker published and the bound Trips calendar's id —
+/// the web's only copy of the union, which used to be its own TS
+/// `effectiveSelection`. `selection_json` is a JSON array of
+/// `{"id","horizon"}`; an unreadable one reads as nothing ticked, so the
+/// answer is at worst the Trips calendar alone, never an error the poller
+/// would have to interpret. Answers the same array shape.
+#[wasm_bindgen]
+pub fn effective_calendar_selection_json(selection_json: &str, trips_id: Option<String>) -> String {
+    let selection: Vec<hummingbird_core::calendar::CalendarSelection> =
+        serde_json::from_str(selection_json).unwrap_or_default();
+    serde_json::to_string(&hummingbird_core::calendar::effective_selection(
+        &selection,
+        trips_id.as_deref(),
+    ))
+    .unwrap()
+}
+
 /// One item as [`queue::order_triage`]/[`queue::triage_process_queue`] read
 /// it: an id and its capture time — the JSON shape `seam.ts` sends, a strict
 /// subset of `TaskItemDTO` exactly like [`FrontierItemDTO`] above.
@@ -1428,6 +1447,19 @@ pub fn pane_zone_queries_json(inputs_json: &str, surface: &str) -> String {
     }
 }
 
+/// [`panes::required_sources`] — every `context_snapshots` source one
+/// surface's questions read, as a JSON string array (#820). The web's
+/// `usePaneReadsWiring.ts` reads this rather than declaring its own
+/// per-question list, so it and the mobile seam's pane-read loop read one
+/// declaration. An unrecognised surface reads nothing.
+#[wasm_bindgen]
+pub fn required_sources_json(surface: &str) -> String {
+    let Some(surface) = Surface::parse(surface) else {
+        return "[]".to_string();
+    };
+    serde_json::to_string(&panes::required_sources(surface)).unwrap()
+}
+
 /// [`panes::rank_panes`] — phase two for a whole surface, already in
 /// display order. An unrecognised surface ranks nothing.
 #[wasm_bindgen]
@@ -1628,6 +1660,33 @@ pub fn sync_status_summary_json(input_json: &str) -> String {
     }
 }
 
+// ------------------------------------------------------------------- #839
+// Signed-in devices' decision half (ADR-0040 decision 7): the worker's
+// `devices` call answers the authority's rows, and these order and word
+// them on the main thread, as every other decision here.
+
+use hummingbird_core::decisions::devices;
+
+/// [`devices::device_rows`]: `devices_json` is the `devices` array of the
+/// worker's `devices` answer (the authority's snake_case rows); the answer
+/// is the shown rows in order, each `{"id", "name", "isCurrent",
+/// "thisDevice": string|null, "platformLabel", "lastSeenLabel",
+/// "revocable"}` — or `{"error":"..."}` on unparseable input.
+#[wasm_bindgen]
+pub fn device_rows_json(devices_json: &str, now_ms: f64) -> String {
+    match serde_json::from_str::<Vec<hummingbird_domain::DeviceInfo>>(devices_json) {
+        Ok(rows) => serde_json::to_string(&devices::device_rows(&rows, now_ms as i64)).unwrap(),
+        Err(error) => error_json(error.to_string()),
+    }
+}
+
+/// [`devices::sign_out_confirmation`] — the sentence before this device
+/// signs itself out, naming how many unsent changes stay queued.
+#[wasm_bindgen]
+pub fn sign_out_confirmation(queue_depth: u32) -> String {
+    devices::sign_out_confirmation(queue_depth)
+}
+
 // ------------------------------------------------------------------- #534
 // The remaining seven panes: the status four (kimi/github/uptime/
 // reachability) and the now three (race/weekend/vacation) — same house
@@ -1635,7 +1694,7 @@ pub fn sync_status_summary_json(input_json: &str) -> String {
 // values, never a rendered sentence; each pane's own TS module composes its
 // words from these.
 
-use hummingbird_core::decisions::panes::{kimi, github, homework, poller, scps, uptime, reachability, race, vacation, weekend, zone};
+use hummingbird_core::decisions::panes::{fantasy, kimi, github, homework, poller, scps, uptime, reachability, race, vacation, weekend, zone};
 
 /// `hummingbird_core::decisions::panes::zone::DEVICE_ZONE` — the sentinel
 /// `zone-bridge.ts`'s `resolveZone` special-cases to mean "the reader's own
@@ -1979,6 +2038,68 @@ pub fn race_constants_json() -> String {
         "bindingKey": race::BINDING_KEY,
         "staleAfterMs": race::STALE_AFTER_MS,
         "setupSubject": race::SETUP_SUBJECT,
+    })
+    .to_string()
+}
+
+// -- fantasy (#717) --------------------------------------------------------
+// The no-data arms only: setup, subjects and the gap kind. `waste_facts_json`'s
+// shape, one export per decision, structured values and never a sentence.
+
+#[wasm_bindgen]
+pub fn fantasy_leagues_from_binding_json(text: &str) -> String {
+    serde_json::to_string(&fantasy::leagues_from_binding(text)).unwrap()
+}
+
+#[wasm_bindgen]
+pub fn fantasy_setup_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&fantasy::fantasy_setup(&inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn fantasy_subjects_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&fantasy::fantasy_subjects(&inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+/// [`fantasy::parse_subject_key`] — `{league, subject}`, or `null` for a key
+/// that is not this question's, so no client splits the string itself.
+#[wasm_bindgen]
+pub fn fantasy_parse_subject_key_json(subject_key: &str) -> String {
+    serde_json::to_string(&fantasy::parse_subject_key(subject_key).map(|(league, subject)| {
+        serde_json::json!({ "league": league, "subject": subject })
+    }))
+    .unwrap()
+}
+
+#[wasm_bindgen]
+pub fn fantasy_facts_json(subject_key: &str, inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&fantasy::fantasy_facts(subject_key, &inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn fantasy_answer_json(subject_key: &str, inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&fantasy::fantasy_answer(subject_key, &inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
+#[wasm_bindgen]
+pub fn fantasy_constants_json() -> String {
+    serde_json::json!({
+        "lineupSource": fantasy::LINEUP_SOURCE,
+        "waiversSource": fantasy::WAIVERS_SOURCE,
+        "bindingKey": fantasy::BINDING_KEY,
+        "setupLeague": fantasy::SETUP_LEAGUE,
     })
     .to_string()
 }
@@ -2571,6 +2692,22 @@ mod tests {
     }
 
     #[test]
+    fn effective_calendar_selection_json_is_the_core_s_union() {
+        assert_eq!(
+            effective_calendar_selection_json(
+                r#"[{"id":"a","horizon":"standard"},{"id":"trips","horizon":"standard"}]"#,
+                Some("trips".to_string())
+            ),
+            r#"[{"id":"a","horizon":"standard"},{"id":"trips","horizon":"long"}]"#
+        );
+        assert_eq!(
+            effective_calendar_selection_json("not json", Some("trips".to_string())),
+            r#"[{"id":"trips","horizon":"long"}]"#
+        );
+        assert_eq!(effective_calendar_selection_json("[]", None), "[]");
+    }
+
+    #[test]
     fn order_triage_ids_orders_oldest_capture_first() {
         let payload = r#"[{"id":"b","createdAt":2},{"id":"a","createdAt":1}]"#;
         assert_eq!(order_triage_ids(payload), r#"["a","b"]"#);
@@ -2775,12 +2912,13 @@ mod tests {
         let now: serde_json::Value =
             serde_json::from_str(&rank_panes_json(&inputs, FACTS, "now")).unwrap();
         // #534 grew Now to four questions (waste/weekend/vacation/race),
-        // #675 added homework as a fifth, and #693 added scps as a sixth;
-        // this fixture only binds waste's own page, so the rest rank
-        // unbound (or, for homework/scps, on the zone bridge's own gap)
-        // rather than vanishing — ADR-0017's own rule.
+        // #675 added homework as a fifth, #693 added scps as a sixth, and
+        // #717 added fantasy's two setup panes; this fixture only binds
+        // waste's own page, so the rest rank unbound (or, for homework/scps,
+        // on the zone bridge's own gap) rather than vanishing — ADR-0017's
+        // own rule.
         let now = now.as_array().unwrap();
-        assert_eq!(now.len(), 6);
+        assert_eq!(now.len(), 8);
         assert!(now.iter().any(|pane| pane["question"] == "homework"));
         let waste = now.iter().find(|pane| pane["question"] == "waste").unwrap();
         assert_eq!(waste["paneKey"], serde_json::json!("waste:collection"));
@@ -2795,6 +2933,18 @@ mod tests {
         );
         assert_eq!(rank_panes_json(&inputs, FACTS, "not-a-surface"), "[]");
         assert_eq!(pane_zone_queries_json(&inputs, "not-a-surface"), "[]");
+    }
+
+    /// #820: the web's door answers exactly the core's declaration, per
+    /// surface and in order — the same `panes::required_sources` the mobile
+    /// seam's pane-read loop is pinned to (`ffi-mobile`'s own test).
+    #[test]
+    fn required_sources_json_is_the_cores_declaration_per_surface() {
+        for (wire, surface) in [("now", Surface::Now), ("status", Surface::Status)] {
+            let crossed: Vec<String> = serde_json::from_str(&required_sources_json(wire)).unwrap();
+            assert_eq!(crossed, panes::required_sources(surface), "{wire}");
+        }
+        assert_eq!(required_sources_json("elsewhere"), "[]");
     }
 
     #[test]
@@ -2865,7 +3015,7 @@ mod tests {
         assert_eq!(pane_band_order_json(), r#"["live","imminent","near","distant","dormant"]"#);
         assert_eq!(
             pane_question_order_json(),
-            r#"["homework","scps","waste","weekend","vacation","race","kimi","github","uptime","reachability","poller"]"#,
+            r#"["homework","scps","waste","weekend","vacation","race","fantasy","kimi","github","uptime","reachability","poller"]"#,
         );
         let constants: serde_json::Value =
             serde_json::from_str(&waste_constants_json()).unwrap();
@@ -3358,6 +3508,36 @@ mod tests {
     }
 
     #[test]
+    fn device_rows_json_orders_and_words_the_workers_rows() {
+        let devices = r#"[
+            {"id":"device-android-pixel","name":"Pixel","platform":"android","created_at":1,
+             "last_seen":3600000,"revoked_at":null,"is_current":false,"revocable":true},
+            {"id":"device-web-old","name":"Old","platform":"web","created_at":1,
+             "last_seen":7000000,"revoked_at":7100000,"is_current":false,"revocable":true},
+            {"id":"device-web-laptop","name":"Laptop","platform":"web","created_at":1,
+             "last_seen":0,"revoked_at":null,"is_current":true,"revocable":true}
+        ]"#;
+        let rows: serde_json::Value =
+            serde_json::from_str(&device_rows_json(devices, 7_200_000.0)).unwrap();
+        let rows = rows.as_array().unwrap();
+        assert_eq!(rows.len(), 2, "the revoked row is not shown");
+        assert_eq!(rows[0]["id"], "device-web-laptop");
+        assert_eq!(rows[0]["thisDevice"], "This device");
+        assert_eq!(rows[0]["lastSeenLabel"], "Last seen 2h ago");
+        assert_eq!(rows[1]["platformLabel"], "Android");
+        assert_eq!(rows[1]["thisDevice"], serde_json::Value::Null);
+        assert!(device_rows_json("not json", 0.0).contains("error"));
+    }
+
+    #[test]
+    fn sign_out_confirmation_is_the_core_sentence() {
+        assert_eq!(
+            sign_out_confirmation(2),
+            "Sign out this device? 2 unsent changes stay queued and send once you sign in again."
+        );
+    }
+
+    #[test]
     fn sync_status_summary_reports_unparseable_input_rather_than_panicking() {
         let json = sync_status_summary_json("not json");
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -3388,6 +3568,32 @@ mod tests {
     }
 
     #[test]
+    fn fantasy_crosses_its_setup_subjects_and_gap_as_data() {
+        let inputs = serde_json::json!({
+            "nowMs": 0,
+            "bindings": [{"key":"yahoo-leagues","value":{"state":"text","text":" 449.l.1, "}}],
+            "paneReads": {},
+        })
+        .to_string();
+        assert_eq!(fantasy_subjects_json(&inputs), r#"["449.l.1:lineup","449.l.1:waivers"]"#);
+        assert_eq!(fantasy_setup_json(&inputs), r#"{"kind":"bound","leagues":["449.l.1"]}"#);
+        assert_eq!(
+            fantasy_facts_json("449.l.1:waivers", &inputs),
+            r#"{"kind":"gap","gap":{"gap":"notFetched"}}"#
+        );
+        assert_eq!(
+            fantasy_answer_json("449.l.1:lineup", &inputs),
+            r#"{"answerState":"bound-but-unacquired","band":"dormant","withinBand":null}"#
+        );
+        assert_eq!(
+            fantasy_parse_subject_key_json("449.l.1:lineup"),
+            r#"{"league":"449.l.1","subject":"lineup"}"#
+        );
+        assert_eq!(fantasy_parse_subject_key_json("nope"), "null");
+        assert_eq!(fantasy_leagues_from_binding_json("a, b,,"), r#"["a","b"]"#);
+    }
+
+    #[test]
     fn the_question_roster_crosses_as_the_cores_own_list_in_order() {
         let crossed: Vec<serde_json::Value> =
             serde_json::from_str(&question_roster_json()).unwrap();
@@ -3404,6 +3610,7 @@ mod tests {
                 "weekend",
                 "vacation",
                 "race",
+                "fantasy",
                 "kimi",
                 "github",
                 "uptime",
@@ -3416,8 +3623,11 @@ mod tests {
         assert_eq!(crossed[5]["label"], "When is the next race");
         assert_eq!(crossed[5]["surface"], "now");
         assert_eq!(crossed[5]["bindings"], serde_json::json!(["race-series"]));
-        assert_eq!(crossed[8]["question"], "uptime");
-        assert_eq!(crossed[8]["surface"], "status");
-        assert_eq!(crossed[8]["bindings"], serde_json::json!([]));
+        assert_eq!(crossed[6]["label"], "Fantasy football");
+        assert_eq!(crossed[6]["surface"], "now");
+        assert_eq!(crossed[6]["bindings"], serde_json::json!(["yahoo-leagues"]));
+        assert_eq!(crossed[9]["question"], "uptime");
+        assert_eq!(crossed[9]["surface"], "status");
+        assert_eq!(crossed[9]["bindings"], serde_json::json!([]));
     }
 }

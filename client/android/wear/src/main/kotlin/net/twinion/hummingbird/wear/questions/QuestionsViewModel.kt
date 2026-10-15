@@ -65,7 +65,7 @@ class QuestionsViewModel(
 
     /** The row's label: the roster's word for the question, and for a
      * per-series question the subject key after it — the phone's
-     * `nowPaneLabel` rule for the race pane, over the roster's label rather
+     * `rosterPaneLabel` rule for the race pane, over the roster's label rather
      * than a second literal. */
     fun label(pane: MobileRankedPane): String {
         val base = labels[pane.standingQuestion] ?: pane.standingQuestion.name.lowercase()

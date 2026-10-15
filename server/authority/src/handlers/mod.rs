@@ -5,9 +5,11 @@
 mod admin_tokens;
 mod alerts;
 mod auth;
+pub mod auth_google;
 mod blocked_by;
 mod calendar_token;
 mod changes;
+mod devices;
 mod file_links;
 mod fog;
 mod grills;
@@ -237,7 +239,13 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         ("PUT", ["settings", key]) if !key.is_empty() => {
             settings::put(key, req.body, now_ms, sql)
         }
-        ("POST", ["alerts"]) => alerts::ingest(req.body, now_ms, principal.source.as_deref(), sql),
+        ("POST", ["alerts"]) => alerts::ingest(
+            req.body,
+            now_ms,
+            principal.source.as_deref(),
+            principal.allowed_origin.as_deref(),
+            sql,
+        ),
         ("POST", ["snapshots"]) => {
             snapshots::ingest(req.body, now_ms, principal.source.as_deref(), sql)
         }
@@ -274,18 +282,25 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
         ("POST", ["google", "calendar_write_token"]) => {
             Ok(calendar_token::write_verdict(&principal.id))
         }
+        // ADR-0040 decision 6: the scope matrix has already said "a device
+        // token"; the handler narrows to device-scope rows and refuses
+        // `NON_DEVICE_HOLDERS`, the same token-id narrowing as above.
+        ("GET", ["devices"]) => devices::list(&principal.id, sql),
+        ("DELETE", ["devices", id]) if !id.is_empty() => {
+            devices::revoke(id, &principal.id, now_ms, sql)
+        }
         // A known collection or entity path with the wrong method is a 405;
         // anything else falls through to 404.
         (
             _,
             ["items" | "projects" | "fog" | "project_links" | "file_links" | "steps"
                 | "blocked_by" | "alerts" | "rules" | "push_targets" | "snapshots" | "changes"
-                | "sweep" | "grills"],
+                | "sweep" | "grills" | "devices"],
         ) => Ok(method_not_allowed()),
         (
             _,
             ["items" | "projects" | "routes" | "fog" | "project_links" | "file_links" | "steps"
-                | "settings" | "alerts" | "rules" | "push_targets" | "grills", id],
+                | "settings" | "alerts" | "rules" | "push_targets" | "grills" | "devices", id],
         ) if !id.is_empty() =>
         {
             Ok(method_not_allowed())

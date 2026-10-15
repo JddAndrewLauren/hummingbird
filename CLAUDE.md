@@ -33,12 +33,14 @@ grepping it.
 | The which-cans poller | `server/city-waste/` | `src/lib.rs`, then `src/judge.rs` |
 | Evaluated-stream pollers | `server/{gmail-poll,calendar-poll,graph-poll}/` | each `src/lib.rs`, ADR-0011 |
 | The race lane (2 binaries) | `server/race-poll/` | `src/lib.rs` |
+| The fantasy poller — one binary with a conditional fetch (its lib half is #853; the Yahoo wire and the binary are #854) | `server/fantasy-poll/` | `src/lib.rs` |
 | The client sync engine | `client/core/src/sync/` | `sync/mod.rs`, then `sync/cycle.rs`, ADR-0007/0008 |
 | The one client API | `client/core/src/lib.rs` | its `Core` docs — every mutation entry point carries its own, including whether it overlays |
 | Ranking / freshness / panes / bindings | `client/core/src/{rank,freshness,pane,bindings}.rs` | each header; ADR-0015 for the Rust/TS carve-out, **as redrawn by ADR-0025** |
 | The decisions every client shares (#141/M1) | `client/core/src/decisions/`, `client/ffi-web/src/decisions.rs`, `client/web/src/decisions/seam.ts` | `decisions/mod.rs`, then `seam.ts`; ADR-0025 |
 | The panes' decision half + the zone bridge (#533/M4) | `client/core/src/decisions/panes/`, `client/web/src/screens/questions/zone-bridge.ts` | `panes/mod.rs`, then `panes/zone.rs`; ADR-0025 |
 | The standing-question roster (#714, ADR-0034 decision 4) — every question named once, with its label, its surface and the bindings that answer it; the spine of Settings' `Standing questions` section on the web | `client/core/src/decisions/questions.rs`, `client/ffi-web/src/decisions.rs`'s `question_roster_json`, `client/ffi-mobile/src/lib.rs`'s `question_roster`, `client/web/src/screens/{questions/roster.ts,bindings.ts,SettingsScreen.tsx}` | `decisions/questions.rs`, then ADR-0034 decision 4; ADR-0025 |
+| The Fantasy football question (#717, the tracer bullet of plan #713) — two panes per league named in the `yahoo-leagues` binding (`<league>:lineup`, `<league>:waivers`), each on its own frozen source (`yahoo-lineup/v1` state, `yahoo-waivers/v1` event); unpolled today, so both answer only their no-data arms (unbound, never polled) | `server/domain/src/sources.rs`'s two entries, `client/core/src/decisions/panes/fantasy.rs`, `client/ffi-web/src/decisions.rs`'s fantasy section, `client/ffi-mobile/src/lib.rs`'s `MobilePaneFacts::Fantasy`, `client/web/src/screens/fantasy-pane/` | `fantasy.rs`, then plan issue #713; ADR-0014's #717 amendment |
 | The pane lane's mobile seam (#536/M4) — `paneZoneQueries`/`rankPanes`, applied results only | `client/ffi-mobile/src/lib.rs` (its panes (#536) section) | that section's own header; ADR-0025 |
 | Android's calendar lane (#564) and the panes it unblocks (#621) — the authority mint, the calendar half behind its own lock, Settings' Calendar section, the weekend card's plan chips | `client/ffi-mobile/src/{calendar_token.rs,lib.rs}` (its calendar (#564) section), `client/core/src/calendar/{host.rs,selection.rs}`, `client/android/.../{CalendarPrefs.kt,SettingsScreen.kt,ui/panes/NowPanesExpanded.kt}` | `calendar_token.rs`, then `host.rs`; ADR-0028 as amended by #564, ADR-0025 |
 | The skills runner lane, client side (#538/M4) | `client/core/src/decisions/skills/`, `client/web/src/skills/`, `client/android/.../hummingbird/skills/` | `decisions/skills/mod.rs`, then `SkillRunner.kt`; ADR-0025 as amended by #538 |
@@ -76,6 +78,7 @@ grepping it.
 | The suggested contexts are an edited list (ADR-0038) — the third `settings` vocabulary (one ordered `contexts` row, defaults until edited), the two Core doors and the removal cascade (list first, then one clear per live item and per project default, archived never), both seams, Settings' `Contexts` section and the live list reaching capture, the item panel and the frontier chips. Web edits it; the phone reads it through an injected door beside `captureFormMeta` | `client/core/src/contexts.rs`, `client/core/src/lib.rs`'s `suggested_contexts`/`add_context`/`remove_context`, `client/ffi-web/src/task_host.rs`, `client/ffi-mobile/src/lib.rs`'s `suggested_contexts`, `client/web/src/screens/{contexts.ts,SettingsScreen.tsx,field-vocabulary.ts}`, `client/android/.../{CaptureViewModel,ItemDetailViewModel}.kt` | `contexts.rs`, then ADR-0038 |
 | The diagnostics lane (#705/#712) — the shared wire contract, the PWA journal/export, Android's recorder/export, and the authority's correlated request events | `server/domain/src/diagnostics.rs`, `client/core/src/diagnostics/`, `client/web/src/{worker/diagnostics-*.ts,shell/diagnostics-download.ts}`, `client/android/.../diagnostics/`, `server/authority/src/diagnostics.rs` | `docs/diagnostics.md`, then `server/domain/src/diagnostics.rs`'s module header |
 | Local review candidates — any revision (a PR head or main) built into one of two persistent local slots and run beside the other, a local-only authority plus the production bundle; never production | `scripts/candidate/` | `candidate.sh`'s header, then `guard.sh`'s |
+| One sign-in per device, devices managed in-app, calendar choices synced (ADR-0040, **being built under plan #834** — until its pieces land, devices are still pasted; calendar choices sync since #843) — `POST /api/auth/google` verifies a Google ID token against a one-subject allowlist and mints an ordinary per-device `device` token (no session); `/api/devices` lists and revokes; Settings' Signed-in devices on web and phone; the extension's Options page signs in too; `calendar-connected`/`calendar-selection` are a synced vocabulary (the fourth over `settings`), edited through the core on both clients, each device's old local copy seeded once and deleted | ADR-0040 names the pieces; each sub-issue of #834 names its own files; the calendar choices are `client/core/src/calendar_prefs.rs` | ADR-0040, then plan issue #834; `calendar_prefs.rs` for the synced choices |
 
 Agent skills live in `.claude/skills/`, each with its own `SKILL.md`:
 `/next-up-hb` (select and delegate), `/to-actions` (project → actions),
@@ -87,7 +90,8 @@ gates them.
 
 Working docs: `docs/agents/issue-tracker.md` (issues are GitHub issues driven
 via `gh`; the wayfinder map is issue #1), `docs/agents/triage-labels.md`,
-`docs/agents/domain.md`.
+`docs/agents/domain.md`, `docs/agents/rigs.yaml` (Human Check rigs), and the
+root `AGENTS.md` (the test commands, per stack).
 
 ## Repo-wide rules
 
@@ -111,8 +115,16 @@ spend*, via `POST /api/skills/run`, and since #577 it can also mint a Google
 against a server-held credential shared by every device (ADR-0028) —
 **and since #564 the phone is one of the minters**, over that same route
 with that same credential, so the sentence above is a statement about every
-device token rather than about browsers. The
-population of `device` tokens is: one per operator device (a browser
+device token rather than about browsers. **Since ADR-0040 (plan #834, as its pieces land) a `device` token can also
+list the operator's devices and revoke any of them** (`/api/devices`) except
+`runner` and `openclaw-agent` — denial of service only: it cannot mint, and
+the fix is signing in again. **And the operator's Google account is now a
+minting root for `device` tokens**: `POST /api/auth/google` mints one for any
+Google ID token whose `sub` matches the `GOOGLE_SIGNIN_ALLOWED_SUB` Worker
+secret, so for that one scope the account is as sensitive as `ADMIN_SECRET`,
+and its protection is its own second factor. The
+population of `device` tokens is: one per operator device, minted by
+signing in (ADR-0040) or by the admin lane (a browser
 profile running the capture extension is one — `device-chrome-<machine>`,
 ADR-0037; the watch is one — `device-watch`, ADR-0039, delivered from the
 phone's Settings over the Wearable Data Layer and held on the watch alone),

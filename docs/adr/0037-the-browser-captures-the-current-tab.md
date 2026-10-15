@@ -1,6 +1,13 @@
 # ADR-0037: The browser captures the current tab — a popup that writes to the authority as a device
 
 **Status:** accepted · 2026-09-08
+**Amended 2026-10-11 by
+[ADR-0040](0040-sign-in-mints-the-device-token.md):**
+the Options page gains a Sign in with Google button
+(`chrome.identity.launchWebAuthFlow`, the `identity` permission), which
+mints the extension's `device-chrome-…` token at the authority instead of
+it being pasted; pasting stays as a fallback. Still no CORS: the sign-in
+`POST` is an extension page calling a host in `host_permissions`.
 **Context:** the operator wanted one click in the desktop browser to turn
 the page in front of them into a new item — Chrome first, Firefox and
 Safari later. #782 had already decided what a shared page *is* to an item

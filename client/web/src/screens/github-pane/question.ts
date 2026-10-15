@@ -1,5 +1,5 @@
 import type { QuestionDef } from "../questions/contract";
-import { SOURCE, githubAnswer, githubSubjects } from "./github";
+import { githubAnswer, githubSubjects } from "./github";
 import { GithubPaneExpanded } from "./GithubPaneExpanded";
 
 /** "Are hummingbird's own workflows healthy?" as the shell's registry sees
@@ -14,7 +14,6 @@ import { GithubPaneExpanded } from "./GithubPaneExpanded";
  * platform with no rows yet renders as a gap, never as nothing." */
 export const githubQuestion: QuestionDef = {
   surface: "status",
-  sources: [SOURCE],
   subjects: githubSubjects,
   answer: githubAnswer,
   Expanded: GithubPaneExpanded,

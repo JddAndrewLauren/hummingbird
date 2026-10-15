@@ -1,3 +1,4 @@
+import { fantasyQuestion } from "../fantasy-pane/question";
 import { githubQuestion } from "../github-pane/question";
 import { homeworkQuestion } from "../homework-pane/question";
 import { kimiQuestion } from "../kimi-pane/question";
@@ -19,6 +20,7 @@ import {
   type StandingQuestion,
   type Surface,
 } from "./contract";
+import { requiredSourcesFromCore } from "../../decisions/seam";
 import { orderPanes } from "./sort";
 
 // The registry: every standing question this build renders, and the one
@@ -37,6 +39,7 @@ export const QUESTIONS: Record<StandingQuestion, QuestionDef> = {
   weekend: weekendQuestion,
   vacation: vacationQuestion,
   race: raceQuestion,
+  fantasy: fantasyQuestion,
   kimi: kimiQuestion,
   github: githubQuestion,
   uptime: uptimeQuestion,
@@ -45,9 +48,7 @@ export const QUESTIONS: Record<StandingQuestion, QuestionDef> = {
 };
 
 /** `QUESTION_ORDER`, filtered to the questions declared for one surface
- * (ADR-0017 decision 1) — the surface filter `rankPanes` and
- * `requiredSources` both apply, so the two can never disagree about which
- * questions belong to a view.
+ * (ADR-0017 decision 1) — the surface filter `rankPanes` applies.
  *
  * The **off switch** is a second filter and is applied only by `rankPanes`,
  * through `askedQuestionsFor` below, which states why. */
@@ -55,21 +56,16 @@ function questionsFor(surface: Surface): StandingQuestion[] {
   return QUESTION_ORDER.filter((question) => QUESTIONS[question].surface === surface);
 }
 
-/** Every `context_snapshots` source one surface's registered questions must
- * request a pane read for — the union over that surface's questions,
- * deduplicated, in declared order. A question that reads no snapshot lane
- * (the calendar-lane ones, #117/#121/#122, and client-only reachability,
- * #316) contributes nothing here and is not special-cased. */
+/** Every `context_snapshots` source one surface's questions must request a
+ * pane read for — **the core's answer, not this registry's** (#820). Which
+ * question reads which source is declared once, in
+ * `hummingbird_core::decisions::panes::question_sources`, and the mobile
+ * seam's pane-read loop reads the same union; a per-question `sources` field
+ * here was a second copy that could drift silently, so it is gone. A
+ * question that reads no snapshot lane (the calendar-lane ones, the
+ * items-keyed homework, client-only reachability) contributes nothing. */
 export function requiredSources(surface: Surface): string[] {
-  const sources: string[] = [];
-  for (const question of questionsFor(surface)) {
-    for (const source of QUESTIONS[question].sources) {
-      if (!sources.includes(source)) {
-        sources.push(source);
-      }
-    }
-  }
-  return sources;
+  return requiredSourcesFromCore(surface);
 }
 
 /** Every calendar-arm interval the registered standing questions need —
@@ -123,8 +119,8 @@ export function panesFrom(
 /** `questionsFor`, minus every question switched off (#715, ADR-0034) —
  * the second filter, applied only on the ranking path.
  *
- * Deliberately **not** folded into `questionsFor` itself, which
- * `requiredSources` also reads. Off means hidden, silent and unpolled, and
+ * Deliberately **not** applied to `requiredSources` either, whose core
+ * answer takes no switch state. Off means hidden, silent and unpolled, and
  * the third of those is about the *server* poller (ADR-0034 decision 1's
  * own table): a pane read is `Core::pane_read`, a synchronous read of rows
  * this device has already pulled, so narrowing it would save no traffic and

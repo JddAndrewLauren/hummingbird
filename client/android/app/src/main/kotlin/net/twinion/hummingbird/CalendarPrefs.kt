@@ -11,26 +11,25 @@ import java.io.IOException
 import kotlinx.coroutines.flow.first
 import uniffi.hummingbird_ffi_mobile.MobileCalendarSelection
 
-// #564's two device-local calendar preferences: whether this device is
-// opted in, and which calendars it polls. `FrontierPrefs.kt`'s store, its
+// #564's two device-local calendar preferences — whether this device was
+// opted in, and which calendars it polled — **read once, for ADR-0040
+// decision 8's migration, and then deleted.** Both are synced `settings`
+// rows now (`hummingbird_core::calendar_prefs`), read and written through
+// the core via `MobileTaskHost`; nothing here writes either key any more.
+// `MainActivity`'s sync loop hands what it finds to the core's one-time
+// seed (`MobileTaskHost.seedCalendarPrefs`) and, once the core answers
+// anything but `NOT_YET`, clears them. `FrontierPrefs.kt`'s store, its
 // DataStore-over-SharedPreferences argument and its degradation rule apply
-// here verbatim (that header carries all three); this file adds only the
-// pair of keys and the one thing that is genuinely different about them.
+// here verbatim (that header carries all three).
 //
-// **What is different: neither of these is a credential, and this file is
-// where that has to stay true.** The opt-in flag is a *preference*
-// (`calendar/persistence.ts`'s own distinction, ported): it says the
-// operator chose to connect, not that anything here can connect. The
-// Google access token is minted in Rust, held in Rust for its ~1-hour life
-// and re-minted on demand — it is never handed to Kotlin, so there is
-// nothing for this store to be tempted by. The device token is
-// `TokenStore`'s, and a second copy of it here would be a second
-// credential lifecycle for no gain. **Nothing token-shaped may be added to
-// this file**; `SettingsScreenStructuralTest` pins that.
+// **Neither of these is a credential, and this file is where that has to
+// stay true.** The Google access token is minted in Rust, held in Rust for
+// its ~1-hour life and re-minted on demand — it is never handed to Kotlin.
+// The device token is `TokenStore`'s. **Nothing token-shaped may be added
+// to this file**; `CalendarPrefsTest` pins that.
 //
-// **Losing this store costs one Connect tap**, not data: the mirror on disk
-// is `hummingbird-core`'s and survives, and a device that reads back
-// `connected = false` simply polls nothing until the operator reconnects.
+// **Losing this store costs one Connect tap**, not data: an unreadable
+// store reads as nothing to migrate, and the operator connects again.
 private val Context.calendarPrefsStore: DataStore<Preferences> by preferencesDataStore(
     name = "hummingbird-calendar",
 )
@@ -40,79 +39,52 @@ object CalendarPrefs {
     private val SELECTED_KEY = stringSetPreferencesKey("selected_calendars")
     private val LONG_HORIZON_KEY = stringSetPreferencesKey("long_horizon_calendars")
 
+    /** The pre-#843 copy: the opt-in flag and the picked calendars, each with
+     * the horizon it was picked under (the long-horizon set is a strict
+     * subset of the selected one, so membership is the whole
+     * representation — a calendar id is opaque provider text, and no
+     * separator would be safe to encode with). */
+    data class Local(val connected: Boolean, val selections: List<MobileCalendarSelection>)
+
     private suspend fun <T> tolerating(access: suspend () -> T): T? = try {
         access()
     } catch (_: IOException) {
         null
     }
 
-    suspend fun readConnected(context: Context): Boolean =
-        readConnected(context.calendarPrefsStore)
+    suspend fun readLocal(context: Context): Local? = readLocal(context.calendarPrefsStore)
 
-    suspend fun writeConnected(context: Context, connected: Boolean) =
-        writeConnected(context.calendarPrefsStore, connected)
-
-    suspend fun readSelections(context: Context): List<MobileCalendarSelection> =
-        readSelections(context.calendarPrefsStore)
-
-    suspend fun writeSelections(context: Context, selections: List<MobileCalendarSelection>) =
-        writeSelections(context.calendarPrefsStore, selections)
+    suspend fun clear(context: Context) = clear(context.calendarPrefsStore)
 
     // The same doors against a DataStore handed in — `FrontierPrefs`' own
     // test seam, for the same no-Context-in-a-JVM-test reason.
 
-    internal suspend fun readConnected(store: DataStore<Preferences>): Boolean =
-        tolerating { store.data.first()[CONNECTED_KEY] } ?: false
-
-    internal suspend fun writeConnected(store: DataStore<Preferences>, connected: Boolean) {
-        tolerating {
-            store.edit { prefs ->
-                // Absence is "never connected", so disconnecting removes
-                // the key rather than writing `false` — the same
-                // absence-is-the-default convention `FrontierPrefs` uses
-                // for its own default axis.
-                if (connected) prefs[CONNECTED_KEY] = true else prefs.remove(CONNECTED_KEY)
-            }
-        }
-    }
-
-    /** The picked calendars, each with the horizon it was picked under
-     * (#121). Two sets rather than one encoded string: a calendar id is
-     * opaque provider text that may contain any separator a hand-rolled
-     * encoding would pick, and the long-horizon set is a strict subset of
-     * the selected set, so membership is the whole representation. Order is
-     * not preserved and is not meaningful — the poller iterates the
-     * selection, it does not rank it — but the list is sorted here so two
-     * reads of an unchanged store are equal, which is what lets the
-     * `LaunchedEffect` keyed on it in Settings settle. */
-    internal suspend fun readSelections(
-        store: DataStore<Preferences>,
-    ): List<MobileCalendarSelection> {
-        val prefs = tolerating { store.data.first() } ?: return emptyList()
+    /** `null` when there is nothing to migrate: neither key is present (a
+     * device that never connected, or one already migrated), or the store
+     * cannot be read. Sorted, so two reads of an unchanged store are equal. */
+    internal suspend fun readLocal(store: DataStore<Preferences>): Local? {
+        val prefs = tolerating { store.data.first() } ?: return null
+        val selected = prefs[SELECTED_KEY]
+        val connected = prefs[CONNECTED_KEY]
+        if (selected == null && connected == null) return null
         val long = prefs[LONG_HORIZON_KEY].orEmpty()
-        return prefs[SELECTED_KEY].orEmpty().sorted().map { id ->
-            MobileCalendarSelection(id = id, longHorizon = id in long)
-        }
+        return Local(
+            connected = connected == true,
+            selections = selected.orEmpty().sorted().map { id ->
+                MobileCalendarSelection(id = id, longHorizon = id in long)
+            },
+        )
     }
 
-    internal suspend fun writeSelections(
-        store: DataStore<Preferences>,
-        selections: List<MobileCalendarSelection>,
-    ) {
+    /** Deletes every key — the migration's last step, on a settled seed. A
+     * store that cannot be written fails silently: the next settled seed
+     * is an `ADOPTED` no-op, and clears it then. */
+    internal suspend fun clear(store: DataStore<Preferences>) {
         tolerating {
             store.edit { prefs ->
-                if (selections.isEmpty()) {
-                    prefs.remove(SELECTED_KEY)
-                    prefs.remove(LONG_HORIZON_KEY)
-                } else {
-                    prefs[SELECTED_KEY] = selections.map { it.id }.toSet()
-                    val long = selections.filter { it.longHorizon }.map { it.id }.toSet()
-                    if (long.isEmpty()) {
-                        prefs.remove(LONG_HORIZON_KEY)
-                    } else {
-                        prefs[LONG_HORIZON_KEY] = long
-                    }
-                }
+                prefs.remove(CONNECTED_KEY)
+                prefs.remove(SELECTED_KEY)
+                prefs.remove(LONG_HORIZON_KEY)
             }
         }
     }

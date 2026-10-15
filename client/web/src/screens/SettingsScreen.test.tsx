@@ -18,7 +18,12 @@ import { OTHER_ROWS_KEY, SettingsScreen } from "./SettingsScreen";
 import { connectErrorCopy } from "../calendar/connect-error";
 import { questionRoster } from "./questions/roster";
 import { bindingDTO, fireEvent, itemDTO, render, screen, taskState, within } from "../test/component";
-import type { BindingDTO, DeadLetterEntryDTO, LedgerRowDTO } from "../store/protocol";
+import type {
+  BindingDTO,
+  CalendarPrefsDTO,
+  DeadLetterEntryDTO,
+  LedgerRowDTO,
+} from "../store/protocol";
 import type { CalendarState, CoreStatus, TaskState } from "../store/store";
 import type { TaskTokenUiState } from "../task/token-ui";
 
@@ -39,7 +44,6 @@ const ALL_CONNECT_ERROR_CODES = [
 const calendar: CalendarState = {
   connected: false,
   needsReconnect: false,
-  selectedCalendarIds: [],
   availableCalendars: [],
   lastPollOutcome: null,
   connectPending: false,
@@ -99,7 +103,7 @@ function renderSettings(options: SettingsOptions = {}) {
       options.expanded ?? [...questionRoster().map((entry) => entry.question), OTHER_ROWS_KEY],
     ),
   });
-  const onSelectionChange = vi.fn();
+  const onToggleCalendar = vi.fn();
   const onBackendSelection = vi.fn();
   const onDropboxLocalRoot = vi.fn();
   const onDownloadDiagnostics = vi.fn();
@@ -120,7 +124,7 @@ function renderSettings(options: SettingsOptions = {}) {
       dropboxLocalRoot={current.dropboxLocalRoot ?? null}
       onDropboxLocalRoot={onDropboxLocalRoot}
       onConnect={onConnect}
-      onSelectionChange={onSelectionChange}
+      onToggleCalendar={onToggleCalendar}
       onRefresh={vi.fn()}
       taskTokenState={current.taskTokenState ?? "resting"}
       taskTokenEnteredAtMs={null}
@@ -148,7 +152,7 @@ function renderSettings(options: SettingsOptions = {}) {
     onConnect,
     onSetBinding,
     onAddContext, onRemoveContext, onSetQuestionEnabled,
-    onSelectionChange,
+    onToggleCalendar,
     onBackendSelection,
     onDropboxLocalRoot,
     onDownloadDiagnostics,
@@ -355,7 +359,7 @@ describe("SettingsScreen — the bindings editor", () => {
 describe("SettingsScreen — the standing-question roster (#714, ADR-0034)", () => {
   it("lists every standing question the core knows, in the core's order", () => {
     // The section's spine is the core's roster, not the bindings table: a
-    // fresh device with nothing set still sees all eleven questions.
+    // fresh device with nothing set still sees all twelve questions.
     renderSettings({ bindings: [] });
 
     const headings = screen
@@ -704,11 +708,18 @@ describe("SettingsScreen — the calendar picker's locked Trips row (#121)", () 
   const boundTrips: BindingDTO[] = [
     bindingDTO({ key: "trips-calendar", value: { state: "text", text: "trips@g" } }),
   ];
+  // ADR-0040 decision 8: the ticked calendars are the synced row.
+  const tickedPrimary: CalendarPrefsDTO = {
+    connected: true,
+    selection: [{ id: "primary", horizon: "standard" }],
+    pending: false,
+  };
 
   it("renders the bound Trips calendar checked, locked, and with the reason said out loud", () => {
     renderSettings({
       bindings: boundTrips,
-      calendar: { availableCalendars: listed, selectedCalendarIds: ["primary"] },
+      calendar: { availableCalendars: listed },
+      task: { calendarPrefs: tickedPrimary },
     });
 
     const trips = screen.getByRole("checkbox", { name: /Trips/ }) as HTMLInputElement;
@@ -729,32 +740,45 @@ describe("SettingsScreen — the calendar picker's locked Trips row (#121)", () 
     expect(screen.getByRole("link", { name: "Standing questions" })).toBeDefined();
   });
 
-  it("refuses to untick it — the click never reaches the selection handler", () => {
-    const { onSelectionChange } = renderSettings({
+  it("refuses to untick it — the click never reaches the toggle handler", () => {
+    const { onToggleCalendar } = renderSettings({
       bindings: boundTrips,
-      calendar: { availableCalendars: listed, selectedCalendarIds: ["primary"] },
+      calendar: { availableCalendars: listed },
+      task: { calendarPrefs: tickedPrimary },
     });
 
     fireEvent.click(screen.getByRole("checkbox", { name: /Trips/ }));
-    expect(onSelectionChange).not.toHaveBeenCalled();
+    expect(onToggleCalendar).not.toHaveBeenCalled();
   });
 
-  it("still toggles every other calendar, over the polled set the binding contributes to", () => {
-    const { onSelectionChange } = renderSettings({
+  it("still toggles every other calendar, one id through the core", () => {
+    const { onToggleCalendar } = renderSettings({
       bindings: boundTrips,
-      calendar: { availableCalendars: listed, selectedCalendarIds: ["primary"] },
+      calendar: { availableCalendars: listed },
+      task: { calendarPrefs: tickedPrimary },
     });
 
     fireEvent.click(screen.getByRole("checkbox", { name: /john@twinion.net/ }));
-    // The derived id rides along in the request; `acceptSelectionChange`
-    // strips it before anything is persisted.
-    expect(onSelectionChange).toHaveBeenCalledWith(["trips@g"]);
+    // One id, never a whole list: the core toggles it in the synced row and
+    // keeps every other calendar's horizon (ADR-0040 decision 8).
+    expect(onToggleCalendar).toHaveBeenCalledWith("primary");
+  });
+
+  it("draws nothing ticked, and does not throw, before the choices have been read", () => {
+    // `calendarPrefs: null` is "not read yet"; an unreadable row arrives
+    // from the core already read as nothing ticked. Neither may crash the
+    // screen.
+    renderSettings({ calendar: { availableCalendars: listed }, task: { calendarPrefs: null } });
+    expect(
+      (screen.getByRole("checkbox", { name: /john@twinion.net/ }) as HTMLInputElement).checked,
+    ).toBe(false);
   });
 
   it("locks nothing while no Trips calendar is designated", () => {
     renderSettings({
       bindings: [bindingDTO({ key: "trips-calendar", value: { state: "unset" } })],
-      calendar: { availableCalendars: listed, selectedCalendarIds: ["primary"] },
+      calendar: { availableCalendars: listed },
+      task: { calendarPrefs: tickedPrimary },
     });
 
     expect((screen.getByRole("checkbox", { name: /Trips/ }) as HTMLInputElement).disabled).toBe(

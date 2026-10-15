@@ -29,4 +29,7 @@ pub use rebase::RebaseDecision;
 #[cfg(feature = "reqwest-transport")]
 pub use reqwest_transport::ReqwestMutationTransport;
 pub use taxonomy::WriteError;
-pub use transport::{HttpMethod, MutationRequest, MutationTransport, RawResponse};
+pub use transport::{
+    DirectMethod, DirectRequest, DirectTransport, HttpMethod, MutationRequest, MutationTransport,
+    RawResponse,
+};

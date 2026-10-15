@@ -6,7 +6,7 @@ import { VacationPaneExpanded } from "./VacationPaneExpanded";
  * over #245).
  *
  * One subject, always — the trip queue is one answer, not one pane per trip.
- * `sources: []`: this question touches no `context_snapshots` lane at all,
+ * No snapshot source: this question touches no `context_snapshots` lane at all,
  * and raises no alerts either (see `vacation.ts`'s header for why that is a
  * decision rather than an omission). Its one read is #267's calendar arm,
  * declared below over the **long** horizon — the same −7d/+730d window
@@ -14,7 +14,6 @@ import { VacationPaneExpanded } from "./VacationPaneExpanded";
  * mirror was never filled for. */
 export const vacationQuestion: QuestionDef = {
   surface: "now",
-  sources: [],
   subjects: () => [SUBJECT_KEY],
   answer: (_subjectKey, inputs) => vacationAnswer(inputs),
   calendarRequests: (nowMs) => {

@@ -47,10 +47,12 @@ import { resolveZoneFacts } from "../questions/zone-bridge";
 
 // **The four constants below stay literal TS**, deliberately, and are
 // pinned against `waste_constants_json()` by `seam.test.ts` rather than
-// read through the seam at runtime. `question.ts` builds `sources:
-// [SOURCE]` at module evaluation and `registry.ts` imports it statically,
-// so a seam call here would run before `initDecisions()` resolves and throw
-// the seam's "used before ready" guard on every page load. This is exactly
+// read through the seam at runtime. Until #820 `question.ts` built
+// `sources: [SOURCE]` at module evaluation and `registry.ts` imported it
+// statically, so a seam call here would have run before `initDecisions()`
+// resolved and thrown the seam's "used before ready" guard on every page
+// load; which sources are read is now the core's `required_sources`, and
+// the constants stay pinned rather than re-plumbed. This is exactly
 // `field-vocabulary.ts`'s existing arrangement (#500's PR records the
 // constraint) — and a *fallback* is not the alternative: `seam.ts`'s "not
 // ready is a throw, never a fallback" rule means the choice is a pinned

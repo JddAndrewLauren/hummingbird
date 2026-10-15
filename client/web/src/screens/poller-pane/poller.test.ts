@@ -51,8 +51,8 @@ function inputs(overrides: Partial<QuestionInputs> = {}): QuestionInputs {
 }
 
 describe("SOURCES", () => {
-  it("is nine sources — every registered snapshot-writing one but the retired v1", () => {
-    expect(SOURCES).toHaveLength(9);
+  it("is eleven sources — every registered snapshot-writing one but the retired v1", () => {
+    expect(SOURCES).toHaveLength(11);
     expect(SOURCES).toContain("uptime/v1");
     expect(SOURCES).not.toContain("city-waste/v1");
   });

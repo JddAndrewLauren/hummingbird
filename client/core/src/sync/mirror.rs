@@ -42,8 +42,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use hummingbird_domain::{
-    Alert, BlockedBy, ChangesResponse, ContextSnapshot, FileLink, Fog, Item, Project, ProjectLink,
-    Route, Rule, Setting, Step,
+    Alert, BlockedBy, ChangesResponse, ContextSnapshot, FileLink, Fog, GrillWithoutTranscript,
+    Item, Project, ProjectLink, Route, Rule, Setting, Step,
 };
 
 use crate::storage::{Persistable, PersistableSealed};
@@ -99,7 +99,12 @@ use crate::task::Presence;
 /// exactly: a new *table*, whose empty default map cannot be told from
 /// "this device hasn't re-swept since the field was added". Discard and
 /// resweep, same as every bump above.
-pub const SYNC_MIRROR_SCHEMA_VERSION: u32 = 6;
+///
+/// Bumped to 7 for #358's `grills` table — the bump-to-4 case again: the
+/// sweep has carried `grills` since #353, but this mirror dropped it, so a
+/// v6 snapshot's empty default would read as "this item was never
+/// grilled" rather than "this device has not re-swept since it kept them".
+pub const SYNC_MIRROR_SCHEMA_VERSION: u32 = 7;
 
 /// One stored row plus whether it is currently live — the retained-history
 /// half of the retention rule above.
@@ -139,6 +144,9 @@ pub struct SyncMirror {
     context_snapshots: BTreeMap<(String, String), Slot<ContextSnapshot>>,
     settings: BTreeMap<String, Slot<Setting>>,
     rules: BTreeMap<String, Slot<Rule>>,
+    /// Completed Grills, transcript never included (ADR-0023 decision 4 —
+    /// the sweep does not carry it, so neither can this).
+    grills: BTreeMap<String, Slot<GrillWithoutTranscript>>,
 }
 
 impl PersistableSealed for SyncMirror {}
@@ -397,6 +405,20 @@ impl SyncMirror {
         self.rules.values().filter_map(live_slot)
     }
 
+    /// Every live completed Grill on one item, id order — the Grill
+    /// history's read (#358). A grill is immutable and never flagged
+    /// (ADR-0023 decision 2), so only a full sweep's absence ever demotes
+    /// one. Newest-first is [`crate::Core::grills_for`]'s to decide.
+    pub fn grills_for_item<'a>(
+        &'a self,
+        item_id: &'a str,
+    ) -> impl Iterator<Item = &'a GrillWithoutTranscript> {
+        self.grills
+            .values()
+            .filter_map(live_slot)
+            .filter(move |grill| grill.item_id == item_id)
+    }
+
     /// Live and not yet `Done` — the population ADR-0001's 250-issue
     /// watchline measures, ported to the owned schema (`crate::task::query`'s
     /// `active_count` is its S1/Linear-era twin).
@@ -535,6 +557,14 @@ impl SyncMirror {
             resp.rules,
             |r| r.id.clone(),
             |r| r.deleted_at,
+            full,
+            now_ms,
+        );
+        apply_table(
+            &mut self.grills,
+            resp.grills,
+            |g| g.id.clone(),
+            |_| None,
             full,
             now_ms,
         );
@@ -1219,6 +1249,47 @@ mod tests {
             ..ChangesResponse::empty(2)
         });
         assert_eq!(mirror.file_links_for_item("i-1").count(), 0, "flagged removal, not a full sweep, demotes it");
+    }
+
+    fn grill(id: &str, item_id: &str) -> GrillWithoutTranscript {
+        GrillWithoutTranscript {
+            id: id.to_string(),
+            item_id: item_id.to_string(),
+            summary: format!("summary {id}"),
+            verdict: hummingbird_domain::GrillVerdict::Resolved,
+            model_proposal: "{}".to_string(),
+            applied_patch: "{}".to_string(),
+            resulting_stage: hummingbird_domain::Stage::Ready,
+            completed_at: 1,
+            version: 1,
+        }
+    }
+
+    /// #358: the sweep has carried `grills` since #353 and this mirror now
+    /// keeps them, scoped to their item; only a full sweep's absence
+    /// demotes one, since a grill carries no soft-delete flag.
+    #[test]
+    fn grills_are_kept_scoped_to_their_item_and_only_a_sweep_demotes_them() {
+        let mut mirror = SyncMirror::new();
+        mirror.apply_delta(ChangesResponse {
+            version: 1,
+            grills: vec![grill("g-1", "i-1"), grill("g-2", "i-2")],
+            ..ChangesResponse::empty(1)
+        });
+        assert_eq!(
+            mirror.grills_for_item("i-1").map(|g| g.id.as_str()).collect::<Vec<_>>(),
+            vec!["g-1"]
+        );
+
+        mirror.apply_delta(ChangesResponse::empty(2));
+        assert_eq!(mirror.grills_for_item("i-1").count(), 1, "a delta that omits a grill keeps it");
+
+        mirror.apply_sweep(
+            ChangesResponse { grills: vec![grill("g-2", "i-2")], ..ChangesResponse::empty(3) },
+            5_000,
+        );
+        assert_eq!(mirror.grills_for_item("i-1").count(), 0, "a sweep's absence demotes it");
+        assert_eq!(mirror.grills_for_item("i-2").count(), 1);
     }
 
     /// #628: open Fog is scoped to its project, and a resolved row

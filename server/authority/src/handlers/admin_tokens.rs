@@ -2,8 +2,16 @@
 //! list, revoke. Gated by `ADMIN_SECRET` upstream (see `auth.rs`); used
 //! only from the operator's terminal. Tokens never bump the workspace
 //! counter: they are machinery outside the delta contract.
+//!
+//! An ingest token may carry an **allowed link origin** (#845, ADR-0014's
+//! 2026-10-15 amendment): one `https` origin its alerts' `url`s must sit
+//! on, checked at write time by `alerts.rs::ingest`. It is set here, from
+//! the operator's terminal, and lives only on the token's row — never in
+//! this public repository — so replacing the token is how it changes.
 
-use hummingbird_domain::{find_source, is_url_safe_id, MintToken, MintedToken, Scope, TokenInfo};
+use hummingbird_domain::{
+    find_source, is_url_safe_id, parse_link_origin, MintToken, MintedToken, Scope, TokenInfo,
+};
 
 use super::{auth, error, json, parse_body, ApiResponse, HandleContext, ID_NOT_URL_SAFE};
 use crate::codec::{bad_cell, RowReader};
@@ -62,6 +70,13 @@ pub fn mint(
     // (`handlers/alerts.rs::ingest`, `handlers/snapshots.rs::ingest`),
     // each rejecting a source this registry does not declare for *their*
     // table.
+    if mint.scope != Scope::Ingest && mint.allowed_origin.is_some() {
+        return Ok(error(
+            400,
+            "validation",
+            "only an ingest token may carry an allowed link origin",
+        ));
+    }
     if let Some(source) = &mint.source {
         match find_source(source) {
             None => {
@@ -81,24 +96,38 @@ pub fn mint(
                         ),
                     ));
                 }
+                if entry.requires_link_origin && mint.allowed_origin.is_none() {
+                    return Ok(error(
+                        400,
+                        "validation",
+                        &format!("`{source}` tokens require an allowed link origin"),
+                    ));
+                }
             }
         }
     }
+    // Stored canonical (host lowercased, `:443` folded away), so the
+    // write-time comparison and the listing both read one spelling.
+    let allowed_origin = match mint.allowed_origin.as_deref().map(parse_link_origin) {
+        None => None,
+        Some(Some(origin)) => Some(origin),
+        Some(None) => {
+            return Ok(error(
+                400,
+                "validation",
+                "allowed_origin must be an https origin: scheme, host and optional port, nothing else",
+            ));
+        }
+    };
 
-    let mut bytes = [0u8; 32];
-    ctx.entropy.fill(&mut bytes);
-    let token = format!("hb_{}", auth::hex(&bytes));
-    sql.exec(
-        "INSERT INTO tokens (id, name, scope, source, token_hash, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?)",
-        &[
-            SqlValue::Text(mint.id.clone()),
-            SqlValue::Text(mint.name.clone()),
-            SqlValue::Text(mint.scope.as_str().to_string()),
-            SqlValue::from_opt_text(mint.source.as_deref()),
-            SqlValue::Text(auth::sha256_hex(&token)),
-            SqlValue::Integer(ctx.now_ms),
-        ],
+    let token = insert_token(
+        sql,
+        ctx,
+        &mint.id,
+        &mint.name,
+        mint.scope,
+        mint.source.as_deref(),
+        allowed_origin.as_deref(),
     )?;
     Ok(json(
         201,
@@ -107,10 +136,44 @@ pub fn mint(
             name: mint.name,
             scope: mint.scope,
             source: mint.source,
+            allowed_origin,
             created_at: ctx.now_ms,
             token,
         },
     ))
+}
+
+/// The one place a token row is born, shared by this lane's mint and
+/// `POST /api/auth/google` (ADR-0040) so the two can never disagree on the
+/// token's shape: `hb_` plus 64 hex from the injected entropy, stored only
+/// as its sha256. Returns the plaintext, which exists nowhere else after
+/// the caller's 201.
+pub(crate) fn insert_token(
+    sql: &dyn Sql,
+    ctx: &HandleContext,
+    id: &str,
+    name: &str,
+    scope: Scope,
+    source: Option<&str>,
+    allowed_origin: Option<&str>,
+) -> Result<String, SqlError> {
+    let mut bytes = [0u8; 32];
+    ctx.entropy.fill(&mut bytes);
+    let token = format!("hb_{}", auth::hex(&bytes));
+    sql.exec(
+        "INSERT INTO tokens (id, name, scope, source, token_hash, created_at, allowed_origin) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        &[
+            SqlValue::Text(id.to_string()),
+            SqlValue::Text(name.to_string()),
+            SqlValue::Text(scope.as_str().to_string()),
+            SqlValue::from_opt_text(source),
+            SqlValue::Text(auth::sha256_hex(&token)),
+            SqlValue::Integer(ctx.now_ms),
+            SqlValue::from_opt_text(allowed_origin),
+        ],
+    )?;
+    Ok(token)
 }
 
 pub fn list(sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
@@ -142,7 +205,7 @@ pub fn revoke(id: &str, now_ms: i64, sql: &dyn Sql) -> Result<ApiResponse, SqlEr
     Ok(json(200, &token_info_from_row(&row)?))
 }
 
-fn select_token(sql: &dyn Sql, id: &str) -> Result<Option<Row>, SqlError> {
+pub(crate) fn select_token(sql: &dyn Sql, id: &str) -> Result<Option<Row>, SqlError> {
     Ok(sql
         .exec(
             "SELECT * FROM tokens WHERE id = ?",
@@ -162,6 +225,7 @@ fn token_info_from_row(row: &Row) -> Result<TokenInfo, SqlError> {
         name: r.text("name")?,
         scope: hummingbird_domain::Scope::parse(&scope_text).ok_or_else(|| bad_cell("scope"))?,
         source: r.opt_text("source"),
+        allowed_origin: r.opt_text("allowed_origin"),
         created_at: r.int("created_at")?,
         last_seen: r.opt_int("last_seen"),
         revoked_at: r.opt_int("revoked_at"),

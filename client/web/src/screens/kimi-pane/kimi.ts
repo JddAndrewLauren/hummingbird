@@ -28,9 +28,8 @@ import { isStaleFreshness } from "../questions/freshness";
 // two clients wording "$0.42 — critical" differently is a design choice.
 
 /** These four constants stay literal TS, pinned against `kimi_constants_json()`
- * by `seam.test.ts` — `question.ts` builds `sources: [SOURCE]` at module
- * evaluation, before `initDecisions()` ever resolves, exactly
- * `waste.ts`'s own arrangement. */
+ * by `seam.test.ts` — `waste.ts`'s own arrangement, whose header says why
+ * (and what #820 changed about it). */
 export const SOURCE = "kimi-balance/v1";
 export const SNAPSHOT_KEY = "balance";
 export const STALE_AFTER_MS = 13 * 60 * 60 * 1000;

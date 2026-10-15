@@ -395,6 +395,18 @@ under other names (`RaceSnapshotRow.pollIntervalMs`, vacation's
 `scenario.pollIntervalMs`). Two questions needed it independently before
 anyone proposed sharing it.
 
+*Amended 2026-10-15 (#853): a declared cadence is a **floor**, not the
+nominal interval.* `polled_every_ms` states the longest a healthy poller
+leaves its row unrefreshed, not how often its cron fires. The fantasy
+poller (`server/fantasy-poll`) is the first poller where the two differ. It
+runs every 15 minutes but asks Yahoo only when its fetch gate says it matters,
+and it always asks once the last fetch is over six hours old. So it declares
+6h, the `2 ×` staleness rule reads 12h, and Actions' cron jitter never trips
+it. Declaring 15 minutes would band every quiet hour stale. A pane that needs
+a tighter judgement while its rows are minutes old (the lineup's "invalid,
+last checked 3h ago") owns that threshold beside its band, as the carve-out
+above already says thresholds are owned.
+
 ## `alerts.subject_key`, and the additive join
 
 `alerts` gains a **nullable `subject_key`** naming the snapshot `key` it

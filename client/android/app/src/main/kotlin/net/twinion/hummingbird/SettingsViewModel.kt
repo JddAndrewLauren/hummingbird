@@ -14,10 +14,16 @@ import net.twinion.hummingbird.watch.SendOutcome
 import net.twinion.hummingbird.watch.WatchTokenSender
 import uniffi.hummingbird_ffi_mobile.MobileBindingRecord
 import uniffi.hummingbird_ffi_mobile.MobileCalendarList
-import uniffi.hummingbird_ffi_mobile.MobileCalendarSelection
+import uniffi.hummingbird_ffi_mobile.MobileCalendarEditException
+import uniffi.hummingbird_ffi_mobile.MobileCalendarPrefs
 import uniffi.hummingbird_ffi_mobile.MobileDeadLetterRecord
+import uniffi.hummingbird_ffi_mobile.MobileQuestionRosterEntry
+import uniffi.hummingbird_ffi_mobile.MobileQuestionSwitch
 import uniffi.hummingbird_ffi_mobile.MobileSetBindingException
+import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
+import uniffi.hummingbird_ffi_mobile.MobileSurface
 import uniffi.hummingbird_ffi_mobile.deadLetterHeading
+import uniffi.hummingbird_ffi_mobile.questionRoster
 
 /** Settings' own read of the seam (#535/M4) — bindings, the dead-letter
  * journal and the outbound queue's depth. Token entry/forget, the theme
@@ -31,7 +37,73 @@ data class SettingsRead(
     val bindings: List<MobileBindingRecord>,
     val deadLetters: List<MobileDeadLetterRecord>,
     val queueDepth: UInt,
+    /** Every question's off switch (#715), `MobileTaskHost.questionSwitches`'
+     * answer — device state, read with the bindings so one reload moves
+     * both. */
+    val switches: List<MobileQuestionSwitch> = emptyList(),
 )
+
+/** One question's group in Settings' `Standing questions` section (#716) —
+ * `bindings.ts`'s `QuestionBindingGroup`, field for field. */
+data class QuestionBindingGroup(
+    val question: MobileStandingQuestion,
+    val label: String,
+    val surface: MobileSurface,
+    /** `null` when this reader was handed no switch for the question — no
+     * toggle is drawn rather than one guessed at. */
+    val enabled: Boolean?,
+    val pending: Boolean,
+    val rows: List<MobileBindingRecord>,
+    /** Keys the roster says answer this question for which no row came
+     * back — a different fact from having none, said as one. */
+    val missing: List<String>,
+)
+
+/** The section's whole shape: every question in the roster's order, then
+ * the `settings` rows no question claims (the **Other settings rows**
+ * group). */
+data class GroupedBindings(
+    val groups: List<QuestionBindingGroup>,
+    val other: List<MobileBindingRecord>,
+)
+
+/** Folds `Core::bindings`' flat answer into the core's roster — the Kotlin
+ * twin of `bindings.ts`'s `groupBindingsByQuestion`, and like it a join,
+ * not a table: which keys answer which question, the questions' order and
+ * their words all arrive in [roster], and nothing here names one (#716,
+ * `QuestionRosterLiteralTest`). Never invents or hides a row: every input
+ * row lands in exactly one group or in `other`. */
+fun groupBindingsByQuestion(
+    roster: List<MobileQuestionRosterEntry>,
+    bindings: List<MobileBindingRecord>,
+    switches: List<MobileQuestionSwitch>,
+): GroupedBindings {
+    val claimed = mutableSetOf<String>()
+    val groups = roster.map { entry ->
+        val rows = mutableListOf<MobileBindingRecord>()
+        val missing = mutableListOf<String>()
+        for (key in entry.bindings) {
+            val row = bindings.find { it.key == key }
+            if (row == null) {
+                missing += key
+            } else {
+                claimed += key
+                rows += row
+            }
+        }
+        val switch = switches.find { it.question == entry.question }
+        QuestionBindingGroup(
+            question = entry.question,
+            label = entry.label,
+            surface = entry.surface,
+            enabled = switch?.enabled,
+            pending = switch?.pending ?: false,
+            rows = rows,
+            missing = missing,
+        )
+    }
+    return GroupedBindings(groups, bindings.filterNot { it.key in claimed })
+}
 
 /** Mints one binding write's seed — the Kotlin twin of `useBindingsWiring
  * .ts`'s `mintBindingSeed`, and deliberately the identical spelling
@@ -64,8 +136,14 @@ class SettingsViewModel(
     private val setBindingFn: suspend (key: String, value: String, nowMs: Long) -> Unit,
     private val deadLetterHeadingFn: (UInt) -> String = ::deadLetterHeading,
     private val listCalendarsFn: suspend () -> MobileCalendarList = { MobileCalendarList("no_credential", emptyList()) },
-    private val readSelectionsFn: suspend () -> List<MobileCalendarSelection> = { emptyList() },
-    private val writeSelectionsFn: suspend (List<MobileCalendarSelection>) -> Unit = {},
+    /** ADR-0040 decision 8: the synced calendar choices, read through the
+     * core — `MobileTaskHost.calendarPrefs` in production. `null` only
+     * before anything has been read. */
+    private val readCalendarPrefsFn: suspend () -> MobileCalendarPrefs? = { null },
+    /** Ticks or unticks one calendar through the core, which keeps every
+     * other calendar's horizon, refuses the bound Trips calendar, and polls
+     * at once — `MobileTaskHost.toggleCalendar` in production. */
+    private val toggleCalendarFn: suspend (String) -> Unit = {},
     /** #709's Export/Clear diagnostics buttons. Injected the same way
      * every other native-touching call on this class is, so a plain JVM
      * test drives the screen's control flow with no `.so` in the process —
@@ -78,7 +156,15 @@ class SettingsViewModel(
      * is the watch's, and the phone keeps neither (`SettingsScreenStructuralTest`
      * pins that no `String`-typed flow exists here). */
     private val sendWatchTokenFn: suspend (String) -> SendOutcome = { SendOutcome.Unavailable("no sender wired") },
+    /** The core's standing-question roster (#714) — `questionRoster` in
+     * production, a constant of the build. */
+    private val rosterFn: () -> List<MobileQuestionRosterEntry> = { emptyList() },
+    /** `MobileTaskHost.setQuestionEnabled` (#715) — which overlays, so the
+     * reload after it reads the new state as `pending`. */
+    private val setQuestionEnabledFn: suspend (MobileStandingQuestion, Boolean, Long) -> Unit = { _, _, _ -> },
 ) : ViewModel() {
+
+    private val roster: List<MobileQuestionRosterEntry> by lazy { rosterFn() }
 
     private val _watchSend = MutableStateFlow<SendOutcome?>(null)
     /** The last send's outcome, for the Watch card's one line; `null` until
@@ -94,6 +180,17 @@ class SettingsViewModel(
     private val _queueDepth = MutableStateFlow(0u)
     val queueDepth: StateFlow<UInt> = _queueDepth.asStateFlow()
 
+    /** The `Standing questions` section — `null` until the first read, the
+     * same "not yet" [bindings] carries. */
+    private val _questions = MutableStateFlow<GroupedBindings?>(null)
+    val questions: StateFlow<GroupedBindings?> = _questions.asStateFlow()
+
+    /** The last toggle write's failure, matched by question — [bindingError]'s
+     * own rule: a stale failure never bleeds onto another row. */
+    private val _questionSwitchError = MutableStateFlow<Pair<MobileStandingQuestion, String>?>(null)
+    val questionSwitchError: StateFlow<Pair<MobileStandingQuestion, String>?> =
+        _questionSwitchError.asStateFlow()
+
     /** The picker's options, or `null` before any list attempt. A failed
      * or credential-less list is kept as its own `kind` rather than
      * flattened to `null`: the picker's rule is that a bad list leaves the
@@ -103,12 +200,14 @@ class SettingsViewModel(
     private val _calendars = MutableStateFlow<MobileCalendarList?>(null)
     val calendars: StateFlow<MobileCalendarList?> = _calendars.asStateFlow()
 
-    /** Which calendars this device polls — the persisted selection, which
-     * is the picker's checked state. Held here rather than re-read per
-     * frame so a tap is visible before the store round-trips. */
-    private val _calendarSelections = MutableStateFlow<List<MobileCalendarSelection>>(emptyList())
-    val calendarSelections: StateFlow<List<MobileCalendarSelection>> =
-        _calendarSelections.asStateFlow()
+    /** The synced calendar choices (ADR-0040 decision 8): what is ticked,
+     * what this device polls (the ticked calendars plus the bound Trips
+     * calendar — the core's union, never re-derived here) and which row is
+     * locked on. The picker's checked state is `polled`. Re-read on every
+     * [load], so a calendar ticked on another device shows here after the
+     * next sync. */
+    private val _calendarPrefs = MutableStateFlow<MobileCalendarPrefs?>(null)
+    val calendarPrefs: StateFlow<MobileCalendarPrefs?> = _calendarPrefs.asStateFlow()
 
     /** The last binding write's failure, matched by key — `bindings.ts`'s
      * `bindingWriteError` own reasoning: a stale failure from a DIFFERENT
@@ -126,10 +225,12 @@ class SettingsViewModel(
         _bindings.value = read.bindings
         _deadLetters.value = read.deadLetters
         _queueDepth.value = read.queueDepth
+        _questions.value = groupBindingsByQuestion(roster, read.bindings, read.switches)
+        _calendarPrefs.value = readCalendarPrefsFn()
     }
 
-    /** Reloads the picker: the persisted selection first (it renders even
-     * with no credential), then the option list.
+    /** Reloads the picker: the synced choices first (they render even with
+     * no credential), then the option list.
      *
      * `keepOptionsOnFailure` is the caller's read of whether the lane is
      * still armed. A failed list on an armed device (offline, or the
@@ -139,26 +240,26 @@ class SettingsViewModel(
      * disconnected passes `false`, so the options it can no longer read
      * back do go away. */
     suspend fun loadCalendars(keepOptionsOnFailure: Boolean) {
-        _calendarSelections.value = readSelectionsFn()
+        _calendarPrefs.value = readCalendarPrefsFn()
         val listed = listCalendarsFn()
         if (listed.kind == "ok" || _calendars.value == null || !keepOptionsOnFailure) {
             _calendars.value = listed
         }
     }
 
-    /** Adds or removes one calendar from the polled set, persisting it and
-     * pushing it through the seam. A newly-added calendar keeps the
-     * standard horizon; the long horizon is the Vacation pane's own
-     * business (#121) and no picker gesture here sets it. */
+    /** Ticks or unticks one calendar in the synced selection, through the
+     * core, then re-reads the choices — the core overlays the write, so the
+     * tap shows at once, offline or not. A newly ticked calendar polls at
+     * the standard horizon; every other calendar keeps its own. A refused
+     * tap (the locked Trips row, which the picker never offers) or a
+     * failed write changes nothing, and the re-read says so. */
     suspend fun toggleCalendar(id: String) {
-        val current = _calendarSelections.value
-        val next = if (current.any { it.id == id }) {
-            current.filterNot { it.id == id }
-        } else {
-            current + MobileCalendarSelection(id = id, longHorizon = false)
+        try {
+            toggleCalendarFn(id)
+        } catch (_: MobileCalendarEditException) {
+            // Nothing was written; the re-read below draws what is true.
         }
-        _calendarSelections.value = next
-        writeSelectionsFn(next)
+        _calendarPrefs.value = readCalendarPrefsFn()
     }
 
     /** The exported diagnostics bytes — one `application/json` document,
@@ -197,6 +298,24 @@ class SettingsViewModel(
         load()
     }
 
+    /** Switches one standing question on or off through the seam (#715),
+     * then reloads so the row reads the overlaid state — [setBinding]'s own
+     * shape. */
+    suspend fun setQuestionEnabled(question: MobileStandingQuestion, enabled: Boolean, nowMs: Long) {
+        try {
+            setQuestionEnabledFn(question, enabled, nowMs)
+        } catch (error: MobileSetBindingException) {
+            _questionSwitchError.value = question to when (error) {
+                is MobileSetBindingException.UnknownKey ->
+                    "This build doesn't know that question, so it wasn't switched."
+                is MobileSetBindingException.WriteFailed -> error.detail
+            }
+            return
+        }
+        _questionSwitchError.value = null
+        load()
+    }
+
     companion object {
         fun create(context: Context): SettingsViewModel {
             suspend fun core() = CoreHolder.get(context.applicationContext)
@@ -207,21 +326,20 @@ class SettingsViewModel(
                         bindings = host.bindings(),
                         deadLetters = host.deadLetters(),
                         queueDepth = host.queueDepth(),
+                        switches = host.questionSwitches(),
                     )
                 },
                 setBindingFn = { key, value, nowMs ->
                     core().setBinding(mintBindingSeed(key, nowMs), key, value, nowMs)
                 },
                 listCalendarsFn = { core().listCalendars() },
-                readSelectionsFn = { CalendarPrefs.readSelections(context.applicationContext) },
-                writeSelectionsFn = { selections ->
-                    CalendarPrefs.writeSelections(context.applicationContext, selections)
-                    // The seam is told immediately, not at the next launch,
-                    // and it polls on being told: the next timer tick may be
-                    // fifteen minutes away, and until it lands the panes
+                readCalendarPrefsFn = { core().calendarPrefs() },
+                toggleCalendarFn = { id ->
+                    // The seam polls on being told: the next timer tick may
+                    // be fifteen minutes away, and until it lands the panes
                     // would answer off a snapshot taken over the *previous*
                     // selection.
-                    core().setCalendarSelections(selections, System.currentTimeMillis())
+                    core().toggleCalendar(id, System.currentTimeMillis())
                 },
                 // #710 review round 1: drains the mobile FFI host's
                 // buffered `core.*`/`operation.*` spans before exporting —
@@ -239,6 +357,10 @@ class SettingsViewModel(
                 },
                 clearDiagnosticsFn = { DiagnosticsRecorder.get(context.applicationContext).clear() },
                 sendWatchTokenFn = WatchTokenSender.create(context)::send,
+                rosterFn = { questionRoster() },
+                setQuestionEnabledFn = { question, enabled, nowMs ->
+                    core().setQuestionEnabled(question, enabled, nowMs)
+                },
             )
         }
 

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it, vi } from "vitest";
+import { requiredSourcesFromCore } from "../decisions/seam";
 import { requiredSources } from "../screens/questions/registry";
 import type { CoreStatus } from "../store/store";
 import type { WorkerLike } from "../store/worker-client";
@@ -52,6 +53,17 @@ describe("usePaneReadsWiring", () => {
     const worker = fakeWorker();
     render(<Probe worker={worker} status="ready" syncOutcomeSeq={0} />);
     expect(sources(worker)).toEqual(allSources());
+  });
+
+  // #820: the same set the mobile seam's pane-read loop reads —
+  // `panes::required_sources` for Now chained with Status, deduplicated
+  // (`ffi-mobile`'s `mobile_pane_inputs`), read here straight off the core.
+  it("requests exactly the core's union over both surfaces", () => {
+    const worker = fakeWorker();
+    render(<Probe worker={worker} status="ready" syncOutcomeSeq={0} />);
+    const core = new Set([...requiredSourcesFromCore("now"), ...requiredSourcesFromCore("status")]);
+    expect(new Set(sources(worker))).toEqual(core);
+    expect(sources(worker)).toHaveLength(core.size);
   });
 
   it("re-requests them on every completed cycle", () => {

@@ -16,6 +16,7 @@ describe("isTaskWorkerRequest", () => {
     { type: "pushTaskApiKey", apiKey: "k" },
     { type: "initTaskApiKey", apiKey: "k" },
     { type: "clearTaskApiKey" },
+    { type: "reportNoTaskApiKey" },
     {
       type: "capture",
       seed: "s",
@@ -46,6 +47,7 @@ describe("isTaskWorkerRequest", () => {
     { type: "getProjects" },
     { type: "getProjectLinks", projectId: "p" },
     { type: "getFileLinks", itemId: "i" },
+    { type: "getGrills", itemId: "i" },
     { type: "createFileLink", seed: "s", itemId: "i", path: "Finance/receipt.pdf", nowMs: 1 },
     {
       type: "removeFileLink",

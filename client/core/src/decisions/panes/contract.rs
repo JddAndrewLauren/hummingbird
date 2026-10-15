@@ -78,6 +78,7 @@ pub enum StandingQuestion {
     Weekend,
     Vacation,
     Race,
+    Fantasy,
     Kimi,
     Github,
     Uptime,
@@ -94,6 +95,7 @@ impl StandingQuestion {
             StandingQuestion::Weekend => "weekend",
             StandingQuestion::Vacation => "vacation",
             StandingQuestion::Race => "race",
+            StandingQuestion::Fantasy => "fantasy",
             StandingQuestion::Kimi => "kimi",
             StandingQuestion::Github => "github",
             StandingQuestion::Uptime => "uptime",
@@ -117,18 +119,22 @@ impl StandingQuestion {
 /// (#693) — no ranking claim beyond "here", the slot ADR-0032's own
 /// grilling session settled on.
 ///
+/// `Fantasy` (#717) is declared last of Now's own, directly after `Race`
+/// — the other sports question, and no ranking claim beyond that.
+///
 /// `Poller` (#775) is declared **last**: it is a meta-question over every
 /// other source's own freshness, including several of the infra questions'
 /// (`kimi`, `github`, `uptime`), so it reads naturally as the board's final
 /// word on "is anything not writing" rather than competing with the
 /// content-specific questions ahead of it.
-pub const QUESTION_ORDER: [StandingQuestion; 11] = [
+pub const QUESTION_ORDER: [StandingQuestion; 12] = [
     StandingQuestion::Homework,
     StandingQuestion::Scps,
     StandingQuestion::Waste,
     StandingQuestion::Weekend,
     StandingQuestion::Vacation,
     StandingQuestion::Race,
+    StandingQuestion::Fantasy,
     StandingQuestion::Kimi,
     StandingQuestion::Github,
     StandingQuestion::Uptime,
@@ -224,7 +230,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&QUESTION_ORDER).unwrap(),
-            r#"["homework","scps","waste","weekend","vacation","race","kimi","github","uptime","reachability","poller"]"#,
+            r#"["homework","scps","waste","weekend","vacation","race","fantasy","kimi","github","uptime","reachability","poller"]"#,
         );
     }
 

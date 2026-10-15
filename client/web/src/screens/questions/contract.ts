@@ -117,14 +117,14 @@ export type StandingQuestion =
   | "weekend"
   | "vacation"
   | "race"
+  | "fantasy"
   | "kimi"
   | "github"
   | "uptime"
   | "reachability"
   | "poller";
 
-/** Declared display order — the last axis of the cross-pane sort, and the
- * order the wiring unions its sources in. Declaration order, not
+/** Declared display order — the last axis of the cross-pane sort. Declaration order, not
  * alphabetical, so a question's place does not move when another is
  * renamed. The four infra questions (ADR-0017, #311) are declared after
  * Now's own so neither surface's existing order moves when the other
@@ -139,6 +139,8 @@ export type StandingQuestion =
  * `scps` is declared second (#693) — directly after `homework`, before
  * `waste` — the slot ADR-0032's own grilling session settled on.
  *
+ * `fantasy` is declared last of Now's own (#717), directly after `race`.
+ *
  * `poller` is declared **last** (#775): a meta-question over every other
  * source's own freshness, so it reads as the board's final word rather than
  * competing with the content-specific questions ahead of it. */
@@ -149,6 +151,7 @@ export const QUESTION_ORDER: readonly StandingQuestion[] = [
   "weekend",
   "vacation",
   "race",
+  "fantasy",
   "kimi",
   "github",
   "uptime",
@@ -275,15 +278,10 @@ export interface QuestionDef {
    * it twice. */
   /** ADR-0017's surface axis: which ranked region (`NowScreen`'s aside or
    * the Status screen) this question renders into. Read by `registry.ts`'s
-   * `rankPanes`/`requiredSources` to filter `QUESTION_ORDER` per view — the
+   * `rankPanes` to filter `QUESTION_ORDER` per view — the
    * sort, the band vocabulary and the collapse rule downstream of that
    * filter are entirely unaware a second surface exists. */
   surface: Surface;
-  /** Which `context_snapshots` sources the wiring must request a pane read
-   * for. Empty for a question that reads no snapshot lane at all (the
-   * calendar-lane questions, #117/#121/#122, and client-only questions such
-   * as device reachability, #316). */
-  sources: readonly string[];
   /** Which subjects this question currently has — 0..N, so one question can
    * answer for several things (several bins, several race series).
    *
@@ -314,7 +312,8 @@ export interface QuestionDef {
    * rather than a fixed interval because a window like #122's rolls
    * forward as the clock advances; `registry.ts`'s `requiredCalendarRequests`
    * is the union of every registered question's answer here, exactly the
-   * way `requiredSources()` unions `sources`. */
+   * way the core's `required_sources` unions each question's snapshot
+   * sources (`registry.ts`'s `requiredSources`, #820). */
   calendarRequests?(nowMs: number): CalendarEventsRequest[];
   /** The pane's own expanded rendering. Rendered with the **live** inputs on
    * every render — only position and band chrome come from the shell's

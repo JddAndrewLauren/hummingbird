@@ -30,6 +30,7 @@ import type {
   TaskItemDTO,
 } from "../store/protocol";
 import { obsidianVaultName } from "../obsidian/vault-uri";
+import { fetchGrillTranscript } from "../shell/grill-transcript-wiring";
 import type { TaskState } from "../store/store";
 import type { TriageEdits } from "../store/worker-client";
 import { blockedReasonLabel } from "./blocked-reason";
@@ -375,6 +376,7 @@ export function FrontierBoard({
         onBack={handleGrillBack}
         onDiscard={grill.discard}
         completionError={grillCompletionFailureFor(task.lastGrillCompletion, grill.confirmSeed)}
+        grillHistory={{ grills: task.grillsByItem[openItem.id], fetchTranscript: fetchGrillTranscript }}
       />
     );
   }
@@ -479,6 +481,7 @@ export function FrontierBoard({
             fileLinks={task.fileLinksByItem[selectedItem.id] ?? []}
             fileLinksWiring={fileLinks}
             lastFileLinkWrite={task.lastFileLinkWrite}
+            grillHistory={{ grills: task.grillsByItem[selectedItem.id], fetchTranscript: fetchGrillTranscript }}
             // #359: "Grill me" reaches Now — gated by `item-actions.ts`'s
             // `canGrill`, the one deciding function, same as Triage's.
             onGrillMe={grill ? handleGrillMe : undefined}

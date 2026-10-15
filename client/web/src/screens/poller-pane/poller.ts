@@ -21,9 +21,8 @@ import type { Band, PaneAnswer, PaneGlyph, QuestionInputs } from "../questions/c
 // What is here is what ADR-0025 leaves per-client: the words and the glyph.
 
 /** Pinned against `poller_constants_json()`'s own `sources` by
- * `seam.test.ts` — `question.ts` builds `sources: SOURCES` at module
- * evaluation, `github.ts`'s own arrangement (that module's own comment on
- * why these stay literal TS rather than a wasm call at import time). */
+ * `seam.test.ts`. Read by the tests alone since #820: which sources the
+ * wiring reads is the core's `required_sources`, not this list. */
 export const SOURCES: readonly string[] = [
   "gmail/v1",
   "m365-mail/v1",
@@ -31,6 +30,8 @@ export const SOURCES: readonly string[] = [
   "m365-calendar/v1",
   "city-waste/v2",
   "race-schedule/v1",
+  "yahoo-lineup/v1",
+  "yahoo-waivers/v1",
   "kimi-balance/v1",
   "github-hummingbird/v1",
   "uptime/v1",

@@ -11,12 +11,15 @@
 # `gmail-poll.yml`, `calendar-poll.yml`, `graph-mail-poll.yml`,
 # `graph-calendar-poll.yml`, `race-alert-poll.yml`,
 # `race-schedule-poll.yml`); `github-status.yml` (#314) and
-# `uptime-probe.yml` (#315) landed after it, so **ten `schedule:` workflows
-# exist today**. The same overturn of issue #8's ban
-# applies verbatim — that ban was about a *private* repo's pooled Actions
-# minutes and $0 spending cap, neither of which exists here. It does not
-# compete with any live clock: this is the only thing that ever polls this
-# endpoint.
+# `uptime-probe.yml` (#315) landed after it. #774 and #792 have since moved
+# six of those ten onto the sweeper's supercronic clock, so **four
+# `schedule:` workflows exist today** — the count
+# `server/github-status/src/manifest.rs`'s
+# `the_repo_carries_four_scheduled_workflows_today` asserts. The same
+# overturn of issue #8's ban applies verbatim — that ban was about a
+# *private* repo's pooled Actions minutes and $0 spending cap, neither of
+# which exists here. It does not compete with any live clock: this is the
+# only thing that ever polls this endpoint.
 #
 # **Six hours, not daily.** A balance is a countdown to a hard cliff
 # (`exceeded_current_quota_error` fails every hosted skill op closed once

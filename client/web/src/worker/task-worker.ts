@@ -1,13 +1,18 @@
 import type {
   BindingDTO,
+  CredentialArmName,
   QuestionSwitchDTO,
   SuggestedContextsDTO,
+  CalendarPrefsDTO,
+  CalendarSeedOutcome,
   BindingValueDTO,
   BlockedFrontierEntryDTO,
   ConditionDTO,
   DeadLetterEntryDTO,
   FieldTypeName,
   GrillDraftTurnDTO,
+  GrillDTO,
+  GrillVerdictName,
   KindEntryDTO,
   KindRegistryDTO,
   LedgerRowDTO,
@@ -23,6 +28,7 @@ import type {
   StepDTO,
   TaskEventDTO,
   TaskItemDTO,
+  TaskStageName,
   TaskRunOutcomeKind,
   TaskWorkerRequest,
   TaskWorkerResponse,
@@ -47,6 +53,9 @@ export interface TaskHostLike {
    * `protocol.ts`'s `initTaskApiKey` doc for the full contract. */
   rehydrateApiKey(apiKey: string): void;
   clearApiKey(): void;
+  /** #846: the start-up token load found no stored token — moves the core
+   * from `unknown` to `unset`. */
+  reportNoApiKey(): void;
   /** #208's capture fields as one JSON object (`ffi-web`'s `CaptureFields`),
    * for the same reason `triage` below takes one: the list had grown past the
    * point where positional scalars read. `size`/`energy` inside it are the
@@ -140,6 +149,25 @@ export interface TaskHostLike {
    * number|null}`. */
   addContext(seed: string, name: string, nowMs: number): Promise<string>;
   removeContext(seed: string, name: string, nowMs: number): Promise<string>;
+  /** ADR-0040 decision 8's read. Mirrors `TaskHost::calendarPrefs`,
+   * resolved to JSON: `{"kind": "ok"|"busy", "prefs": {"connected": bool,
+   * "selection": [{"id", "horizon"}], "pending": bool}}`. */
+  calendarPrefs(): string;
+  /** ADR-0040 decision 8's writes. Mirror `TaskHost::toggleCalendar` /
+   * `TaskHost::setCalendarConnected`, resolved to JSON: `{"kind": "ok"|
+   * "locked"|"failed"|"busy", "error": string|null}`. */
+  toggleCalendar(seed: string, id: string, nowMs: number): Promise<string>;
+  setCalendarConnected(seed: string, connected: boolean, nowMs: number): Promise<string>;
+  /** The one-time seed. Mirrors `TaskHost::seedCalendarPrefs` —
+   * `selectionJson` is a JSON string array — resolved to JSON: `{"kind":
+   * "ok"|"failed"|"busy", "seed": "not_yet"|"seeded"|"adopted"|null,
+   * "error": string|null}`. */
+  seedCalendarPrefs(
+    seed: string,
+    connected: boolean,
+    selectionJson: string,
+    nowMs: number,
+  ): Promise<string>;
   /** #140's kind registry export. Mirrors `hummingbird-ffi-web`'s
    * `TaskHost::kindRegistry` — never `"busy"`, so this resolves
    * synchronously to `{"kind":"ok",…}` always. */
@@ -237,6 +265,10 @@ export interface TaskHostLike {
   /** ADR-0036's per-item file-link read. Mirrors `TaskHost::fileLinks`,
    * resolved to JSON: `{"kind": "ok"|"busy", "links": [FileLink]}`. */
   fileLinks(itemId: string): string;
+  /** #358's per-item Grill history read. Mirrors `TaskHost::grills`,
+   * resolved to JSON: `{"kind": "ok"|"busy", "grills": [Grill]}`, newest
+   * first, never a transcript. */
+  grills(itemId: string): string;
   /** ADR-0036's file-link create. Mirrors `TaskHost::createFileLink`,
    * resolved to JSON: `{"kind": "ok"|"failed"|"busy", "id": string|null,
    * "error": string|null}`. A blank path is refused at the seam. */
@@ -391,6 +423,22 @@ interface RawQuestionSwitchListResponse {
 interface RawSuggestedContextsResponse {
   kind: "ok" | "busy";
   contexts: { entries: { name: string; item_count: number }[]; pending: boolean };
+}
+
+interface RawCalendarPrefsResponse {
+  kind: "ok" | "busy";
+  prefs: CalendarPrefsDTO;
+}
+
+interface RawEditCalendarPrefsResponse {
+  kind: "ok" | "locked" | "not_selected" | "failed" | "busy";
+  error: string | null;
+}
+
+interface RawSeedCalendarPrefsResponse {
+  kind: "ok" | "failed" | "busy";
+  seed: CalendarSeedOutcome | null;
+  error: string | null;
 }
 
 interface RawEditContextResponse {
@@ -575,6 +623,23 @@ interface RawFileLinkListResponse {
   links: RawFileLink[];
 }
 
+interface RawGrill {
+  id: string;
+  item_id: string;
+  summary: string;
+  verdict: GrillVerdictName;
+  model_proposal: string;
+  applied_patch: string;
+  resulting_stage: TaskStageName;
+  completed_at: number;
+  version: number;
+}
+
+interface RawGrillListResponse {
+  kind: "ok" | "busy";
+  grills: RawGrill[];
+}
+
 interface RawCreateFileLinkResponse {
   kind: "ok" | "failed" | "busy";
   id: string | null;
@@ -710,8 +775,8 @@ interface RawGrillDraftItemIdsResponse {
 }
 
 interface RawTaskEvent {
-  kind: "credential_needed";
-  at_ms: number;
+  kind: "credential_changed";
+  arm: CredentialArmName;
 }
 
 interface RawRunResponse {
@@ -924,6 +989,20 @@ function mapFileLink(raw: RawFileLink): FileLinkDTO {
   };
 }
 
+function mapGrill(raw: RawGrill): GrillDTO {
+  return {
+    id: raw.id,
+    itemId: raw.item_id,
+    summary: raw.summary,
+    verdict: raw.verdict,
+    modelProposal: raw.model_proposal,
+    appliedPatch: raw.applied_patch,
+    resultingStage: raw.resulting_stage,
+    completedAt: raw.completed_at,
+    version: raw.version,
+  };
+}
+
 function mapRoute(raw: RawRoute): RouteDTO {
   return {
     projectId: raw.project_id,
@@ -971,7 +1050,7 @@ function unmapStep(step: StepDTO): RawStep {
 }
 
 function mapEvents(raw: RawTaskEvent[]): TaskEventDTO[] {
-  return raw.map((event) => ({ kind: event.kind, atMs: event.at_ms }));
+  return raw.map((event) => ({ kind: event.kind, arm: event.arm }));
 }
 
 function mapDeadLetters(raw: RawDeadLetterEntry[]): DeadLetterEntryDTO[] {
@@ -1061,6 +1140,10 @@ export async function handleTaskRequest(
       // reply — there is nothing to reply with, and the host already
       // updated its own local state before sending this.
       host.clearApiKey();
+      return;
+    case "reportNoTaskApiKey":
+      // #846: same fire-and-forget shape as `clearTaskApiKey`.
+      host.reportNoApiKey();
       return;
     case "capture": {
       const raw = JSON.parse(
@@ -1273,6 +1356,38 @@ export async function handleTaskRequest(
         return;
       }
       post({ type: "suggestedContexts", contexts: mapSuggestedContexts(raw.contexts) });
+      return;
+    }
+    case "getCalendarPrefs": {
+      const raw = JSON.parse(host.calendarPrefs()) as RawCalendarPrefsResponse;
+      if (raw.kind === "busy") {
+        // No answer, not "not connected": a calendar lane that acted on the
+        // busy placeholder would stop polling over a read it never made.
+        return;
+      }
+      post({ type: "calendarPrefs", prefs: raw.prefs });
+      return;
+    }
+    case "toggleCalendar":
+    case "setCalendarConnected": {
+      const raw = JSON.parse(
+        request.type === "toggleCalendar"
+          ? await host.toggleCalendar(request.seed, request.id, request.nowMs)
+          : await host.setCalendarConnected(request.seed, request.connected, request.nowMs),
+      ) as RawEditCalendarPrefsResponse;
+      post({ type: "calendarPrefsEditResult", seed: request.seed, kind: raw.kind, error: raw.error });
+      return;
+    }
+    case "seedCalendarPrefs": {
+      const raw = JSON.parse(
+        await host.seedCalendarPrefs(
+          request.seed,
+          request.connected,
+          JSON.stringify(request.selectedIds),
+          request.nowMs,
+        ),
+      ) as RawSeedCalendarPrefsResponse;
+      post({ type: "seedCalendarPrefsResult", seed: request.seed, kind: raw.kind, outcome: raw.seed });
       return;
     }
     case "getQuestionSwitches": {
@@ -1579,6 +1694,14 @@ export async function handleTaskRequest(
         return;
       }
       post({ type: "fileLinks", itemId: request.itemId, links: raw.links.map(mapFileLink) });
+      return;
+    }
+    case "getGrills": {
+      const raw = JSON.parse(host.grills(request.itemId)) as RawGrillListResponse;
+      if (raw.kind === "busy") {
+        return;
+      }
+      post({ type: "grills", itemId: request.itemId, grills: raw.grills.map(mapGrill) });
       return;
     }
     case "createFileLink": {

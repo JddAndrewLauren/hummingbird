@@ -135,6 +135,7 @@ class StatusChipRowTest {
         MobileStandingQuestion.WEEKEND,
         MobileStandingQuestion.VACATION,
         MobileStandingQuestion.RACE,
+        MobileStandingQuestion.FANTASY,
         -> error("a Now-surface question has no chip on Status: $question")
     }
 

@@ -12,7 +12,7 @@ import { WeekendPaneExpanded } from "./WeekendPaneExpanded";
  * (#122 over #245).
  *
  * One subject, always — the coming (or under-way) weekend is the only thing
- * this question ever answers. `sources: []`: this question touches no
+ * this question ever answers. No snapshot source: this question touches no
  * `context_snapshots` lane at all — its one read is #267's calendar arm,
  * declared below via `calendarRequests`, plus `QuestionInputs.items`, which
  * every question can already read. It is returned even while the calendar
@@ -21,7 +21,6 @@ import { WeekendPaneExpanded } from "./WeekendPaneExpanded";
  * `wasteQuestion` documents for its own binding. */
 export const weekendQuestion: QuestionDef = {
   surface: "now",
-  sources: [],
   subjects: () => [SUBJECT_KEY],
   answer: (_subjectKey, inputs) => weekendAnswer(inputs),
   calendarRequests: (nowMs) => {

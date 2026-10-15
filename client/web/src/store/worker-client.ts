@@ -119,6 +119,7 @@ type Store = Pick<
   | "setTaskSteps"
   | "setTaskProjectLinks"
   | "setTaskFileLinks"
+  | "setTaskGrills"
   | "setTaskRoute"
   | "setTaskPaneRead"
   | "setTaskGrillDraft"
@@ -400,6 +401,25 @@ export function attachWorkerClient(
       case "suggestedContexts":
         store.setTaskState({ suggestedContexts: message.contexts });
         return;
+      case "calendarPrefs":
+        store.setTaskState({ calendarPrefs: message.prefs });
+        return;
+      case "calendarPrefsEditResult":
+        if (message.kind === "ok") {
+          // `Core::toggle_calendar`/`set_calendar_connected` overlay, as
+          // `set_binding` does, so the picker settles at once and the
+          // calendar wiring re-pushes the polled set off the new answer.
+          requestCalendarPrefs(worker);
+        }
+        return;
+      case "seedCalendarPrefsResult":
+        store.setTaskState({
+          lastCalendarSeed: { seed: message.seed, outcome: message.outcome },
+        });
+        if (message.outcome === "seeded") {
+          requestCalendarPrefs(worker);
+        }
+        return;
       case "kindRegistry":
         store.setTaskState({ kindRegistry: message.registry });
         return;
@@ -539,6 +559,9 @@ export function attachWorkerClient(
       case "fileLinks":
         store.setTaskFileLinks(message.itemId, message.links);
         return;
+      case "grills":
+        store.setTaskGrills(message.itemId, message.grills);
+        return;
       case "createFileLinkResult":
       case "removeFileLinkResult":
         store.setTaskState({
@@ -649,16 +672,19 @@ export function attachWorkerClient(
           lastSyncAtMs: message.atMs,
         });
         return;
-      case "taskEvents":
-        // Same contract as the calendar binding's `credentialEvents`: at
-        // least one credential-needed event landed, so reconnecting is now
-        // needed. `Core::take_events` today only ever produces this one
-        // kind, but the switch stays exhaustive over `TaskEventDTO["kind"]`
-        // rather than assuming that never changes.
-        if (message.events.some((event) => event.kind === "credential_needed")) {
+      case "taskEvents": {
+        // Same contract as the calendar binding's `credentialEvents`: the
+        // newest credential event leaving the core in `reprompt` (a 401, or
+        // a rehydration that could not resume one) means reconnecting is
+        // now needed. Every credential mutation emits its own event (#846),
+        // so the newest one is the arm the core is in — a push that already
+        // resolved an undrained 401 lands after it and supersedes it.
+        const newest = message.events.filter((event) => event.kind === "credential_changed").at(-1);
+        if (newest?.arm === "reprompt") {
           store.setTaskState({ needsReconnect: true });
         }
         return;
+      }
       case "queueDepth":
         // Arrives both in reply to `getQueueDepth` (once, on becoming
         // ready) and unsolicited at the tail of every cycle (issue #191,
@@ -780,6 +806,12 @@ export function initTaskApiKey(worker: WorkerLike, apiKey: string): void {
  * `clearTaskApiKey`. */
 export function clearTaskApiKey(worker: WorkerLike): void {
   worker.postMessage({ type: "clearTaskApiKey" });
+}
+
+/** #846: the core-start token load found no stored token — see
+ * `protocol.ts`'s `reportNoTaskApiKey`. */
+export function reportNoTaskApiKey(worker: WorkerLike): void {
+  worker.postMessage({ type: "reportNoTaskApiKey" });
 }
 
 /** `seed` mints the deterministic id `Core::capture` derives from it; the
@@ -973,6 +1005,40 @@ export function requestQuestionSwitches(worker: WorkerLike): void {
 /** The suggested-contexts list (ADR-0038). */
 export function requestSuggestedContexts(worker: WorkerLike): void {
   worker.postMessage({ type: "getSuggestedContexts" });
+}
+
+/** The calendar choices (ADR-0040 decision 8). */
+export function requestCalendarPrefs(worker: WorkerLike): void {
+  worker.postMessage({ type: "getCalendarPrefs" });
+}
+
+/** Ticks or unticks one calendar in the synced selection. The core keeps
+ * every other calendar's horizon and refuses the bound Trips calendar. */
+export function toggleCalendar(worker: WorkerLike, seed: string, id: string, nowMs: number): void {
+  worker.postMessage({ type: "toggleCalendar", seed, id, nowMs });
+}
+
+/** Records whether the operator's devices poll Google Calendar — the
+ * Connect gesture's synced half. */
+export function setCalendarConnected(
+  worker: WorkerLike,
+  seed: string,
+  connected: boolean,
+  nowMs: number,
+): void {
+  worker.postMessage({ type: "setCalendarConnected", seed, connected, nowMs });
+}
+
+/** Hands this browser's old `localStorage` calendar choices to the core's
+ * one-time seed (`Core::seed_calendar_prefs`). */
+export function seedCalendarPrefs(
+  worker: WorkerLike,
+  seed: string,
+  connected: boolean,
+  selectedIds: string[],
+  nowMs: number,
+): void {
+  worker.postMessage({ type: "seedCalendarPrefs", seed, connected, selectedIds, nowMs });
 }
 
 /** ADR-0038's two list writes: one absolute-value CAS `PUT` on the
@@ -1182,6 +1248,12 @@ export function patchProject(
  * style per-id fetch. */
 export function requestFileLinks(worker: WorkerLike, itemId: string): void {
   worker.postMessage({ type: "getFileLinks", itemId });
+}
+
+/** #358's per-item Grill history read — a mirror read only; it never
+ * triggers a sync and never fetches a transcript. */
+export function requestGrills(worker: WorkerLike, itemId: string): void {
+  worker.postMessage({ type: "getGrills", itemId });
 }
 
 /** ADR-0036's file-link create. `seed` mints `Core::create_file_link`'s

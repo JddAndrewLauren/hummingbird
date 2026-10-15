@@ -8,6 +8,8 @@ import net.twinion.hummingbird.brand.R
 import uniffi.hummingbird_ffi_mobile.MobilePaneAnswerState
 import uniffi.hummingbird_ffi_mobile.MobilePaneBand
 import uniffi.hummingbird_ffi_mobile.MobilePaneFacts
+import uniffi.hummingbird_ffi_mobile.MobileFantasySetup
+import uniffi.hummingbird_ffi_mobile.MobileFantasySubject
 import uniffi.hummingbird_ffi_mobile.MobileHomeworkFacts
 import uniffi.hummingbird_ffi_mobile.MobileHomeworkResolved
 import uniffi.hummingbird_ffi_mobile.MobilePaneFreshness
@@ -65,6 +67,7 @@ fun paneHeadline(pane: MobileRankedPane, nowMs: Long): String = when (val facts 
     is MobilePaneFacts.Weekend -> weekendHeadline(pane, facts.resolved)
     is MobilePaneFacts.Vacation -> vacationHeadline(pane, facts.resolved)
     is MobilePaneFacts.Race -> raceHeadline(pane, facts.setup, facts.resolved, nowMs)
+    is MobilePaneFacts.Fantasy -> fantasyHeadline(pane, facts.setup, facts.subject)
     is MobilePaneFacts.Kimi -> kimiHeadline(pane, facts.resolved)
     is MobilePaneFacts.Github -> githubHeadline(pane, facts.resolved, nowMs)
     is MobilePaneFacts.Uptime -> uptimeHeadline(pane, facts.resolved)
@@ -83,6 +86,7 @@ fun paneGlyphs(pane: MobileRankedPane, nowMs: Long): List<PaneGlyph> = when (val
     is MobilePaneFacts.Weekend -> weekendGlyphs(pane, facts.resolved)
     is MobilePaneFacts.Vacation -> emptyList()
     is MobilePaneFacts.Race -> raceGlyphs(pane, facts.setup, facts.resolved)
+    is MobilePaneFacts.Fantasy -> fantasyGlyphs(facts.setup, facts.subject)
     is MobilePaneFacts.Kimi -> kimiGlyphs(pane)
     is MobilePaneFacts.Github -> githubGlyphs(pane, facts.resolved, nowMs)
     is MobilePaneFacts.Uptime -> uptimeGlyphs(pane, facts.resolved)
@@ -103,8 +107,6 @@ private val NO_ANSWER = PaneGlyph.Icon(R.drawable.ic_cloud_fog, "no answer yet")
 private val CHECKING_SETUP = PaneGlyph.Icon(R.drawable.ic_cloud_fog, "checking setup")
 private val SETUP_NEEDS_A_LOOK = PaneGlyph.Icon(R.drawable.ic_help_circle, "setup needs a look")
 
-/** `ageWords` in `github.ts`/`uptime.ts`, ported — internal since the
- * pane-content slice: the expanded cards speak the same ages. */
 /** The web's shared stale caveat line — "stale — as of Nh ago", or the
  * honest no-number arm (`WastePaneExpanded.tsx`'s own note: an unknown age
  * has no hours to name, so it says that instead of fabricating one). Here
@@ -115,6 +117,8 @@ fun staleWords(freshness: MobilePaneFreshness): String = when (freshness) {
     MobilePaneFreshness.Unknown -> "stale — age unknown"
 }
 
+/** `ageWords` in `github.ts`/`uptime.ts`, ported — internal since the
+ * pane-content slice: the expanded cards speak the same ages. */
 fun ageWords(ageMs: Long): String {
     val hours = ageMs / 3_600_000
     if (hours < 1) return "under an hour ago"
@@ -481,6 +485,55 @@ fun countdown(deltaMs: Long): Pair<String, String> {
     val days = (deltaMs / 86_400_000.0).roundToLong()
     return Pair(days.toString(), if (days == 1L) "day" else "days")
 }
+
+// --------------------------------------------------------------- fantasy
+
+/** `subjectLabel` in `fantasy.ts`, ported. */
+private fun fantasySubjectLabel(subject: MobileFantasySubject?): String = when (subject) {
+    MobileFantasySubject.LINEUP, null -> "Lineup"
+    MobileFantasySubject.WAIVERS -> "Waivers"
+}
+
+/** `leagueLabel` in `fantasy.ts`, ported: the id after `.l.`, or the key
+ * whole. The subject key is `<league>:<subject>`, so the league is
+ * everything before its last colon. */
+private fun fantasyLeagueLabel(subjectKey: String): String {
+    val league = subjectKey.substringBeforeLast(':')
+    val id = league.substringAfter(".l.", "")
+    return if (id.isEmpty()) league else "League $id"
+}
+
+/** `fantasyAnswer`'s headline in `fantasy.ts`, ported — the no-data arms
+ * only, which are all #717 decides (#718/#719 bring the answered ones). */
+private fun fantasyHeadline(
+    pane: MobileRankedPane,
+    setup: MobileFantasySetup,
+    subject: MobileFantasySubject?,
+): String {
+    val label = fantasySubjectLabel(subject)
+    return when (setup) {
+        MobileFantasySetup.UNSET -> "$label · Not set up"
+        MobileFantasySetup.UNREAD -> "$label · Checking setup"
+        MobileFantasySetup.UNUSABLE -> "$label · Setup needs a look"
+        MobileFantasySetup.BOUND -> "${fantasyLeagueLabel(pane.subjectKey)} · $label · Never polled"
+    }
+}
+
+private fun fantasyGlyphs(
+    setup: MobileFantasySetup,
+    subject: MobileFantasySubject?,
+): List<PaneGlyph> = listOf(
+    when (setup) {
+        MobileFantasySetup.UNSET -> NOT_SET_UP
+        MobileFantasySetup.UNREAD -> CHECKING_SETUP
+        MobileFantasySetup.UNUSABLE -> SETUP_NEEDS_A_LOOK
+        MobileFantasySetup.BOUND -> when (subject) {
+            MobileFantasySubject.WAIVERS -> PaneGlyph.Icon(R.drawable.ic_calendar_clock, "never polled")
+            MobileFantasySubject.LINEUP, null ->
+                PaneGlyph.Icon(R.drawable.ic_list_checks, "never polled")
+        }
+    },
+)
 
 private fun raceHeadline(
     pane: MobileRankedPane,

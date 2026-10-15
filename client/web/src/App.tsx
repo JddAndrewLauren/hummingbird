@@ -169,9 +169,16 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   const fileLinksWiring = useFileLinksWiring(worker, dropboxLocalRoot);
   const {
     handleConnectClick,
-    handleCalendarSelectionChange,
+    handleCalendarToggle,
     handleRefreshClick,
-  } = useCalendarWiring(worker, status, calendar, tripsCalendarId(task.bindings));
+  } = useCalendarWiring(
+    worker,
+    status,
+    calendar,
+    tripsCalendarId(task.bindings),
+    task.calendarPrefs,
+    task.lastCalendarSeed,
+  );
   const {
     hasToken: hasTaskToken,
     enteredAtMs: taskTokenEnteredAtMs,
@@ -777,7 +784,7 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               dropboxLocalRoot={dropboxLocalRoot}
               onDropboxLocalRoot={setDropboxLocalRoot}
               onConnect={() => void handleConnectClick()}
-              onSelectionChange={handleCalendarSelectionChange}
+              onToggleCalendar={handleCalendarToggle}
               onRefresh={handleRefreshClick}
               taskTokenState={taskTokenState}
               taskTokenEnteredAtMs={taskTokenEnteredAtMs}

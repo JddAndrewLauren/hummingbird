@@ -231,6 +231,26 @@ shows acked alerts (visible, annoying) rather than hiding live ones
 enforce it. The mitigation is that it is written **once, in `domain`**, as
 the single predicate all three call; no consumer re-spells it in SQL.
 
+*Amended 2026-10-15 ([#845](https://github.com/JddAndrewLauren/hummingbird/issues/845)):
+**an occurrence's lifecycle only moves forward.** The predicate above is
+sound, but the write path could overtake it: a re-raise sets `resolved_at`
+absolutely like every other source-owned field, so an omitted resolution
+clears the stored one, and an explicit `raised_at` is written even when it
+is earlier than the stored stamp. A pushed source that sends one request at
+a time can still have a timed-out request land after its successor — and
+then a raise that preceded a resolution clears it (the alert is live
+again, and rings), or a resolution that preceded a re-raise moves
+`raised_at` backwards and settles a condition that has returned (silence,
+the worse failure). So a write that **carries an explicit `raised_at`** is
+**stale** when that stamp is earlier than the stored `raised_at`, or equal
+to it while the write carries no resolution and the stored alert is
+resolved. A stale write is answered as success, changes no field, and
+rings nothing. Occurrences are ordered by `raised_at`; within one, a
+resolution is final. A write with no explicit `raised_at` behaves exactly
+as before — the shipped pollers send none — and a source honouring the
+wiring-time obligation above, stamping the moment its condition began,
+only ever meets this rule on a genuinely reordered delivery.*
+
 ## The conventions
 
 | Source | Shape | `source_key` |
@@ -244,6 +264,52 @@ the single predicate all three call; no consumer re-spells it in SQL.
 | `item-threshold/v1` | **state** | `item:<id>` |
 | `healthchecks/v1`, `home-assistant/v1` | **state** | the check or entity id, authored in the webhook body |
 | `github/v1`, `photo-site/v1`, `gmail-alert/v1` | event | the source's own event or message id |
+| `yahoo-lineup/v1` ***(#717)*** | **state** | `team:<team_key>` — `team:449.l.123456.t.7` |
+| `yahoo-waivers/v1` ***(#717)*** | event | `<season>-<week>`, week zero-padded — `2026-04` |
+| `starling/v1` ***(#830)*** | **state** | the cockpit's own attention item id, kind prefix included — `gate:<id>`, `question:<id>` |
+| `auk/v1` ***(#845)*** | **state** | machine, record id and cause, authored by Auk — never the wait episode |
+
+*Amended 2026-09-23 ([#717](https://github.com/JddAndrewLauren/hummingbird/issues/717)):
+the fantasy lane (#713) enrolls **two** sources, not one, because its two
+subjects differ in shape and a registry entry holds one `Shape`. The lineup
+keys on the **team**, not the team-week — every state source keys on the
+entity whose state it is and re-enters live when the condition returns, and
+a per-week key would mint seventeen rows a season for one recurring
+condition. The waivers key on the **week**, not the deadline instant — this
+ADR's own fixed-coordinate clause: a commissioner moving the deadline is the
+same occurrence with a new `expires_at`, not a second ring. Both are
+`Writes::Both` and both are pinned by frozen key vectors in `sources.rs`.*
+
+*Amended 2026-10-14 ([#830](https://github.com/JddAndrewLauren/hummingbird/issues/830)):
+the Starling cockpit pushes its "waiting on you" alerts — a batch stopped at a
+gate or on a question — under `starling/v1`. It is a **state** source keyed on
+the cockpit's own attention item id, verbatim, so a re-post at a higher
+severity with the same `raised_at` escalates the one live row rather than
+minting a second, and a re-post carrying `resolved_at` takes it off the live
+stack. `Writes::Alerts` only (a pushed source has no snapshot to write) and no
+`expires_at`, ever: nothing about a waiting batch becomes untrue with time, so
+it stays live until the cockpit resolves it or the operator acks it — the
+expiry table below carries it as `none, ever`. ADR-0012's
+delivery rules are unchanged; this is one more pushed source. Pinned by the
+frozen table and a key vector in `sources.rs`.*
+
+*Amended 2026-10-15 ([#845](https://github.com/JddAndrewLauren/hummingbird/issues/845)):
+the operator's software factory, Auk, enrolls as `auk/v1` — a pushed state
+source that writes alerts only and never expires. Its key names the thing
+that waits, so a new wait on the same thing re-raises the same row, and the
+factory resolves the alert itself when the wait ends. Its severity is always
+`normal`; whether it rings is the operator's own Rule. With it comes a
+**per-token allowed link origin**: an ingest token may be minted with one
+`https` origin, and an alert it writes whose `url` is outside that origin
+(scheme, host and port, exactly) is refused with a validation error naming
+the source, so a stolen token cannot point the operator at a page of its
+choosing. The origin is set at mint, from the operator's terminal, and lives
+on the token's row — never checked in, since this repository is public, and
+replaced whenever the token is. An `auk/v1` token cannot be minted without
+one; every other source may carry one and behaves as before without it.
+Tapping such an alert lands on the alert, per
+[ADR-0027](0027-an-alert-opens-the-thing-it-is-about.md), whose link then
+opens the factory's map.*
 
 Two of these are judgment calls rather than consequences:
 
@@ -423,6 +489,23 @@ swipe-equals-ack, which ADR-0012 rejected outright.
 | `city-waste/v2` ***(#120)*** | end of the **later** of the scheduled and the slid-to collection date |
 | `gmail/v1`, `m365-mail/v1` | none, ever |
 | `github/v1`, `photo-site/v1` | none unless the event carries one |
+| `yahoo-lineup/v1` ***(#717)*** | the earliest kickoff among the invalid slots' eligible replacements (the lock the alert warns about) |
+| `yahoo-waivers/v1` ***(#717)*** | the waiver deadline instant |
+| `auk/v1` ***(#845)*** | none, ever |
+| `starling/v1` ***(#830)*** | none, ever |
+
+*Amended 2026-10-15 (#853, operator ruling): the `yahoo-lineup/v1` row's
+lock is each invalid slot's earliest eligible-replacement kickoff **capped at
+that slot's own occupant's kickoff**, then the minimum across invalid slots.*
+Yahoo locks the player being removed as well as the one being inserted, so an
+Out or IR starter whose game kicks off before every replacement's shuts the
+slot at his own kickoff. Over eligible replacements alone, that expiry would
+come after the slot could no longer be fixed. A starter already locked in at
+the fetch leaves his slot with no lock to name.
+
+*Amended 2026-10-15 (#845, a correction): the `auk/v1` row. The #845
+amendment above enrolls the source as one that never expires, but landed
+without the row that says so here.*
 
 A "meeting starts in 15 min" alert is genuinely meaningless once the meeting
 ends, and a slide alert once the pickup happened — both have a referent to

@@ -122,11 +122,8 @@ pub struct QuestionRosterEntry {
 /// names on the Status board is the one whose headline carries no subject
 /// of its own (`tile-copy.ts`: a separator-less headline keeps the
 /// question's label as its name), so the label is what that tile reads.
-/// Android
-/// still spells its own shorter Now-pane labels (`NowScreen.kt`'s
-/// `nowPaneLabel`) and keeps them until #716 renders this roster there — a
-/// divergence ADR-0034 decision 4 enters on purpose, because that surface
-/// owes a device run.
+/// Android reads them too since #716 (`QuestionLabels.kt`), on its Now and
+/// Status panes and in Settings.
 ///
 /// Wildcard-free by design; see the module header.
 pub fn question_label(question: StandingQuestion) -> &'static str {
@@ -137,6 +134,7 @@ pub fn question_label(question: StandingQuestion) -> &'static str {
         StandingQuestion::Weekend => "This weekend",
         StandingQuestion::Vacation => "Next vacation",
         StandingQuestion::Race => "When is the next race",
+        StandingQuestion::Fantasy => "Fantasy football",
         StandingQuestion::Kimi => "Kimi balance",
         StandingQuestion::Github => "GitHub workflows",
         StandingQuestion::Uptime => "Uptime",
@@ -162,6 +160,7 @@ pub fn question_bindings(question: StandingQuestion) -> &'static [BindingKey] {
         StandingQuestion::Weekend => &[],
         StandingQuestion::Vacation => &[BindingKey::TripsCalendar],
         StandingQuestion::Race => &[BindingKey::RaceSeries],
+        StandingQuestion::Fantasy => &[BindingKey::Fantasy],
         StandingQuestion::Kimi => &[],
         StandingQuestion::Github => &[],
         StandingQuestion::Uptime => &[],
@@ -249,7 +248,7 @@ mod tests {
             .filter(|entry| entry.surface == Surface::Now)
             .map(|entry| entry.question.as_str())
             .collect();
-        assert_eq!(now, ["homework", "scps", "waste", "weekend", "vacation", "race"]);
+        assert_eq!(now, ["homework", "scps", "waste", "weekend", "vacation", "race", "fantasy"]);
         let status: Vec<&str> = roster
             .iter()
             .filter(|entry| entry.surface == Surface::Status)
@@ -259,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn the_five_bound_questions_carry_their_key_and_the_rest_carry_none() {
+    fn the_six_bound_questions_carry_their_key_and_the_rest_carry_none() {
         let bound: Vec<(StandingQuestion, Vec<BindingKey>)> = question_roster()
             .into_iter()
             .filter(|entry| !entry.bindings.is_empty())
@@ -273,6 +272,7 @@ mod tests {
                 (StandingQuestion::Waste, vec![BindingKey::CityWastePage]),
                 (StandingQuestion::Vacation, vec![BindingKey::TripsCalendar]),
                 (StandingQuestion::Race, vec![BindingKey::RaceSeries]),
+                (StandingQuestion::Fantasy, vec![BindingKey::Fantasy]),
             ]
         );
     }

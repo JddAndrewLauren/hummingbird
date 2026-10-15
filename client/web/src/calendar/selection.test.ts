@@ -1,13 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { BindingDTO } from "../store/protocol";
-import {
-  acceptSelectionChange,
-  effectiveCalendarIds,
-  effectiveSelection,
-  toggleCalendarId,
-  tripsCalendarId,
-  unavailableSelectedIds,
-} from "./selection";
+import { effectiveCalendarSelection } from "../decisions/seam";
+import { toggleCalendarId, tripsCalendarId, unavailableSelectedIds } from "./selection";
 
 describe("toggleCalendarId", () => {
   it("adds an id that isn't selected yet", () => {
@@ -70,23 +64,42 @@ describe("tripsCalendarId", () => {
   });
 });
 
-describe("effectiveSelection", () => {
-  it("polls every ticked calendar on the standard horizon when nothing is bound", () => {
-    expect(effectiveSelection(["a", "b"], null)).toEqual([
+// ADR-0040 decision 8 (#843): the web's own `effectiveSelection` copy is
+// gone. These are the same cases it was pinned by, now run against the
+// core's rule through the decision seam — the only copy left.
+describe("effectiveCalendarSelection (the core's rule)", () => {
+  it("polls every ticked calendar at its own horizon when nothing is bound", () => {
+    expect(
+      effectiveCalendarSelection(
+        [
+          { id: "a", horizon: "standard" },
+          { id: "b", horizon: "long" },
+        ],
+        null,
+      ),
+    ).toEqual([
       { id: "a", horizon: "standard" },
-      { id: "b", horizon: "standard" },
+      { id: "b", horizon: "long" },
     ]);
   });
 
   it("adds the bound trips calendar nobody ticked, on the long horizon", () => {
-    expect(effectiveSelection(["a"], "trips@g")).toEqual([
+    expect(effectiveCalendarSelection([{ id: "a", horizon: "standard" }], "trips@g")).toEqual([
       { id: "a", horizon: "standard" },
       { id: "trips@g", horizon: "long" },
     ]);
   });
 
   it("does not list a ticked trips calendar twice, and gives it the long horizon", () => {
-    expect(effectiveSelection(["a", "trips@g"], "trips@g")).toEqual([
+    expect(
+      effectiveCalendarSelection(
+        [
+          { id: "a", horizon: "standard" },
+          { id: "trips@g", horizon: "standard" },
+        ],
+        "trips@g",
+      ),
+    ).toEqual([
       { id: "a", horizon: "standard" },
       { id: "trips@g", horizon: "long" },
     ]);
@@ -96,22 +109,14 @@ describe("effectiveSelection", () => {
     // Deriving rather than persisting is what makes this true: the old
     // calendar simply stops being polled, with nothing left behind that
     // would keep polling it forever with no on-screen reason why.
-    expect(effectiveCalendarIds(["a"], "old@g")).toEqual(["a", "old@g"]);
-    expect(effectiveCalendarIds(["a"], "new@g")).toEqual(["a", "new@g"]);
-  });
-});
-
-describe("acceptSelectionChange", () => {
-  it("refuses a change that unticks the bound trips calendar", () => {
-    expect(acceptSelectionChange(["a"], "trips@g")).toBeNull();
-  });
-
-  it("accepts an ordinary change and never persists the derived id", () => {
-    expect(acceptSelectionChange(["a", "b", "trips@g"], "trips@g")).toEqual(["a", "b"]);
-  });
-
-  it("accepts everything while nothing is bound", () => {
-    expect(acceptSelectionChange([], null)).toEqual([]);
-    expect(acceptSelectionChange(["a"], null)).toEqual(["a"]);
+    const ticked = [{ id: "a", horizon: "standard" as const }];
+    expect(effectiveCalendarSelection(ticked, "old@g").map((entry) => entry.id)).toEqual([
+      "a",
+      "old@g",
+    ]);
+    expect(effectiveCalendarSelection(ticked, "new@g").map((entry) => entry.id)).toEqual([
+      "a",
+      "new@g",
+    ]);
   });
 });

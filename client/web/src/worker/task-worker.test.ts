@@ -13,6 +13,7 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     pushApiKey: vi.fn(),
     rehydrateApiKey: vi.fn(),
     clearApiKey: vi.fn(),
+    reportNoApiKey: vi.fn(),
     capture: vi.fn().mockResolvedValue('{"kind":"ok","id":"item-1","error":null}'),
     act: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     triage: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
@@ -29,6 +30,14 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
       .mockReturnValue('{"kind":"ok","contexts":{"entries":[{"name":"@home","item_count":2}],"pending":false}}'),
     addContext: vi.fn().mockResolvedValue('{"kind":"ok","error":null,"cleared":null}'),
     removeContext: vi.fn().mockResolvedValue('{"kind":"ok","error":null,"cleared":2}'),
+    calendarPrefs: vi
+      .fn()
+      .mockReturnValue(
+        '{"kind":"ok","prefs":{"connected":true,"selection":[{"id":"work@g","horizon":"long"}],"pending":false}}',
+      ),
+    toggleCalendar: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
+    setCalendarConnected: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
+    seedCalendarPrefs: vi.fn().mockResolvedValue('{"kind":"ok","seed":"seeded","error":null}'),
     questionSwitches: vi.fn().mockReturnValue('{"kind":"ok","switches":[]}'),
     kindRegistry: vi
       .fn()
@@ -55,6 +64,7 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     createProjectLink: vi.fn().mockResolvedValue('{"kind":"ok","id":"link-1","error":null}'),
     patchProjectLink: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     fileLinks: vi.fn().mockReturnValue('{"kind":"ok","links":[]}'),
+    grills: vi.fn().mockReturnValue('{"kind":"ok","grills":[]}'),
     createFileLink: vi.fn().mockResolvedValue('{"kind":"ok","id":"file-link-1","error":null}'),
     removeFileLink: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     route: vi.fn().mockReturnValue('{"kind":"ok","route":null}'),
@@ -182,6 +192,14 @@ describe("handleTaskRequest", () => {
     const posted = await run({ type: "clearTaskApiKey" }, host);
 
     expect(host.clearApiKey).toHaveBeenCalledTimes(1);
+    expect(posted).toEqual([]);
+  });
+
+  it("reportNoTaskApiKey forwards the absence report to the host and posts nothing back", async () => {
+    const host = fakeHost();
+    const posted = await run({ type: "reportNoTaskApiKey" }, host);
+
+    expect(host.reportNoApiKey).toHaveBeenCalledTimes(1);
     expect(posted).toEqual([]);
   });
 
@@ -625,7 +643,7 @@ describe("handleTaskRequest", () => {
 
   it("capture also drains and posts any credential event the cycle recorded", async () => {
     const host = fakeHost({
-      takeEvents: vi.fn().mockReturnValue('[{"kind":"credential_needed","at_ms":5000}]'),
+      takeEvents: vi.fn().mockReturnValue('[{"kind":"credential_changed","arm":"reprompt"}]'),
     });
     const posted = await run(
       {
@@ -641,7 +659,7 @@ describe("handleTaskRequest", () => {
 
     expect(posted).toEqual([
       { type: "captureResult", seed: "seed-1", kind: "ok", id: "item-1", error: null },
-      { type: "taskEvents", events: [{ kind: "credential_needed", atMs: 5000 }] },
+      { type: "taskEvents", events: [{ kind: "credential_changed", arm: "reprompt" }] },
     ]);
   });
 
@@ -915,6 +933,54 @@ describe("handleTaskRequest", () => {
     expect(await run({ type: "getFileLinks", itemId: "item-1" }, host)).toEqual([]);
   });
 
+  // #358's Grill history: a mirror read, every snake_case column crossing
+  // to camelCase, and never a transcript (the sweep carries none).
+  it("getGrills maps every raw grill to its camelCase DTO, alongside the requested item id", async () => {
+    const rawGrill = {
+      id: "grill-1",
+      item_id: "item-1",
+      summary: "Needs a plumber's quote first",
+      verdict: "fog_remains",
+      model_proposal: '{"title":"Get a quote"}',
+      applied_patch: '{"title":"Get two quotes"}',
+      resulting_stage: "grilling",
+      completed_at: 7_000,
+      version: 3,
+    };
+    const host = fakeHost({
+      grills: vi.fn().mockReturnValue(JSON.stringify({ kind: "ok", grills: [rawGrill] })),
+    });
+    const posted = await run({ type: "getGrills", itemId: "item-1" }, host);
+
+    expect(posted).toEqual([
+      {
+        type: "grills",
+        itemId: "item-1",
+        grills: [
+          {
+            id: "grill-1",
+            itemId: "item-1",
+            summary: "Needs a plumber's quote first",
+            verdict: "fog_remains",
+            modelProposal: '{"title":"Get a quote"}',
+            appliedPatch: '{"title":"Get two quotes"}',
+            resultingStage: "grilling",
+            completedAt: 7_000,
+            version: 3,
+          },
+        ],
+      },
+    ]);
+    expect(host.grills).toHaveBeenCalledWith("item-1");
+  });
+
+  it('getGrills posts nothing when the host answers "busy"', async () => {
+    const host = fakeHost({
+      grills: vi.fn().mockReturnValue('{"kind":"busy","grills":[]}'),
+    });
+    expect(await run({ type: "getGrills", itemId: "item-1" }, host)).toEqual([]);
+  });
+
   it("createFileLink hands the host the seed, item, path and clock, and posts the result keyed by seed and item", async () => {
     const host = fakeHost();
     const posted = await run(
@@ -1150,7 +1216,7 @@ describe("handleTaskRequest", () => {
       runSync: vi.fn().mockResolvedValue(
         '{"kind":"credential_needed","retry_after_ms":null,"active_item_count":null,"was_full_sweep":null,"dead_lettered":0}',
       ),
-      takeEvents: vi.fn().mockReturnValue('[{"kind":"credential_needed","at_ms":9000}]'),
+      takeEvents: vi.fn().mockReturnValue('[{"kind":"credential_changed","arm":"reprompt"}]'),
     });
 
     const posted = await run(
@@ -1168,7 +1234,7 @@ describe("handleTaskRequest", () => {
         deadLettered: 0,
         atMs: 9_000,
       },
-      { type: "taskEvents", events: [{ kind: "credential_needed", atMs: 9000 }] },
+      { type: "taskEvents", events: [{ kind: "credential_changed", arm: "reprompt" }] },
       { type: "queueDepth", depth: 0 },
       { type: "deadLetters", entries: [] },
     ]);
@@ -1464,6 +1530,53 @@ describe("handleTaskRequest", () => {
         .mockReturnValue('{"kind":"busy","contexts":{"entries":[],"pending":false}}'),
     });
     expect(await run({ type: "getSuggestedContexts" }, busy)).toEqual([]);
+  });
+
+  it("getCalendarPrefs posts the synced choices as they cross, and nothing when busy", async () => {
+    expect(await run({ type: "getCalendarPrefs" }, fakeHost())).toEqual([
+      {
+        type: "calendarPrefs",
+        prefs: { connected: true, selection: [{ id: "work@g", horizon: "long" }], pending: false },
+      },
+    ]);
+    const busy = fakeHost({
+      calendarPrefs: vi
+        .fn()
+        .mockReturnValue('{"kind":"busy","prefs":{"connected":false,"selection":[],"pending":false}}'),
+    });
+    // A busy placeholder reads "not connected"; posting it would park the
+    // calendar lane over a read nobody made.
+    expect(await run({ type: "getCalendarPrefs" }, busy)).toEqual([]);
+  });
+
+  it("the calendar writes reach the host and answer by seed", async () => {
+    const host = fakeHost({
+      toggleCalendar: vi.fn().mockResolvedValue('{"kind":"locked","error":"the Trips calendar is always polled while it is bound"}'),
+    });
+    expect(await run({ type: "toggleCalendar", seed: "s-1", id: "trips@g", nowMs: 1_000 }, host)).toEqual([
+      {
+        type: "calendarPrefsEditResult",
+        seed: "s-1",
+        kind: "locked",
+        error: "the Trips calendar is always polled while it is bound",
+      },
+    ]);
+    expect(host.toggleCalendar).toHaveBeenCalledWith("s-1", "trips@g", 1_000);
+    expect(
+      await run({ type: "setCalendarConnected", seed: "s-2", connected: true, nowMs: 2_000 }, host),
+    ).toEqual([{ type: "calendarPrefsEditResult", seed: "s-2", kind: "ok", error: null }]);
+    expect(host.setCalendarConnected).toHaveBeenCalledWith("s-2", true, 2_000);
+  });
+
+  it("seedCalendarPrefs hands the old ids over as JSON and posts the core's outcome", async () => {
+    const host = fakeHost();
+    expect(
+      await run(
+        { type: "seedCalendarPrefs", seed: "s-3", connected: true, selectedIds: ["a", "b"], nowMs: 3_000 },
+        host,
+      ),
+    ).toEqual([{ type: "seedCalendarPrefsResult", seed: "s-3", kind: "ok", outcome: "seeded" }]);
+    expect(host.seedCalendarPrefs).toHaveBeenCalledWith("s-3", true, '["a","b"]', 3_000);
   });
 
   it("getQuestionSwitches posts every question's state", async () => {

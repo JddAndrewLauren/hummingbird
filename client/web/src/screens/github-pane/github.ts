@@ -28,8 +28,8 @@ import { isStaleFreshness } from "../questions/freshness";
 // `githubGapReason`.
 
 /** These five constants stay literal TS, pinned against `github_constants_json()`
- * by `seam.test.ts` — `question.ts` builds `sources: [SOURCE]` at module
- * evaluation, exactly `waste.ts`'s own arrangement. */
+ * by `seam.test.ts` — `waste.ts`'s own arrangement, whose header says why
+ * (and what #820 changed about it). */
 export const SOURCE = "github-hummingbird/v1";
 export const NEVER_POLLED_SUBJECT = "pending";
 export const STALE_AFTER_MS = 6 * 60 * 60 * 1000;

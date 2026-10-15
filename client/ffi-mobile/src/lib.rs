@@ -97,7 +97,8 @@ use hummingbird_core::decisions::panes::inputs::{
 use hummingbird_core::freshness::Freshness;
 use hummingbird_core::decisions::panes::zone::{ZoneFact, ZoneFacts, ZoneQuery};
 use hummingbird_core::decisions::panes::{
-    github, homework, kimi, poller, race, reachability, scps, uptime, vacation, waste, weekend,
+    fantasy, github, homework, kimi, poller, race, reachability, scps, uptime, vacation, waste,
+    weekend,
 };
 use hummingbird_core::diagnostics::{DiagnosticClock, DiagnosticSession, DiagnosticsContext};
 use hummingbird_core::pane::PaneEnvelope;
@@ -106,11 +107,14 @@ use hummingbird_core::storage::FsSnapshotStore;
 use hummingbird_core::sync::write::transport::{
     HttpMethod, MutationRequest, MutationTransport,
 };
-use hummingbird_core::sync::write::ReqwestMutationTransport;
+use hummingbird_core::sync::write::{DirectTransport, ReqwestMutationTransport};
 use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
+use hummingbird_core::decisions::devices;
+use hummingbird_core::devices::{DevicesOutcome, RevokeOutcome, SignInOutcome};
 use hummingbird_core::{search, CaptureOptions, Core, CoreCycleOutcome, CoreEvent, ItemAction};
 use hummingbird_domain::{
-    Alert, Condition, CreatePushTarget, Energy, FieldType, Item, Platform, Rule, Size, Stage, Tier,
+    Alert, Condition, CreatePushTarget, DeviceInfo, DeviceListPlatform, DevicePlatform, Energy,
+    FieldType, Item, Platform, Rule, Size, Stage, Tier,
 };
 use hummingbird_rules_engine::Operator;
 
@@ -652,19 +656,20 @@ impl std::fmt::Display for MobilePushRegistrationError {
 impl std::error::Error for MobilePushRegistrationError {}
 
 /// One drained [`CoreEvent`], as the mobile hosts' shape — the same
-/// `kind`/`at_ms` pair `ffi-web`'s `TaskEventDTO` carries, so the two FFI
-/// surfaces stay nameable in one breath.
+/// `kind`/`arm` pair `ffi-web`'s `TaskEventDTO` carries, so the two FFI
+/// surfaces stay nameable in one breath. `arm` is the
+/// [`hummingbird_core::CredentialArm`]'s wire name (#846) — never the token.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct MobileEvent {
     pub kind: String,
-    pub at_ms: i64,
+    pub arm: String,
 }
 
 fn map_event(event: CoreEvent) -> MobileEvent {
     match event {
-        CoreEvent::CredentialNeeded { at_ms } => MobileEvent {
-            kind: "credential_needed".to_string(),
-            at_ms,
+        CoreEvent::CredentialChanged { arm } => MobileEvent {
+            kind: "credential_changed".to_string(),
+            arm: arm.as_str().to_string(),
         },
     }
 }
@@ -2280,10 +2285,13 @@ fn to_backtest_item(item: &Item, occurred_at_utc: String) -> rules::BacktestItem
 // with a `debug_assert!`, which compiles out of the APK: the guarantee held
 // in CI and nowhere the phone runs. The decision: the mobile seam carries
 // the guarantee **at runtime, by construction, in the web's shape** —
-// [`mobile_pane_inputs`] reads `panes::required_sources`, the core's
-// restatement of the web's per-question `requiredSources`, where each pane
-// declares its own source and only the poller question derives from the
-// registry. A retirement therefore cannot blank an Android pane in any
+// [`mobile_pane_inputs`] reads `panes::required_sources`, the union of
+// `panes::question_sources`, where each pane declares its own source and
+// only the poller question derives from the registry. **Since #820 that is
+// the only declaration**: the web's `usePaneReadsWiring.ts` reads the same
+// union through `ffi-web`'s `required_sources_json`, and its per-question
+// TS `sources` copy is gone, so the two clients' pane-read sets cannot
+// drift. A retirement therefore cannot blank an Android pane in any
 // build: the loop never consulted the registry for the sunk five, so it
 // has nothing to lose there, and there is no assertion left to compile
 // out. The core's own test pins that the union names every sunk pane's
@@ -2335,6 +2343,7 @@ pub enum MobileStandingQuestion {
     Weekend,
     Vacation,
     Race,
+    Fantasy,
     Kimi,
     Github,
     Uptime,
@@ -2352,6 +2361,7 @@ fn map_standing_question(question: StandingQuestion) -> MobileStandingQuestion {
         StandingQuestion::Weekend => MobileStandingQuestion::Weekend,
         StandingQuestion::Vacation => MobileStandingQuestion::Vacation,
         StandingQuestion::Race => MobileStandingQuestion::Race,
+        StandingQuestion::Fantasy => MobileStandingQuestion::Fantasy,
         StandingQuestion::Kimi => MobileStandingQuestion::Kimi,
         StandingQuestion::Github => MobileStandingQuestion::Github,
         StandingQuestion::Uptime => MobileStandingQuestion::Uptime,
@@ -2370,6 +2380,7 @@ fn unmap_standing_question(question: MobileStandingQuestion) -> StandingQuestion
         MobileStandingQuestion::Weekend => StandingQuestion::Weekend,
         MobileStandingQuestion::Vacation => StandingQuestion::Vacation,
         MobileStandingQuestion::Race => StandingQuestion::Race,
+        MobileStandingQuestion::Fantasy => StandingQuestion::Fantasy,
         MobileStandingQuestion::Kimi => StandingQuestion::Kimi,
         MobileStandingQuestion::Github => StandingQuestion::Github,
         MobileStandingQuestion::Uptime => StandingQuestion::Uptime,
@@ -2398,10 +2409,8 @@ pub struct MobileQuestionRosterEntry {
 /// never the three per-question functions behind it, so it cannot hold an
 /// opinion about which questions exist.
 ///
-/// **Android does not render this yet.** ADR-0034 decision 4 splits the
-/// rendering into #716 on purpose — that surface has no emulator matrix, so
-/// a UI change there owes a device run — and this slice lands the door so
-/// #716 is rendering-only.
+/// Android renders it since #716: Settings' `Standing questions` section,
+/// and every Now and Status pane's label (`QuestionLabels.kt`).
 #[uniffi::export]
 pub fn question_roster() -> Vec<MobileQuestionRosterEntry> {
     hummingbird_core::decisions::question_roster()
@@ -3136,6 +3145,70 @@ fn map_race_resolved(resolved: race::RaceResolved) -> MobileRaceResolved {
     }
 }
 
+/// [`fantasy::FantasySetup`]'s **kind**, mirrored — [`MobileRaceSetup`]'s
+/// twin, with the payload (`leagues`) dropped for its reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileFantasySetup {
+    Bound,
+    Unread,
+    Unusable,
+    Unset,
+}
+
+fn map_fantasy_setup(setup: fantasy::FantasySetup) -> MobileFantasySetup {
+    match setup {
+        fantasy::FantasySetup::Bound { .. } => MobileFantasySetup::Bound,
+        fantasy::FantasySetup::Unread => MobileFantasySetup::Unread,
+        fantasy::FantasySetup::Unusable => MobileFantasySetup::Unusable,
+        fantasy::FantasySetup::Unset => MobileFantasySetup::Unset,
+    }
+}
+
+/// [`fantasy::FantasySubject`], mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileFantasySubject {
+    Lineup,
+    Waivers,
+}
+
+fn map_fantasy_subject(subject: fantasy::FantasySubject) -> MobileFantasySubject {
+    match subject {
+        fantasy::FantasySubject::Lineup => MobileFantasySubject::Lineup,
+        fantasy::FantasySubject::Waivers => MobileFantasySubject::Waivers,
+    }
+}
+
+/// [`fantasy::FantasyGap`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobileFantasyGap {
+    NotFetched,
+    Malformed { reason: String },
+    UnknownSchema { schema: String },
+    BodyNotRead,
+}
+
+/// [`fantasy::FantasyResolved`], mirrored — only its gap arm exists yet
+/// (#717; the fact sets arrive with #718/#719).
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobileFantasyResolved {
+    Gap { gap: MobileFantasyGap },
+}
+
+fn map_fantasy_resolved(resolved: fantasy::FantasyResolved) -> MobileFantasyResolved {
+    match resolved {
+        fantasy::FantasyResolved::Gap { gap } => MobileFantasyResolved::Gap {
+            gap: match gap {
+                fantasy::FantasyGap::NotFetched => MobileFantasyGap::NotFetched,
+                fantasy::FantasyGap::Malformed { reason } => MobileFantasyGap::Malformed { reason },
+                fantasy::FantasyGap::UnknownSchema { schema } => {
+                    MobileFantasyGap::UnknownSchema { schema }
+                }
+                fantasy::FantasyGap::BodyNotRead => MobileFantasyGap::BodyNotRead,
+            },
+        },
+    }
+}
+
 /// [`kimi::KimiGap`], mirrored.
 #[derive(Debug, Clone, PartialEq, uniffi::Enum)]
 pub enum MobileKimiGap {
@@ -3494,6 +3567,14 @@ pub enum MobilePaneFacts {
     Weekend { resolved: MobileWeekendResolved },
     Vacation { resolved: Option<MobileVacationResolved> },
     Race { setup: MobileRaceSetup, resolved: MobileRaceResolved },
+    /// One per `(league, subject)` — `subjectKey` on the enclosing
+    /// [`MobileRankedPane`] names which; `subject` is that key's parse, so
+    /// a host never splits the string itself.
+    Fantasy {
+        setup: MobileFantasySetup,
+        subject: Option<MobileFantasySubject>,
+        resolved: MobileFantasyResolved,
+    },
     Kimi { resolved: MobileKimiResolved },
     Github { resolved: MobileWorkflowResolved },
     Uptime { resolved: MobileProbeResolved },
@@ -3804,9 +3885,8 @@ fn mobile_pane_inputs(
         calendar_connected: calendar.connected,
         items,
         sync: to_sync_facts(sync),
-        // #715: passed straight through as `Core` decided it — the phone
-        // honours a question switched off in the browser without being able
-        // to change it (ADR-0034 decision 4; #716 renders the toggle).
+        // #715: passed straight through as `Core` decided it — a question
+        // switched off on either client (Settings' toggle since #716).
         disabled_questions: core.disabled_questions(),
     }
 }
@@ -3862,6 +3942,14 @@ fn mobile_pane_facts_of(
             // unacquired) plus the setup kind above are what route the
             // rendering.
             resolved: map_race_resolved(race::race_facts(subject_key, inputs)),
+        },
+        StandingQuestion::Fantasy => MobilePaneFacts::Fantasy {
+            setup: map_fantasy_setup(fantasy::fantasy_setup(inputs)),
+            subject: fantasy::parse_subject_key(subject_key)
+                .map(|(_, subject)| map_fantasy_subject(subject)),
+            // A sentinel subject has no row, so it resolves to its own
+            // honest `NotFetched`; the setup kind routes the rendering.
+            resolved: map_fantasy_resolved(fantasy::fantasy_facts(subject_key, inputs)),
         },
         StandingQuestion::Kimi => {
             MobilePaneFacts::Kimi { resolved: map_kimi_resolved(kimi::kimi_facts(inputs)) }
@@ -3971,6 +4059,86 @@ pub struct MobileCalendarSelection {
     pub long_horizon: bool,
 }
 
+/// The calendar choices as the phone's Settings draws them (ADR-0040
+/// decision 8) — the synced rows, read through the core, never this
+/// device's own copy. An **applied result**: `polled` is
+/// [`hummingbird_core::Core::effective_calendar_selection`], so Kotlin never
+/// restates the Trips union, and `locked_id` is the bound Trips calendar
+/// whose row the picker draws checked and disabled.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileCalendarPrefs {
+    pub connected: bool,
+    /// The ticked calendars, each with its horizon — the synced row.
+    pub selections: Vec<MobileCalendarSelection>,
+    /// What this device polls: `selections` plus the bound Trips calendar.
+    pub polled: Vec<MobileCalendarSelection>,
+    pub locked_id: Option<String>,
+    /// Whether an unconfirmed local write is overlaid on either row.
+    pub pending: bool,
+}
+
+/// What [`MobileTaskHost::seed_calendar_prefs`] did with the phone's old
+/// DataStore copy — [`hummingbird_core::calendar_prefs::CalendarSeed`]
+/// verbatim. Only `NotYet` means keep the local values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileCalendarSeed {
+    NotYet,
+    Seeded,
+    Adopted,
+}
+
+/// Why a calendar-choice edit did not land. `Locked` (the bound Trips
+/// calendar) and `NotSelected` (a horizon for an unticked calendar) are
+/// refused before anything is enqueued; `WriteFailed` is a durability
+/// failure.
+#[derive(Debug, uniffi::Error)]
+pub enum MobileCalendarEditError {
+    Locked,
+    NotSelected,
+    WriteFailed { detail: String },
+}
+
+impl std::fmt::Display for MobileCalendarEditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MobileCalendarEditError::Locked => {
+                write!(f, "the Trips calendar is always polled while it is bound")
+            }
+            MobileCalendarEditError::NotSelected => write!(f, "that calendar is not ticked"),
+            MobileCalendarEditError::WriteFailed { detail } => write!(f, "{detail}"),
+        }
+    }
+}
+
+impl std::error::Error for MobileCalendarEditError {}
+
+impl<E: std::fmt::Debug> From<hummingbird_core::CalendarPrefsError<E>> for MobileCalendarEditError {
+    fn from(error: hummingbird_core::CalendarPrefsError<E>) -> Self {
+        match error {
+            hummingbird_core::CalendarPrefsError::Locked => MobileCalendarEditError::Locked,
+            hummingbird_core::CalendarPrefsError::NotSelected => MobileCalendarEditError::NotSelected,
+            hummingbird_core::CalendarPrefsError::Snapshot(error) => {
+                MobileCalendarEditError::WriteFailed { detail: error.to_string() }
+            }
+        }
+    }
+}
+
+/// The synced calendar rows plus the Trips binding, read out from under
+/// `inner`'s lock in one go and handed to [`CalendarHalf::reconcile`] —
+/// the lock discipline [`CalendarHalf`]'s header states.
+struct SyncedCalendar {
+    connected: bool,
+    selection: Vec<CalendarSelection>,
+    trips_id: Option<String>,
+}
+
+/// What [`CalendarHalf::reconcile`] changed.
+struct Reconciled {
+    newly_connected: bool,
+    selection_moved: bool,
+}
+
 /// What one timer tick did: the poll's own outcome name (the same
 /// vocabulary `client/web/src/store/protocol.ts` matches on) plus the
 /// connection state the tick left the device in.
@@ -3988,6 +4156,13 @@ fn to_calendar_selection(selection: &MobileCalendarSelection) -> CalendarSelecti
         } else {
             CalendarHorizon::Standard
         },
+    }
+}
+
+fn to_mobile_selection(selection: &CalendarSelection) -> MobileCalendarSelection {
+    MobileCalendarSelection {
+        id: selection.id.clone(),
+        long_horizon: selection.horizon == CalendarHorizon::Long,
     }
 }
 
@@ -4015,23 +4190,17 @@ struct CalendarHalf {
     host: CalendarHostCore<FsSnapshotStore>,
     client: reqwest::Client,
     base_url: String,
-    /// The opt-in flag, as this process currently believes it. Durably the
-    /// host's (Preferences DataStore, beside `FrontierPrefs`), handed back
-    /// at each launch through [`MobileTaskHost::init_calendar`] — a flag,
-    /// never a credential (`calendar/persistence.ts`'s own distinction).
+    /// The opt-in flag, as this process last applied it. Durably the
+    /// synced `calendar-connected` row (ADR-0040 decision 8), read through
+    /// the core at [`MobileTaskHost::init_calendar`], every tick and every
+    /// [`MobileTaskHost::sync_calendar_prefs`] — a preference, never a
+    /// credential.
     opted_in: bool,
     /// The expiry of the access token currently pushed into `host`, or
     /// `None` when none is.
     expires_at_ms: Option<i64>,
     /// The last mint's failure code, or `None` if it succeeded.
     last_error: Option<&'static str>,
-    /// The **device's own** ticked calendars, as the picker last wrote them
-    /// — never the polled set. What is actually polled is
-    /// [`hummingbird_core::calendar::effective_selection`] over this plus
-    /// the synced `trips-calendar` binding, re-derived on every push and
-    /// every tick, so a binding that arrives by sync starts being polled
-    /// without the operator touching the picker.
-    stored_selections: Vec<CalendarSelection>,
 }
 
 /// One mirrored event, as a pane rule reads it — `inputs.rs`'s trimmed
@@ -4120,13 +4289,38 @@ impl CalendarHalf {
         }
     }
 
-    /// Pushes the polled set: this device's picks unioned with the bound
-    /// Trips calendar, which is always polled and always at the long
-    /// horizon. `effectiveSelection`'s rule, read out of core so there is
-    /// no ffi-side copy of it.
-    fn apply_selection(&self, trips_id: Option<&str>) {
-        self.host
-            .set_calendar_selections(effective_selection(&self.stored_selections, trips_id));
+    /// Brings this process in line with the synced rows: pushes the polled
+    /// set — the synced selection unioned with the bound Trips calendar,
+    /// always at the long horizon (`effective_selection`, read out of core
+    /// so there is no ffi-side copy of it) — and applies the synced
+    /// connected flag. A device another device disconnected stops here:
+    /// its token is disposed of, as [`MobileTaskHost::disconnect_calendar`]
+    /// does. Re-run on every door into the lane, so a choice made on the
+    /// web starts (or stops) polling here without the operator opening
+    /// Settings.
+    fn reconcile(&mut self, synced: &SyncedCalendar) -> Reconciled {
+        let polled = effective_selection(&synced.selection, synced.trips_id.as_deref());
+        let selection_moved = self.host.calendar_selections() != polled;
+        if selection_moved {
+            self.host.set_calendar_selections(polled);
+        }
+        let newly_connected = synced.connected && !self.opted_in;
+        if !synced.connected && self.opted_in {
+            self.forget_token();
+        }
+        self.opted_in = synced.connected;
+        Reconciled {
+            newly_connected,
+            selection_moved,
+        }
+    }
+
+    /// Drops the held access token and its bookkeeping — the disconnect
+    /// gesture's credential half.
+    fn forget_token(&mut self) {
+        self.expires_at_ms = None;
+        self.last_error = None;
+        self.host.clear_token();
     }
 
     /// Whether the held token is close enough to expiry to rotate now —
@@ -4198,33 +4392,19 @@ impl MobileTaskHost {
     /// a directory path on mobile targets; the host supplies its app-local
     /// files dir (ADR-0003: the namespace is the one thing the host
     /// contributes at init). `base_url` is the authority's origin,
-    /// host-supplied for the same reason. `api_key` is whatever device
-    /// token the host already holds — often empty at first launch; it is
-    /// never persisted by the core ([`Core::init`]'s own doc), and
-    /// [`MobileTaskHost::push_api_key`] /
-    /// [`MobileTaskHost::rehydrate_api_key`] supply it afterwards.
+    /// host-supplied for the same reason. Takes no credential (#846): the
+    /// core starts in `unknown`, and the host's start-up token load calls
+    /// [`MobileTaskHost::rehydrate_api_key`] with a stored token or
+    /// [`MobileTaskHost::report_no_api_key`] without one — see
+    /// [`Core::init`].
     #[uniffi::constructor]
-    pub async fn init(
-        namespace: String,
-        base_url: String,
-        api_key: String,
-    ) -> Result<Arc<Self>, MobileInitError> {
-        let empty_key = api_key.is_empty();
-        let shadow_key = (!empty_key).then(|| api_key.clone());
+    pub async fn init(namespace: String, base_url: String) -> Result<Arc<Self>, MobileInitError> {
         let namespace_path = namespace.clone();
-        let mut core = Core::init(namespace, api_key)
+        let core = Core::init(namespace)
             .await
             .map_err(|error| MobileInitError::InitFailed {
                 detail: error.to_string(),
             })?;
-        // `Core::init` holds whatever string it is given — including `""`,
-        // which would then be *sent* as a bearer token. An empty key from
-        // the host means "no token yet", so map it to the core's explicit
-        // no-credential state: `run` answers `no_credential` and reaches no
-        // transport, instead of `pull_failed` after a doomed request.
-        if empty_key {
-            core.clear_api_key();
-        }
         let client = reqwest_client();
         let read_transport = ReqwestSyncTransport::new(client.clone(), base_url.clone());
         let write_transport = ReqwestMutationTransport::new(client.clone(), base_url.clone());
@@ -4232,8 +4412,8 @@ impl MobileTaskHost {
         // host-supplied namespace, sibling to the queue/mirror/grill-draft
         // files `Core::init` just laid down (ADR-0003: the namespace is the
         // one thing the host contributes). Selections start empty — a
-        // never-opted-in device polls nothing — and arrive at
-        // `init_calendar`.
+        // never-opted-in device polls nothing — and are read from the
+        // synced rows at `init_calendar`.
         let calendar = CalendarHalf {
             host: CalendarHostCore::new(
                 FsSnapshotStore::new(std::path::Path::new(&namespace_path).join("calendar.json")),
@@ -4244,14 +4424,13 @@ impl MobileTaskHost {
             opted_in: false,
             expires_at_ms: None,
             last_error: None,
-            stored_selections: Vec::new(),
         };
         Ok(Arc::new(Self {
             inner: tokio::sync::Mutex::new(Inner {
                 core,
                 read_transport,
                 write_transport,
-                api_key: shadow_key,
+                api_key: None,
             }),
             calendar: tokio::sync::Mutex::new(calendar),
             core_owner: core_lock::CoreOwnershipTracker::new(),
@@ -4385,8 +4564,7 @@ impl MobileTaskHost {
     /// a constant of the build and this is device state, which is why they
     /// are two doors (`decisions::questions`'s own header).
     ///
-    /// **Android does not render this yet** (#716); the door lands here so
-    /// that slice is rendering-only.
+    /// Settings' question rows draw it since #716.
     pub async fn question_switches(&self) -> Vec<MobileQuestionSwitch> {
         self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await
             .core
@@ -4436,11 +4614,12 @@ impl MobileTaskHost {
     }
 
     /// A fresh device token from the person (first entry, or rotation
-    /// after a `credential_needed` event). Always resumes a hold — see
+    /// after a `credential_changed` event in `reprompt`). Always resumes a hold — see
     /// [`Core::push_api_key`].
     pub async fn push_api_key(&self, api_key: String) {
         let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
-        inner.api_key = Some(api_key.clone());
+        // An empty key is a clear, in the shadow as in the core (#846).
+        inner.api_key = (!api_key.is_empty()).then(|| api_key.clone());
         inner.core.push_api_key(api_key);
     }
 
@@ -4448,7 +4627,10 @@ impl MobileTaskHost {
     /// resuming a hold — see [`Core::rehydrate_api_key`].
     pub async fn rehydrate_api_key(&self, api_key: String) {
         let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
-        inner.api_key = Some(api_key.clone());
+        // An empty key is an absence report, which withdraws nothing (#846).
+        if !api_key.is_empty() {
+            inner.api_key = Some(api_key.clone());
+        }
         inner.core.rehydrate_api_key(api_key);
     }
 
@@ -4458,6 +4640,55 @@ impl MobileTaskHost {
         let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
         inner.api_key = None;
         inner.core.clear_api_key();
+    }
+
+    /// #846: the host's start-up token load read its storage and found
+    /// nothing (empty or unreadable alike) — moves the core from `unknown`
+    /// to `unset`. See [`Core::report_no_api_key`].
+    pub async fn report_no_api_key(&self) {
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings)
+            .await
+            .core
+            .report_no_api_key();
+    }
+
+    /// Where this device's credential stands (#846): one of `unknown`,
+    /// `unset`, `resting`, `reprompt` — see [`Core::credential_arm`].
+    pub async fn credential_arm(&self) -> String {
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read)
+            .await
+            .core
+            .credential_arm()
+            .as_str()
+            .to_string()
+    }
+
+    /// Trades a Google ID token from Credential Manager for this phone's
+    /// token (#839, ADR-0040 decisions 1 and 3) — always as the `android`
+    /// platform: the watch never signs in (ADR-0039 is not amended), so
+    /// this seam has no other platform to name. Holds nothing: on
+    /// `SignedIn` the app stores the token and then calls
+    /// [`MobileTaskHost::push_api_key`] with it.
+    pub async fn sign_in_with_google(&self, id_token: String, name: String) -> MobileSignInOutcome {
+        let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
+        sign_in_in(&inner, &inner.write_transport, &id_token, &name).await
+    }
+
+    /// The operator's devices (#839, ADR-0040 decision 6) — the
+    /// authority's rows; [`device_rows`] orders and words them.
+    pub async fn devices(&self) -> MobileDevicesOutcome {
+        let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
+        let transport = inner.write_transport.clone();
+        devices_in(&mut inner, &transport).await
+    }
+
+    /// Signs one device out (#839, ADR-0040 decision 6). `SignedOut` means
+    /// it was this one: the core and this seam's shadow both drop the
+    /// credential, and every queued write stays queued.
+    pub async fn revoke_device(&self, id: String) -> MobileRevokeOutcome {
+        let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
+        let transport = inner.write_transport.clone();
+        revoke_device_in(&mut inner, &transport, &id).await
     }
 
     /// Runs one observed sync cycle against the live transports (#769).
@@ -4694,8 +4925,9 @@ impl MobileTaskHost {
             .collect()
     }
 
-    /// Drains queued [`CoreEvent`]s (today: `credential_needed`) — a
-    /// pull-based drain, never a host-implemented callback (ADR-0003).
+    /// Drains queued [`CoreEvent`]s (today: `credential_changed`, carrying
+    /// the arm, #846) — a pull-based drain, never a host-implemented
+    /// callback (ADR-0003).
     pub async fn take_events(&self) -> Vec<MobileEvent> {
         self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Read).await
             .core
@@ -5704,28 +5936,22 @@ impl MobileTaskHost {
     // same `CalendarHostCore`. See the `CalendarHalf` section above for why
     // the token never crosses this seam.
 
-    /// Re-arms the lane at app start from the host's persisted state: the
-    /// opt-in flag and the picked calendars, both DataStore-owned
-    /// (Slice 3), neither a credential. An opted-in device mints once here,
-    /// so a launch that is online is already connected by the time Settings
-    /// renders; a never-opted-in one does nothing and stays
+    /// Arms the lane at app start from the **synced** calendar choices
+    /// (ADR-0040 decision 8): the connected flag and the ticked calendars
+    /// are rows every device reads, so a device another one connected
+    /// starts polling without a Connect tap here. A connected device mints
+    /// once, so a launch that is online is already connected by the time
+    /// Settings renders; a not-connected one does nothing and stays
     /// [`MobileCalendarState::NeverConnected`] — `initConnection`'s own
     /// two-branch shape.
-    pub async fn init_calendar(
-        &self,
-        was_previously_connected: bool,
-        selections: Vec<MobileCalendarSelection>,
-    ) -> MobileCalendarConnection {
+    pub async fn init_calendar(&self) -> MobileCalendarConnection {
         let device_token = self.device_token().await;
-        let trips_id = self.trips_calendar_id().await;
+        let synced = self.synced_calendar().await;
         let mut calendar = self.calendar.lock().await;
-        calendar.stored_selections = selections.iter().map(to_calendar_selection).collect();
-        calendar.apply_selection(trips_id.as_deref());
-        if !was_previously_connected {
-            return calendar.connection();
+        calendar.reconcile(&synced);
+        if calendar.opted_in {
+            calendar.mint(device_token.as_deref()).await;
         }
-        calendar.opted_in = true;
-        calendar.mint(device_token.as_deref()).await;
         calendar.connection()
     }
 
@@ -5735,18 +5961,36 @@ impl MobileTaskHost {
     /// returns — `shouldKeepExistingConnection`'s rule, and the reason a
     /// cancelled or failed *re*-connect cannot cost the operator their
     /// stale-but-real mirror. A **first** connect that fails leaves the
-    /// device never-connected, so the Connect affordance is still offered.
-    pub async fn connect_calendar(&self) -> MobileCalendarConnection {
+    /// device never-connected, so the Connect affordance is still offered;
+    /// one that succeeds records the synced `calendar-connected` row, which
+    /// is what connects the operator's other devices too.
+    pub async fn connect_calendar(&self, now_ms: i64) -> MobileCalendarConnection {
         let device_token = self.device_token().await;
-        let mut calendar = self.calendar.lock().await;
-        let was_opted_in = calendar.opted_in;
-        let minted = calendar.mint(device_token.as_deref()).await;
-        calendar.opted_in = was_opted_in || minted;
-        calendar.connection()
+        let minted = {
+            let mut calendar = self.calendar.lock().await;
+            let was_opted_in = calendar.opted_in;
+            let minted = calendar.mint(device_token.as_deref()).await;
+            calendar.opted_in = was_opted_in || minted;
+            minted
+        };
+        if minted && !self.synced_calendar().await.connected {
+            // A failed enqueue leaves the row unwritten: this process stays
+            // connected, and the next launch reads not-connected and offers
+            // Connect again — nothing is lost that a tap cannot restore.
+            let seed = mint_mutation_seed("calendar-connected", now_ms);
+            let _ = self
+                .lock_inner(hummingbird_core::diagnostics::CoreOwner::Calendar)
+                .await
+                .core
+                .set_calendar_connected(&seed, true, now_ms)
+                .await;
+        }
+        self.calendar.lock().await.connection()
     }
 
-    /// "Disconnect": forget the opt-in and dispose of the held access
-    /// token.
+    /// "Disconnect": record the synced `calendar-connected` row as off —
+    /// which disconnects the operator's other devices on their next sync —
+    /// and dispose of the held access token.
     ///
     /// **The mirror is not cleared.** A disconnected device's already-polled
     /// events stay on disk — the mirror is disposable, not a lie, and
@@ -5760,12 +6004,141 @@ impl MobileTaskHost {
     /// Settings lists again on exactly this state change, so a disconnected
     /// device would have gone on making authenticated Google requests until
     /// the token expired.
-    pub async fn disconnect_calendar(&self) -> MobileCalendarConnection {
+    ///
+    /// The ticked calendars survive deliberately: reconnecting should not
+    /// make the operator re-pick, and nothing polls them while the flag is
+    /// off.
+    pub async fn disconnect_calendar(&self, now_ms: i64) -> MobileCalendarConnection {
+        let seed = mint_mutation_seed("calendar-connected", now_ms);
+        let _ = self
+            .lock_inner(hummingbird_core::diagnostics::CoreOwner::Calendar)
+            .await
+            .core
+            .set_calendar_connected(&seed, false, now_ms)
+            .await;
         let mut calendar = self.calendar.lock().await;
         calendar.opted_in = false;
-        calendar.expires_at_ms = None;
-        calendar.last_error = None;
-        calendar.host.clear_token();
+        calendar.forget_token();
+        calendar.connection()
+    }
+
+    /// The calendar choices for Settings' picker (ADR-0040 decision 8), per
+    /// [`hummingbird_core::Core::calendar_prefs`] — read through the core's
+    /// overlay, so a tick made offline reads back at once.
+    pub async fn calendar_prefs(&self) -> MobileCalendarPrefs {
+        let inner = self
+            .lock_inner(hummingbird_core::diagnostics::CoreOwner::Calendar)
+            .await;
+        let prefs = inner.core.calendar_prefs();
+        MobileCalendarPrefs {
+            connected: prefs.connected,
+            selections: prefs.selection.iter().map(to_mobile_selection).collect(),
+            polled: inner
+                .core
+                .effective_calendar_selection()
+                .iter()
+                .map(to_mobile_selection)
+                .collect(),
+            locked_id: inner.core.trips_calendar_id(),
+            pending: prefs.pending,
+        }
+    }
+
+    /// Ticks or unticks one calendar in the synced selection, per
+    /// [`hummingbird_core::Core::toggle_calendar`] — every other entry keeps
+    /// its horizon, and the bound Trips calendar is refused
+    /// ([`MobileCalendarEditError::Locked`]).
+    ///
+    /// **It polls straight away rather than waiting for the next tick**, and
+    /// that is a correctness matter, not a nicety: an empty selection is not
+    /// a no-op poll, it is a *successful* one over zero calendars, so the
+    /// first tick after Connect saves a real, fresh, empty snapshot. Leaving
+    /// the new selection until the next 15-minute tick would have the
+    /// weekend pane answer a confident "nothing on" for a quarter of an hour
+    /// after the operator picked the calendar that says otherwise.
+    /// `ContextPoller::refresh` is the user-invoked trigger this is.
+    pub async fn toggle_calendar(
+        &self,
+        id: String,
+        now_ms: i64,
+    ) -> Result<MobileCalendarTick, MobileCalendarEditError> {
+        let seed = mint_mutation_seed("calendar-toggle", now_ms);
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings)
+            .await
+            .core
+            .toggle_calendar(&seed, &id, now_ms)
+            .await?;
+        Ok(self.apply_and_refresh(now_ms).await)
+    }
+
+    /// Sets one ticked calendar's poll horizon, per
+    /// [`hummingbird_core::Core::set_calendar_horizon`] — refused for a
+    /// calendar that is not ticked ([`MobileCalendarEditError::NotSelected`]).
+    /// Polls straight away, for [`Self::toggle_calendar`]'s reason.
+    pub async fn set_calendar_horizon(
+        &self,
+        id: String,
+        long_horizon: bool,
+        now_ms: i64,
+    ) -> Result<MobileCalendarTick, MobileCalendarEditError> {
+        let seed = mint_mutation_seed("calendar-horizon", now_ms);
+        let horizon = if long_horizon { CalendarHorizon::Long } else { CalendarHorizon::Standard };
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings)
+            .await
+            .core
+            .set_calendar_horizon(&seed, &id, horizon, now_ms)
+            .await?;
+        Ok(self.apply_and_refresh(now_ms).await)
+    }
+
+    /// The one-time migration of the phone's old DataStore calendar
+    /// choices, per [`hummingbird_core::Core::seed_calendar_prefs`]: writes
+    /// nothing before this process's first completed full sweep
+    /// ([`MobileCalendarSeed::NotYet`] — keep the local values and ask
+    /// again after the next cycle), then seeds only a row that does not
+    /// exist and adopts one that does. Any other answer means the host
+    /// deletes its local values.
+    pub async fn seed_calendar_prefs(
+        &self,
+        connected: bool,
+        selections: Vec<MobileCalendarSelection>,
+        now_ms: i64,
+    ) -> Result<MobileCalendarSeed, MobileCalendarEditError> {
+        let seed = mint_mutation_seed("calendar-seed", now_ms);
+        let selection: Vec<CalendarSelection> = selections.iter().map(to_calendar_selection).collect();
+        let outcome = self
+            .lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings)
+            .await
+            .core
+            .seed_calendar_prefs(&seed, connected, &selection, now_ms)
+            .await
+            .map_err(|error| MobileCalendarEditError::WriteFailed { detail: error.to_string() })?;
+        Ok(match outcome {
+            hummingbird_core::calendar_prefs::CalendarSeed::NotYet => MobileCalendarSeed::NotYet,
+            hummingbird_core::calendar_prefs::CalendarSeed::Seeded => MobileCalendarSeed::Seeded,
+            hummingbird_core::calendar_prefs::CalendarSeed::Adopted => MobileCalendarSeed::Adopted,
+        })
+    }
+
+    /// Brings the lane in line with the synced calendar choices after a
+    /// sync cycle (ADR-0040 decision 8) — the door that makes a calendar
+    /// ticked on the web start polling here **without touching the
+    /// phone**. A device another device connected mints and polls; one
+    /// another device disconnected stops and drops its token; a selection
+    /// (or Trips binding) that moved is polled at once rather than at the
+    /// next 15-minute tick, for [`Self::toggle_calendar`]'s reason. Nothing
+    /// moved, nothing is fetched.
+    pub async fn sync_calendar_prefs(&self, now_ms: i64) -> MobileCalendarConnection {
+        let device_token = self.device_token().await;
+        let synced = self.synced_calendar().await;
+        let mut calendar = self.calendar.lock().await;
+        let reconciled = calendar.reconcile(&synced);
+        if calendar.opted_in && (reconciled.newly_connected || reconciled.selection_moved) {
+            if calendar.due_for_rotation(now_ms) {
+                calendar.mint(device_token.as_deref()).await;
+            }
+            calendar.host.refresh(now_ms).await;
+        }
         calendar.connection()
     }
 
@@ -5788,44 +6161,6 @@ impl MobileTaskHost {
         }
     }
 
-    /// The picker's current selection. Durably the host's, like the opt-in
-    /// flag.
-    ///
-    /// **It polls straight away rather than waiting for the next tick**, and
-    /// that is a correctness matter, not a nicety: an empty selection is not
-    /// a no-op poll, it is a *successful* one over zero calendars, so the
-    /// first tick after Connect saves a real, fresh, empty snapshot. Leaving
-    /// the new selection until the next 15-minute tick would have the
-    /// weekend pane answer a confident "nothing on" for a quarter of an hour
-    /// after the operator picked the calendar that says otherwise.
-    /// `ContextPoller::refresh` is the user-invoked trigger this is.
-    pub async fn set_calendar_selections(
-        &self,
-        selections: Vec<MobileCalendarSelection>,
-        now_ms: i64,
-    ) -> MobileCalendarTick {
-        let device_token = self.device_token().await;
-        let trips_id = self.trips_calendar_id().await;
-        let mut calendar = self.calendar.lock().await;
-        calendar.stored_selections = selections.iter().map(to_calendar_selection).collect();
-        calendar.apply_selection(trips_id.as_deref());
-        if !calendar.opted_in {
-            return MobileCalendarTick {
-                outcome: outcome_name(hummingbird_core::context::PollOutcome::NoCredential)
-                    .to_string(),
-                connection: calendar.connection(),
-            };
-        }
-        if calendar.due_for_rotation(now_ms) {
-            calendar.mint(device_token.as_deref()).await;
-        }
-        let outcome = calendar.host.refresh(now_ms).await;
-        MobileCalendarTick {
-            outcome: outcome_name(outcome).to_string(),
-            connection: calendar.connection(),
-        }
-    }
-
     /// One foreground timer tick, at [`calendar_poll_interval_ms`].
     ///
     /// The whole mint/rotate/401 loop is here, not in Kotlin:
@@ -5843,13 +6178,14 @@ impl MobileTaskHost {
     ///    token rather than repeating the 401.
     pub async fn calendar_on_timer(&self, now_ms: i64) -> MobileCalendarTick {
         let device_token = self.device_token().await;
-        let trips_id = self.trips_calendar_id().await;
+        let synced = self.synced_calendar().await;
         let mut calendar = self.calendar.lock().await;
-        // Re-derived every tick, not just at a picker gesture: the Trips
-        // binding is *synced*, so it can arrive from another device between
-        // two ticks and must start being polled without the operator
-        // opening Settings.
-        calendar.apply_selection(trips_id.as_deref());
+        // Re-derived every tick, not just at a picker gesture: the
+        // selection, the connected flag and the Trips binding are all
+        // *synced*, so any of them can arrive from another device between
+        // two ticks and must take effect without the operator opening
+        // Settings.
+        calendar.reconcile(&synced);
         if !calendar.opted_in {
             return MobileCalendarTick {
                 outcome: outcome_name(hummingbird_core::context::PollOutcome::NoCredential)
@@ -5906,32 +6242,46 @@ impl MobileTaskHost {
             .clone()
     }
 
-    /// The designated Trips calendar, read off the synced bindings table
-    /// under `inner`'s lock and released before the calendar's is taken —
-    /// the same lock order [`Self::device_token`] keeps, for the same
-    /// reason.
+    /// The synced calendar choices and the designated Trips calendar, read
+    /// off the `settings` table under `inner`'s lock and released before
+    /// the calendar's is taken — the same lock order [`Self::device_token`]
+    /// keeps, for the same reason.
     ///
-    /// It is a *binding*, not a device preference: the operator names their
-    /// Trips calendar once, anywhere, and every device polls it. That is
-    /// why the polled set cannot be the picker's list alone.
-    async fn trips_calendar_id(&self) -> Option<String> {
+    /// None of it is a device preference any more (ADR-0040 decision 8):
+    /// the operator ticks a calendar, connects, or names their Trips
+    /// calendar once, anywhere, and every device follows.
+    async fn synced_calendar(&self) -> SyncedCalendar {
         let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Calendar).await;
-        inner
-            .core
-            .bindings()
-            .into_iter()
-            .find(|binding| binding.key == vacation::TRIPS_CALENDAR_BINDING_KEY)
-            .and_then(|binding| match binding.value {
-                BindingValue::Text { text } => {
-                    let id = text.trim().to_string();
-                    if id.is_empty() {
-                        None
-                    } else {
-                        Some(id)
-                    }
-                }
-                _ => None,
-            })
+        let prefs = inner.core.calendar_prefs();
+        SyncedCalendar {
+            connected: prefs.connected,
+            selection: prefs.selection,
+            trips_id: inner.core.trips_calendar_id(),
+        }
+    }
+
+    /// The tail of every picker gesture: apply the synced choices just
+    /// written and, if this device polls at all, poll now.
+    async fn apply_and_refresh(&self, now_ms: i64) -> MobileCalendarTick {
+        let device_token = self.device_token().await;
+        let synced = self.synced_calendar().await;
+        let mut calendar = self.calendar.lock().await;
+        calendar.reconcile(&synced);
+        if !calendar.opted_in {
+            return MobileCalendarTick {
+                outcome: outcome_name(hummingbird_core::context::PollOutcome::NoCredential)
+                    .to_string(),
+                connection: calendar.connection(),
+            };
+        }
+        if calendar.due_for_rotation(now_ms) {
+            calendar.mint(device_token.as_deref()).await;
+        }
+        let outcome = calendar.host.refresh(now_ms).await;
+        MobileCalendarTick {
+            outcome: outcome_name(outcome).to_string(),
+            connection: calendar.connection(),
+        }
     }
 
     /// Phase one's calendar arm: every event the mirror holds, under each
@@ -7006,6 +7356,236 @@ pub fn is_informative_sync_outcome(kind: String) -> bool {
     settings::is_informative_sync_outcome(&kind)
 }
 
+// -------------------------------------------------------------- #839: devices
+
+/// [`DeviceListPlatform`], mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileDeviceListPlatform {
+    Web,
+    Android,
+    Chrome,
+    Watch,
+    Other,
+}
+
+fn map_device_list_platform(platform: DeviceListPlatform) -> MobileDeviceListPlatform {
+    match platform {
+        DeviceListPlatform::Web => MobileDeviceListPlatform::Web,
+        DeviceListPlatform::Android => MobileDeviceListPlatform::Android,
+        DeviceListPlatform::Chrome => MobileDeviceListPlatform::Chrome,
+        DeviceListPlatform::Watch => MobileDeviceListPlatform::Watch,
+        DeviceListPlatform::Other => MobileDeviceListPlatform::Other,
+    }
+}
+
+fn unmap_device_list_platform(platform: MobileDeviceListPlatform) -> DeviceListPlatform {
+    match platform {
+        MobileDeviceListPlatform::Web => DeviceListPlatform::Web,
+        MobileDeviceListPlatform::Android => DeviceListPlatform::Android,
+        MobileDeviceListPlatform::Chrome => DeviceListPlatform::Chrome,
+        MobileDeviceListPlatform::Watch => DeviceListPlatform::Watch,
+        MobileDeviceListPlatform::Other => DeviceListPlatform::Other,
+    }
+}
+
+/// One row of `GET /api/devices` ([`DeviceInfo`]), mirrored — what
+/// [`MobileTaskHost::devices`] answers and [`device_rows`] decides over.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileDeviceInfo {
+    pub id: String,
+    pub name: String,
+    pub platform: MobileDeviceListPlatform,
+    pub created_at: i64,
+    pub last_seen: Option<i64>,
+    pub revoked_at: Option<i64>,
+    pub is_current: bool,
+    pub revocable: bool,
+}
+
+fn to_mobile_device(device: DeviceInfo) -> MobileDeviceInfo {
+    MobileDeviceInfo {
+        platform: map_device_list_platform(device.platform),
+        id: device.id,
+        name: device.name,
+        created_at: device.created_at,
+        last_seen: device.last_seen,
+        revoked_at: device.revoked_at,
+        is_current: device.is_current,
+        revocable: device.revocable,
+    }
+}
+
+fn from_mobile_device(device: MobileDeviceInfo) -> DeviceInfo {
+    DeviceInfo {
+        platform: unmap_device_list_platform(device.platform),
+        id: device.id,
+        name: device.name,
+        created_at: device.created_at,
+        last_seen: device.last_seen,
+        revoked_at: device.revoked_at,
+        is_current: device.is_current,
+        revocable: device.revocable,
+    }
+}
+
+/// [`SignInOutcome`], mirrored — one arm per refusal, so Settings can say
+/// "not your account", "too many sign-ins, try later" and "sign-in isn't
+/// set up" without reading a status code. `SignedIn` carries the token
+/// for the app to store and then push through
+/// [`MobileTaskHost::push_api_key`]; the core has not kept it.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileSignInOutcome {
+    SignedIn { id: String, token: String },
+    NotAllowed,
+    RateLimited,
+    Unconfigured,
+    Unavailable,
+    Invalid { detail: String },
+    Failed { detail: String },
+}
+
+fn map_sign_in_outcome(outcome: SignInOutcome) -> MobileSignInOutcome {
+    match outcome {
+        SignInOutcome::SignedIn(device) => MobileSignInOutcome::SignedIn {
+            id: device.id,
+            token: device.token,
+        },
+        SignInOutcome::NotAllowed => MobileSignInOutcome::NotAllowed,
+        SignInOutcome::RateLimited => MobileSignInOutcome::RateLimited,
+        SignInOutcome::Unconfigured => MobileSignInOutcome::Unconfigured,
+        SignInOutcome::Unavailable => MobileSignInOutcome::Unavailable,
+        SignInOutcome::Invalid { message } => MobileSignInOutcome::Invalid { detail: message },
+        SignInOutcome::Failed { message } => MobileSignInOutcome::Failed { detail: message },
+    }
+}
+
+/// [`DevicesOutcome`], mirrored.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileDevicesOutcome {
+    Listed { devices: Vec<MobileDeviceInfo> },
+    NoCredential,
+    CredentialRejected,
+    Failed { detail: String },
+}
+
+fn map_devices_outcome(outcome: DevicesOutcome) -> MobileDevicesOutcome {
+    match outcome {
+        DevicesOutcome::Listed(devices) => MobileDevicesOutcome::Listed {
+            devices: devices.into_iter().map(to_mobile_device).collect(),
+        },
+        DevicesOutcome::NoCredential => MobileDevicesOutcome::NoCredential,
+        DevicesOutcome::CredentialRejected => MobileDevicesOutcome::CredentialRejected,
+        DevicesOutcome::Failed { message } => MobileDevicesOutcome::Failed { detail: message },
+    }
+}
+
+/// [`RevokeOutcome`], mirrored. `SignedOut` is this device's own row: the
+/// core holds no credential now, the queue is untouched, and the app
+/// deletes its stored token.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileRevokeOutcome {
+    Revoked { device: MobileDeviceInfo },
+    SignedOut { device: MobileDeviceInfo },
+    NotRevocable,
+    NotFound,
+    NoCredential,
+    CredentialRejected,
+    Failed { detail: String },
+}
+
+fn map_revoke_outcome(outcome: RevokeOutcome) -> MobileRevokeOutcome {
+    match outcome {
+        RevokeOutcome::Revoked(device) => MobileRevokeOutcome::Revoked {
+            device: to_mobile_device(device),
+        },
+        RevokeOutcome::SignedOut(device) => MobileRevokeOutcome::SignedOut {
+            device: to_mobile_device(device),
+        },
+        RevokeOutcome::NotRevocable => MobileRevokeOutcome::NotRevocable,
+        RevokeOutcome::NotFound => MobileRevokeOutcome::NotFound,
+        RevokeOutcome::NoCredential => MobileRevokeOutcome::NoCredential,
+        RevokeOutcome::CredentialRejected => MobileRevokeOutcome::CredentialRejected,
+        RevokeOutcome::Failed { message } => MobileRevokeOutcome::Failed { detail: message },
+    }
+}
+
+/// [`MobileTaskHost::sign_in_with_google`]'s body, over any transport and
+/// under the caller's lock — the seam's tests script the authority
+/// through this, as through the two below.
+async fn sign_in_in(
+    inner: &Inner,
+    transport: &impl DirectTransport,
+    id_token: &str,
+    name: &str,
+) -> MobileSignInOutcome {
+    map_sign_in_outcome(
+        inner
+            .core
+            .sign_in_with_google(transport, id_token, name, DevicePlatform::Android)
+            .await,
+    )
+}
+
+/// [`MobileTaskHost::devices`]' body, over any transport and under the
+/// caller's lock — the seam's tests script the authority through this.
+async fn devices_in(inner: &mut Inner, transport: &impl DirectTransport) -> MobileDevicesOutcome {
+    map_devices_outcome(inner.core.devices(transport).await)
+}
+
+/// [`MobileTaskHost::revoke_device`]'s body, likewise. A sign-out clears
+/// the shadow token in the same critical section, so
+/// `register_push_target` and the calendar mint stop sending it.
+async fn revoke_device_in(
+    inner: &mut Inner,
+    transport: &impl DirectTransport,
+    id: &str,
+) -> MobileRevokeOutcome {
+    let outcome = inner.core.revoke_device(transport, id).await;
+    if matches!(outcome, RevokeOutcome::SignedOut(_)) {
+        inner.api_key = None;
+    }
+    map_revoke_outcome(outcome)
+}
+
+/// [`devices::DeviceRow`], mirrored.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileDeviceRow {
+    pub id: String,
+    pub name: String,
+    pub is_current: bool,
+    pub this_device: Option<String>,
+    pub platform_label: String,
+    pub last_seen_label: String,
+    pub revocable: bool,
+}
+
+/// [`devices::device_rows`] — Signed-in devices' rows, ordered and worded
+/// in the core (ADR-0040 decision 7): revoked rows left out, this device
+/// first, then the most recently seen.
+#[uniffi::export]
+pub fn device_rows(devices: Vec<MobileDeviceInfo>, now_ms: i64) -> Vec<MobileDeviceRow> {
+    let devices: Vec<DeviceInfo> = devices.into_iter().map(from_mobile_device).collect();
+    devices::device_rows(&devices, now_ms)
+        .into_iter()
+        .map(|row| MobileDeviceRow {
+            id: row.id,
+            name: row.name,
+            is_current: row.is_current,
+            this_device: row.this_device,
+            platform_label: row.platform_label,
+            last_seen_label: row.last_seen_label,
+            revocable: row.revocable,
+        })
+        .collect()
+}
+
+/// [`devices::sign_out_confirmation`] — the sentence before this device
+/// signs itself out, naming how many unsent changes stay queued.
+#[uniffi::export]
+pub fn sign_out_confirmation(queue_depth: u32) -> String {
+    devices::sign_out_confirmation(queue_depth)
+}
+
 // -------------------------------------------------------------- #709: diagnostics
 
 /// Mirrors only the handful of [`hummingbird_core::diagnostics::DiagnosticEvent`]
@@ -7247,7 +7827,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://authority.example".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -7293,7 +7872,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://authority.example".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -7387,10 +7965,10 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             String::new(),
-            "device-token".to_string(),
         )
         .await
         .unwrap();
+        host.push_api_key("device-token".to_string()).await;
 
         host.capture(title_only_draft("drain me"), 1_000).await.unwrap();
         let before_run: Vec<DiagnosticEventV1> = host
@@ -7433,13 +8011,27 @@ mod tests {
     /// A host whose base URL refuses connections, so every mint answers
     /// `authority_unreachable` without a network of any kind.
     async fn unreachable_host(dir: &tempfile::TempDir, api_key: &str) -> Arc<MobileTaskHost> {
-        MobileTaskHost::init(
+        let host = MobileTaskHost::init(
             dir.path().join("cal-ns").to_str().unwrap().to_string(),
             "http://127.0.0.1:1".to_string(),
-            api_key.to_string(),
         )
         .await
-        .unwrap()
+        .unwrap();
+        host.push_api_key(api_key.to_string()).await;
+        host
+    }
+
+    /// Opts the device in the only way there is now (ADR-0040 decision 8):
+    /// the synced `calendar-connected` row, written through the core, then
+    /// the launch-time arm that reads it.
+    pub(super) async fn opt_in_calendar(host: &MobileTaskHost) -> MobileCalendarConnection {
+        host.lock_inner(hummingbird_core::diagnostics::CoreOwner::Calendar)
+            .await
+            .core
+            .set_calendar_connected("seed-opt-in", true, 1_000)
+            .await
+            .unwrap();
+        host.init_calendar().await
     }
 
     /// The polled set is the picker's list unioned with the synced Trips
@@ -7459,17 +8051,113 @@ mod tests {
         .await
         .unwrap();
 
-        host.init_calendar(
-            true,
-            vec![MobileCalendarSelection { id: "personal@g".to_string(), long_horizon: false }],
-        )
-        .await;
+        host.toggle_calendar("personal@g".to_string(), 1_000).await.unwrap();
+        opt_in_calendar(&host).await;
 
         let polled = host.calendar.lock().await.host.calendar_selections();
         assert_eq!(
             polled,
             vec![CalendarSelection::standard("personal@g"), CalendarSelection::long("trips@g")]
         );
+    }
+
+    /// ADR-0040 decision 8's whole point on this side: a calendar ticked —
+    /// or a connection made, or undone — on another device reaches this
+    /// lane through the synced rows after a sync, with nothing tapped here.
+    /// The other device's writes are simulated by writing through this
+    /// core, which is exactly what a pulled row looks like to the lane.
+    #[tokio::test]
+    async fn choices_made_elsewhere_reach_the_lane_after_a_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+        assert_eq!(host.init_calendar().await.state, MobileCalendarState::NeverConnected);
+
+        {
+            let mut inner = host
+                .lock_inner(hummingbird_core::diagnostics::CoreOwner::Calendar)
+                .await;
+            inner.core.set_calendar_connected("seed-c", true, 1_000).await.unwrap();
+            inner.core.toggle_calendar("seed-t", "work@g", 1_000).await.unwrap();
+        }
+        let connection = host.sync_calendar_prefs(2_000).await;
+
+        // Connected: the mint was attempted (and the unreachable authority
+        // refused it), so this is an opted-in device, not a fresh one.
+        assert_eq!(connection.state, MobileCalendarState::CannotConfirm);
+        assert_eq!(
+            host.calendar.lock().await.host.calendar_selections(),
+            vec![CalendarSelection::standard("work@g")]
+        );
+
+        host.lock_inner(hummingbird_core::diagnostics::CoreOwner::Calendar)
+            .await
+            .core
+            .set_calendar_connected("seed-d", false, 3_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            host.sync_calendar_prefs(4_000).await.state,
+            MobileCalendarState::NeverConnected
+        );
+        assert_eq!(host.calendar_on_timer(5_000).await.outcome, "no_credential");
+    }
+
+    /// The picker reads the core's applied answer: the ticked calendars,
+    /// what is polled, and which row is locked on — and the locked row
+    /// refuses an untick before anything is written.
+    #[tokio::test]
+    async fn the_picker_reads_the_polled_set_and_the_trips_row_is_locked_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+        host.set_binding(
+            "seed-trips".to_string(),
+            vacation::TRIPS_CALENDAR_BINDING_KEY.to_string(),
+            "trips@g".to_string(),
+            1_000,
+        )
+        .await
+        .unwrap();
+        host.toggle_calendar("work@g".to_string(), 1_000).await.unwrap();
+        host.set_calendar_horizon("work@g".to_string(), true, 1_000).await.unwrap();
+
+        let prefs = host.calendar_prefs().await;
+        assert_eq!(
+            prefs.selections,
+            vec![MobileCalendarSelection { id: "work@g".to_string(), long_horizon: true }]
+        );
+        assert_eq!(
+            prefs.polled.iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(),
+            vec!["work@g", "trips@g"]
+        );
+        assert_eq!(prefs.locked_id.as_deref(), Some("trips@g"));
+        assert!(prefs.pending);
+
+        assert!(matches!(
+            host.toggle_calendar("trips@g".to_string(), 2_000).await,
+            Err(MobileCalendarEditError::Locked)
+        ));
+        assert!(matches!(
+            host.set_calendar_horizon("other@g".to_string(), true, 2_000).await,
+            Err(MobileCalendarEditError::NotSelected)
+        ));
+    }
+
+    /// The phone's old DataStore copy is not seeded before this process
+    /// has swept — the core's rule, crossed as the seam's own enum.
+    #[tokio::test]
+    async fn seeding_before_any_sweep_keeps_the_local_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+        let outcome = host
+            .seed_calendar_prefs(
+                true,
+                vec![MobileCalendarSelection { id: "work@g".to_string(), long_horizon: true }],
+                1_000,
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome, MobileCalendarSeed::NotYet);
+        assert!(!host.calendar_prefs().await.connected);
     }
 
     /// The binding is *synced*: it can arrive from the browser between two
@@ -7479,7 +8167,7 @@ mod tests {
     async fn a_trips_binding_that_arrives_later_is_picked_up_on_the_next_tick() {
         let dir = tempfile::tempdir().unwrap();
         let host = unreachable_host(&dir, "device-token").await;
-        host.init_calendar(true, Vec::new()).await;
+        crate::tests::opt_in_calendar(&host).await;
         assert!(host.calendar.lock().await.host.calendar_selections().is_empty());
 
         host.set_binding(
@@ -7523,7 +8211,7 @@ mod tests {
         // `!calendar_connected` produces.
         assert_eq!(weekend_state(&before), MobilePaneAnswerState::Unbound);
 
-        host.init_calendar(true, Vec::new()).await;
+        crate::tests::opt_in_calendar(&host).await;
 
         let after = host
             .rank_panes(MobileSurface::Now, 1_000, Vec::new(), MobileSyncFacts::default())
@@ -7561,7 +8249,7 @@ mod tests {
             1_000,
         )
         .await;
-        host.init_calendar(true, Vec::new()).await;
+        crate::tests::opt_in_calendar(&host).await;
 
         let midnight = |date: &str| MobileZoneQuery::Midnight {
             zone: hummingbird_core::decisions::panes::zone::DEVICE_ZONE.to_string(),
@@ -7573,7 +8261,7 @@ mod tests {
 
         // Disconnected, the read is not bound and the trip's dates are not
         // asked for — the arm is read, but it decides nothing on its own.
-        host.disconnect_calendar().await;
+        host.disconnect_calendar(1_000).await;
         let disconnected = host.pane_zone_queries(MobileSurface::Now, 1_000).await;
         assert!(!disconnected.contains(&midnight("2030-03-10")), "{disconnected:?}");
     }
@@ -7629,7 +8317,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let host = unreachable_host(&dir, "device-token").await;
 
-        let connection = host.init_calendar(false, Vec::new()).await;
+        let connection = host.init_calendar().await;
 
         assert_eq!(connection.state, MobileCalendarState::NeverConnected);
         assert_eq!(connection.expires_at_ms, None);
@@ -7658,7 +8346,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let host = unreachable_host(&dir, "device-token").await;
 
-        let connection = host.connect_calendar().await;
+        let connection = host.connect_calendar(1_000).await;
 
         assert_eq!(connection.state, MobileCalendarState::NeverConnected);
         assert_eq!(connection.error.as_deref(), Some("authority_unreachable"));
@@ -7671,7 +8359,7 @@ mod tests {
 
         // Opted in at launch, so this is a re-mint on an established
         // connection rather than a first attempt.
-        let connection = host.init_calendar(true, Vec::new()).await;
+        let connection = crate::tests::opt_in_calendar(&host).await;
 
         assert_eq!(connection.state, MobileCalendarState::RefusedDeviceToken);
         assert_eq!(connection.error.as_deref(), Some("no_device_token"));
@@ -7682,7 +8370,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let host = unreachable_host(&dir, "device-token").await;
 
-        let connection = host.init_calendar(true, Vec::new()).await;
+        let connection = crate::tests::opt_in_calendar(&host).await;
 
         // Not `NeverConnected`: the phone cannot tell "I am offline" from
         // "the authority is down", and neither is a reason to un-opt-in
@@ -7699,9 +8387,9 @@ mod tests {
         // Reconnect affordance down with it.
         let dir = tempfile::tempdir().unwrap();
         let host = unreachable_host(&dir, "device-token").await;
-        host.init_calendar(true, Vec::new()).await;
+        crate::tests::opt_in_calendar(&host).await;
 
-        let connection = host.connect_calendar().await;
+        let connection = host.connect_calendar(1_000).await;
 
         assert_eq!(connection.state, MobileCalendarState::CannotConfirm);
     }
@@ -7710,9 +8398,9 @@ mod tests {
     async fn disconnecting_returns_the_device_to_never_connected() {
         let dir = tempfile::tempdir().unwrap();
         let host = unreachable_host(&dir, "device-token").await;
-        host.init_calendar(true, Vec::new()).await;
+        crate::tests::opt_in_calendar(&host).await;
 
-        let connection = host.disconnect_calendar().await;
+        let connection = host.disconnect_calendar(1_000).await;
 
         assert_eq!(connection.state, MobileCalendarState::NeverConnected);
         assert_eq!(connection.error, None);
@@ -7724,7 +8412,7 @@ mod tests {
     async fn an_opted_in_tick_reports_the_pollers_own_outcome_vocabulary() {
         let dir = tempfile::tempdir().unwrap();
         let host = unreachable_host(&dir, "device-token").await;
-        host.init_calendar(true, Vec::new()).await;
+        crate::tests::opt_in_calendar(&host).await;
 
         let tick = host.calendar_on_timer(1_000).await;
 
@@ -7759,7 +8447,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let host = unreachable_host(&dir, "s3cret-device-token").await;
 
-        let connection = host.init_calendar(true, Vec::new()).await;
+        let connection = crate::tests::opt_in_calendar(&host).await;
         let tick = host.calendar_on_timer(1_000).await;
         let list = host.list_calendars().await;
 
@@ -7781,7 +8469,6 @@ mod tests {
             // A base URL that would fail DNS if any request were attempted:
             // `no_credential` short-circuits before the transports.
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -7789,6 +8476,70 @@ mod tests {
         let outcome = host.run(1_000, "user".to_string(), false, 0.0).await;
         assert_eq!(outcome.kind, "no_credential");
         assert!(host.take_events().await.is_empty());
+    }
+
+    // ------------------------------------------- #846: the credential's arm
+
+    async fn arm_host(dir: &tempfile::TempDir, name: &str) -> Arc<MobileTaskHost> {
+        MobileTaskHost::init(
+            dir.path().join(name).to_str().unwrap().to_string(),
+            // Would fail DNS if any request were attempted.
+            "https://invalid.invalid".to_string(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_seam_starts_unknown_and_an_absence_report_moves_it_to_unset_without_a_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = arm_host(&dir, "arm-ns-1").await;
+        assert_eq!(host.credential_arm().await, "unknown");
+
+        host.report_no_api_key().await;
+        assert_eq!(host.credential_arm().await, "unset");
+        assert_eq!(host.run(1_000, "user".to_string(), false, 0.0).await.kind, "no_credential");
+        assert_eq!(
+            host.take_events().await,
+            vec![MobileEvent { kind: "credential_changed".to_string(), arm: "unset".to_string() }]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_seams_doors_move_the_arm_and_each_emits_one_event_never_the_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = arm_host(&dir, "arm-ns-2").await;
+
+        host.push_api_key(String::new()).await;
+        assert_eq!(host.credential_arm().await, "unset", "an empty push is not a credential");
+        assert_eq!(host.run(1_000, "user".to_string(), false, 0.0).await.kind, "no_credential");
+        host.rehydrate_api_key("sk-secret".to_string()).await;
+        assert_eq!(host.credential_arm().await, "resting");
+        host.push_api_key("sk-secret".to_string()).await;
+        assert_eq!(host.credential_arm().await, "resting");
+        host.clear_api_key().await;
+        assert_eq!(host.credential_arm().await, "unset");
+
+        let events = host.take_events().await;
+        assert_eq!(
+            events.iter().map(|event| event.arm.as_str()).collect::<Vec<_>>(),
+            vec!["unset", "resting", "resting", "unset"]
+        );
+        assert!(!format!("{events:?}").contains("sk-secret"));
+    }
+
+    /// The shadow `register_push_target` sends with follows the core's
+    /// slot: an empty push leaves no bearer to send.
+    #[tokio::test]
+    async fn an_empty_push_leaves_no_shadow_token_to_register_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = arm_host(&dir, "arm-ns-3").await;
+        host.push_api_key(String::new()).await;
+
+        let result = host
+            .register_push_target("id".to_string(), "name".to_string(), "fcm".to_string())
+            .await;
+        assert!(matches!(result, Err(MobilePushRegistrationError::Unauthorized)));
     }
 
     // ------------------------------------------------------- M1-5 (#503)
@@ -7902,7 +8653,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -7922,7 +8672,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -7960,7 +8709,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8012,7 +8760,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8160,7 +8907,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8206,7 +8952,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8259,7 +9004,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8293,7 +9037,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8317,7 +9060,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8825,7 +9567,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8887,7 +9628,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8914,7 +9654,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8943,7 +9682,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8970,7 +9708,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -8991,7 +9728,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9009,7 +9745,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9050,7 +9785,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9067,7 +9801,6 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9216,7 +9949,6 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("triage-board-ns").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9242,7 +9974,6 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("triage-item-ns").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9279,7 +10010,6 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("triage-item-ns-2").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9308,7 +10038,6 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("triage-item-ns-3").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9346,13 +10075,14 @@ mod tests {
         // it here keeps the durable namespace alive for the whole test
         // without threading the guard through every call site.
         std::mem::forget(dir);
-        MobileTaskHost::init(
+        let host = MobileTaskHost::init(
             path.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            api_key.to_string(),
         )
         .await
-        .unwrap()
+        .unwrap();
+        host.push_api_key(api_key.to_string()).await;
+        host
     }
 
     /// The two verdicts this record exists to carry. A settled row is not
@@ -9666,7 +10396,6 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("edit-ns").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -9700,7 +10429,6 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("edit-ns-2").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -10446,7 +11174,7 @@ mod skills_tests {
         // (the same trade every other tempdir-backed test here already
         // makes implicitly by never calling `.close()`).
         std::mem::forget(dir);
-        MobileTaskHost::init(path.to_str().unwrap().to_string(), "https://invalid.invalid".to_string(), String::new())
+        MobileTaskHost::init(path.to_str().unwrap().to_string(), "https://invalid.invalid".to_string())
             .await
             .unwrap()
     }
@@ -10742,6 +11470,7 @@ mod settings_tests {
                 MobileStandingQuestion::Weekend,
                 MobileStandingQuestion::Vacation,
                 MobileStandingQuestion::Race,
+                MobileStandingQuestion::Fantasy,
                 MobileStandingQuestion::Kimi,
                 MobileStandingQuestion::Github,
                 MobileStandingQuestion::Uptime,
@@ -10766,7 +11495,7 @@ mod settings_tests {
         let host = pane_host("switches-fresh").await;
         let switches = host.question_switches().await;
 
-        assert_eq!(switches.len(), 11);
+        assert_eq!(switches.len(), 12);
         // Same order as the roster, so #716 can zip the two lists.
         let questions: Vec<MobileStandingQuestion> =
             switches.iter().map(|switch| switch.question).collect();
@@ -10874,13 +11603,14 @@ mod settings_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(namespace);
         std::mem::forget(dir);
-        MobileTaskHost::init(
+        let host = MobileTaskHost::init(
             path.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
-            "token".to_string(),
         )
         .await
-        .unwrap()
+        .unwrap();
+        host.push_api_key("token".to_string()).await;
+        host
     }
 
     /// #779: the read loop is exactly the panes' own declaration, unioned
@@ -11170,7 +11900,7 @@ mod settings_tests {
     }
 
     #[tokio::test]
-    async fn a_fresh_device_ranks_the_now_five_with_only_homework_answered() {
+    async fn a_fresh_device_ranks_every_now_pane_with_only_homework_answered() {
         // Nothing bound (waste/race), no calendar connected (weekend/
         // vacation) — those four are `unbound`, still ranked rather than
         // vanishing (`panes::mod`'s own "a pane nobody has bound yet must
@@ -11182,9 +11912,12 @@ mod settings_tests {
         // nothing, which is the honest "this host answered no queries" case
         // and not a setup prompt (scps has no setup prompt at all —
         // `scps.rs`'s own "never unbound" rule).
+        //
+        // Fantasy (#717) adds two more, both `unbound`: one setup pane per
+        // subject, since nothing names a league yet.
         let host = pane_host("panes-now-fresh").await;
         let ranked = host.rank_panes(MobileSurface::Now, 1_000, Vec::new(), MobileSyncFacts::default()).await;
-        assert_eq!(ranked.len(), 6);
+        assert_eq!(ranked.len(), 8);
         let questions: Vec<MobileStandingQuestion> = ranked.iter().map(|pane| pane.standing_question).collect();
         assert_eq!(
             questions,
@@ -11195,6 +11928,8 @@ mod settings_tests {
                 MobileStandingQuestion::Weekend,
                 MobileStandingQuestion::Vacation,
                 MobileStandingQuestion::Race,
+                MobileStandingQuestion::Fantasy,
+                MobileStandingQuestion::Fantasy,
             ],
         );
         assert!(ranked
@@ -11304,10 +12039,10 @@ mod settings_tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "http://127.0.0.1:1".to_string(),
-            "token".to_string(),
         )
         .await
         .unwrap();
+        host.push_api_key("token".to_string()).await;
         // Noon UTC on 2030-03-01, in `resolve_zone_facts`'s own UTC civil days.
         let now_ms = civil_days_between("1970-01-01", "2030-03-01").unwrap() * DAY_MS + 12 * 3_600_000;
         host.set_binding(
@@ -11324,7 +12059,7 @@ mod settings_tests {
             now_ms as u64,
         )
         .await;
-        host.init_calendar(true, Vec::new()).await;
+        crate::tests::opt_in_calendar(&host).await;
 
         let queries = host.pane_zone_queries(MobileSurface::Now, now_ms).await;
         let facts = resolve_zone_facts(queries);
@@ -12153,6 +12888,9 @@ mod settings_tests {
                     MobileStandingQuestion::Weekend => matches!(pane.facts, MobilePaneFacts::Weekend { .. }),
                     MobileStandingQuestion::Vacation => matches!(pane.facts, MobilePaneFacts::Vacation { .. }),
                     MobileStandingQuestion::Race => matches!(pane.facts, MobilePaneFacts::Race { .. }),
+                    MobileStandingQuestion::Fantasy => {
+                        matches!(pane.facts, MobilePaneFacts::Fantasy { .. })
+                    }
                     MobileStandingQuestion::Kimi => matches!(pane.facts, MobilePaneFacts::Kimi { .. }),
                     MobileStandingQuestion::Github => matches!(pane.facts, MobilePaneFacts::Github { .. }),
                     MobileStandingQuestion::Uptime => matches!(pane.facts, MobilePaneFacts::Uptime { .. }),
@@ -12190,6 +12928,241 @@ mod settings_tests {
             facts_of(MobileStandingQuestion::Vacation),
             MobilePaneFacts::Vacation { resolved: None }
         ));
+        // #717: no `yahoo-leagues` row, so both setup panes cross — one per
+        // subject, each unset and never fetched.
+        let fantasy: Vec<&MobileRankedPane> = ranked
+            .iter()
+            .filter(|pane| pane.standing_question == MobileStandingQuestion::Fantasy)
+            .collect();
+        assert_eq!(fantasy.len(), 2);
+        for (pane, subject) in
+            fantasy.iter().zip([MobileFantasySubject::Lineup, MobileFantasySubject::Waivers])
+        {
+            assert_eq!(
+                pane.facts,
+                MobilePaneFacts::Fantasy {
+                    setup: MobileFantasySetup::Unset,
+                    subject: Some(subject),
+                    resolved: MobileFantasyResolved::Gap { gap: MobileFantasyGap::NotFetched },
+                }
+            );
+        }
+    }
+
+    // ---------------------------------------------------------- devices (#839)
+
+    /// The authority, scripted: answers in order, records each bearer.
+    #[derive(Default)]
+    struct ScriptedAuthority {
+        responses: std::sync::Mutex<Vec<(u16, String)>>,
+        bearers: std::sync::Mutex<Vec<Option<String>>>,
+    }
+
+    impl ScriptedAuthority {
+        fn answering(responses: &[(u16, &str)]) -> Self {
+            Self {
+                responses: std::sync::Mutex::new(
+                    responses.iter().rev().map(|(s, b)| (*s, b.to_string())).collect(),
+                ),
+                bearers: std::sync::Mutex::default(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DirectTransport for ScriptedAuthority {
+        async fn call(
+            &self,
+            access_token: Option<&str>,
+            _request: hummingbird_core::sync::write::DirectRequest,
+        ) -> Result<
+            hummingbird_core::sync::write::RawResponse,
+            hummingbird_core::sync::TransportError,
+        > {
+            self.bearers.lock().unwrap().push(access_token.map(str::to_string));
+            let (status, body) = self.responses.lock().unwrap().pop().expect("no more answers");
+            Ok(hummingbird_core::sync::write::RawResponse { status, body })
+        }
+    }
+
+    fn device_json(id: &str, is_current: bool) -> String {
+        format!(
+            r#"{{"id":"{id}","name":"{id}","platform":"android","created_at":1,
+            "last_seen":2,"revoked_at":null,"is_current":{is_current},"revocable":true}}"#
+        )
+    }
+
+    async fn device_host(dir: &tempfile::TempDir) -> Arc<MobileTaskHost> {
+        MobileTaskHost::init(
+            dir.path().join("devices-ns").to_str().unwrap().to_string(),
+            "http://127.0.0.1:1".to_string(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[test]
+    fn every_sign_in_outcome_reaches_kotlin_as_its_own_arm() {
+        assert_eq!(
+            map_sign_in_outcome(SignInOutcome::SignedIn(hummingbird_domain::SignedInDevice {
+                id: "device-android-pixel".to_string(),
+                token: "hb_new".to_string(),
+            })),
+            MobileSignInOutcome::SignedIn {
+                id: "device-android-pixel".to_string(),
+                token: "hb_new".to_string(),
+            }
+        );
+        for (outcome, mobile) in [
+            (SignInOutcome::NotAllowed, MobileSignInOutcome::NotAllowed),
+            (SignInOutcome::RateLimited, MobileSignInOutcome::RateLimited),
+            (SignInOutcome::Unconfigured, MobileSignInOutcome::Unconfigured),
+            (SignInOutcome::Unavailable, MobileSignInOutcome::Unavailable),
+        ] {
+            assert_eq!(map_sign_in_outcome(outcome), mobile);
+        }
+    }
+
+    #[tokio::test]
+    async fn each_sign_in_status_reaches_kotlin_as_its_own_arm_and_holds_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = device_host(&dir).await;
+        let authority = ScriptedAuthority::answering(&[
+            (201, r#"{"id":"device-android-pixel","token":"hb_new"}"#),
+            (403, ""),
+            (429, r#"{"error":"rate_limited","message":"later"}"#),
+            (503, r#"{"error":"signin_unconfigured","message":"unset"}"#),
+            (503, r#"{"error":"signin_unavailable","message":"retry"}"#),
+            (503, "Service Unavailable"),
+        ]);
+        let mut outcomes = Vec::new();
+        for _ in 0..6 {
+            let inner = host.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
+            outcomes.push(sign_in_in(&inner, &authority, "jwt", "Pixel").await);
+        }
+        assert_eq!(
+            outcomes,
+            [
+                MobileSignInOutcome::SignedIn {
+                    id: "device-android-pixel".to_string(),
+                    token: "hb_new".to_string(),
+                },
+                MobileSignInOutcome::NotAllowed,
+                MobileSignInOutcome::RateLimited,
+                MobileSignInOutcome::Unconfigured,
+                MobileSignInOutcome::Unavailable,
+                MobileSignInOutcome::Unavailable,
+            ]
+        );
+        assert!(authority.bearers.lock().unwrap().iter().all(Option::is_none));
+        assert_eq!(host.credential_arm().await, "unknown", "a sign-in holds nothing");
+    }
+
+    #[tokio::test]
+    async fn the_live_sign_in_fails_cleanly_when_the_authority_is_unreachable() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = device_host(&dir).await;
+        assert!(matches!(
+            host.sign_in_with_google("jwt".to_string(), "Pixel".to_string()).await,
+            MobileSignInOutcome::Failed { .. }
+        ));
+        assert_eq!(host.credential_arm().await, "unknown", "a sign-in holds nothing");
+        assert_eq!(host.devices().await, MobileDevicesOutcome::NoCredential);
+        assert_eq!(
+            host.revoke_device("device-android".to_string()).await,
+            MobileRevokeOutcome::NoCredential
+        );
+    }
+
+    #[tokio::test]
+    async fn the_device_list_reaches_kotlin_with_the_held_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = device_host(&dir).await;
+        host.push_api_key("hb_mine".to_string()).await;
+        let list = format!("[{}]", device_json("device-android-pixel", true));
+        let authority = ScriptedAuthority::answering(&[(200, &list), (401, "")]);
+
+        let outcome = {
+            let mut inner = host.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
+            devices_in(&mut inner, &authority).await
+        };
+        let MobileDevicesOutcome::Listed { devices } = outcome else {
+            panic!("{outcome:?}");
+        };
+        assert_eq!(devices[0].platform, MobileDeviceListPlatform::Android);
+        assert!(devices[0].is_current);
+
+        let rejected = {
+            let mut inner = host.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
+            devices_in(&mut inner, &authority).await
+        };
+        assert_eq!(rejected, MobileDevicesOutcome::CredentialRejected);
+        assert_eq!(host.credential_arm().await, "reprompt");
+        assert_eq!(*authority.bearers.lock().unwrap(), [Some("hb_mine".to_string()), Some("hb_mine".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn signing_this_phone_out_drops_both_tokens_and_keeps_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = device_host(&dir).await;
+        host.push_api_key("hb_mine".to_string()).await;
+        host.capture(title_only_draft("still queued"), 1_000).await.unwrap();
+        assert_eq!(host.queue_depth().await, 1);
+        let authority = ScriptedAuthority::answering(&[
+            (200, &device_json("device-watch", false)),
+            (200, &device_json("device-android-pixel", true)),
+        ]);
+
+        let other = {
+            let mut inner = host.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
+            revoke_device_in(&mut inner, &authority, "device-watch").await
+        };
+        assert!(matches!(other, MobileRevokeOutcome::Revoked { .. }));
+        assert_eq!(host.credential_arm().await, "resting");
+
+        let own = {
+            let mut inner = host.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
+            revoke_device_in(&mut inner, &authority, "device-android-pixel").await
+        };
+        assert!(matches!(own, MobileRevokeOutcome::SignedOut { .. }));
+        assert_eq!(host.credential_arm().await, "unset");
+        assert_eq!(host.device_token().await, None, "the shadow token went with it");
+        assert_eq!(host.queue_depth().await, 1, "the queued capture survives");
+    }
+
+    #[test]
+    fn the_device_rows_are_the_core_decision_verbatim() {
+        let device = |id: &str, last_seen: Option<i64>, is_current: bool, revoked_at: Option<i64>| {
+            MobileDeviceInfo {
+                id: id.to_string(),
+                name: id.to_string(),
+                platform: MobileDeviceListPlatform::Other,
+                created_at: 0,
+                last_seen,
+                revoked_at,
+                is_current,
+                revocable: true,
+            }
+        };
+        let rows = device_rows(
+            vec![
+                device("device-watch", Some(3_000_000), false, None),
+                device("device-old", Some(3_600_000), false, Some(3_600_000)),
+                device("device-android-pixel", Some(0), true, None),
+            ],
+            3_600_000,
+        );
+        assert_eq!(
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["device-android-pixel", "device-watch"]
+        );
+        assert_eq!(rows[0].this_device.as_deref(), Some("This device"));
+        assert_eq!(rows[0].last_seen_label, "Last seen 1h ago");
+        assert_eq!(rows[1].platform_label, "Other");
+        assert_eq!(
+            sign_out_confirmation(0),
+            "Sign out this device? Nothing is waiting to send."
+        );
     }
 }
 
@@ -12250,7 +13223,6 @@ mod diagnostic_ffi_tests {
         let host = MobileTaskHost::init(
             dir.path().join("seq-ns").to_str().unwrap().to_string(),
             "https://authority.example".to_string(),
-            String::new(),
         )
         .await
         .unwrap();
@@ -12317,7 +13289,6 @@ mod diagnostic_ffi_tests {
             MobileTaskHost::init(
                 dir.path().join("drain-during-hang-ns").to_str().unwrap().to_string(),
                 "https://authority.example".to_string(),
-                String::new(),
             )
             .await
             .unwrap(),

@@ -35,6 +35,7 @@ describe("bindingCopy", () => {
       "city-waste-page",
       "homework-link",
       "scps-quest",
+      "yahoo-leagues",
     ]) {
       const copy = bindingCopy(binding({ key }));
       expect(copy.label).not.toBe(key);
