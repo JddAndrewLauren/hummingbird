@@ -129,6 +129,18 @@ request 403 POST /api/alerts '{"source":"home-assistant/v1","source_key":"k","ti
 request 200 POST /api/admin/tokens '{"id":"t-device","name":"smoke device","scope":"device"}' "$ADMIN_SECRET"
 [ "$(jq -r 'has("token")' <<<"$BODY")" = "false" ] || fail "mint replay leaked a token: $BODY"
 
+# A device lists the device-scope tokens only, itself marked current
+# (ADR-0040 decision 6, #838); the sweeper and ingest tokens never show, and
+# a DELETE naming one is a 404. The revoke itself is in the native suite —
+# revoking t-device here would sign this script out.
+request 200 GET /api/devices '' "$DEVICE"
+[ "$(jq -c '[.[] | select(.id == "t-device") | .is_current]' <<<"$BODY")" = "[true]" ] ||
+  fail "t-device not listed as current: $BODY"
+[ "$(jq '[.[] | select(.id == "t-sweeper" or .id == "t-ingest")] | length' <<<"$BODY")" = "0" ] ||
+  fail "a non-device token was listed: $BODY"
+request 404 DELETE /api/devices/t-sweeper '' "$DEVICE"
+request 403 GET /api/devices '' "$SWEEPER"
+
 # An unauthenticated write is an empty-bodied 401 before any routing.
 request 401 POST /api/items '{"id":"smoke-1","title":"hello"}'
 [ -z "$BODY" ] || fail "401 leaked a body: $BODY"
