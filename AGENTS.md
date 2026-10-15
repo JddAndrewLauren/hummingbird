@@ -13,7 +13,7 @@ Each stack's CI workflow is canonical; these are the commands it runs.
 - **Web** (`client/web/`, `client.yml`): `pnpm test`, `pnpm run typecheck`, `pnpm run lint`,
   `pnpm run build`, `pnpm run assert-no-fixtures`
 - **Server** (`server/`, `server-test.yml`): `cargo clippy --workspace --all-targets -- -D warnings`,
-  `cargo test --workspace`, `./scripts/smoke.sh`
+  `cargo test --workspace`, `node --test worker/tests/`, `./scripts/smoke.sh`
 - **Android** (`client/android/`, `android.yml`): `./gradlew :core-binding:testDebugUnitTest
   :brand:testDebugUnitTest :app:testDebugUnitTest :wear:testDebugUnitTest`, then
   `./gradlew :app:assembleDebug :wear:assembleDebug`. CI is the only gate for the Kotlin

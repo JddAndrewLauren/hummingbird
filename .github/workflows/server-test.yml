@@ -1,6 +1,7 @@
 # The authority server's test recipe (ADR-0008), factored out so exactly one
 # copy of it exists: native fixture tests for the pure crates, a wasm32
-# typecheck of the workers-rs shim, and the wire-level smoke test against
+# typecheck of the workers-rs shim, a Node WebCrypto test of the shim's RS256
+# verify path, and the wire-level smoke test against
 # `wrangler dev` (#113's CI acceptance).
 #
 # Called by two workflows and triggered by neither — `workflow_call` only:
@@ -53,6 +54,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+
+      # The shim's RS256 verify path (#837), mirrored under Node's WebCrypto
+      # against the fixture the native suite pins — the one part of the
+      # sign-in route `cargo test` cannot execute.
+      - name: WebCrypto import-path test
+        working-directory: server
+        run: node --test worker/tests/
 
       - name: Smoke test against wrangler dev
         working-directory: server

@@ -63,3 +63,59 @@ pub struct MintedToken {
     pub created_at: i64,
     pub token: String,
 }
+
+/// The closed set of platforms a device signs in from (ADR-0040 decision 1)
+/// — the middle segment of the token id `POST /api/auth/google` derives,
+/// `device-<platform>-<slug of the name>`. Not [`crate::Platform`], which
+/// is a *push* target's platform and a different set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DevicePlatform {
+    Web,
+    Android,
+    /// The browser capture extension (ADR-0037).
+    Chrome,
+}
+
+impl DevicePlatform {
+    pub const ALL: [DevicePlatform; 3] =
+        [DevicePlatform::Web, DevicePlatform::Android, DevicePlatform::Chrome];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DevicePlatform::Web => "web",
+            DevicePlatform::Android => "android",
+            DevicePlatform::Chrome => "chrome",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<DevicePlatform> {
+        DevicePlatform::ALL.into_iter().find(|v| v.as_str() == s)
+    }
+}
+
+/// The 201 of `POST /api/auth/google` (ADR-0040): the id the authority
+/// chose and the plaintext token, shown exactly once — only its sha256 is
+/// stored. Deliberately just the pair: the device already knows the name
+/// and platform it sent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SignedInDevice {
+    pub id: String,
+    pub token: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_platform_spellings_are_the_closed_set() {
+        for platform in DevicePlatform::ALL {
+            let wire = serde_json::to_string(&platform).unwrap();
+            assert_eq!(wire, format!("\"{}\"", platform.as_str()));
+            assert_eq!(DevicePlatform::parse(platform.as_str()), Some(platform));
+        }
+        assert_eq!(DevicePlatform::parse("ios"), None);
+        assert!(serde_json::from_str::<DevicePlatform>("\"watch\"").is_err());
+    }
+}
