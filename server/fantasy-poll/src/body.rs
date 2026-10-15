@@ -79,8 +79,10 @@ pub struct OccupantBody {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InvalidSlot {
     pub reason: Invalid,
-    /// The earliest kickoff among the slot's eligible replacements, as of
-    /// the fetch; `null` when nothing on the roster can fill it.
+    /// The earliest kickoff among the slot's eligible replacements, capped at
+    /// the occupant's own kickoff, as of the fetch
+    /// ([`crate::deadline::slot_deadline_ms`]); `null` when nothing on the
+    /// roster can fill it, or the occupant is already locked in.
     pub deadline_ms: Option<i64>,
 }
 

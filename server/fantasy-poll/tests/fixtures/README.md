@@ -18,6 +18,13 @@ starter who is Out, and a questionable RB who stays valid. On the bench, a
 WR in Thursday's game holds the earliest eligible-replacement kickoff, so
 it sets the lineup's deadline.
 
+## `roster-starter-locks-first.json`
+
+The operator's #853 ruling, in its own fixture. One WR starter is Out and
+plays Thursday night, and every bench WR plays on Sunday. Yahoo locks him
+into the slot at his kickoff, so that slot's deadline is capped at Thursday.
+Taking the earliest replacement alone would say Sunday, three days late.
+
 ## `golden-lineup.json` and `golden-discovered.json`
 
 The exact envelopes `body.rs` builds from the two input files above, with the
