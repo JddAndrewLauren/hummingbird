@@ -1,0 +1,28 @@
+[package]
+name = "hummingbird-fantasy-poll"
+version.workspace = true
+edition.workspace = true
+
+# The out-of-process poller behind the Fantasy standing question (#713's
+# fantasy lane; ADR-0015, ADR-0034). **This is its lib half (#853)**:
+# everything the poller decides, over typed inputs, natively tested. The
+# Yahoo wire format, OAuth, the HTTP and the one binary are #854's.
+#
+# **One binary with a conditional fetch, not race-poll's two.** Lineup
+# validity changes out of band, in Yahoo, so a `*/15` alert binary over a
+# six-hour-old snapshot would escalate a ring for a lineup already fixed.
+# `src/lib.rs` and plan #713 say why at length; don't "restore" the split.
+#
+# A workspace member, so CI's `cargo clippy --workspace` /
+# `cargo test --workspace` gate it. It must NEVER become a dependency of
+# `hummingbird-authority-worker` (asserted from the other side in `lib.rs`'s
+# tests, as `race-poll` does): #854 gives it an HTTP client, and the clamp
+# that #720 adds needs a tzdb.
+
+[dependencies]
+# The real `YAHOO_LINEUP_V1`, the real `yahoo-leagues` split and the real
+# switch key and its reading, never hand-copied twins — the split and the
+# switch moved down into `domain` at #853 for exactly this.
+hummingbird-domain = { path = "../domain" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

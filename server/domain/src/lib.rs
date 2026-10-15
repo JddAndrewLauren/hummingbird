@@ -15,6 +15,7 @@ mod context;
 mod deadline;
 pub mod diagnostics;
 mod event;
+mod fantasy;
 mod file_link;
 mod github_repo;
 mod grill;
@@ -45,6 +46,7 @@ pub use event::{
     core_field_type, find_kind, kind_registry_json, Event, EventKindEntry, FieldDescriptor,
     FieldType, FieldValue, CORE_FIELDS, EVENT_KINDS,
 };
+pub use fantasy::{question_enabled_from_stored, yahoo_leagues_from_binding, FANTASY_SWITCH_KEY};
 pub use file_link::FileLink;
 pub use github_repo::is_valid_github_repo;
 pub use grill::{resulting_stage, Grill, GrillOnDoneItem, GrillVerdict, GrillWithoutTranscript};

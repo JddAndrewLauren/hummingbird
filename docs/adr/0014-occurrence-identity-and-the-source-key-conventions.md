@@ -493,6 +493,15 @@ swipe-equals-ack, which ADR-0012 rejected outright.
 | `yahoo-waivers/v1` ***(#717)*** | the waiver deadline instant |
 | `starling/v1` ***(#830)*** | none, ever |
 
+*Amended 2026-10-15 (#853, operator ruling): the `yahoo-lineup/v1` row's
+lock is each invalid slot's earliest eligible-replacement kickoff **capped at
+that slot's own occupant's kickoff**, then the minimum across invalid slots.*
+Yahoo locks the player being removed as well as the one being inserted, so an
+Out or IR starter whose game kicks off before every replacement's shuts the
+slot at his own kickoff. Over eligible replacements alone, that expiry would
+come after the slot could no longer be fixed. A starter already locked in at
+the fetch leaves his slot with no lock to name.
+
 A "meeting starts in 15 min" alert is genuinely meaningless once the meeting
 ends, and a slide alert once the pickup happened — both have a referent to
 expire against, which is what a source-declared lifetime is for. An email
