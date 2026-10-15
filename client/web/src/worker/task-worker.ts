@@ -2,6 +2,8 @@ import type {
   BindingDTO,
   QuestionSwitchDTO,
   SuggestedContextsDTO,
+  CalendarPrefsDTO,
+  CalendarSeedOutcome,
   BindingValueDTO,
   BlockedFrontierEntryDTO,
   ConditionDTO,
@@ -143,6 +145,25 @@ export interface TaskHostLike {
    * number|null}`. */
   addContext(seed: string, name: string, nowMs: number): Promise<string>;
   removeContext(seed: string, name: string, nowMs: number): Promise<string>;
+  /** ADR-0040 decision 8's read. Mirrors `TaskHost::calendarPrefs`,
+   * resolved to JSON: `{"kind": "ok"|"busy", "prefs": {"connected": bool,
+   * "selection": [{"id", "horizon"}], "pending": bool}}`. */
+  calendarPrefs(): string;
+  /** ADR-0040 decision 8's writes. Mirror `TaskHost::toggleCalendar` /
+   * `TaskHost::setCalendarConnected`, resolved to JSON: `{"kind": "ok"|
+   * "locked"|"failed"|"busy", "error": string|null}`. */
+  toggleCalendar(seed: string, id: string, nowMs: number): Promise<string>;
+  setCalendarConnected(seed: string, connected: boolean, nowMs: number): Promise<string>;
+  /** The one-time seed. Mirrors `TaskHost::seedCalendarPrefs` —
+   * `selectionJson` is a JSON string array — resolved to JSON: `{"kind":
+   * "ok"|"failed"|"busy", "seed": "not_yet"|"seeded"|"adopted"|null,
+   * "error": string|null}`. */
+  seedCalendarPrefs(
+    seed: string,
+    connected: boolean,
+    selectionJson: string,
+    nowMs: number,
+  ): Promise<string>;
   /** #140's kind registry export. Mirrors `hummingbird-ffi-web`'s
    * `TaskHost::kindRegistry` — never `"busy"`, so this resolves
    * synchronously to `{"kind":"ok",…}` always. */
@@ -398,6 +419,22 @@ interface RawQuestionSwitchListResponse {
 interface RawSuggestedContextsResponse {
   kind: "ok" | "busy";
   contexts: { entries: { name: string; item_count: number }[]; pending: boolean };
+}
+
+interface RawCalendarPrefsResponse {
+  kind: "ok" | "busy";
+  prefs: CalendarPrefsDTO;
+}
+
+interface RawEditCalendarPrefsResponse {
+  kind: "ok" | "locked" | "not_selected" | "failed" | "busy";
+  error: string | null;
+}
+
+interface RawSeedCalendarPrefsResponse {
+  kind: "ok" | "failed" | "busy";
+  seed: CalendarSeedOutcome | null;
+  error: string | null;
 }
 
 interface RawEditContextResponse {
@@ -1311,6 +1348,38 @@ export async function handleTaskRequest(
         return;
       }
       post({ type: "suggestedContexts", contexts: mapSuggestedContexts(raw.contexts) });
+      return;
+    }
+    case "getCalendarPrefs": {
+      const raw = JSON.parse(host.calendarPrefs()) as RawCalendarPrefsResponse;
+      if (raw.kind === "busy") {
+        // No answer, not "not connected": a calendar lane that acted on the
+        // busy placeholder would stop polling over a read it never made.
+        return;
+      }
+      post({ type: "calendarPrefs", prefs: raw.prefs });
+      return;
+    }
+    case "toggleCalendar":
+    case "setCalendarConnected": {
+      const raw = JSON.parse(
+        request.type === "toggleCalendar"
+          ? await host.toggleCalendar(request.seed, request.id, request.nowMs)
+          : await host.setCalendarConnected(request.seed, request.connected, request.nowMs),
+      ) as RawEditCalendarPrefsResponse;
+      post({ type: "calendarPrefsEditResult", seed: request.seed, kind: raw.kind, error: raw.error });
+      return;
+    }
+    case "seedCalendarPrefs": {
+      const raw = JSON.parse(
+        await host.seedCalendarPrefs(
+          request.seed,
+          request.connected,
+          JSON.stringify(request.selectedIds),
+          request.nowMs,
+        ),
+      ) as RawSeedCalendarPrefsResponse;
+      post({ type: "seedCalendarPrefsResult", seed: request.seed, kind: raw.kind, outcome: raw.seed });
       return;
     }
     case "getQuestionSwitches": {

@@ -7,6 +7,8 @@ client/target/
 server/target/
 server/worker/build/
 server/worker/.wrangler/
+# wrangler dev's local vars and secrets (GOOGLE_SIGNIN_*, ADR-0040).
+server/worker/.dev.vars
 /.wrangler/
 HANDOFF.md
 

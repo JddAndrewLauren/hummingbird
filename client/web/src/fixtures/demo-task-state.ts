@@ -941,6 +941,13 @@ export function buildDemoTaskState(): TaskState {
     },
     lastQuestionSwitchWrite: null,
     lastContextEdit: null,
+    // ADR-0040 decision 8: never read here. `null` is "not read yet", which
+    // keeps `useCalendarWiring` parked — it neither seeds this browser's
+    // real `localStorage` copy nor arms a real Google poll off a fixture —
+    // and the Settings picker draws the fixture calendars off its own local
+    // copy (`calendarIsDemo`).
+    calendarPrefs: null,
+    lastCalendarSeed: null,
     // Moved from `demo-data.ts`'s kit-only `DEMO_DATA`, which already typed
     // these as the real `RuleDTO[]`/`KindRegistryDTO` (piece 1's "a move
     // rather than a rewrite") — the kit world keeps its own reference to the

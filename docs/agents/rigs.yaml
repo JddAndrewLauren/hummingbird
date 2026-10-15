@@ -11,14 +11,14 @@ rigs:
     data: The seed is client/web/src/fixtures/demo.ts; ?demo=kit shows the design-kit alerts. Reload to reset.
     needs: ["[device] wasm-pack 0.13, pnpm 11 and Node 22 on PATH"]
   authority-local:
-    what: The authority Worker under wrangler dev on 127.0.0.1:8787 with an empty local store and a throwaway admin secret
+    what: The authority Worker under wrangler dev on 127.0.0.1:8787 with an empty local store and a throwaway admin secret; Google sign-in (POST /api/auth/google) is configured from server/worker/.dev.vars when that file exists, and answers 503 when it does not
     start:
       - rustup target add wasm32-unknown-unknown
       - (cd server/worker && rm -rf .wrangler/state && cargo install -q worker-build && worker-build --release)
       - (cd server/worker && npx --yes wrangler@4 dev --ip 127.0.0.1 --port 8787 --var ADMIN_SECRET:local-rig-admin)
     ready: test "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 'http://127.0.0.1:8787/api/changes?since=0')" = 401
     open: http://127.0.0.1:8787/api/changes?since=0
-    data: "Fresh store on every boot. Mint a device token: curl -sX POST http://127.0.0.1:8787/api/admin/tokens -H 'Authorization: Bearer local-rig-admin' -d '{\"id\":\"rig-device\",\"name\":\"rig\",\"scope\":\"device\"}' | jq -r .token"
+    data: "Fresh store on every boot. Mint a device token: curl -sX POST http://127.0.0.1:8787/api/admin/tokens -H 'Authorization: Bearer local-rig-admin' -d '{\"id\":\"rig-device\",\"name\":\"rig\",\"scope\":\"device\"}' | jq -r .token. For sign-in, put GOOGLE_SIGNIN_CLIENT_IDS=<web client id> and GOOGLE_SIGNIN_ALLOWED_SUB=<your Google sub> in server/worker/.dev.vars before start (wrangler dev reads it alongside --var)"
     needs: ["[device] Node 22 (npx wrangler@4), jq and curl"]
     exclusive: true
   web-local:

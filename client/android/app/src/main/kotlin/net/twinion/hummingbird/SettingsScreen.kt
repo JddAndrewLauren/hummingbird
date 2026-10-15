@@ -68,7 +68,7 @@ import uniffi.hummingbird_ffi_mobile.MobileBindingRecord
 import uniffi.hummingbird_ffi_mobile.MobileBindingValue
 import uniffi.hummingbird_ffi_mobile.MobileCalendarConnection
 import uniffi.hummingbird_ffi_mobile.MobileCalendarList
-import uniffi.hummingbird_ffi_mobile.MobileCalendarSelection
+import uniffi.hummingbird_ffi_mobile.MobileCalendarPrefs
 import uniffi.hummingbird_ffi_mobile.MobileCalendarState
 import uniffi.hummingbird_ffi_mobile.MobileDeadLetterReason
 import uniffi.hummingbird_ffi_mobile.MobileDeadLetterRecord
@@ -142,7 +142,7 @@ fun SettingsScreen(
     val queueDepth by viewModel.queueDepth.collectAsState()
     val bindingError by viewModel.bindingError.collectAsState()
     val calendars by viewModel.calendars.collectAsState()
-    val calendarSelections by viewModel.calendarSelections.collectAsState()
+    val calendarPrefs by viewModel.calendarPrefs.collectAsState()
     val watchSend by viewModel.watchSend.collectAsState()
 
     suspend fun reload() = viewModel.load()
@@ -300,7 +300,7 @@ fun SettingsScreen(
                 CalendarSection(
                     connection = calendarConnection,
                     calendars = calendars,
-                    selections = calendarSelections,
+                    prefs = calendarPrefs,
                     onConnect = onConnectCalendar,
                     onDisconnect = onDisconnectCalendar,
                     onToggleCalendar = { id -> scope.launch { viewModel.toggleCalendar(id) } },
@@ -931,7 +931,7 @@ private fun calendarStateSentence(state: MobileCalendarState): String = when (st
 private fun CalendarSection(
     connection: MobileCalendarConnection,
     calendars: MobileCalendarList?,
-    selections: List<MobileCalendarSelection>,
+    prefs: MobileCalendarPrefs?,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onToggleCalendar: (String) -> Unit,
@@ -958,19 +958,35 @@ private fun CalendarSection(
         val options = calendars?.takeIf { it.kind == "ok" }?.calendars.orEmpty()
         if (options.isNotEmpty()) {
             Text("Calendars to read", style = MaterialTheme.typography.titleSmall)
+            // ADR-0040 decision 8: checked is what this device polls — the
+            // synced ticks plus the bound Trips calendar, the core's union —
+            // and the Trips row is locked on, with the reason said, because
+            // it is polled whatever the picker says.
+            val polled = prefs?.polled.orEmpty()
             for (entry in options) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .semantics { contentDescription = "calendar ${entry.summary}" },
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Checkbox(
-                        checked = selections.any { it.id == entry.id },
-                        onCheckedChange = { onToggleCalendar(entry.id) },
-                    )
-                    Text(entry.summary, style = MaterialTheme.typography.bodyMedium)
+                val locked = entry.id == prefs?.lockedId
+                Column {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics { contentDescription = "calendar ${entry.summary}" },
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Checkbox(
+                            checked = polled.any { it.id == entry.id },
+                            onCheckedChange = { onToggleCalendar(entry.id) },
+                            enabled = !locked,
+                        )
+                        Text(entry.summary, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    if (locked) {
+                        Text(
+                            "Polled because it is the bound Trips calendar. Change it under Standing questions.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         } else if (connection.state == MobileCalendarState.CONNECTED) {

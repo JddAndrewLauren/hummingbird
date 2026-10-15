@@ -46,7 +46,6 @@ import type { SyncStorageLike } from "./sync-persistence";
 const initialCalendar: CalendarState = {
   connected: false,
   needsReconnect: false,
-  selectedCalendarIds: [],
   availableCalendars: [],
   lastPollOutcome: null,
   connectPending: false,
@@ -70,6 +69,8 @@ const initialTask: TaskState = {
   bindings: null,
   questionSwitches: null,
   suggestedContexts: null,
+  calendarPrefs: null,
+  lastCalendarSeed: null,
   kindRegistry: null,
   rules: null,
   lastRuleWrite: null,
