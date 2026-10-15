@@ -429,6 +429,16 @@ where
         &self.mirror_store
     }
 
+    /// Whether this process has completed a full sweep — the one moment a
+    /// row's absence from the mirror means the authority has no such row,
+    /// rather than that it has not been pulled yet. In-memory, like
+    /// [`SyncCycle::last_full_sweep_at_ms`] itself: a fresh process answers
+    /// `false` until its first cycle sweeps, the safe direction for
+    /// ADR-0040's one-time seeding (`crate::Core::seed_calendar_prefs`).
+    pub fn has_completed_full_sweep(&self) -> bool {
+        self.last_full_sweep_at_ms.is_some()
+    }
+
     /// The population ADR-0001's 250-issue watchline measures — see
     /// [`SyncMirror::active_item_count`].
     pub fn active_item_count(&self) -> usize {

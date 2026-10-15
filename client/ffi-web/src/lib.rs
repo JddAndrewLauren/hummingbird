@@ -493,6 +493,12 @@ mod wasm_bindings {
     const BUSY_SUGGESTED_CONTEXTS: &str =
         r#"{"kind":"busy","contexts":{"entries":[],"pending":false}}"#;
     const BUSY_EDIT_CONTEXT: &str = r#"{"kind":"busy","error":null,"cleared":null}"#;
+    // ADR-0040 decision 8: the same contract — a busy placeholder is not a
+    // read, and a host must never stop polling over it.
+    const BUSY_CALENDAR_PREFS: &str =
+        r#"{"kind":"busy","prefs":{"connected":false,"selection":[],"pending":false}}"#;
+    const BUSY_EDIT_CALENDAR_PREFS: &str = r#"{"kind":"busy","error":null}"#;
+    const BUSY_SEED_CALENDAR_PREFS: &str = r#"{"kind":"busy","seed":null,"error":null}"#;
     // #140: same "no answer, never an empty one" contract as BUSY_BINDINGS.
     const BUSY_RULES: &str = r#"{"kind":"busy","rules":[]}"#;
     const BUSY_CREATE_RULE: &str = r#"{"kind":"busy","id":null,"error":null}"#;
@@ -1449,6 +1455,76 @@ mod wasm_bindings {
                 let response = host.remove_context(&seed, &name, now_ms as i64).await;
                 Ok(JsValue::from_str(
                     &serde_json::to_string(&response).expect("EditContextResponse serializes"),
+                ))
+            })
+        }
+
+        /// The calendar choices (ADR-0040 decision 8), as JSON:
+        /// `{"kind": "ok"|"busy", "prefs": {"connected": bool, "selection":
+        /// [{"id": string, "horizon": "standard"|"long"}], "pending": bool}}`.
+        #[wasm_bindgen(js_name = calendarPrefs)]
+        pub fn calendar_prefs(&self) -> String {
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_CALENDAR_PREFS.to_string(), |host| {
+                serde_json::to_string(&host.calendar_prefs()).expect("CalendarPrefsResponse serializes")
+            })
+        }
+
+        /// Ticks or unticks one calendar (ADR-0040 decision 8). Resolves to
+        /// JSON: `{"kind": "ok"|"locked"|"failed"|"busy", "error":
+        /// string|null}`.
+        #[wasm_bindgen(js_name = toggleCalendar)]
+        pub fn toggle_calendar(&self, seed: String, id: String, now_ms: f64) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Settings, now_ms as i64) else {
+                    return Ok(JsValue::from_str(BUSY_EDIT_CALENDAR_PREFS));
+                };
+                let response = host.toggle_calendar(&seed, &id, now_ms as i64).await;
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("EditCalendarPrefsResponse serializes"),
+                ))
+            })
+        }
+
+        /// Records whether the operator's devices poll Google Calendar
+        /// (ADR-0040 decision 8). Resolves to `toggleCalendar`'s JSON.
+        #[wasm_bindgen(js_name = setCalendarConnected)]
+        pub fn set_calendar_connected(&self, seed: String, connected: bool, now_ms: f64) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Settings, now_ms as i64) else {
+                    return Ok(JsValue::from_str(BUSY_EDIT_CALENDAR_PREFS));
+                };
+                let response = host.set_calendar_connected(&seed, connected, now_ms as i64).await;
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("EditCalendarPrefsResponse serializes"),
+                ))
+            })
+        }
+
+        /// Seeds the synced calendar choices from this browser's old
+        /// `localStorage` copy, once (ADR-0040 decision 8). `selection_json`
+        /// is the old ids as a JSON string array. Resolves to JSON:
+        /// `{"kind": "ok"|"failed"|"busy", "seed": "not_yet"|"seeded"|
+        /// "adopted"|null, "error": string|null}`.
+        #[wasm_bindgen(js_name = seedCalendarPrefs)]
+        pub fn seed_calendar_prefs(
+            &self,
+            seed: String,
+            connected: bool,
+            selection_json: String,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Settings, now_ms as i64) else {
+                    return Ok(JsValue::from_str(BUSY_SEED_CALENDAR_PREFS));
+                };
+                let response = host
+                    .seed_calendar_prefs(&seed, connected, &selection_json, now_ms as i64)
+                    .await;
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("SeedCalendarPrefsResponse serializes"),
                 ))
             })
         }

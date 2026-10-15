@@ -401,6 +401,25 @@ export function attachWorkerClient(
       case "suggestedContexts":
         store.setTaskState({ suggestedContexts: message.contexts });
         return;
+      case "calendarPrefs":
+        store.setTaskState({ calendarPrefs: message.prefs });
+        return;
+      case "calendarPrefsEditResult":
+        if (message.kind === "ok") {
+          // `Core::toggle_calendar`/`set_calendar_connected` overlay, as
+          // `set_binding` does, so the picker settles at once and the
+          // calendar wiring re-pushes the polled set off the new answer.
+          requestCalendarPrefs(worker);
+        }
+        return;
+      case "seedCalendarPrefsResult":
+        store.setTaskState({
+          lastCalendarSeed: { seed: message.seed, outcome: message.outcome },
+        });
+        if (message.outcome === "seeded") {
+          requestCalendarPrefs(worker);
+        }
+        return;
       case "kindRegistry":
         store.setTaskState({ kindRegistry: message.registry });
         return;
@@ -977,6 +996,40 @@ export function requestQuestionSwitches(worker: WorkerLike): void {
 /** The suggested-contexts list (ADR-0038). */
 export function requestSuggestedContexts(worker: WorkerLike): void {
   worker.postMessage({ type: "getSuggestedContexts" });
+}
+
+/** The calendar choices (ADR-0040 decision 8). */
+export function requestCalendarPrefs(worker: WorkerLike): void {
+  worker.postMessage({ type: "getCalendarPrefs" });
+}
+
+/** Ticks or unticks one calendar in the synced selection. The core keeps
+ * every other calendar's horizon and refuses the bound Trips calendar. */
+export function toggleCalendar(worker: WorkerLike, seed: string, id: string, nowMs: number): void {
+  worker.postMessage({ type: "toggleCalendar", seed, id, nowMs });
+}
+
+/** Records whether the operator's devices poll Google Calendar — the
+ * Connect gesture's synced half. */
+export function setCalendarConnected(
+  worker: WorkerLike,
+  seed: string,
+  connected: boolean,
+  nowMs: number,
+): void {
+  worker.postMessage({ type: "setCalendarConnected", seed, connected, nowMs });
+}
+
+/** Hands this browser's old `localStorage` calendar choices to the core's
+ * one-time seed (`Core::seed_calendar_prefs`). */
+export function seedCalendarPrefs(
+  worker: WorkerLike,
+  seed: string,
+  connected: boolean,
+  selectedIds: string[],
+  nowMs: number,
+): void {
+  worker.postMessage({ type: "seedCalendarPrefs", seed, connected, selectedIds, nowMs });
 }
 
 /** ADR-0038's two list writes: one absolute-value CAS `PUT` on the

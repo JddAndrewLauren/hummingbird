@@ -569,6 +569,25 @@ pub fn contexts_of_json(items_json: &str, suggested_json: &str) -> String {
     serde_json::to_string(&frontier::contexts_of(&entries, &suggested)).unwrap()
 }
 
+/// What a device actually polls (ADR-0040 decision 8, #843):
+/// [`hummingbird_core::calendar::effective_selection`] over the synced
+/// selection the worker published and the bound Trips calendar's id —
+/// the web's only copy of the union, which used to be its own TS
+/// `effectiveSelection`. `selection_json` is a JSON array of
+/// `{"id","horizon"}`; an unreadable one reads as nothing ticked, so the
+/// answer is at worst the Trips calendar alone, never an error the poller
+/// would have to interpret. Answers the same array shape.
+#[wasm_bindgen]
+pub fn effective_calendar_selection_json(selection_json: &str, trips_id: Option<String>) -> String {
+    let selection: Vec<hummingbird_core::calendar::CalendarSelection> =
+        serde_json::from_str(selection_json).unwrap_or_default();
+    serde_json::to_string(&hummingbird_core::calendar::effective_selection(
+        &selection,
+        trips_id.as_deref(),
+    ))
+    .unwrap()
+}
+
 /// One item as [`queue::order_triage`]/[`queue::triage_process_queue`] read
 /// it: an id and its capture time — the JSON shape `seam.ts` sends, a strict
 /// subset of `TaskItemDTO` exactly like [`FrontierItemDTO`] above.
@@ -2643,6 +2662,22 @@ mod tests {
         let two = format!("[{},{}]", one_item("a", "ready"), one_item("b", "ready").replace("@errands", "@calls"));
         assert_eq!(contexts_of_json(&two, r#"["@calls","@errands"]"#), r#"["@calls","@errands"]"#);
         assert_eq!(contexts_of_json(&two, "not json"), r#"["@errands","@calls"]"#);
+    }
+
+    #[test]
+    fn effective_calendar_selection_json_is_the_core_s_union() {
+        assert_eq!(
+            effective_calendar_selection_json(
+                r#"[{"id":"a","horizon":"standard"},{"id":"trips","horizon":"standard"}]"#,
+                Some("trips".to_string())
+            ),
+            r#"[{"id":"a","horizon":"standard"},{"id":"trips","horizon":"long"}]"#
+        );
+        assert_eq!(
+            effective_calendar_selection_json("not json", Some("trips".to_string())),
+            r#"[{"id":"trips","horizon":"long"}]"#
+        );
+        assert_eq!(effective_calendar_selection_json("[]", None), "[]");
     }
 
     #[test]

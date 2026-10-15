@@ -4055,6 +4055,86 @@ pub struct MobileCalendarSelection {
     pub long_horizon: bool,
 }
 
+/// The calendar choices as the phone's Settings draws them (ADR-0040
+/// decision 8) — the synced rows, read through the core, never this
+/// device's own copy. An **applied result**: `polled` is
+/// [`hummingbird_core::Core::effective_calendar_selection`], so Kotlin never
+/// restates the Trips union, and `locked_id` is the bound Trips calendar
+/// whose row the picker draws checked and disabled.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileCalendarPrefs {
+    pub connected: bool,
+    /// The ticked calendars, each with its horizon — the synced row.
+    pub selections: Vec<MobileCalendarSelection>,
+    /// What this device polls: `selections` plus the bound Trips calendar.
+    pub polled: Vec<MobileCalendarSelection>,
+    pub locked_id: Option<String>,
+    /// Whether an unconfirmed local write is overlaid on either row.
+    pub pending: bool,
+}
+
+/// What [`MobileTaskHost::seed_calendar_prefs`] did with the phone's old
+/// DataStore copy — [`hummingbird_core::calendar_prefs::CalendarSeed`]
+/// verbatim. Only `NotYet` means keep the local values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileCalendarSeed {
+    NotYet,
+    Seeded,
+    Adopted,
+}
+
+/// Why a calendar-choice edit did not land. `Locked` (the bound Trips
+/// calendar) and `NotSelected` (a horizon for an unticked calendar) are
+/// refused before anything is enqueued; `WriteFailed` is a durability
+/// failure.
+#[derive(Debug, uniffi::Error)]
+pub enum MobileCalendarEditError {
+    Locked,
+    NotSelected,
+    WriteFailed { detail: String },
+}
+
+impl std::fmt::Display for MobileCalendarEditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MobileCalendarEditError::Locked => {
+                write!(f, "the Trips calendar is always polled while it is bound")
+            }
+            MobileCalendarEditError::NotSelected => write!(f, "that calendar is not ticked"),
+            MobileCalendarEditError::WriteFailed { detail } => write!(f, "{detail}"),
+        }
+    }
+}
+
+impl std::error::Error for MobileCalendarEditError {}
+
+impl<E: std::fmt::Debug> From<hummingbird_core::CalendarPrefsError<E>> for MobileCalendarEditError {
+    fn from(error: hummingbird_core::CalendarPrefsError<E>) -> Self {
+        match error {
+            hummingbird_core::CalendarPrefsError::Locked => MobileCalendarEditError::Locked,
+            hummingbird_core::CalendarPrefsError::NotSelected => MobileCalendarEditError::NotSelected,
+            hummingbird_core::CalendarPrefsError::Snapshot(error) => {
+                MobileCalendarEditError::WriteFailed { detail: error.to_string() }
+            }
+        }
+    }
+}
+
+/// The synced calendar rows plus the Trips binding, read out from under
+/// `inner`'s lock in one go and handed to [`CalendarHalf::reconcile`] —
+/// the lock discipline [`CalendarHalf`]'s header states.
+struct SyncedCalendar {
+    connected: bool,
+    selection: Vec<CalendarSelection>,
+    trips_id: Option<String>,
+}
+
+/// What [`CalendarHalf::reconcile`] changed.
+struct Reconciled {
+    newly_connected: bool,
+    selection_moved: bool,
+}
+
 /// What one timer tick did: the poll's own outcome name (the same
 /// vocabulary `client/web/src/store/protocol.ts` matches on) plus the
 /// connection state the tick left the device in.
@@ -4072,6 +4152,13 @@ fn to_calendar_selection(selection: &MobileCalendarSelection) -> CalendarSelecti
         } else {
             CalendarHorizon::Standard
         },
+    }
+}
+
+fn to_mobile_selection(selection: &CalendarSelection) -> MobileCalendarSelection {
+    MobileCalendarSelection {
+        id: selection.id.clone(),
+        long_horizon: selection.horizon == CalendarHorizon::Long,
     }
 }
 
@@ -4099,23 +4186,17 @@ struct CalendarHalf {
     host: CalendarHostCore<FsSnapshotStore>,
     client: reqwest::Client,
     base_url: String,
-    /// The opt-in flag, as this process currently believes it. Durably the
-    /// host's (Preferences DataStore, beside `FrontierPrefs`), handed back
-    /// at each launch through [`MobileTaskHost::init_calendar`] — a flag,
-    /// never a credential (`calendar/persistence.ts`'s own distinction).
+    /// The opt-in flag, as this process last applied it. Durably the
+    /// synced `calendar-connected` row (ADR-0040 decision 8), read through
+    /// the core at [`MobileTaskHost::init_calendar`], every tick and every
+    /// [`MobileTaskHost::sync_calendar_prefs`] — a preference, never a
+    /// credential.
     opted_in: bool,
     /// The expiry of the access token currently pushed into `host`, or
     /// `None` when none is.
     expires_at_ms: Option<i64>,
     /// The last mint's failure code, or `None` if it succeeded.
     last_error: Option<&'static str>,
-    /// The **device's own** ticked calendars, as the picker last wrote them
-    /// — never the polled set. What is actually polled is
-    /// [`hummingbird_core::calendar::effective_selection`] over this plus
-    /// the synced `trips-calendar` binding, re-derived on every push and
-    /// every tick, so a binding that arrives by sync starts being polled
-    /// without the operator touching the picker.
-    stored_selections: Vec<CalendarSelection>,
 }
 
 /// One mirrored event, as a pane rule reads it — `inputs.rs`'s trimmed
@@ -4204,13 +4285,38 @@ impl CalendarHalf {
         }
     }
 
-    /// Pushes the polled set: this device's picks unioned with the bound
-    /// Trips calendar, which is always polled and always at the long
-    /// horizon. `effectiveSelection`'s rule, read out of core so there is
-    /// no ffi-side copy of it.
-    fn apply_selection(&self, trips_id: Option<&str>) {
-        self.host
-            .set_calendar_selections(effective_selection(&self.stored_selections, trips_id));
+    /// Brings this process in line with the synced rows: pushes the polled
+    /// set — the synced selection unioned with the bound Trips calendar,
+    /// always at the long horizon (`effective_selection`, read out of core
+    /// so there is no ffi-side copy of it) — and applies the synced
+    /// connected flag. A device another device disconnected stops here:
+    /// its token is disposed of, as [`MobileTaskHost::disconnect_calendar`]
+    /// does. Re-run on every door into the lane, so a choice made on the
+    /// web starts (or stops) polling here without the operator opening
+    /// Settings.
+    fn reconcile(&mut self, synced: &SyncedCalendar) -> Reconciled {
+        let polled = effective_selection(&synced.selection, synced.trips_id.as_deref());
+        let selection_moved = self.host.calendar_selections() != polled;
+        if selection_moved {
+            self.host.set_calendar_selections(polled);
+        }
+        let newly_connected = synced.connected && !self.opted_in;
+        if !synced.connected && self.opted_in {
+            self.forget_token();
+        }
+        self.opted_in = synced.connected;
+        Reconciled {
+            newly_connected,
+            selection_moved,
+        }
+    }
+
+    /// Drops the held access token and its bookkeeping — the disconnect
+    /// gesture's credential half.
+    fn forget_token(&mut self) {
+        self.expires_at_ms = None;
+        self.last_error = None;
+        self.host.clear_token();
     }
 
     /// Whether the held token is close enough to expiry to rotate now —
@@ -4316,8 +4422,8 @@ impl MobileTaskHost {
         // host-supplied namespace, sibling to the queue/mirror/grill-draft
         // files `Core::init` just laid down (ADR-0003: the namespace is the
         // one thing the host contributes). Selections start empty — a
-        // never-opted-in device polls nothing — and arrive at
-        // `init_calendar`.
+        // never-opted-in device polls nothing — and are read from the
+        // synced rows at `init_calendar`.
         let calendar = CalendarHalf {
             host: CalendarHostCore::new(
                 FsSnapshotStore::new(std::path::Path::new(&namespace_path).join("calendar.json")),
@@ -4328,7 +4434,6 @@ impl MobileTaskHost {
             opted_in: false,
             expires_at_ms: None,
             last_error: None,
-            stored_selections: Vec::new(),
         };
         Ok(Arc::new(Self {
             inner: tokio::sync::Mutex::new(Inner {
@@ -5787,28 +5892,22 @@ impl MobileTaskHost {
     // same `CalendarHostCore`. See the `CalendarHalf` section above for why
     // the token never crosses this seam.
 
-    /// Re-arms the lane at app start from the host's persisted state: the
-    /// opt-in flag and the picked calendars, both DataStore-owned
-    /// (Slice 3), neither a credential. An opted-in device mints once here,
-    /// so a launch that is online is already connected by the time Settings
-    /// renders; a never-opted-in one does nothing and stays
+    /// Arms the lane at app start from the **synced** calendar choices
+    /// (ADR-0040 decision 8): the connected flag and the ticked calendars
+    /// are rows every device reads, so a device another one connected
+    /// starts polling without a Connect tap here. A connected device mints
+    /// once, so a launch that is online is already connected by the time
+    /// Settings renders; a not-connected one does nothing and stays
     /// [`MobileCalendarState::NeverConnected`] — `initConnection`'s own
     /// two-branch shape.
-    pub async fn init_calendar(
-        &self,
-        was_previously_connected: bool,
-        selections: Vec<MobileCalendarSelection>,
-    ) -> MobileCalendarConnection {
+    pub async fn init_calendar(&self) -> MobileCalendarConnection {
         let device_token = self.device_token().await;
-        let trips_id = self.trips_calendar_id().await;
+        let synced = self.synced_calendar().await;
         let mut calendar = self.calendar.lock().await;
-        calendar.stored_selections = selections.iter().map(to_calendar_selection).collect();
-        calendar.apply_selection(trips_id.as_deref());
-        if !was_previously_connected {
-            return calendar.connection();
+        calendar.reconcile(&synced);
+        if calendar.opted_in {
+            calendar.mint(device_token.as_deref()).await;
         }
-        calendar.opted_in = true;
-        calendar.mint(device_token.as_deref()).await;
         calendar.connection()
     }
 
@@ -5818,18 +5917,36 @@ impl MobileTaskHost {
     /// returns — `shouldKeepExistingConnection`'s rule, and the reason a
     /// cancelled or failed *re*-connect cannot cost the operator their
     /// stale-but-real mirror. A **first** connect that fails leaves the
-    /// device never-connected, so the Connect affordance is still offered.
-    pub async fn connect_calendar(&self) -> MobileCalendarConnection {
+    /// device never-connected, so the Connect affordance is still offered;
+    /// one that succeeds records the synced `calendar-connected` row, which
+    /// is what connects the operator's other devices too.
+    pub async fn connect_calendar(&self, now_ms: i64) -> MobileCalendarConnection {
         let device_token = self.device_token().await;
-        let mut calendar = self.calendar.lock().await;
-        let was_opted_in = calendar.opted_in;
-        let minted = calendar.mint(device_token.as_deref()).await;
-        calendar.opted_in = was_opted_in || minted;
-        calendar.connection()
+        let minted = {
+            let mut calendar = self.calendar.lock().await;
+            let was_opted_in = calendar.opted_in;
+            let minted = calendar.mint(device_token.as_deref()).await;
+            calendar.opted_in = was_opted_in || minted;
+            minted
+        };
+        if minted && !self.synced_calendar().await.connected {
+            // A failed enqueue leaves the row unwritten: this process stays
+            // connected, and the next launch reads not-connected and offers
+            // Connect again — nothing is lost that a tap cannot restore.
+            let seed = mint_mutation_seed("calendar-connected", now_ms);
+            let _ = self
+                .lock_inner(hummingbird_core::diagnostics::CoreOwner::Calendar)
+                .await
+                .core
+                .set_calendar_connected(&seed, true, now_ms)
+                .await;
+        }
+        self.calendar.lock().await.connection()
     }
 
-    /// "Disconnect": forget the opt-in and dispose of the held access
-    /// token.
+    /// "Disconnect": record the synced `calendar-connected` row as off —
+    /// which disconnects the operator's other devices on their next sync —
+    /// and dispose of the held access token.
     ///
     /// **The mirror is not cleared.** A disconnected device's already-polled
     /// events stay on disk — the mirror is disposable, not a lie, and
@@ -5843,12 +5960,141 @@ impl MobileTaskHost {
     /// Settings lists again on exactly this state change, so a disconnected
     /// device would have gone on making authenticated Google requests until
     /// the token expired.
-    pub async fn disconnect_calendar(&self) -> MobileCalendarConnection {
+    ///
+    /// The ticked calendars survive deliberately: reconnecting should not
+    /// make the operator re-pick, and nothing polls them while the flag is
+    /// off.
+    pub async fn disconnect_calendar(&self, now_ms: i64) -> MobileCalendarConnection {
+        let seed = mint_mutation_seed("calendar-connected", now_ms);
+        let _ = self
+            .lock_inner(hummingbird_core::diagnostics::CoreOwner::Calendar)
+            .await
+            .core
+            .set_calendar_connected(&seed, false, now_ms)
+            .await;
         let mut calendar = self.calendar.lock().await;
         calendar.opted_in = false;
-        calendar.expires_at_ms = None;
-        calendar.last_error = None;
-        calendar.host.clear_token();
+        calendar.forget_token();
+        calendar.connection()
+    }
+
+    /// The calendar choices for Settings' picker (ADR-0040 decision 8), per
+    /// [`hummingbird_core::Core::calendar_prefs`] — read through the core's
+    /// overlay, so a tick made offline reads back at once.
+    pub async fn calendar_prefs(&self) -> MobileCalendarPrefs {
+        let inner = self
+            .lock_inner(hummingbird_core::diagnostics::CoreOwner::Calendar)
+            .await;
+        let prefs = inner.core.calendar_prefs();
+        MobileCalendarPrefs {
+            connected: prefs.connected,
+            selections: prefs.selection.iter().map(to_mobile_selection).collect(),
+            polled: inner
+                .core
+                .effective_calendar_selection()
+                .iter()
+                .map(to_mobile_selection)
+                .collect(),
+            locked_id: inner.core.trips_calendar_id(),
+            pending: prefs.pending,
+        }
+    }
+
+    /// Ticks or unticks one calendar in the synced selection, per
+    /// [`hummingbird_core::Core::toggle_calendar`] — every other entry keeps
+    /// its horizon, and the bound Trips calendar is refused
+    /// ([`MobileCalendarEditError::Locked`]).
+    ///
+    /// **It polls straight away rather than waiting for the next tick**, and
+    /// that is a correctness matter, not a nicety: an empty selection is not
+    /// a no-op poll, it is a *successful* one over zero calendars, so the
+    /// first tick after Connect saves a real, fresh, empty snapshot. Leaving
+    /// the new selection until the next 15-minute tick would have the
+    /// weekend pane answer a confident "nothing on" for a quarter of an hour
+    /// after the operator picked the calendar that says otherwise.
+    /// `ContextPoller::refresh` is the user-invoked trigger this is.
+    pub async fn toggle_calendar(
+        &self,
+        id: String,
+        now_ms: i64,
+    ) -> Result<MobileCalendarTick, MobileCalendarEditError> {
+        let seed = mint_mutation_seed("calendar-toggle", now_ms);
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings)
+            .await
+            .core
+            .toggle_calendar(&seed, &id, now_ms)
+            .await?;
+        Ok(self.apply_and_refresh(now_ms).await)
+    }
+
+    /// Sets one ticked calendar's poll horizon, per
+    /// [`hummingbird_core::Core::set_calendar_horizon`] — refused for a
+    /// calendar that is not ticked ([`MobileCalendarEditError::NotSelected`]).
+    /// Polls straight away, for [`Self::toggle_calendar`]'s reason.
+    pub async fn set_calendar_horizon(
+        &self,
+        id: String,
+        long_horizon: bool,
+        now_ms: i64,
+    ) -> Result<MobileCalendarTick, MobileCalendarEditError> {
+        let seed = mint_mutation_seed("calendar-horizon", now_ms);
+        let horizon = if long_horizon { CalendarHorizon::Long } else { CalendarHorizon::Standard };
+        self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings)
+            .await
+            .core
+            .set_calendar_horizon(&seed, &id, horizon, now_ms)
+            .await?;
+        Ok(self.apply_and_refresh(now_ms).await)
+    }
+
+    /// The one-time migration of the phone's old DataStore calendar
+    /// choices, per [`hummingbird_core::Core::seed_calendar_prefs`]: writes
+    /// nothing before this process's first completed full sweep
+    /// ([`MobileCalendarSeed::NotYet`] — keep the local values and ask
+    /// again after the next cycle), then seeds only a row that does not
+    /// exist and adopts one that does. Any other answer means the host
+    /// deletes its local values.
+    pub async fn seed_calendar_prefs(
+        &self,
+        connected: bool,
+        selections: Vec<MobileCalendarSelection>,
+        now_ms: i64,
+    ) -> Result<MobileCalendarSeed, MobileCalendarEditError> {
+        let seed = mint_mutation_seed("calendar-seed", now_ms);
+        let selection: Vec<CalendarSelection> = selections.iter().map(to_calendar_selection).collect();
+        let outcome = self
+            .lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings)
+            .await
+            .core
+            .seed_calendar_prefs(&seed, connected, &selection, now_ms)
+            .await
+            .map_err(|error| MobileCalendarEditError::WriteFailed { detail: error.to_string() })?;
+        Ok(match outcome {
+            hummingbird_core::calendar_prefs::CalendarSeed::NotYet => MobileCalendarSeed::NotYet,
+            hummingbird_core::calendar_prefs::CalendarSeed::Seeded => MobileCalendarSeed::Seeded,
+            hummingbird_core::calendar_prefs::CalendarSeed::Adopted => MobileCalendarSeed::Adopted,
+        })
+    }
+
+    /// Brings the lane in line with the synced calendar choices after a
+    /// sync cycle (ADR-0040 decision 8) — the door that makes a calendar
+    /// ticked on the web start polling here **without touching the
+    /// phone**. A device another device connected mints and polls; one
+    /// another device disconnected stops and drops its token; a selection
+    /// (or Trips binding) that moved is polled at once rather than at the
+    /// next 15-minute tick, for [`Self::toggle_calendar`]'s reason. Nothing
+    /// moved, nothing is fetched.
+    pub async fn sync_calendar_prefs(&self, now_ms: i64) -> MobileCalendarConnection {
+        let device_token = self.device_token().await;
+        let synced = self.synced_calendar().await;
+        let mut calendar = self.calendar.lock().await;
+        let reconciled = calendar.reconcile(&synced);
+        if calendar.opted_in && (reconciled.newly_connected || reconciled.selection_moved) {
+            if calendar.due_for_rotation(now_ms) {
+                calendar.mint(device_token.as_deref()).await;
+            }
+            calendar.host.refresh(now_ms).await;
+        }
         calendar.connection()
     }
 
@@ -5871,44 +6117,6 @@ impl MobileTaskHost {
         }
     }
 
-    /// The picker's current selection. Durably the host's, like the opt-in
-    /// flag.
-    ///
-    /// **It polls straight away rather than waiting for the next tick**, and
-    /// that is a correctness matter, not a nicety: an empty selection is not
-    /// a no-op poll, it is a *successful* one over zero calendars, so the
-    /// first tick after Connect saves a real, fresh, empty snapshot. Leaving
-    /// the new selection until the next 15-minute tick would have the
-    /// weekend pane answer a confident "nothing on" for a quarter of an hour
-    /// after the operator picked the calendar that says otherwise.
-    /// `ContextPoller::refresh` is the user-invoked trigger this is.
-    pub async fn set_calendar_selections(
-        &self,
-        selections: Vec<MobileCalendarSelection>,
-        now_ms: i64,
-    ) -> MobileCalendarTick {
-        let device_token = self.device_token().await;
-        let trips_id = self.trips_calendar_id().await;
-        let mut calendar = self.calendar.lock().await;
-        calendar.stored_selections = selections.iter().map(to_calendar_selection).collect();
-        calendar.apply_selection(trips_id.as_deref());
-        if !calendar.opted_in {
-            return MobileCalendarTick {
-                outcome: outcome_name(hummingbird_core::context::PollOutcome::NoCredential)
-                    .to_string(),
-                connection: calendar.connection(),
-            };
-        }
-        if calendar.due_for_rotation(now_ms) {
-            calendar.mint(device_token.as_deref()).await;
-        }
-        let outcome = calendar.host.refresh(now_ms).await;
-        MobileCalendarTick {
-            outcome: outcome_name(outcome).to_string(),
-            connection: calendar.connection(),
-        }
-    }
-
     /// One foreground timer tick, at [`calendar_poll_interval_ms`].
     ///
     /// The whole mint/rotate/401 loop is here, not in Kotlin:
@@ -5926,13 +6134,14 @@ impl MobileTaskHost {
     ///    token rather than repeating the 401.
     pub async fn calendar_on_timer(&self, now_ms: i64) -> MobileCalendarTick {
         let device_token = self.device_token().await;
-        let trips_id = self.trips_calendar_id().await;
+        let synced = self.synced_calendar().await;
         let mut calendar = self.calendar.lock().await;
-        // Re-derived every tick, not just at a picker gesture: the Trips
-        // binding is *synced*, so it can arrive from another device between
-        // two ticks and must start being polled without the operator
-        // opening Settings.
-        calendar.apply_selection(trips_id.as_deref());
+        // Re-derived every tick, not just at a picker gesture: the
+        // selection, the connected flag and the Trips binding are all
+        // *synced*, so any of them can arrive from another device between
+        // two ticks and must take effect without the operator opening
+        // Settings.
+        calendar.reconcile(&synced);
         if !calendar.opted_in {
             return MobileCalendarTick {
                 outcome: outcome_name(hummingbird_core::context::PollOutcome::NoCredential)
@@ -5989,32 +6198,46 @@ impl MobileTaskHost {
             .clone()
     }
 
-    /// The designated Trips calendar, read off the synced bindings table
-    /// under `inner`'s lock and released before the calendar's is taken —
-    /// the same lock order [`Self::device_token`] keeps, for the same
-    /// reason.
+    /// The synced calendar choices and the designated Trips calendar, read
+    /// off the `settings` table under `inner`'s lock and released before
+    /// the calendar's is taken — the same lock order [`Self::device_token`]
+    /// keeps, for the same reason.
     ///
-    /// It is a *binding*, not a device preference: the operator names their
-    /// Trips calendar once, anywhere, and every device polls it. That is
-    /// why the polled set cannot be the picker's list alone.
-    async fn trips_calendar_id(&self) -> Option<String> {
+    /// None of it is a device preference any more (ADR-0040 decision 8):
+    /// the operator ticks a calendar, connects, or names their Trips
+    /// calendar once, anywhere, and every device follows.
+    async fn synced_calendar(&self) -> SyncedCalendar {
         let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Calendar).await;
-        inner
-            .core
-            .bindings()
-            .into_iter()
-            .find(|binding| binding.key == vacation::TRIPS_CALENDAR_BINDING_KEY)
-            .and_then(|binding| match binding.value {
-                BindingValue::Text { text } => {
-                    let id = text.trim().to_string();
-                    if id.is_empty() {
-                        None
-                    } else {
-                        Some(id)
-                    }
-                }
-                _ => None,
-            })
+        let prefs = inner.core.calendar_prefs();
+        SyncedCalendar {
+            connected: prefs.connected,
+            selection: prefs.selection,
+            trips_id: inner.core.trips_calendar_id(),
+        }
+    }
+
+    /// The tail of every picker gesture: apply the synced choices just
+    /// written and, if this device polls at all, poll now.
+    async fn apply_and_refresh(&self, now_ms: i64) -> MobileCalendarTick {
+        let device_token = self.device_token().await;
+        let synced = self.synced_calendar().await;
+        let mut calendar = self.calendar.lock().await;
+        calendar.reconcile(&synced);
+        if !calendar.opted_in {
+            return MobileCalendarTick {
+                outcome: outcome_name(hummingbird_core::context::PollOutcome::NoCredential)
+                    .to_string(),
+                connection: calendar.connection(),
+            };
+        }
+        if calendar.due_for_rotation(now_ms) {
+            calendar.mint(device_token.as_deref()).await;
+        }
+        let outcome = calendar.host.refresh(now_ms).await;
+        MobileCalendarTick {
+            outcome: outcome_name(outcome).to_string(),
+            connection: calendar.connection(),
+        }
     }
 
     /// Phase one's calendar arm: every event the mirror holds, under each
@@ -7525,6 +7748,19 @@ mod tests {
         .unwrap()
     }
 
+    /// Opts the device in the only way there is now (ADR-0040 decision 8):
+    /// the synced `calendar-connected` row, written through the core, then
+    /// the launch-time arm that reads it.
+    pub(super) async fn opt_in_calendar(host: &MobileTaskHost) -> MobileCalendarConnection {
+        host.lock_inner(hummingbird_core::diagnostics::CoreOwner::Calendar)
+            .await
+            .core
+            .set_calendar_connected("seed-opt-in", true, 1_000)
+            .await
+            .unwrap();
+        host.init_calendar().await
+    }
+
     /// The polled set is the picker's list unioned with the synced Trips
     /// binding, at the long horizon — the failure this pins is a Vacation
     /// pane that answers "nothing booked" because the one calendar it is
@@ -7542,17 +7778,113 @@ mod tests {
         .await
         .unwrap();
 
-        host.init_calendar(
-            true,
-            vec![MobileCalendarSelection { id: "personal@g".to_string(), long_horizon: false }],
-        )
-        .await;
+        host.toggle_calendar("personal@g".to_string(), 1_000).await.unwrap();
+        opt_in_calendar(&host).await;
 
         let polled = host.calendar.lock().await.host.calendar_selections();
         assert_eq!(
             polled,
             vec![CalendarSelection::standard("personal@g"), CalendarSelection::long("trips@g")]
         );
+    }
+
+    /// ADR-0040 decision 8's whole point on this side: a calendar ticked —
+    /// or a connection made, or undone — on another device reaches this
+    /// lane through the synced rows after a sync, with nothing tapped here.
+    /// The other device's writes are simulated by writing through this
+    /// core, which is exactly what a pulled row looks like to the lane.
+    #[tokio::test]
+    async fn choices_made_elsewhere_reach_the_lane_after_a_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+        assert_eq!(host.init_calendar().await.state, MobileCalendarState::NeverConnected);
+
+        {
+            let mut inner = host
+                .lock_inner(hummingbird_core::diagnostics::CoreOwner::Calendar)
+                .await;
+            inner.core.set_calendar_connected("seed-c", true, 1_000).await.unwrap();
+            inner.core.toggle_calendar("seed-t", "work@g", 1_000).await.unwrap();
+        }
+        let connection = host.sync_calendar_prefs(2_000).await;
+
+        // Connected: the mint was attempted (and the unreachable authority
+        // refused it), so this is an opted-in device, not a fresh one.
+        assert_eq!(connection.state, MobileCalendarState::CannotConfirm);
+        assert_eq!(
+            host.calendar.lock().await.host.calendar_selections(),
+            vec![CalendarSelection::standard("work@g")]
+        );
+
+        host.lock_inner(hummingbird_core::diagnostics::CoreOwner::Calendar)
+            .await
+            .core
+            .set_calendar_connected("seed-d", false, 3_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            host.sync_calendar_prefs(4_000).await.state,
+            MobileCalendarState::NeverConnected
+        );
+        assert_eq!(host.calendar_on_timer(5_000).await.outcome, "no_credential");
+    }
+
+    /// The picker reads the core's applied answer: the ticked calendars,
+    /// what is polled, and which row is locked on — and the locked row
+    /// refuses an untick before anything is written.
+    #[tokio::test]
+    async fn the_picker_reads_the_polled_set_and_the_trips_row_is_locked_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+        host.set_binding(
+            "seed-trips".to_string(),
+            vacation::TRIPS_CALENDAR_BINDING_KEY.to_string(),
+            "trips@g".to_string(),
+            1_000,
+        )
+        .await
+        .unwrap();
+        host.toggle_calendar("work@g".to_string(), 1_000).await.unwrap();
+        host.set_calendar_horizon("work@g".to_string(), true, 1_000).await.unwrap();
+
+        let prefs = host.calendar_prefs().await;
+        assert_eq!(
+            prefs.selections,
+            vec![MobileCalendarSelection { id: "work@g".to_string(), long_horizon: true }]
+        );
+        assert_eq!(
+            prefs.polled.iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(),
+            vec!["work@g", "trips@g"]
+        );
+        assert_eq!(prefs.locked_id.as_deref(), Some("trips@g"));
+        assert!(prefs.pending);
+
+        assert!(matches!(
+            host.toggle_calendar("trips@g".to_string(), 2_000).await,
+            Err(MobileCalendarEditError::Locked)
+        ));
+        assert!(matches!(
+            host.set_calendar_horizon("other@g".to_string(), true, 2_000).await,
+            Err(MobileCalendarEditError::NotSelected)
+        ));
+    }
+
+    /// The phone's old DataStore copy is not seeded before this process
+    /// has swept — the core's rule, crossed as the seam's own enum.
+    #[tokio::test]
+    async fn seeding_before_any_sweep_keeps_the_local_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = unreachable_host(&dir, "device-token").await;
+        let outcome = host
+            .seed_calendar_prefs(
+                true,
+                vec![MobileCalendarSelection { id: "work@g".to_string(), long_horizon: true }],
+                1_000,
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome, MobileCalendarSeed::NotYet);
+        assert!(!host.calendar_prefs().await.connected);
     }
 
     /// The binding is *synced*: it can arrive from the browser between two
@@ -7562,7 +7894,7 @@ mod tests {
     async fn a_trips_binding_that_arrives_later_is_picked_up_on_the_next_tick() {
         let dir = tempfile::tempdir().unwrap();
         let host = unreachable_host(&dir, "device-token").await;
-        host.init_calendar(true, Vec::new()).await;
+        crate::tests::opt_in_calendar(&host).await;
         assert!(host.calendar.lock().await.host.calendar_selections().is_empty());
 
         host.set_binding(
@@ -7606,7 +7938,7 @@ mod tests {
         // `!calendar_connected` produces.
         assert_eq!(weekend_state(&before), MobilePaneAnswerState::Unbound);
 
-        host.init_calendar(true, Vec::new()).await;
+        crate::tests::opt_in_calendar(&host).await;
 
         let after = host
             .rank_panes(MobileSurface::Now, 1_000, Vec::new(), MobileSyncFacts::default())
@@ -7644,7 +7976,7 @@ mod tests {
             1_000,
         )
         .await;
-        host.init_calendar(true, Vec::new()).await;
+        crate::tests::opt_in_calendar(&host).await;
 
         let midnight = |date: &str| MobileZoneQuery::Midnight {
             zone: hummingbird_core::decisions::panes::zone::DEVICE_ZONE.to_string(),
@@ -7656,7 +7988,7 @@ mod tests {
 
         // Disconnected, the read is not bound and the trip's dates are not
         // asked for — the arm is read, but it decides nothing on its own.
-        host.disconnect_calendar().await;
+        host.disconnect_calendar(1_000).await;
         let disconnected = host.pane_zone_queries(MobileSurface::Now, 1_000).await;
         assert!(!disconnected.contains(&midnight("2030-03-10")), "{disconnected:?}");
     }
@@ -7712,7 +8044,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let host = unreachable_host(&dir, "device-token").await;
 
-        let connection = host.init_calendar(false, Vec::new()).await;
+        let connection = host.init_calendar().await;
 
         assert_eq!(connection.state, MobileCalendarState::NeverConnected);
         assert_eq!(connection.expires_at_ms, None);
@@ -7741,7 +8073,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let host = unreachable_host(&dir, "device-token").await;
 
-        let connection = host.connect_calendar().await;
+        let connection = host.connect_calendar(1_000).await;
 
         assert_eq!(connection.state, MobileCalendarState::NeverConnected);
         assert_eq!(connection.error.as_deref(), Some("authority_unreachable"));
@@ -7754,7 +8086,7 @@ mod tests {
 
         // Opted in at launch, so this is a re-mint on an established
         // connection rather than a first attempt.
-        let connection = host.init_calendar(true, Vec::new()).await;
+        let connection = crate::tests::opt_in_calendar(&host).await;
 
         assert_eq!(connection.state, MobileCalendarState::RefusedDeviceToken);
         assert_eq!(connection.error.as_deref(), Some("no_device_token"));
@@ -7765,7 +8097,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let host = unreachable_host(&dir, "device-token").await;
 
-        let connection = host.init_calendar(true, Vec::new()).await;
+        let connection = crate::tests::opt_in_calendar(&host).await;
 
         // Not `NeverConnected`: the phone cannot tell "I am offline" from
         // "the authority is down", and neither is a reason to un-opt-in
@@ -7782,9 +8114,9 @@ mod tests {
         // Reconnect affordance down with it.
         let dir = tempfile::tempdir().unwrap();
         let host = unreachable_host(&dir, "device-token").await;
-        host.init_calendar(true, Vec::new()).await;
+        crate::tests::opt_in_calendar(&host).await;
 
-        let connection = host.connect_calendar().await;
+        let connection = host.connect_calendar(1_000).await;
 
         assert_eq!(connection.state, MobileCalendarState::CannotConfirm);
     }
@@ -7793,9 +8125,9 @@ mod tests {
     async fn disconnecting_returns_the_device_to_never_connected() {
         let dir = tempfile::tempdir().unwrap();
         let host = unreachable_host(&dir, "device-token").await;
-        host.init_calendar(true, Vec::new()).await;
+        crate::tests::opt_in_calendar(&host).await;
 
-        let connection = host.disconnect_calendar().await;
+        let connection = host.disconnect_calendar(1_000).await;
 
         assert_eq!(connection.state, MobileCalendarState::NeverConnected);
         assert_eq!(connection.error, None);
@@ -7807,7 +8139,7 @@ mod tests {
     async fn an_opted_in_tick_reports_the_pollers_own_outcome_vocabulary() {
         let dir = tempfile::tempdir().unwrap();
         let host = unreachable_host(&dir, "device-token").await;
-        host.init_calendar(true, Vec::new()).await;
+        crate::tests::opt_in_calendar(&host).await;
 
         let tick = host.calendar_on_timer(1_000).await;
 
@@ -7842,7 +8174,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let host = unreachable_host(&dir, "s3cret-device-token").await;
 
-        let connection = host.init_calendar(true, Vec::new()).await;
+        let connection = crate::tests::opt_in_calendar(&host).await;
         let tick = host.calendar_on_timer(1_000).await;
         let list = host.list_calendars().await;
 
@@ -11413,7 +11745,7 @@ mod settings_tests {
             now_ms as u64,
         )
         .await;
-        host.init_calendar(true, Vec::new()).await;
+        crate::tests::opt_in_calendar(&host).await;
 
         let queries = host.pane_zone_queries(MobileSurface::Now, now_ms).await;
         let facts = resolve_zone_facts(queries);

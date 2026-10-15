@@ -91,6 +91,7 @@ import net.twinion.hummingbird.ui.isWideWindow
 import net.twinion.hummingbird.ui.theme.HummingbirdTheme
 import net.twinion.hummingbird.ui.theme.LocalHbDark
 import uniffi.hummingbird_ffi_mobile.MobileCalendarConnection
+import uniffi.hummingbird_ffi_mobile.MobileCalendarSeed
 import uniffi.hummingbird_ffi_mobile.MobileCalendarState
 import uniffi.hummingbird_ffi_mobile.MobilePaneBand
 import uniffi.hummingbird_ffi_mobile.MobileTapTarget
@@ -438,6 +439,26 @@ private fun AppRoot(
             // than in `hummingbird-core`.
             SyncHistoryStore.recordInformative(context, outcome.kind, nowMs)
         }
+        // ADR-0040 decision 8: the calendar choices are synced rows. Hand
+        // this device's pre-#843 DataStore copy to the core's one-time seed
+        // (it answers NOT_YET until this process has swept, and the copy is
+        // kept for the next cycle), then bring the lane in line with the
+        // rows — which is how a calendar ticked on the web starts polling
+        // here without the phone being touched. Launched, not awaited: the
+        // reconcile takes the calendar lane's own lock, which a Google poll
+        // holds across its round trip, and the sync tick (and the
+        // pull-to-refresh spinner riding it) must not wait on that.
+        scope.launch {
+            CalendarPrefs.readLocal(context)?.let { local ->
+                val seeded = runCatching {
+                    host.seedCalendarPrefs(local.connected, local.selections, nowMs)
+                }.getOrNull()
+                if (seeded != null && seeded != MobileCalendarSeed.NOT_YET) {
+                    CalendarPrefs.clear(context)
+                }
+            }
+            calendarConnection = host.syncCalendarPrefs(nowMs)
+        }
         syncTick += 1
     }
 
@@ -497,36 +518,26 @@ private fun AppRoot(
         val host = CoreHolder.get(context)
         core = host
         needsToken = TokenStore.load(context) == null
-        // Re-arm the calendar from what this device persisted: the opt-in
-        // flag and the picked calendars, both preferences, neither a
-        // credential (`CalendarPrefs.kt`'s own header). An opted-in device
-        // mints once here, so a launch that is online is already connected
-        // by the time Settings can be reached.
-        calendarConnection = host.initCalendar(
-            CalendarPrefs.readConnected(context),
-            CalendarPrefs.readSelections(context),
-        )
+        // Arm the calendar from the synced choices (ADR-0040 decision 8),
+        // read through the core off the persisted mirror — neither is a
+        // credential. A connected workspace mints once here, so a launch
+        // that is online is already connected by the time Settings can be
+        // reached.
+        calendarConnection = host.initCalendar()
     }
 
+    // Connect and Disconnect write the synced `calendar-connected` row
+    // inside the seam — a first attempt that failed writes nothing, so the
+    // Connect affordance is still there after a restart — and so reach the
+    // operator's other devices on their next sync.
     suspend fun connectCalendar() {
         val host = core ?: return
-        calendarConnection = host.connectCalendar()
-        // Persist the opt-in only once the seam says the device is opted
-        // in — a first attempt that failed leaves the flag off, so the
-        // Connect affordance is still there after a restart.
-        CalendarPrefs.writeConnected(
-            context,
-            calendarConnection.state != MobileCalendarState.NEVER_CONNECTED,
-        )
+        calendarConnection = host.connectCalendar(System.currentTimeMillis())
     }
 
     suspend fun disconnectCalendar() {
         val host = core ?: return
-        calendarConnection = host.disconnectCalendar()
-        CalendarPrefs.writeConnected(context, false)
-        // The picked calendars survive a disconnect deliberately:
-        // reconnecting should not make the operator re-pick, and nothing
-        // polls them while the flag is off.
+        calendarConnection = host.disconnectCalendar(System.currentTimeMillis())
     }
 
     NotificationPermissionRequest()

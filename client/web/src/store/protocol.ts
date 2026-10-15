@@ -446,6 +446,24 @@ export interface ContextEntryDTO {
   itemCount: number;
 }
 
+/** The calendar choices (ADR-0040 decision 8) — the wire shape of
+ * `hummingbird_core::calendar_prefs::CalendarPrefs`, two synced `settings`
+ * rows every device reads: whether the operator's devices poll Google
+ * Calendar, and which calendars at which horizon. `selection` is the ticked
+ * calendars only; the polled set adds the bound Trips calendar
+ * (`decisions/seam.ts`'s `effectiveCalendarSelection`). An unreadable row
+ * arrives already read as not connected / empty. */
+export interface CalendarPrefsDTO {
+  connected: boolean;
+  selection: CalendarSelectionDTO[];
+  pending: boolean;
+}
+
+/** What the one-time seed of this browser's old `localStorage` calendar
+ * choices did (`hummingbird_core::calendar_prefs::CalendarSeed`): only
+ * `"not_yet"` means keep the local values and ask again after a cycle. */
+export type CalendarSeedOutcome = "not_yet" | "seeded" | "adopted";
+
 // -- rules (#140, ADR-0012/0013) --------------------------------------------
 //
 // The rules screen: condition rows, a per-row "not" toggle, the
@@ -930,6 +948,22 @@ export type TaskWorkerRequest =
   | { type: "getSuggestedContexts" }
   | { type: "addContext"; seed: string; name: string; nowMs: number }
   | { type: "removeContext"; seed: string; name: string; nowMs: number }
+  /** ADR-0040 decision 8: the calendar choices' read and writes, all
+   * through the core. `toggleCalendar` keeps every other calendar's horizon
+   * and is refused for the bound Trips calendar; `seedCalendarPrefs` carries
+   * this browser's old `localStorage` values, once (`selectedIds` is the
+   * bare id list the web always stored). Same caller-mints-`seed` contract
+   * as `"setBinding"`. */
+  | { type: "getCalendarPrefs" }
+  | { type: "toggleCalendar"; seed: string; id: string; nowMs: number }
+  | { type: "setCalendarConnected"; seed: string; connected: boolean; nowMs: number }
+  | {
+      type: "seedCalendarPrefs";
+      seed: string;
+      connected: boolean;
+      selectedIds: string[];
+      nowMs: number;
+    }
   /** #140: the kind registry export. Carries no argument and needs no
    * `Core` state — see `TaskHostCore::kind_registry`'s own doc. */
   | { type: "getKindRegistry" }
@@ -1434,6 +1468,22 @@ export type TaskWorkerResponse =
       kind: "ok" | "invalid" | "unknown" | "failed" | "busy";
       error: string | null;
       cleared: number | null;
+    }
+  /** ADR-0040 decision 8's read, the result of a toggle or connect write
+   * (`"locked"` is the bound Trips calendar, refused before anything was
+   * enqueued), and the seed's outcome — `null` on `"failed"`/`"busy"`. */
+  | { type: "calendarPrefs"; prefs: CalendarPrefsDTO }
+  | {
+      type: "calendarPrefsEditResult";
+      seed: string;
+      kind: "ok" | "locked" | "not_selected" | "failed" | "busy";
+      error: string | null;
+    }
+  | {
+      type: "seedCalendarPrefsResult";
+      seed: string;
+      kind: "ok" | "failed" | "busy";
+      outcome: CalendarSeedOutcome | null;
     }
   /** #140's rule create result, matched back by `seed` — same
    * broadcast-not-reply contract as `captureResult`. `"failed"` covers both

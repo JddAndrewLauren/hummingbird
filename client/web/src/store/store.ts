@@ -7,6 +7,8 @@ import type {
   BindingDTO,
   QuestionSwitchDTO,
   SuggestedContextsDTO,
+  CalendarPrefsDTO,
+  CalendarSeedOutcome,
   BlockedFrontierEntryDTO,
   CalendarListEntryDTO,
   CalendarReadDTO,
@@ -31,18 +33,20 @@ import type {
 
 export type CoreStatus = "loading" | "ready" | "error";
 
-/** Issue #73's calendar opt-in/tile state. A never-opted-in device starts
- * and stays at `connected: false` — the context tile renders nothing and
- * `/next-up-personal`-style ranking stays unconstrained (see the Agent
- * Brief's "opt-in is per-device" note). */
+/** Issue #73's calendar connection/tile state, on this device. Whether to
+ * connect at all is the synced `calendar-connected` row since ADR-0040
+ * decision 8 (`TaskState.calendarPrefs`); `connected` here is this page's
+ * live answer to it. A device whose row is off starts and stays at
+ * `connected: false` — the context tile renders nothing and
+ * `/next-up-personal`-style ranking stays unconstrained. */
 export interface CalendarState {
   connected: boolean;
   needsReconnect: boolean;
-  selectedCalendarIds: string[];
-  /** The picker's options, as last listed by the core. Distinct from
-   * `selectedCalendarIds`, which is persisted and survives a listing that
-   * never happened (offline start, held credential) — a selected id absent
-   * from here is rendered as unavailable rather than silently dropped. */
+  /** The picker's options, as last listed by the core. Distinct from the
+   * ticked calendars (`TaskState.calendarPrefs`), which are synced and
+   * survive a listing that never happened (offline start, held credential)
+   * — a ticked id absent from here is rendered as unavailable rather than
+   * silently dropped. */
   availableCalendars: CalendarListEntryDTO[];
   lastPollOutcome: PollOutcomeName | null;
   /** A Connect/Reconnect press that has not come back yet. The interactive
@@ -339,6 +343,17 @@ export interface TaskState {
    * `suggestedContexts` answer arrives, on [`TaskState.bindings`]' contract;
    * until then the forms fall back to `DEFAULT_CONTEXTS`. */
   suggestedContexts: SuggestedContextsDTO | null;
+  /** The calendar choices (ADR-0040 decision 8) — synced, so the same on
+   * every device. `null` until the first `calendarPrefs` answer arrives, on
+   * [`TaskState.bindings`]' contract and for a sharper reason: a calendar
+   * lane that read "not connected" off a list it never read would stop
+   * polling, and one that read "nothing ticked" would poll zero calendars
+   * and overwrite the last good snapshot with an empty one. */
+  calendarPrefs: CalendarPrefsDTO | null;
+  /** The last one-time seed's outcome (`seedCalendarPrefsResult`), matched
+   * by `seed` — `useCalendarWiring.ts` deletes the old `localStorage` copy
+   * on any settled answer. `null` before any seed. */
+  lastCalendarSeed: { seed: string; outcome: CalendarSeedOutcome | null } | null;
   /** The kind registry export (#133/#140, ADR-0013) — `null` until the
    * first `getKindRegistry` answer arrives. Never answers `"busy"`
    * core-side, but a view can still ask before the worker's port is ready,
@@ -483,7 +498,6 @@ type Listener = () => void;
 const initialCalendarState: CalendarState = {
   connected: false,
   needsReconnect: false,
-  selectedCalendarIds: [],
   availableCalendars: [],
   lastPollOutcome: null,
   connectPending: false,
@@ -514,6 +528,8 @@ const initialTaskState: TaskState = {
   bindings: null,
   questionSwitches: null,
   suggestedContexts: null,
+  calendarPrefs: null,
+  lastCalendarSeed: null,
   kindRegistry: null,
   rules: null,
   lastRuleWrite: null,

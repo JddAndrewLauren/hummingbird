@@ -206,73 +206,62 @@ where
         let body = serde_json::to_string(&patch)
             .map_err(|source| WriteError::InvalidResponse(source.to_string()))?;
 
-        match send(transport, access_token, method, path, body, operation_id).await {
-            Sent::Success(status, body) => {
-                // A create-shaped PUT (`expected_version: 0`) that lands on
-                // 200 rather than 201 is the authority's create *replay*:
-                // the key already existed, and the body is the STORED row,
-                // not what this attempt sent. Idempotent when it really is
-                // a replay; silent data loss when this device had simply
-                // never pulled the row (a binding edited before the first
-                // sync), because the queue would drop the entry as a
-                // success and the next pull would quietly restore the other
-                // value. Diffed in the entity's own encoding, exactly as
-                // the 409 branch below is, and surfaced as the conflict it
-                // is — the journal gets local and server side by side.
-                if version == 0 && status != 201 {
-                    let entity: Value = parse(&body)?;
-                    let fields =
-                        rebase::divergent_fields(rebase_view.unwrap_or(&patch_value), &entity);
-                    if !fields.is_empty() {
-                        return Err(WriteError::Conflict {
-                            fields,
-                            current: entity,
-                        });
-                    }
-                    return serde_json::from_value(entity)
-                        .map_err(|source| WriteError::InvalidResponse(source.to_string()));
-                }
-                return parse(&body);
-            }
+        let current = match send(transport, access_token, method, path, body, operation_id).await {
+            // A create-shaped PUT (`expected_version: 0`) that lands on 200
+            // rather than 201 is the authority's create *replay*: the key
+            // already existed, and the body is the STORED row, not what
+            // this attempt sent. Idempotent when it really is a replay;
+            // silent data loss when this device had simply never pulled the
+            // row (a binding edited before the first sync), because the
+            // queue would drop the entry as a success and the next pull
+            // would quietly restore the other value. So it is rebased
+            // exactly as a 409 is, in the entity's own encoding: this
+            // write already landed → `Achieved`; the row is still what this
+            // client last knew (its own earlier queued create, #843 — two
+            // edits to a row before the first sync) → `Safe`, reapplied at
+            // the stored version; anyone else's value → `Collision`,
+            // surfaced as the conflict it is, with local and server side by
+            // side in the journal.
+            Sent::Success(status, body) if version == 0 && status != 201 => parse::<Value>(&body)?,
+            Sent::Success(_, body) => return parse(&body),
             Sent::Failed(error) => return Err(error),
-            Sent::Conflict(current) => {
-                let diffed = rebase_view.unwrap_or(&patch_value);
-                match rebase::decide(diffed, &compare_against, &current) {
-                    RebaseDecision::Collision(fields) => {
-                        return Err(WriteError::Conflict { fields, current })
-                    }
-                    RebaseDecision::Achieved => {
-                        // The write already landed — return the carried
-                        // entity as the outcome, no further request.
-                        return serde_json::from_value(current)
-                            .map_err(|source| WriteError::InvalidResponse(source.to_string()));
-                    }
-                    RebaseDecision::Safe => {
-                        if attempt_number == MAX_ATTEMPTS {
-                            // The bounded retry budget is spent and this is
-                            // still genuinely disjoint — contention, not a
-                            // fabricated conflict with no fields to show.
-                            return Err(WriteError::Contention { current });
-                        }
-                        // #103 forwarded-review fix: a `current` with no
-                        // numeric `version` is a malformed 409 body — the
-                        // server's own contract guarantees `current.version`
-                        // on every conflict. Silently falling back to the
-                        // last known version would resend a version this
-                        // client already knows is stale, hiding the
-                        // malformed body behind a spurious further 409
-                        // instead of surfacing it here.
-                        let Some(current_version) =
-                            current.get("version").and_then(Value::as_i64)
-                        else {
-                            return Err(WriteError::InvalidResponse(
-                                "409 conflict body has no numeric \"version\" field".to_string(),
-                            ));
-                        };
-                        version = current_version;
-                        compare_against = current;
-                    }
+            Sent::Conflict(current) => current,
+        };
+        let diffed = rebase_view.unwrap_or(&patch_value);
+        match rebase::decide(diffed, &compare_against, &current) {
+            RebaseDecision::Collision(fields) => {
+                return Err(WriteError::Conflict { fields, current })
+            }
+            RebaseDecision::Achieved => {
+                // The write already landed — return the carried
+                // entity as the outcome, no further request.
+                return serde_json::from_value(current)
+                    .map_err(|source| WriteError::InvalidResponse(source.to_string()));
+            }
+            RebaseDecision::Safe => {
+                if attempt_number == MAX_ATTEMPTS {
+                    // The bounded retry budget is spent and this is
+                    // still genuinely disjoint — contention, not a
+                    // fabricated conflict with no fields to show.
+                    return Err(WriteError::Contention { current });
                 }
+                // #103 forwarded-review fix: a `current` with no
+                // numeric `version` is a malformed 409 body — the
+                // server's own contract guarantees `current.version`
+                // on every conflict. Silently falling back to the
+                // last known version would resend a version this
+                // client already knows is stale, hiding the
+                // malformed body behind a spurious further 409
+                // instead of surfacing it here.
+                let Some(current_version) =
+                    current.get("version").and_then(Value::as_i64)
+                else {
+                    return Err(WriteError::InvalidResponse(
+                        "409 conflict body has no numeric \"version\" field".to_string(),
+                    ));
+                };
+                version = current_version;
+                compare_against = current;
             }
         }
     }
@@ -1172,5 +1161,39 @@ mod tests {
             other => panic!("expected a named conflict, got {other:?}"),
         }
         assert_eq!(transport.call_count(), 1, "a divergent replay is never resent");
+    }
+
+    #[tokio::test]
+    async fn a_second_edit_to_a_row_this_client_just_created_is_reapplied_not_lost() {
+        // #843: two edits to a row nobody had yet (ticking two calendars
+        // before the first sync) are two create-shaped PUTs, the second's
+        // base being the first's overlay. The second is answered with the
+        // first's stored row — still exactly what this client last knew —
+        // so it is rebased and reapplied at the stored version, as a 409
+        // would be, rather than dead-lettered as someone else's row.
+        let stored = r#"{"key":"calendar-selection","value":"\"a\"","updated_at":1000,"version":4}"#;
+        let updated = r#"{"key":"calendar-selection","value":"\"b\"","updated_at":2000,"version":5}"#;
+        // Scripted last-first: the replay answers, then the update.
+        let transport = ScriptedTransport::new(vec![ok(200, updated), ok(200, stored)]);
+        let base = json!({"key": "calendar-selection", "value": "\"a\"", "updated_at": 900, "version": 0});
+
+        let result: hummingbird_domain::Setting = patch_with_rebase(
+            &transport,
+            "token",
+            HttpMethod::Put,
+            "/api/settings/calendar-selection",
+            &base,
+            Some(&json!({"value": "\"b\""})),
+            |v| json!({"expected_version": v, "value": "b"}),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.value, "\"b\"");
+        assert_eq!(transport.call_count(), 2);
+        let calls = transport.calls.lock().unwrap();
+        let resent: Value = serde_json::from_str(&calls[1].body).unwrap();
+        assert_eq!(resent["expected_version"], 4, "reapplied at the stored version");
     }
 }
