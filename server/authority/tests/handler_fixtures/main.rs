@@ -30,6 +30,7 @@ mod schema;
 mod settings;
 mod skills;
 mod snapshots;
+mod starling_source;
 mod steps;
 mod sweep;
 mod webhook_delivery;
