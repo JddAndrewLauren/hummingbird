@@ -44,11 +44,13 @@ export CI=true WRANGLER_SEND_METRICS=false
 # killing the wrapper's descendants first, then the wrapper.
 if command -v setsid >/dev/null; then
   setsid npx --yes wrangler@4 dev --port "$PORT" --var "ADMIN_SECRET:$ADMIN_SECRET" \
+    --var "GOOGLE_SIGNIN_CLIENT_IDS:smoke-client" --var "GOOGLE_SIGNIN_ALLOWED_SUB:smoke-sub" \
     >/tmp/wrangler-smoke.log 2>&1 &
   WRANGLER_PID=$!
   trap 'kill -- "-$WRANGLER_PID" 2>/dev/null || true' EXIT
 else
   npx --yes wrangler@4 dev --port "$PORT" --var "ADMIN_SECRET:$ADMIN_SECRET" \
+    --var "GOOGLE_SIGNIN_CLIENT_IDS:smoke-client" --var "GOOGLE_SIGNIN_ALLOWED_SUB:smoke-sub" \
     >/tmp/wrangler-smoke.log 2>&1 &
   WRANGLER_PID=$!
   trap 'pkill -P "$WRANGLER_PID" 2>/dev/null || true; kill "$WRANGLER_PID" 2>/dev/null || true' EXIT
@@ -127,9 +129,34 @@ request 403 POST /api/alerts '{"source":"home-assistant/v1","source_key":"k","ti
 request 200 POST /api/admin/tokens '{"id":"t-device","name":"smoke device","scope":"device"}' "$ADMIN_SECRET"
 [ "$(jq -r 'has("token")' <<<"$BODY")" = "false" ] || fail "mint replay leaked a token: $BODY"
 
+# A device lists the device-scope tokens only, itself marked current
+# (ADR-0040 decision 6, #838); the sweeper and ingest tokens never show, and
+# a DELETE naming one is a 404. The revoke itself is in the native suite —
+# revoking t-device here would sign this script out.
+request 200 GET /api/devices '' "$DEVICE"
+[ "$(jq -c '[.[] | select(.id == "t-device") | .is_current]' <<<"$BODY")" = "[true]" ] ||
+  fail "t-device not listed as current: $BODY"
+[ "$(jq '[.[] | select(.id == "t-sweeper" or .id == "t-ingest")] | length' <<<"$BODY")" = "0" ] ||
+  fail "a non-device token was listed: $BODY"
+request 404 DELETE /api/devices/t-sweeper '' "$DEVICE"
+request 403 GET /api/devices '' "$SWEEPER"
+
 # An unauthenticated write is an empty-bodied 401 before any routing.
 request 401 POST /api/items '{"id":"smoke-1","title":"hello"}'
 [ -z "$BODY" ] || fail "401 leaked a body: $BODY"
+
+# ------------------------------------------------- Google sign-in (#837)
+
+# `POST /api/auth/google` is answered by the shim ahead of `handle()`, so the
+# native suite cannot see it wired. Both config values are set at boot; no
+# real Google token exists here, so the wire can show only the refusals —
+# never a 401 (that is reserved for a held credential), and a rejected token's
+# 403 is empty. A token that verifies is the native suite's and the WebCrypto
+# test's (`worker/tests/`).
+request 405 GET /api/auth/google
+request 400 POST /api/auth/google '{"id_token":"x","name":"n","platform":"ios"}'
+request 403 POST /api/auth/google '{"id_token":"not.a.jwt","name":"smoke","platform":"web"}'
+[ -z "$BODY" ] || fail "sign-in 403 leaked a body: $BODY"
 
 # ------------------------------------------------- the S0 flow, authed
 

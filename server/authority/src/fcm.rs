@@ -34,6 +34,7 @@
 use hummingbird_domain::Tier;
 use serde::Deserialize;
 
+use crate::base64;
 use crate::delivery::PushNotification;
 use crate::google_oauth::OAUTH_TOKEN_URL;
 use crate::sql::{Sql, SqlError, SqlValue};
@@ -102,7 +103,7 @@ pub fn pkcs8_der_from_pem(pem: &str) -> Result<Vec<u8>, FcmConfigError> {
         .nth(1)
         .and_then(|rest| rest.split("-----END PRIVATE KEY-----").next())
         .ok_or(FcmConfigError::BadPrivateKey)?;
-    base64_decode(body).ok_or(FcmConfigError::BadPrivateKey)
+    base64::decode(body).ok_or(FcmConfigError::BadPrivateKey)
 }
 
 // ---------------------------------------------------------------------------
@@ -114,7 +115,7 @@ pub fn pkcs8_der_from_pem(pem: &str) -> Result<Vec<u8>, FcmConfigError> {
 /// one step that needs a runtime: the worker imports `private_key` into
 /// WebCrypto and signs exactly these bytes.
 pub fn assertion_signing_input(client_email: &str, now_secs: i64) -> String {
-    let header = base64url_encode(br#"{"alg":"RS256","typ":"JWT"}"#);
+    let header = base64::encode_url(br#"{"alg":"RS256","typ":"JWT"}"#);
     let claims = serde_json::json!({
         "iss": client_email,
         "scope": FCM_SCOPE,
@@ -123,13 +124,13 @@ pub fn assertion_signing_input(client_email: &str, now_secs: i64) -> String {
         "exp": now_secs + ASSERTION_TTL_SECS,
     })
     .to_string();
-    format!("{header}.{}", base64url_encode(claims.as_bytes()))
+    format!("{header}.{}", base64::encode_url(claims.as_bytes()))
 }
 
 /// Appends the RS256 signature to its signing input, giving the complete
 /// JWT bearer assertion.
 pub fn assemble_assertion(signing_input: &str, signature: &[u8]) -> String {
-    format!("{signing_input}.{}", base64url_encode(signature))
+    format!("{signing_input}.{}", base64::encode_url(signature))
 }
 
 /// The `application/x-www-form-urlencoded` body of the token request. The
@@ -326,89 +327,9 @@ pub fn revoke_dead_target(sql: &dyn Sql, target_id: &str, now_ms: i64) -> Result
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// base64
-// ---------------------------------------------------------------------------
-
-const STANDARD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-const URL_SAFE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-
-/// base64url, unpadded — JWT's encoding (RFC 7515 §2). Hand-rolled rather
-/// than pulled in: it is twenty lines, and `authority`'s dependency list is
-/// deliberately short enough to audit at a glance (`lib.rs`'s guard test).
-fn base64url_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b = |i: usize| *chunk.get(i).unwrap_or(&0) as u32;
-        let n = (b(0) << 16) | (b(1) << 8) | b(2);
-        let digits = [(n >> 18) & 63, (n >> 12) & 63, (n >> 6) & 63, n & 63];
-        // 3 input bytes -> 4 digits, 2 -> 3, 1 -> 2; the rest would be
-        // padding, which base64url omits.
-        for digit in digits.iter().take(chunk.len() + 1) {
-            out.push(URL_SAFE[*digit as usize] as char);
-        }
-    }
-    out
-}
-
-/// Standard base64 decode, tolerant of the whitespace and line breaks a PEM
-/// block carries and of padding being present or absent.
-fn base64_decode(text: &str) -> Option<Vec<u8>> {
-    let mut acc: u32 = 0;
-    let mut bits = 0;
-    let mut out = Vec::with_capacity(text.len() * 3 / 4);
-    for byte in text.bytes() {
-        if byte.is_ascii_whitespace() || byte == b'=' {
-            continue;
-        }
-        let value = STANDARD.iter().position(|c| *c == byte)? as u32;
-        acc = (acc << 6) | value;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-        }
-    }
-    // Leftover bits are the encoder's zero padding; anything set in them
-    // means the input was not valid base64.
-    if acc & ((1 << bits) - 1) != 0 {
-        return None;
-    }
-    Some(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn base64url_encodes_without_padding() {
-        assert_eq!(base64url_encode(b""), "");
-        assert_eq!(base64url_encode(b"f"), "Zg");
-        assert_eq!(base64url_encode(b"fo"), "Zm8");
-        assert_eq!(base64url_encode(b"foo"), "Zm9v");
-        assert_eq!(base64url_encode(b"foob"), "Zm9vYg");
-        assert_eq!(base64url_encode(b"fooba"), "Zm9vYmE");
-        assert_eq!(base64url_encode(b"foobar"), "Zm9vYmFy");
-    }
-
-    /// The two alphabets differ only in the last two digits, which is
-    /// exactly where a mix-up would hide: `>>?` encodes to `Pj4/` in
-    /// standard base64 and must encode to `Pj4_` here.
-    #[test]
-    fn base64url_uses_the_url_safe_alphabet() {
-        assert_eq!(base64url_encode(&[0x3e, 0x3e, 0x3f]), "Pj4_");
-        assert_eq!(base64url_encode(&[0xfb, 0xff]), "-_8");
-    }
-
-    #[test]
-    fn base64_decode_round_trips_and_tolerates_pem_whitespace() {
-        assert_eq!(base64_decode("Zm9vYmFy").as_deref(), Some(&b"foobar"[..]));
-        assert_eq!(base64_decode("Zm9v\nYmFy\n").as_deref(), Some(&b"foobar"[..]));
-        assert_eq!(base64_decode("Zg==").as_deref(), Some(&b"f"[..]));
-        assert_eq!(base64_decode("Zg").as_deref(), Some(&b"f"[..]));
-        assert_eq!(base64_decode("not base64!"), None);
-    }
 
     #[test]
     fn service_account_parses_and_ignores_the_key_file_s_other_fields() {
@@ -644,17 +565,9 @@ mod tests {
         );
     }
 
-    /// base64url decoder, tests only — the production path never decodes
-    /// what it encoded, but the assertion tests must read the claims back.
+    /// The assertion tests must read the claims back; the production path
+    /// never decodes what it encoded.
     fn base64_decode_url(text: &str) -> Vec<u8> {
-        let standard: String = text
-            .chars()
-            .map(|c| match c {
-                '-' => '+',
-                '_' => '/',
-                other => other,
-            })
-            .collect();
-        base64_decode(&standard).expect("round-trips its own encoder")
+        crate::base64::decode_url(text).expect("round-trips its own encoder")
     }
 }

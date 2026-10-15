@@ -6,6 +6,7 @@
 //! discipline as `client/core`'s transport seam, in sync form (the DO is
 //! single-threaded and its SQLite API synchronous).
 
+mod base64;
 mod codec;
 mod delivery;
 pub mod diagnostics;
@@ -13,6 +14,7 @@ mod entropy;
 mod fcm;
 mod google_calendar;
 mod google_oauth;
+mod google_signin;
 mod handlers;
 mod schema;
 mod skills;
@@ -33,6 +35,8 @@ pub use google_calendar::{
     is_invalid_grant, token_is_fresh,
 };
 pub use google_oauth::{parse_access_token, AccessToken, OAUTH_TOKEN_URL};
+pub use google_signin::{JwksCache, SigninConfig, GOOGLE_JWKS_URL};
+pub use handlers::auth_google;
 pub use handlers::{handle, ApiRequest, ApiResponse, HandleContext};
 pub use schema::{init_schema, SCHEMA_VERSION};
 pub use skills::{
@@ -63,7 +67,37 @@ mod tests {
         }
     }
 
-    /// #711 review round 1, finding 2: `hummingbird-authority-worker`'s
+    /// ADR-0040 decision 4 (#837): Google sign-in verification added a JWT
+    /// split, a JWKS parse, a JWK → SPKI DER encoder and an RS256 verify,
+    /// and took no crate for any of them — `crate::base64`,
+    /// `crate::google_signin` and the shim's `crypto.subtle` cover it. Both
+    /// manifests the wasm32 build compiles are held to that here, by
+    /// dependency *key*, so the crates an "obvious" fix would reach for fail
+    /// a test rather than a review: JWT/crypto/encoding parsers, an HTTP
+    /// client, a tzdb (CLAUDE.md, "The wasm32 worker build stays thin").
+    #[test]
+    fn the_wasm32_build_takes_no_jwt_crypto_http_or_tzdb_crate() {
+        const FORBIDDEN: &[&str] = &[
+            "jsonwebtoken", "jwt-simple", "rsa", "ring", "der", "spki", "pkcs1", "pkcs8",
+            "pem", "base64", "reqwest", "ureq", "hyper", "chrono-tz", "tzdb",
+        ];
+        for (manifest, text) in [
+            ("server/authority/Cargo.toml", include_str!("../Cargo.toml")),
+            ("server/worker/Cargo.toml", include_str!("../../worker/Cargo.toml")),
+        ] {
+            let dependencies = text.split("[dev-dependencies]").next().unwrap();
+            for line in dependencies.lines() {
+                let Some((key, _)) = line.split_once('=') else { continue };
+                let key = key.trim();
+                assert!(
+                    !FORBIDDEN.contains(&key),
+                    "{manifest} must not depend on `{key}` — the wasm32 build stays thin",
+                );
+            }
+        }
+    }
+
+    /// #711 review round 1, finding 2:`hummingbird-authority-worker`'s
     /// `fetch` used to have a bare `.await?` after logging
     /// `request.received` (`ensure_alarm_scheduled(...).await?`) — on
     /// failure, that propagated the error straight out of `fetch` with

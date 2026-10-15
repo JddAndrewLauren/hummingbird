@@ -1,0 +1,17 @@
+{
+  "_comment": "Generated once with openssl (RSA-2048, e=65537); the private key was discarded. spki_der_base64 is `openssl pkey -pubout -outform DER` of the same key, so it is the known-good DER for the JWK below. id_token is a real RS256 JWT over this key.",
+  "jwks": {
+    "keys": [
+      {
+        "kty": "RSA",
+        "alg": "RS256",
+        "use": "sig",
+        "kid": "fixture-kid-1",
+        "n": "4r8DdkYkbZQXPJy5nx9RTmMBhWjVimOdZ-c9ZgEe3epPEwBNI36cluHBYrOhGTycoAOlB_NjQWynRA_17y1cpt7TsHFnX0xCwuL1hBapJyNrJzti1NNqnp_gIYiHRbOzkyMfrV2Xhvfhxi3SAe8MCHbUbQWQIt548rbtrci8N6U2SpPh6813QDEFNnRr3aTLXS9Tx07bUceBow0PD7i-lA5iZ_pssaZhQOVDaa8YYShovxipoNw4w3-JI-vJa5QU46OezYoSvykTKPNDv67zTar_9gB66okYfCUgyrHRMShlOtIhTxqCedwuyNF-tNuSoVsC8i1JzA2F8dDmuTdGgw",
+        "e": "AQAB"
+      }
+    ]
+  },
+  "spki_der_base64": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4r8DdkYkbZQXPJy5nx9RTmMBhWjVimOdZ+c9ZgEe3epPEwBNI36cluHBYrOhGTycoAOlB/NjQWynRA/17y1cpt7TsHFnX0xCwuL1hBapJyNrJzti1NNqnp/gIYiHRbOzkyMfrV2Xhvfhxi3SAe8MCHbUbQWQIt548rbtrci8N6U2SpPh6813QDEFNnRr3aTLXS9Tx07bUceBow0PD7i+lA5iZ/pssaZhQOVDaa8YYShovxipoNw4w3+JI+vJa5QU46OezYoSvykTKPNDv67zTar/9gB66okYfCUgyrHRMShlOtIhTxqCedwuyNF+tNuSoVsC8i1JzA2F8dDmuTdGgwIDAQAB",
+  "id_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImZpeHR1cmUta2lkLTEiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL2FjY291bnRzLmdvb2dsZS5jb20iLCJhenAiOiJmaXh0dXJlLWNsaWVudC5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbSIsImF1ZCI6ImZpeHR1cmUtY2xpZW50LmFwcHMuZ29vZ2xldXNlcmNvbnRlbnQuY29tIiwic3ViIjoiMTEwMDAwMDAwMDAwMDAwMDAwMDAxIiwiZW1haWwiOiJvcGVyYXRvckBleGFtcGxlLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlLCJpYXQiOjE3NjAwMDAwMDAsImV4cCI6MTc2MDAwMzYwMH0.fYY70BYDzKeQTBPiGtRt0TyV9SoEUfKgfQAJy_OzgKKOlhLKvb0YNswryJ49ZLCV2laz2BdPQewNnokBAYlCRh5tBhBd_SbXoLpiHjQHmIAqKFjdTOE1l_HYsB6pvW6UJvTOB5ExU4EmVZIuAOZrNgs_RskvvRIvBSQnsOTfGvxk8YgBCPv5NJTxghE6L9SS7d_1Sp-eFJsIypqFheCJhzdUWQe-lTPWNTaVxWSfyJwvdVCFve3trkDfrb_UcBcygc6-zSv_aK6AvjCRql33yMOCqvT-qnzJJ-BoJwkVAWO7iS0S8jc3YN_oaGVDDZ1HvNq-N8rOshAQageZX3kQYg"
+}

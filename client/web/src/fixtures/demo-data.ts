@@ -307,6 +307,7 @@ export const DEMO_DATA: DemoData = {
       { source: "github/v1", retiredAs: null },
       { source: "photo-site/v1", retiredAs: null },
       { source: "gmail-alert/v1", retiredAs: null },
+      { source: "starling/v1", retiredAs: null },
     ],
   },
   ruleBacktestItems: [

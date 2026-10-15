@@ -602,6 +602,17 @@ pub struct MintToken {
     pub allowed_origin: Option<String>,
 }
 
+/// `POST /api/auth/google` body (ADR-0040): a Google ID token, plus the
+/// device's own label and platform. The authority derives the token id
+/// from the last two — the caller never chooses it, unlike [`MintToken`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoogleSignIn {
+    pub id_token: String,
+    pub name: String,
+    pub platform: crate::DevicePlatform,
+}
+
 /// `GET /api/changes?since=N` (and `GET /api/sweep`, which is the same
 /// query with `since = 0`) response: the workspace version and every synced
 /// row whose `version` is above the cursor.

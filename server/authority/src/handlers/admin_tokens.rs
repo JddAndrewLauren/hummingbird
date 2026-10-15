@@ -120,21 +120,14 @@ pub fn mint(
         }
     };
 
-    let mut bytes = [0u8; 32];
-    ctx.entropy.fill(&mut bytes);
-    let token = format!("hb_{}", auth::hex(&bytes));
-    sql.exec(
-        "INSERT INTO tokens (id, name, scope, source, token_hash, created_at, allowed_origin) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
-        &[
-            SqlValue::Text(mint.id.clone()),
-            SqlValue::Text(mint.name.clone()),
-            SqlValue::Text(mint.scope.as_str().to_string()),
-            SqlValue::from_opt_text(mint.source.as_deref()),
-            SqlValue::Text(auth::sha256_hex(&token)),
-            SqlValue::Integer(ctx.now_ms),
-            SqlValue::from_opt_text(allowed_origin.as_deref()),
-        ],
+    let token = insert_token(
+        sql,
+        ctx,
+        &mint.id,
+        &mint.name,
+        mint.scope,
+        mint.source.as_deref(),
+        allowed_origin.as_deref(),
     )?;
     Ok(json(
         201,
@@ -148,6 +141,39 @@ pub fn mint(
             token,
         },
     ))
+}
+
+/// The one place a token row is born, shared by this lane's mint and
+/// `POST /api/auth/google` (ADR-0040) so the two can never disagree on the
+/// token's shape: `hb_` plus 64 hex from the injected entropy, stored only
+/// as its sha256. Returns the plaintext, which exists nowhere else after
+/// the caller's 201.
+pub(crate) fn insert_token(
+    sql: &dyn Sql,
+    ctx: &HandleContext,
+    id: &str,
+    name: &str,
+    scope: Scope,
+    source: Option<&str>,
+    allowed_origin: Option<&str>,
+) -> Result<String, SqlError> {
+    let mut bytes = [0u8; 32];
+    ctx.entropy.fill(&mut bytes);
+    let token = format!("hb_{}", auth::hex(&bytes));
+    sql.exec(
+        "INSERT INTO tokens (id, name, scope, source, token_hash, created_at, allowed_origin) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        &[
+            SqlValue::Text(id.to_string()),
+            SqlValue::Text(name.to_string()),
+            SqlValue::Text(scope.as_str().to_string()),
+            SqlValue::from_opt_text(source),
+            SqlValue::Text(auth::sha256_hex(&token)),
+            SqlValue::Integer(ctx.now_ms),
+            SqlValue::from_opt_text(allowed_origin),
+        ],
+    )?;
+    Ok(token)
 }
 
 pub fn list(sql: &dyn Sql) -> Result<ApiResponse, SqlError> {
@@ -179,7 +205,7 @@ pub fn revoke(id: &str, now_ms: i64, sql: &dyn Sql) -> Result<ApiResponse, SqlEr
     Ok(json(200, &token_info_from_row(&row)?))
 }
 
-fn select_token(sql: &dyn Sql, id: &str) -> Result<Option<Row>, SqlError> {
+pub(crate) fn select_token(sql: &dyn Sql, id: &str) -> Result<Option<Row>, SqlError> {
     Ok(sql
         .exec(
             "SELECT * FROM tokens WHERE id = ?",

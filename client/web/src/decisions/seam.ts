@@ -44,6 +44,7 @@ import type { TaskActionName, TaskStageName } from "../store/protocol";
 import type {
   BindingDTO,
   CalendarEventDTO,
+  CalendarSelectionDTO,
   CalendarReadDTO,
   ConditionDTO,
   FieldTypeName,
@@ -102,6 +103,8 @@ export interface DecisionsModule {
   toggle_facet_json(selectionJson: string, facet: string, value: string): string;
   apply_facets_ids(itemsJson: string, selectionJson: string, now: string): string;
   contexts_of_json(itemsJson: string, suggestedJson: string): string;
+  // ADR-0040 decision 8 (#843): the polled calendar set.
+  effective_calendar_selection_json(selectionJson: string, tripsId: string | undefined): string;
   order_triage_ids(itemsJson: string): string;
   triage_process_queue_json(triageJson: string, grillingJson: string, draftIdsJson: string): string;
   // M3 (#532): Done's ordering and the Ledger's ordering + row-state read.
@@ -786,6 +789,21 @@ export function contextsOf(items: readonly TaskItemDTO[], suggested: readonly st
   return JSON.parse(
     required().contexts_of_json(frontierPayload(items), JSON.stringify(suggested)),
   ) as string[];
+}
+
+/** `hummingbird_core::calendar::effective_selection` — what this device
+ * polls: the synced ticked calendars plus the bound Trips calendar, which is
+ * always polled and always at the long horizon. The web's only copy of the
+ * union (ADR-0040 decision 8 retired its own TS one): stored order, with a
+ * bound calendar nobody ticked appended, so a re-push is byte-identical
+ * while nothing moved. */
+export function effectiveCalendarSelection(
+  selection: readonly CalendarSelectionDTO[],
+  tripsId: string | null,
+): CalendarSelectionDTO[] {
+  return JSON.parse(
+    required().effective_calendar_selection_json(JSON.stringify(selection), tripsId ?? undefined),
+  ) as CalendarSelectionDTO[];
 }
 
 function queuePayload(items: readonly TaskItemDTO[]): string {

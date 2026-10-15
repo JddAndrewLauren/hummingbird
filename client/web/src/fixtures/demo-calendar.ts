@@ -26,11 +26,6 @@ export function buildDemoCalendarState(): CalendarState {
   return {
     connected: true,
     needsReconnect: false,
-    // Nothing designates a Trips calendar in this world — `SettingsScreen`
-    // reads that through `task.bindings`, which the board `TaskState` seeds
-    // separately (`demo-pane-reads.ts`'s `boundRaceBinding`/`boundWasteBinding`
-    // plus its own trips binding), so this stays empty rather than guessing.
-    selectedCalendarIds: [],
     availableCalendars: [
       { id: "demo-personal", summary: "Fictional (personal)" },
       { id: "demo-family", summary: "Fictional (family)" },

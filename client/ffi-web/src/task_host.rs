@@ -22,6 +22,7 @@ use hummingbird_core::diagnostics::{
 /// name it as `task_host::CoreOwner` alongside [`TaskCoreCell`], rather
 /// than importing it from `hummingbird_core` a second way.
 pub use hummingbird_core::diagnostics::CoreOwner;
+use hummingbird_core::calendar_prefs::{CalendarPrefs, CalendarSeed};
 use hummingbird_core::contexts::SuggestedContexts;
 use hummingbird_core::question_switch::QuestionSwitch;
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
@@ -875,6 +876,36 @@ pub struct EditContextResponse {
     pub kind: &'static str,
     pub error: Option<String>,
     pub cleared: Option<usize>,
+}
+
+/// The wrapper around [`TaskHostCore::calendar_prefs`]'s answer (ADR-0040
+/// decision 8). Same `"busy"` contract as [`SuggestedContextsResponse`]: a
+/// busy core's placeholder reads as not connected with nothing ticked, and
+/// a host that acted on it would stop polling over a read it never made.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CalendarPrefsResponse {
+    pub kind: &'static str,
+    pub prefs: CalendarPrefs,
+}
+
+/// What [`TaskHostCore::toggle_calendar`] /
+/// [`TaskHostCore::set_calendar_connected`] resolve to. `"locked"` is the
+/// bound Trips calendar refused before anything is enqueued; `"failed"` is
+/// a durability failure.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct EditCalendarPrefsResponse {
+    pub kind: &'static str,
+    pub error: Option<String>,
+}
+
+/// What [`TaskHostCore::seed_calendar_prefs`] resolves to: `"ok"` with the
+/// core's [`CalendarSeed`] (only `not_yet` means keep the local values),
+/// or `"failed"`/`"busy"` with none.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SeedCalendarPrefsResponse {
+    pub kind: &'static str,
+    pub seed: Option<CalendarSeed>,
+    pub error: Option<String>,
 }
 
 /// What [`TaskHostCore::set_binding`] resolves to. `"unknown_key"` is
@@ -2132,6 +2163,74 @@ impl TaskHostCore {
         match self.core.remove_context(seed, name, now_ms).await {
             Ok(cleared) => EditContextResponse { kind: "ok", error: None, cleared: Some(cleared) },
             Err(error) => edit_context_failure(error),
+        }
+    }
+
+    /// The calendar choices (ADR-0040 decision 8), per
+    /// [`Core::calendar_prefs`] — the synced connected flag and the ticked
+    /// calendars, with one `pending` fact for both rows.
+    pub fn calendar_prefs(&self) -> CalendarPrefsResponse {
+        CalendarPrefsResponse {
+            kind: "ok",
+            prefs: self.core.calendar_prefs(),
+        }
+    }
+
+    /// Ticks or unticks one calendar, per [`Core::toggle_calendar`] — which
+    /// keeps every other entry's horizon and refuses the bound Trips
+    /// calendar.
+    pub async fn toggle_calendar(&mut self, seed: &str, id: &str, now_ms: i64) -> EditCalendarPrefsResponse {
+        use hummingbird_core::CalendarPrefsError;
+        match self.core.toggle_calendar(seed, id, now_ms).await {
+            Ok(()) => EditCalendarPrefsResponse { kind: "ok", error: None },
+            Err(error) => EditCalendarPrefsResponse {
+                kind: match &error {
+                    CalendarPrefsError::Locked => "locked",
+                    CalendarPrefsError::NotSelected => "not_selected",
+                    CalendarPrefsError::Snapshot(_) => "failed",
+                },
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    /// Records the Connect gesture's synced half, per
+    /// [`Core::set_calendar_connected`].
+    pub async fn set_calendar_connected(
+        &mut self,
+        seed: &str,
+        connected: bool,
+        now_ms: i64,
+    ) -> EditCalendarPrefsResponse {
+        match self.core.set_calendar_connected(seed, connected, now_ms).await {
+            Ok(()) => EditCalendarPrefsResponse { kind: "ok", error: None },
+            Err(error) => EditCalendarPrefsResponse { kind: "failed", error: Some(error.to_string()) },
+        }
+    }
+
+    /// The one-time migration of this browser's old `localStorage` calendar
+    /// choices, per [`Core::seed_calendar_prefs`]. `selection_json` is the
+    /// old ids as a JSON array of strings — the web never stored a horizon,
+    /// so each seeds at the standard one; an unreadable value seeds none.
+    pub async fn seed_calendar_prefs(
+        &mut self,
+        seed: &str,
+        connected: bool,
+        selection_json: &str,
+        now_ms: i64,
+    ) -> SeedCalendarPrefsResponse {
+        let ids: Vec<String> = serde_json::from_str(selection_json).unwrap_or_default();
+        let selection: Vec<hummingbird_core::calendar::CalendarSelection> = ids
+            .into_iter()
+            .map(hummingbird_core::calendar::CalendarSelection::standard)
+            .collect();
+        match self.core.seed_calendar_prefs(seed, connected, &selection, now_ms).await {
+            Ok(outcome) => SeedCalendarPrefsResponse { kind: "ok", seed: Some(outcome), error: None },
+            Err(error) => SeedCalendarPrefsResponse {
+                kind: "failed",
+                seed: None,
+                error: Some(error.to_string()),
+            },
         }
     }
 
@@ -6147,6 +6246,59 @@ fn edit_context_failure<E: std::fmt::Debug>(error: hummingbird_core::ContextEdit
         ContextEditError::Snapshot(_) => "failed",
     };
     EditContextResponse { kind, error: Some(error.to_string()), cleared: None }
+}
+
+#[cfg(test)]
+mod calendar_prefs_tests {
+    use super::*;
+    use hummingbird_core::calendar::CalendarSelection;
+
+    #[test]
+    fn calendar_responses_serialize_with_the_exact_keys_task_worker_ts_parses() {
+        assert_eq!(
+            serde_json::to_string(&CalendarPrefsResponse {
+                kind: "ok",
+                prefs: CalendarPrefs {
+                    connected: true,
+                    selection: vec![CalendarSelection::long("a")],
+                    pending: false,
+                },
+            })
+            .unwrap(),
+            r#"{"kind":"ok","prefs":{"connected":true,"selection":[{"id":"a","horizon":"long"}],"pending":false}}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&SeedCalendarPrefsResponse {
+                kind: "ok",
+                seed: Some(CalendarSeed::NotYet),
+                error: None
+            })
+            .unwrap(),
+            r#"{"kind":"ok","seed":"not_yet","error":null}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn a_toggle_reads_back_pending_and_seeding_waits_for_a_sweep() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-calendar-prefs");
+        let mut host = TaskHostCore::init(namespace.to_str().unwrap(), "", "").await.unwrap();
+
+        let fresh = host.calendar_prefs();
+        assert_eq!(fresh.kind, "ok");
+        assert!(!fresh.prefs.connected && fresh.prefs.selection.is_empty());
+
+        // Never swept: the old local values are kept, and nothing is written.
+        let seeded = host.seed_calendar_prefs("seed-0", true, r#"["work@g"]"#, 1_000).await;
+        assert_eq!(seeded.seed, Some(CalendarSeed::NotYet));
+        assert!(!host.calendar_prefs().prefs.pending);
+
+        assert_eq!(host.toggle_calendar("seed-1", "work@g", 1_000).await.kind, "ok");
+        assert_eq!(host.set_calendar_connected("seed-2", true, 1_000).await.kind, "ok");
+        let read = host.calendar_prefs().prefs;
+        assert!(read.connected && read.pending);
+        assert_eq!(read.selection, vec![CalendarSelection::standard("work@g")]);
+    }
 }
 
 #[cfg(test)]
