@@ -23,6 +23,15 @@ upstream exchange per hour. This ADR's 401-means-re-prompt semantics are
 precisely why that route never answers 401 for a provisioning or upstream
 failure: a false 401 would make the client discard a `device` token that is
 perfectly fine, so those failures are 503/502 instead.
+**Amended 2026-10-11 by
+[ADR-0040](0040-sign-in-mints-the-device-token.md):**
+a `device` token is now also minted by signing in with Google — an
+unauthenticated route that verifies an ID token against a one-identity
+allowlist and returns an ordinary per-device token once. Identity is
+checked only at mint time: no session, refresh or expiry, so the shape,
+the resting places, the never-persisted rule and 401-holds-the-queue all
+stand. The OAuth revisit trigger has not fired (one author, no delegated
+grant), and ADR-0040 says why.
 **Context:** the credentials grilling of 2026-08-07, wayfinder map
 [#35](https://github.com/JddAndrewLauren/hummingbird/issues/35) ticket
 [#49](https://github.com/JddAndrewLauren/hummingbird/issues/49). Amends

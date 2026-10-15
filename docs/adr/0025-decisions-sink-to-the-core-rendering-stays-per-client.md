@@ -211,6 +211,11 @@ must.
 `context_snapshots` source is declared once, in the core — see
 [Each question's snapshot sources are declared once (#820)](#each-questions-snapshot-sources-are-declared-once-820)
 below.
+**Amended 2026-10-11 by
+[ADR-0040](0040-sign-in-mints-the-device-token.md):**
+the Signed-in devices list's ordering and wording sink to the core, and the
+web moves onto `calendar/selection.rs`'s effective-selection rule, retiring
+the divergence that module's header records.
 **Context:** the Android-client grilling of 2026-08-14, opened on
 [#141](https://github.com/JddAndrewLauren/hummingbird/issues/141) when the
 build went from planned to started — core maturity (the #95/#114 stack) is

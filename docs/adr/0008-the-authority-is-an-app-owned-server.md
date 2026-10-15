@@ -6,6 +6,14 @@ two lanes, not one — this ADR's Google Tasks adapter (below) stays the
 unattended phone/watch/speaker → Gemini → Tasks lane, and ADR-0022 adds a
 second, client-local lane straight into the capture box that never reaches
 this authority's sweeper at all.
+**Amended 2026-10-11 by
+[ADR-0040](0040-sign-in-mints-the-device-token.md):**
+the admin lane is no longer the only way to mint a `device` token —
+signing in with Google, allowlisted to the operator's one Google subject,
+mints one too — and a `device` token can now list and revoke other
+operator devices in-app (`runner` and `openclaw-agent` excepted). "No
+OAuth, no rotation machinery" still holds: the sign-in is a check at mint
+time, not a session.
 **Context:** the backend reconsideration of 2026-08-08 — a from-scratch
 tradeoff analysis (Linear-stays vs owned server vs CRDT local-first) followed
 by the authority-move grilling. Supersedes the authority designation of

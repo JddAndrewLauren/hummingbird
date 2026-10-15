@@ -23,6 +23,13 @@ calendar token — the authority mints it from a server-held refresh token
 and serves it over an authenticated route. Hosts-own-the-lifecycle,
 never-persisted, per-device opt-in and device-side polling all stand
 unchanged; only the web host's *source* of the token moves.
+**Amended 2026-10-11 by
+[ADR-0040](0040-sign-in-mints-the-device-token.md):**
+whether a device is connected to the calendar source, and which calendars
+it polls, now sync through two `settings` rows instead of living on each
+device. Since ADR-0028 no device holds a grant of its own, so the
+"per-device opt-in" above is now one opt-in for every device; device-side
+polling and host-owned token lifecycles stand.
 **Context:** the context-polling grilling of 2026-08-08, wayfinder map
 [#35](https://github.com/JddAndrewLauren/hummingbird/issues/35) ticket
 [#50](https://github.com/JddAndrewLauren/hummingbird/issues/50). Resolves the
