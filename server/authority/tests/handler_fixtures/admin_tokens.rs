@@ -75,6 +75,15 @@ fn mint_validation_400() {
             r#"{"id": "t", "name": "n", "scope": "sweeper", "source": "hc"}"#,
             "sweeper with a source",
         ),
+        (
+            r#"{"id": "t", "name": "n", "scope": "device", "allowed_origin": "https://factory.example"}"#,
+            "device with an allowed origin (#845)",
+        ),
+        (
+            r#"{"id": "t", "name": "n", "scope": "ingest", "source": "healthchecks/v1",
+                "allowed_origin": "https://factory.example/map"}"#,
+            "an allowed origin carrying a path (#845)",
+        ),
     ] {
         let resp = req_admin(&sql, "POST", "/api/admin/tokens", Some(body), 0);
         assert_eq!(resp.status, 400, "{why}: {}", resp.body);

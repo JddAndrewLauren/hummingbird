@@ -1693,6 +1693,83 @@ fn the_file_links_growth_is_idempotent() {
     assert_eq!(schema_version(&migrated), SCHEMA_VERSION);
 }
 
+/// `CREATE_FILE_LINKS` as 14→15 laid it down, frozen here byte-for-byte
+/// for the same reason as [`V2_TABLES`]: the fixture must keep
+/// describing a real v15 store even if the live constant later moves.
+/// Its indexes are left to `init_schema`, which creates them `IF NOT
+/// EXISTS` on every boot.
+const V15_CREATE_FILE_LINKS: &str = "\
+CREATE TABLE IF NOT EXISTS file_links (
+  id          TEXT PRIMARY KEY,
+  item_id     TEXT NOT NULL REFERENCES items(id),
+  path        TEXT NOT NULL,
+  removed_at  INTEGER,
+  version     INTEGER NOT NULL
+)";
+
+/// A genuine v15 store: [`v14_store`] with 14→15's own `CREATE` applied,
+/// exactly how a real v15 store came to be. `tokens` still lacks
+/// `allowed_origin`, which is what the 15→16 growth below has to find.
+fn v15_store() -> RusqliteSql {
+    let sql = v14_store();
+    sql.exec(V15_CREATE_FILE_LINKS, &[]).expect("14→15's own CREATE applies");
+    sql.exec("UPDATE meta SET schema_version = 15 WHERE id = 1", &[])
+        .expect("v15 meta row seeds");
+    sql
+}
+
+/// The 15→16 growth path (#845): `tokens.allowed_origin`, the ninth
+/// [`add_missing_columns`] arm — one nullable column on an existing table.
+/// The byte-identity assertion decides how `CREATE_TOKENS` had to be
+/// written: `, allowed_origin TEXT)` spliced before the closing paren.
+#[test]
+fn init_schema_grows_a_schema_15_database_additively() {
+    let migrated = v15_store();
+    assert_eq!(schema_version(&migrated), 15, "starts genuinely at v15");
+    assert!(
+        !column_names(&migrated, "tokens").contains(&"allowed_origin".to_string()),
+        "the v15 fixture must not already carry tokens.allowed_origin",
+    );
+    migrated
+        .exec(
+            "INSERT INTO tokens (id, name, scope, source, token_hash, created_at) \
+             VALUES ('hc', 'healthchecks', 'ingest', 'healthchecks/v1', 'h', 1000)",
+            &[],
+        )
+        .unwrap();
+
+    init_schema(&migrated, 0).expect("growth init succeeds");
+
+    assert_eq!(schema_version(&migrated), SCHEMA_VERSION, "schema_version moved forward");
+    let rows = migrated.exec("SELECT id, allowed_origin FROM tokens WHERE id = 'hc'", &[]).unwrap();
+    assert_eq!(rows.len(), 1, "the pre-growth token survives");
+    assert!(
+        matches!(rows[0].get("allowed_origin"), Some(SqlValue::Null) | None),
+        "a token minted before #845 links anywhere",
+    );
+
+    let fresh = RusqliteSql::new();
+    assert_eq!(
+        schema_ddl(&migrated),
+        schema_ddl(&fresh),
+        "a migrated v15 store and a fresh store end up with byte-identical DDL — which is \
+         why CREATE_TOKENS is written with `, allowed_origin TEXT)` spliced before the \
+         closing paren",
+    );
+}
+
+#[test]
+fn the_tokens_origin_migration_is_idempotent() {
+    let migrated = v15_store();
+    init_schema(&migrated, 0).expect("first growth succeeds");
+    init_schema(&migrated, 0).expect("second init is a no-op, not a duplicate-column error");
+    assert_eq!(
+        column_names(&migrated, "tokens").iter().filter(|name| *name == "allowed_origin").count(),
+        1,
+        "exactly one allowed_origin column",
+    );
+}
+
 fn index_names(sql: &dyn Sql) -> Vec<String> {
     sql.exec(
         "SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name",

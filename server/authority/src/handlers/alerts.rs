@@ -9,10 +9,19 @@
 //! mint its own `item-threshold/v1` alerts. Hooking it into `upsert`
 //! would double-evaluate the sweep's own alerts as `alert_raised` events on
 //! top of the delivery `sweep_tick` already runs for them.
+//!
+//! Two guards from ADR-0014's 2026-10-15 amendment (#845). [`upsert`]
+//! moves an occurrence's lifecycle only forward: a write carrying an
+//! explicit `raised_at` that arrived out of order is answered as success
+//! and changes nothing ([`Alert::is_stale_write`]), and [`ingest`] rings
+//! nothing for it. And [`ingest`] holds every alert `url` to its token's
+//! allowed link origin, when the token carries one.
 
 use std::collections::BTreeMap;
 
-use hummingbird_domain::{find_source, now_as_deadline, Alert, AlertIngest, AlertPatch, Event};
+use hummingbird_domain::{
+    find_source, now_as_deadline, url_is_on_origin, Alert, AlertIngest, AlertPatch, Event,
+};
 use hummingbird_rules_engine::{evaluate_rules, RuleOutcome};
 
 use super::{
@@ -28,10 +37,16 @@ use crate::sql::{Row, Sql, SqlError, SqlValue};
 /// `POST /api/admin/tokens`. A payload naming any other source is a 403
 /// with an empty body, matching the rest of the scope-matrix error
 /// semantics; it never reaches the upsert below.
+///
+/// `token_origin` is the caller's allowed link origin (#845), `None` for a
+/// token minted without one. With one, an alert whose `url` is not on
+/// exactly that origin is a 400 naming the source. An alert with **no**
+/// `url` is accepted: there is no link to misdirect anyone with.
 pub fn ingest(
     body: Option<&str>,
     now_ms: i64,
     token_source: Option<&str>,
+    token_origin: Option<&str>,
     sql: &dyn Sql,
 ) -> Result<ApiResponse, SqlError> {
     let ingest: AlertIngest = match parse_body(body) {
@@ -83,8 +98,24 @@ pub fn ingest(
     if token_source != Some(ingest.source.as_str()) {
         return Ok(empty_status(403));
     }
+    if let (Some(origin), Some(url)) = (token_origin, ingest.url.as_deref()) {
+        if !url_is_on_origin(url, origin) {
+            return Ok(error(
+                400,
+                "validation",
+                &format!("`{}`: url is outside this token's allowed link origin", ingest.source),
+            ));
+        }
+    }
 
-    let (status, alert) = upsert(sql, now_ms, ingest)?;
+    let Upserted { status, alert, stale } = upsert(sql, now_ms, ingest)?;
+    // A stale write rings nothing (ADR-0014's #845 amendment). It changed
+    // nothing either, so the evaluation below could at most repeat a ring
+    // the dedupe already holds — but "at most" is a claim about every
+    // future rule and target, and the amendment's promise is simpler.
+    if stale {
+        return Ok(json(status, &alert));
+    }
     // Evaluated unconditionally, on every ingest call — not gated on
     // whether `upsert` above actually wrote something (the 2026-08-10
     // grilling decision's own "no did-this-change pre-filter": `deliver`'s
@@ -158,13 +189,20 @@ fn alert_raised_event(alert: &Alert) -> Event {
     }
 }
 
+/// What [`upsert`] did: the HTTP status the caller would answer with (201
+/// first raise, 200 otherwise), the resulting row, and whether the write
+/// was stale — refused as out of order, so the row is exactly as stored.
+pub(crate) struct Upserted {
+    pub status: u16,
+    pub alert: Alert,
+    pub stale: bool,
+}
+
 /// The mint/re-raise core, HTTP-agnostic — shared verbatim by the webhook
 /// ingest route above and #138's internal DO-alarm sweep, which mints
 /// `item-threshold/v1` alerts through this exact same path rather than a
 /// parallel one (the brief's "through the same path as every other kind").
-/// Returns the HTTP status the caller would have answered with (201 first
-/// raise, 200 no-op-or-updated re-raise) alongside the resulting row —
-/// the sweep ignores the status and uses only the alert.
+/// Returns [`Upserted`] — the sweep ignores everything but the alert.
 ///
 /// Every caller is expected to have already resolved *concurrent* severity
 /// judgments into the one `severity` it passes (ADR-0014's mint fold); this
@@ -174,7 +212,7 @@ pub(crate) fn upsert(
     sql: &dyn Sql,
     now_ms: i64,
     ingest: AlertIngest,
-) -> Result<(u16, Alert), SqlError> {
+) -> Result<Upserted, SqlError> {
     let Some(row) = select_by_identity(sql, &ingest.source, &ingest.source_key)? else {
         // First raise. The id is minted deterministically from the identity
         // — no entropy, and a crashed-and-replayed first raise lands on the
@@ -215,7 +253,7 @@ pub(crate) fn upsert(
             ],
         )?;
         write_meta_version(sql, version)?;
-        return Ok((201, alert));
+        return Ok(Upserted { status: 201, alert, stale: false });
     };
 
     // Re-raise: the source-owned fields are set absolutely from the payload
@@ -239,6 +277,20 @@ pub(crate) fn upsert(
     // for this `(alert, rule, generation)`. So severity is set absolutely,
     // like every other source-owned field, and an absent one clears.
     let current = alert_from_row(&row)?;
+
+    // ADR-0014's 2026-10-15 amendment (#845): an occurrence's lifecycle
+    // only moves forward. A pushed source sending one request at a time can
+    // still have a timed-out one land after its successor; written as
+    // given, a raise that preceded a resolution would clear it (live again,
+    // and ringing), and a resolution that preceded a re-raise would move
+    // `raised_at` backwards and settle a condition that has returned. Such
+    // a write is answered as success and changes no field. Every caller
+    // goes through here, so this holds for every source — the sweep and the
+    // shipped pollers never send a stamp that trips it.
+    if current.is_stale_write(ingest.raised_at, ingest.resolved_at) {
+        return Ok(Upserted { status: 200, alert: current, stale: true });
+    }
+
     let next = Alert {
         // Source-owned like title/body/url: set absolutely, so a source
         // that stops naming a subject clears the join rather than leaving
@@ -254,7 +306,7 @@ pub(crate) fn upsert(
         ..current.clone()
     };
     if next == current {
-        return Ok((200, current));
+        return Ok(Upserted { status: 200, alert: current, stale: false });
     }
 
     // Past this point the raise genuinely changed a source-owned field —
@@ -296,7 +348,7 @@ pub(crate) fn upsert(
         ],
     )?;
     write_meta_version(sql, version)?;
-    Ok((200, Alert { version, ..next }))
+    Ok(Upserted { status: 200, alert: Alert { version, ..next }, stale: false })
 }
 
 /// The device lane: dismiss (or un-dismiss) under CAS — the only alert

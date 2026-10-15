@@ -251,7 +251,7 @@ pub fn tick(sql: &dyn Sql, now_ms: i64) -> Result<Vec<TickMatch>, SqlError> {
             // would re-ring a threshold alert the reader had dismissed.
             restamp_on_change: false,
         };
-        let (_status, alert) = upsert_alert(sql, now_ms, ingest)?;
+        let alert = upsert_alert(sql, now_ms, ingest)?.alert;
 
         for (rule_id, verdict) in verdicts {
             let outcome = deliver(sql, now_ms, &alert, &rule_id, verdict.tier)?;

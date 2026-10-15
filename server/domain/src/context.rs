@@ -61,6 +61,27 @@ impl Alert {
     pub fn is_live(&self, now: i64) -> bool {
         crate::is_live(self.raised_at, self.resolved_at, self.dismissed_at, self.expires_at, now)
     }
+
+    /// ADR-0014's 2026-10-15 amendment (#845): **an occurrence's lifecycle
+    /// only moves forward.** Whether a source write carrying this
+    /// `raised_at`/`resolved_at` pair arrived out of order and must change
+    /// nothing. Occurrences are ordered by `raised_at`, and within one a
+    /// resolution is final, so a write is stale when its explicit stamp is
+    /// earlier than this row's, or equal to it while it carries no
+    /// resolution and this row is resolved — a raise landing after the
+    /// resolution it preceded.
+    ///
+    /// A write with no explicit `raised_at` is never stale: it says nothing
+    /// about which occurrence it belongs to, and behaves exactly as before
+    /// (every shipped poller sends none). A later stamp is a genuine
+    /// re-raise.
+    pub fn is_stale_write(&self, raised_at: Option<i64>, resolved_at: Option<i64>) -> bool {
+        match raised_at {
+            None => false,
+            Some(r) if r < self.raised_at => true,
+            Some(r) => r == self.raised_at && resolved_at.is_none() && self.resolved_at.is_some(),
+        }
+    }
 }
 
 /// One server-polled gauge, exactly the `context_snapshots` columns.
@@ -326,5 +347,57 @@ mod tests {
         )
         .expect("a pre-0015 alert still deserializes");
         assert_eq!(alert.subject_key, None);
+    }
+
+    fn stored(raised_at: i64, resolved_at: Option<i64>) -> Alert {
+        Alert {
+            id: "a".into(),
+            source: "auk/v1".into(),
+            source_key: "k".into(),
+            subject_key: None,
+            title: "t".into(),
+            body: None,
+            url: None,
+            severity: Some("normal".into()),
+            raised_at,
+            resolved_at,
+            dismissed_at: None,
+            expires_at: None,
+            version: 1,
+        }
+    }
+
+    #[test]
+    fn a_write_without_an_explicit_raised_at_is_never_stale() {
+        assert!(!stored(1000, None).is_stale_write(None, None));
+        assert!(!stored(1000, Some(2000)).is_stale_write(None, None));
+        assert!(!stored(1000, None).is_stale_write(None, Some(500)));
+    }
+
+    #[test]
+    fn an_earlier_raised_at_is_stale_with_or_without_a_resolution() {
+        assert!(stored(2000, None).is_stale_write(Some(1000), None));
+        assert!(stored(2000, None).is_stale_write(Some(1000), Some(1500)));
+        assert!(stored(2000, Some(3000)).is_stale_write(Some(1000), None));
+    }
+
+    #[test]
+    fn a_raise_landing_after_its_own_resolution_is_stale() {
+        assert!(stored(1000, Some(1500)).is_stale_write(Some(1000), None));
+    }
+
+    #[test]
+    fn the_same_occurrence_still_moves_forward() {
+        // A replayed raise on a live row, and its resolution, both proceed.
+        assert!(!stored(1000, None).is_stale_write(Some(1000), None));
+        assert!(!stored(1000, None).is_stale_write(Some(1000), Some(1500)));
+        // A replayed resolution of a resolved row is not stale either.
+        assert!(!stored(1000, Some(1500)).is_stale_write(Some(1000), Some(1500)));
+    }
+
+    #[test]
+    fn a_later_raised_at_is_a_genuine_re_raise() {
+        assert!(!stored(1000, Some(1500)).is_stale_write(Some(2000), None));
+        assert!(!stored(1000, None).is_stale_write(Some(2000), None));
     }
 }

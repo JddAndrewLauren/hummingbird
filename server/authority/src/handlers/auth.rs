@@ -59,6 +59,9 @@ pub struct Principal {
     pub id: String,
     pub scope: Scope,
     pub source: Option<String>,
+    /// The ingest token's allowed link origin (#845), which the alerts
+    /// handler holds every alert `url` to — `None` links anywhere.
+    pub allowed_origin: Option<String>,
 }
 
 /// Resolve the bearer to a live token's principal, stamping `last_seen` on
@@ -86,12 +89,13 @@ pub fn authenticate(
     let scope_text = r.text("scope")?;
     let scope = Scope::parse(&scope_text).ok_or_else(|| bad_cell("scope"))?;
     let source = r.opt_text("source");
+    let allowed_origin = r.opt_text("allowed_origin");
     let id = r.text("id")?;
     sql.exec(
         "UPDATE tokens SET last_seen = ? WHERE id = ?",
         &[SqlValue::Integer(now_ms), SqlValue::Text(id.clone())],
     )?;
-    Ok(Some(Principal { id, scope, source }))
+    Ok(Some(Principal { id, scope, source, allowed_origin }))
 }
 
 /// The whole scope matrix. Device is a full task client: everything except
