@@ -8973,6 +8973,32 @@ mod tests {
         assert_eq!(core.cycle.queue().entries().count(), 0);
     }
 
+    /// #867: #843's create-replay rebase (`patch_with_rebase`), through the
+    /// contexts vocabulary. Two edits before the first sync are two
+    /// create-shaped PUTs to a row nobody has yet; the second is answered
+    /// with the first's row, which is still this core's own base, so it is
+    /// reapplied rather than dead-lettered as someone else's.
+    #[tokio::test]
+    async fn two_context_edits_before_the_first_sync_both_land() {
+        let authority = SettingsAuthority::default();
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+
+        core.add_context("seed-1", "@calls", 1_000).await.unwrap();
+        core.add_context("seed-2", "@reading", 1_001).await.unwrap();
+        core.run(&authority, &authority, 2_000, Trigger::User, true, 0.0).await;
+
+        let stored = authority.settings().into_iter().find(|row| row.key == "contexts").unwrap();
+        let stored: Vec<String> = serde_json::from_str(&stored.value).unwrap();
+        assert_eq!(
+            stored,
+            ["@home", "@computer", "@phone", "@errands", "@garden", "@homework", "@calls", "@reading"]
+        );
+        assert!(core.dead_letters().is_empty());
+        assert_eq!(core.cycle.queue().entries().count(), 0);
+        assert_eq!(context_names(&core), stored);
+    }
+
     #[tokio::test]
     async fn removing_an_unknown_context_enqueues_nothing() {
         let mut core = core_with_contexts(vec![], vec![], vec![]).await;
