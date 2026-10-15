@@ -113,9 +113,10 @@ compatibility_date = "2026-08-08"
 command = "cargo install -q worker-build && worker-build --release"
 
 [vars]
-# Empty until the OAuth client exists (ADR-0040's human task): the
-# sign-in route answers 503 until then.
-GOOGLE_SIGNIN_CLIENT_IDS = ""
+# The `hummingbird-signin` Web client (#836). The Android clients are not
+# listed: they are never an audience (ADR-0040 decision 3). The route
+# still answers 503 until GOOGLE_SIGNIN_ALLOWED_SUB is set.
+GOOGLE_SIGNIN_CLIENT_IDS = "309477759674-d169knsap6cuig582ii1mhv032u3ovb2.apps.googleusercontent.com"
 
 [durable_objects]
 bindings = [{ name = "AUTHORITY", class_name = "Authority" }]
