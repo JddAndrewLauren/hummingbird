@@ -54,6 +54,7 @@ pub mod capture;
 pub mod context;
 pub mod contexts;
 pub mod decisions;
+pub mod devices;
 pub mod diagnostics;
 pub mod freshness;
 pub mod item_detail;
@@ -83,8 +84,8 @@ use question_switch::{
 };
 use hummingbird_domain::{
     resulting_stage, Alert, AlertPatch, Condition, CreateFileLink, CreateFog, CreateGrill,
-    CreateItem, CreateProject, CreateProjectLink, CreateRule, CreateStep, Energy, FileLink,
-    FileLinkPatch, Fog, FogPatch, GrillVerdict, GrillWithoutTranscript, Item, Project, ProjectLink, ProjectLinkPatch,
+    CreateItem, CreateProject, CreateProjectLink, CreateRule, CreateStep, DevicePlatform, Energy,
+    FileLink, FileLinkPatch, Fog, FogPatch, GrillVerdict, GrillWithoutTranscript, Item, Project, ProjectLink, ProjectLinkPatch,
     ProjectPatch, Route, RoutePatch, Rule, RulePatch, Setting, Size, Stage, Step, StepPatch, Tier,
 };
 
@@ -95,7 +96,7 @@ use storage::{
 };
 use sync::queue::{MutationIntent, QueueEntry};
 use sync::transport::ChangesTransport;
-use sync::write::transport::{HttpMethod, MutationTransport};
+use sync::write::transport::{DirectTransport, HttpMethod, MutationTransport};
 use sync::{CycleOutcome, LoadError, SyncCycle, Trigger};
 
 /// The public API version both FFI crates surface.
@@ -3861,6 +3862,83 @@ where
         self.credential.arm()
     }
 
+    /// Trades a Google ID token for this device's `device` token through
+    /// `POST /api/auth/google` (#839, ADR-0040 decision 1) — `name` and
+    /// `platform` are what the authority names the token from.
+    ///
+    /// **Touches no credential and persists nothing.** A
+    /// [`devices::SignInOutcome::SignedIn`] carries the token back to the
+    /// host, which stores it and then calls [`Core::push_api_key`] with it,
+    /// exactly as a pasted token flows; until then this core's arm is
+    /// whatever it was. Every refusal is its own arm of the outcome — see
+    /// [`devices::SignInOutcome`].
+    pub async fn sign_in_with_google(
+        &self,
+        transport: &impl DirectTransport,
+        id_token: &str,
+        name: &str,
+        platform: DevicePlatform,
+    ) -> devices::SignInOutcome {
+        let request = devices::sign_in_request(id_token, name, platform);
+        devices::sign_in_outcome(transport.call(None, request).await)
+    }
+
+    /// The operator's devices, per `GET /api/devices` (#839, ADR-0040
+    /// decision 6), in the authority's order —
+    /// [`decisions::devices::device_rows`] orders and words them. Sends
+    /// nothing without a usable credential
+    /// ([`devices::DevicesOutcome::NoCredential`]); a 401 holds the
+    /// credential exactly as [`Core::run`] does, and the arm moves to
+    /// [`CredentialArm::Reprompt`].
+    pub async fn devices(&mut self, transport: &impl DirectTransport) -> devices::DevicesOutcome {
+        let Some(token) = self.credential.token().map(str::to_string) else {
+            return devices::DevicesOutcome::NoCredential;
+        };
+        let outcome = devices::devices_outcome(
+            transport.call(Some(&token), devices::devices_request()).await,
+        );
+        if outcome == devices::DevicesOutcome::CredentialRejected {
+            self.hold_rejected_credential();
+        }
+        outcome
+    }
+
+    /// Signs one device out, per `DELETE /api/devices/:id` (#839, ADR-0040
+    /// decision 6). When the authority says the revoked row is this
+    /// device's own ([`devices::RevokeOutcome::SignedOut`]), the core
+    /// drops its credential through [`Core::clear_api_key`] — the arm
+    /// moves to [`CredentialArm::Unset`] and **every queued write stays
+    /// queued** (ADR-0004), to drain once a fresh token is pushed. The
+    /// host deletes its stored copy on that outcome. A 401 holds the
+    /// credential as [`Core::devices`] does; an id no route can name
+    /// answers [`devices::RevokeOutcome::NotFound`] without a request.
+    pub async fn revoke_device(
+        &mut self,
+        transport: &impl DirectTransport,
+        id: &str,
+    ) -> devices::RevokeOutcome {
+        let Some(token) = self.credential.token().map(str::to_string) else {
+            return devices::RevokeOutcome::NoCredential;
+        };
+        let Some(request) = devices::revoke_request(id) else {
+            return devices::RevokeOutcome::NotFound;
+        };
+        let outcome = devices::revoke_outcome(transport.call(Some(&token), request).await);
+        match outcome {
+            devices::RevokeOutcome::SignedOut(_) => self.clear_api_key(),
+            devices::RevokeOutcome::CredentialRejected => self.hold_rejected_credential(),
+            _ => {}
+        }
+        outcome
+    }
+
+    /// A 401 outside a sync cycle — the same hold, and the same event,
+    /// [`Core::apply_cycle_outcome`] gives one inside it.
+    fn hold_rejected_credential(&mut self) {
+        self.credential.hold();
+        self.credential_changed();
+    }
+
     /// Records one [`CoreEvent::CredentialChanged`] carrying the slot's
     /// current arm — the one place every credential mutation reports
     /// itself, so none of them can forget to.
@@ -4030,8 +4108,7 @@ where
         }
 
         if matches!(outcome, CycleOutcome::CredentialNeeded { .. }) {
-            self.credential.hold();
-            self.credential_changed();
+            self.hold_rejected_credential();
         }
 
         CoreCycleOutcome::Cycle(outcome)
@@ -10367,5 +10444,238 @@ mod tests {
             .unwrap();
 
         assert_eq!(core.cycle.queue().entries().count(), 1);
+    }
+
+    // ------------------------------------------------------------ #839
+
+    /// A [`DirectTransport`] double: answers from a script and records the
+    /// bearer and request of every call.
+    #[derive(Default)]
+    struct ScriptedDirect {
+        responses: Mutex<std::collections::VecDeque<Result<RawResponse, TransportError>>>,
+        calls: Mutex<Vec<(Option<String>, sync::write::DirectRequest)>>,
+    }
+
+    impl ScriptedDirect {
+        fn new(responses: Vec<Result<RawResponse, TransportError>>) -> Self {
+            Self {
+                responses: Mutex::new(responses.into_iter().collect()),
+                calls: Mutex::default(),
+            }
+        }
+
+        fn calls(&self) -> Vec<(Option<String>, sync::write::DirectRequest)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+    impl DirectTransport for ScriptedDirect {
+        async fn call(
+            &self,
+            access_token: Option<&str>,
+            request: sync::write::DirectRequest,
+        ) -> Result<RawResponse, TransportError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((access_token.map(str::to_string), request));
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| panic!("no more scripted direct responses"))
+        }
+    }
+
+    fn device_row_json(id: &str, is_current: bool) -> String {
+        format!(
+            r#"{{"id":"{id}","name":"{id}","platform":"web","created_at":1,"last_seen":2,
+            "revoked_at":3,"is_current":{is_current},"revocable":true}}"#
+        )
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_hands_the_token_back_and_leaves_the_credential_alone() {
+        let mut core = Core::new();
+        let transport = ScriptedDirect::new(vec![ok(
+            201,
+            r#"{"id":"device-web-laptop","token":"hb_minted"}"#,
+        )]);
+
+        let outcome = core
+            .sign_in_with_google(&transport, "id.token.jwt", "Laptop", DevicePlatform::Web)
+            .await;
+
+        assert_eq!(
+            outcome,
+            devices::SignInOutcome::SignedIn(hummingbird_domain::SignedInDevice {
+                id: "device-web-laptop".to_string(),
+                token: "hb_minted".to_string(),
+            })
+        );
+        let calls = transport.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, None, "the exchange is unauthenticated");
+        assert_eq!(calls[0].1.path, "/api/auth/google");
+        // Nothing was taken in: the arm is where it was, no event fired, and
+        // nothing was queued. The host's push is what makes it a credential.
+        assert_eq!(core.credential_arm(), CredentialArm::Unknown);
+        assert!(core.take_events().is_empty());
+        assert_eq!(core.queue_depth(), 0);
+
+        core.push_api_key("hb_minted");
+        assert_eq!(core.credential_arm(), CredentialArm::Resting);
+    }
+
+    #[tokio::test]
+    async fn each_sign_in_refusal_is_its_own_outcome_and_holds_nothing() {
+        let core = Core::new();
+        let transport = ScriptedDirect::new(vec![
+            ok(403, ""),
+            ok(429, r#"{"error":"rate_limited","message":"later"}"#),
+            ok(503, r#"{"error":"signin_unconfigured","message":"unset"}"#),
+        ]);
+        let mut kinds = Vec::new();
+        for _ in 0..3 {
+            kinds.push(
+                core.sign_in_with_google(&transport, "t", "Pixel", DevicePlatform::Android)
+                    .await
+                    .kind(),
+            );
+        }
+        assert_eq!(kinds, ["not_allowed", "rate_limited", "unconfigured"]);
+        assert_eq!(core.credential_arm(), CredentialArm::Unknown);
+    }
+
+    #[tokio::test]
+    async fn the_device_list_sends_the_held_token_and_reads_every_row() {
+        let mut core = Core::new();
+        core.push_api_key("hb_held");
+        let body = format!(
+            "[{},{}]",
+            device_row_json("device-web-laptop", true),
+            device_row_json("device-android-pixel", false)
+        );
+        let transport = ScriptedDirect::new(vec![ok(200, body)]);
+
+        let outcome = core.devices(&transport).await;
+
+        let devices::DevicesOutcome::Listed(rows) = outcome else {
+            panic!("{outcome:?}");
+        };
+        assert_eq!(rows.len(), 2);
+        let calls = transport.calls();
+        assert_eq!(calls[0].0.as_deref(), Some("hb_held"));
+        assert_eq!(calls[0].1.method, sync::write::DirectMethod::Get);
+        assert_eq!(calls[0].1.path, "/api/devices");
+    }
+
+    #[tokio::test]
+    async fn without_a_credential_neither_device_call_sends_anything() {
+        let mut core = Core::new();
+        let transport = ScriptedDirect::new(vec![]);
+        assert_eq!(core.devices(&transport).await, devices::DevicesOutcome::NoCredential);
+        assert_eq!(
+            core.revoke_device(&transport, "device-web").await,
+            devices::RevokeOutcome::NoCredential
+        );
+        assert!(transport.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_401_on_a_device_call_holds_the_credential_like_a_sync_cycle() {
+        let mut core = Core::new();
+        core.push_api_key("hb_dead");
+        core.take_events();
+        let transport = ScriptedDirect::new(vec![ok(401, "")]);
+
+        assert_eq!(core.devices(&transport).await, devices::DevicesOutcome::CredentialRejected);
+
+        assert_eq!(core.credential_arm(), CredentialArm::Reprompt);
+        assert_eq!(
+            core.take_events(),
+            vec![CoreEvent::CredentialChanged {
+                arm: CredentialArm::Reprompt
+            }]
+        );
+        // Held: the next call sends nothing.
+        assert_eq!(
+            core.revoke_device(&transport, "device-web").await,
+            devices::RevokeOutcome::NoCredential
+        );
+        assert_eq!(transport.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn revoking_this_device_clears_the_credential_and_keeps_every_queued_write() {
+        let mut core = Core::new();
+        core.push_api_key("hb_mine");
+        core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
+            .await
+            .unwrap();
+        core.capture("seed-2", "call mum", Stage::Ready, 1_001, CaptureOptions::default(), None)
+            .await
+            .unwrap();
+        let queued_before: Vec<String> =
+            core.cycle.queue().entries().map(|entry| entry.id.clone()).collect();
+        assert_eq!(queued_before.len(), 2);
+        core.take_events();
+        let transport =
+            ScriptedDirect::new(vec![ok(200, device_row_json("device-web-laptop", true))]);
+
+        let outcome = core.revoke_device(&transport, "device-web-laptop").await;
+
+        assert_eq!(outcome.kind(), "signed_out");
+        assert_eq!(transport.calls()[0].0.as_deref(), Some("hb_mine"));
+        assert_eq!(transport.calls()[0].1.method, sync::write::DirectMethod::Delete);
+        assert_eq!(core.credential_arm(), CredentialArm::Unset);
+        assert_eq!(
+            core.take_events(),
+            vec![CoreEvent::CredentialChanged {
+                arm: CredentialArm::Unset
+            }]
+        );
+        let queued_after: Vec<String> =
+            core.cycle.queue().entries().map(|entry| entry.id.clone()).collect();
+        assert_eq!(queued_after, queued_before, "signing out drops no queued write");
+        assert!(core.dead_letters().is_empty());
+        assert_eq!(
+            core.frontier().len(),
+            2,
+            "the unconfirmed captures stay overlaid"
+        );
+    }
+
+    #[tokio::test]
+    async fn revoking_another_device_keeps_this_ones_credential() {
+        let mut core = Core::new();
+        core.push_api_key("hb_mine");
+        let transport = ScriptedDirect::new(vec![
+            ok(200, device_row_json("device-android-pixel", false)),
+            ok(403, ""),
+            ok(404, r#"{"error":"not_found","message":"no such device"}"#),
+        ]);
+
+        assert_eq!(
+            core.revoke_device(&transport, "device-android-pixel").await.kind(),
+            "revoked"
+        );
+        assert_eq!(
+            core.revoke_device(&transport, "runner").await,
+            devices::RevokeOutcome::NotRevocable
+        );
+        assert_eq!(
+            core.revoke_device(&transport, "device-gone").await,
+            devices::RevokeOutcome::NotFound
+        );
+        assert_eq!(
+            core.revoke_device(&transport, "../tokens").await,
+            devices::RevokeOutcome::NotFound,
+            "an id no route can name is not sent"
+        );
+        assert_eq!(transport.calls().len(), 3);
+        assert_eq!(core.credential_arm(), CredentialArm::Resting);
     }
 }

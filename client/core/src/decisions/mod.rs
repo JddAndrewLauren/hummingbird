@@ -22,6 +22,7 @@
 
 pub mod actions;
 pub mod capture;
+pub mod devices;
 pub mod frontier;
 pub mod notification;
 pub mod panes;

@@ -1660,6 +1660,33 @@ pub fn sync_status_summary_json(input_json: &str) -> String {
     }
 }
 
+// ------------------------------------------------------------------- #839
+// Signed-in devices' decision half (ADR-0040 decision 7): the worker's
+// `devices` call answers the authority's rows, and these order and word
+// them on the main thread, as every other decision here.
+
+use hummingbird_core::decisions::devices;
+
+/// [`devices::device_rows`]: `devices_json` is the `devices` array of the
+/// worker's `devices` answer (the authority's snake_case rows); the answer
+/// is the shown rows in order, each `{"id", "name", "isCurrent",
+/// "thisDevice": string|null, "platformLabel", "lastSeenLabel",
+/// "revocable"}` — or `{"error":"..."}` on unparseable input.
+#[wasm_bindgen]
+pub fn device_rows_json(devices_json: &str, now_ms: f64) -> String {
+    match serde_json::from_str::<Vec<hummingbird_domain::DeviceInfo>>(devices_json) {
+        Ok(rows) => serde_json::to_string(&devices::device_rows(&rows, now_ms as i64)).unwrap(),
+        Err(error) => error_json(error.to_string()),
+    }
+}
+
+/// [`devices::sign_out_confirmation`] — the sentence before this device
+/// signs itself out, naming how many unsent changes stay queued.
+#[wasm_bindgen]
+pub fn sign_out_confirmation(queue_depth: u32) -> String {
+    devices::sign_out_confirmation(queue_depth)
+}
+
 // ------------------------------------------------------------------- #534
 // The remaining seven panes: the status four (kimi/github/uptime/
 // reachability) and the now three (race/weekend/vacation) — same house
@@ -3478,6 +3505,36 @@ mod tests {
         assert_eq!(parsed["tone"], "success");
         assert_eq!(parsed["label"], "Synced — as of 1m ago · 2 queued");
         assert_eq!(parsed["toneWord"], "synced");
+    }
+
+    #[test]
+    fn device_rows_json_orders_and_words_the_workers_rows() {
+        let devices = r#"[
+            {"id":"device-android-pixel","name":"Pixel","platform":"android","created_at":1,
+             "last_seen":3600000,"revoked_at":null,"is_current":false,"revocable":true},
+            {"id":"device-web-old","name":"Old","platform":"web","created_at":1,
+             "last_seen":7000000,"revoked_at":7100000,"is_current":false,"revocable":true},
+            {"id":"device-web-laptop","name":"Laptop","platform":"web","created_at":1,
+             "last_seen":0,"revoked_at":null,"is_current":true,"revocable":true}
+        ]"#;
+        let rows: serde_json::Value =
+            serde_json::from_str(&device_rows_json(devices, 7_200_000.0)).unwrap();
+        let rows = rows.as_array().unwrap();
+        assert_eq!(rows.len(), 2, "the revoked row is not shown");
+        assert_eq!(rows[0]["id"], "device-web-laptop");
+        assert_eq!(rows[0]["thisDevice"], "This device");
+        assert_eq!(rows[0]["lastSeenLabel"], "Last seen 2h ago");
+        assert_eq!(rows[1]["platformLabel"], "Android");
+        assert_eq!(rows[1]["thisDevice"], serde_json::Value::Null);
+        assert!(device_rows_json("not json", 0.0).contains("error"));
+    }
+
+    #[test]
+    fn sign_out_confirmation_is_the_core_sentence() {
+        assert_eq!(
+            sign_out_confirmation(2),
+            "Sign out this device? 2 unsent changes stay queued and send once you sign in again."
+        );
     }
 
     #[test]
