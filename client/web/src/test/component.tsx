@@ -260,6 +260,8 @@ export function taskState(overrides: Partial<TaskState> = {}): TaskState {
     bindings: null,
     questionSwitches: null,
     suggestedContexts: null,
+    calendarPrefs: null,
+    lastCalendarSeed: null,
     kindRegistry: null,
     rules: null,
     lastRuleWrite: null,

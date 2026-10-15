@@ -4,7 +4,6 @@ import { type CalendarState, type TaskState, coreStore, createCoreStore } from "
 const initialCalendar: CalendarState = {
   connected: false,
   needsReconnect: false,
-  selectedCalendarIds: [],
   availableCalendars: [],
   lastPollOutcome: null,
   connectPending: false,
@@ -28,6 +27,8 @@ const initialTask: TaskState = {
   bindings: null,
   questionSwitches: null,
   suggestedContexts: null,
+  calendarPrefs: null,
+  lastCalendarSeed: null,
   kindRegistry: null,
   rules: null,
   lastRuleWrite: null,
@@ -106,7 +107,7 @@ describe("createCoreStore", () => {
     const store = createCoreStore();
     store.setState({ status: "ready", apiVersion: 1 });
 
-    store.setCalendarState({ connected: true, selectedCalendarIds: ["primary"] });
+    store.setCalendarState({ connected: true, connectPending: true });
 
     expect(store.getSnapshot()).toEqual({
       status: "ready",
@@ -117,7 +118,7 @@ describe("createCoreStore", () => {
       calendar: {
         ...initialCalendar,
         connected: true,
-        selectedCalendarIds: ["primary"],
+        connectPending: true,
       },
       task: initialTask,
     });

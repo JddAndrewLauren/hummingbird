@@ -23,7 +23,6 @@ import type { TaskTokenUiState } from "../task/token-ui";
 const demoCalendar: CalendarState = {
   connected: true,
   needsReconnect: false,
-  selectedCalendarIds: [],
   availableCalendars: [
     { id: "demo-personal", summary: "Fictional (personal)" },
     { id: "demo-family", summary: "Fictional (family)" },
@@ -39,7 +38,7 @@ function renderBoardSettings(
   status: "loading" | "ready" = "loading",
   taskTokenState: TaskTokenUiState = "unset",
 ) {
-  const onSelectionChange = vi.fn();
+  const onToggleCalendar = vi.fn();
   render(
     <SettingsScreen
       status={status}
@@ -56,7 +55,7 @@ function renderBoardSettings(
       dropboxLocalRoot={null}
       onDropboxLocalRoot={vi.fn()}
       onConnect={vi.fn()}
-      onSelectionChange={onSelectionChange}
+      onToggleCalendar={onToggleCalendar}
       onRefresh={vi.fn()}
       taskTokenState={taskTokenState}
       taskTokenEnteredAtMs={null}
@@ -70,7 +69,7 @@ function renderBoardSettings(
       onClearDiagnostics={vi.fn()}
     />,
   );
-  return { onSelectionChange };
+  return { onToggleCalendar };
 }
 
 describe("SettingsScreen — the board world's calendar card", () => {
@@ -90,15 +89,15 @@ describe("SettingsScreen — the board world's calendar card", () => {
   });
 
   // The round-2 hazard (#452's own words): the fixture card's toggle must
-  // never reach `onSelectionChange`, whose live handler persists the ids to
-  // the shared localStorage key and polls Google for calendars that do not
+  // never reach `onToggleCalendar`, whose live handler writes the ids into
+  // the synced selection and polls Google for calendars that do not
   // exist. `SettingsScreen` has no `demo` prop (#456), so the toggle must
   // branch on `calendarIsDemo`.
-  it("toggles locally and never calls onSelectionChange", () => {
-    const { onSelectionChange } = renderBoardSettings("loading", "unset");
+  it("toggles locally and never calls onToggleCalendar", () => {
+    const { onToggleCalendar } = renderBoardSettings("loading", "unset");
     const family = screen.getByRole("checkbox", { name: /Fictional \(family\)/ });
     fireEvent.click(family);
-    expect(onSelectionChange).not.toHaveBeenCalled();
+    expect(onToggleCalendar).not.toHaveBeenCalled();
     expect((family as HTMLInputElement).checked).toBe(true);
   });
 
@@ -129,7 +128,7 @@ describe("SettingsScreen — the board world's calendar card", () => {
       dropboxLocalRoot={null}
       onDropboxLocalRoot={vi.fn()}
         onConnect={vi.fn()}
-        onSelectionChange={vi.fn()}
+        onToggleCalendar={vi.fn()}
         onRefresh={vi.fn()}
         taskTokenState="unset"
         taskTokenEnteredAtMs={null}

@@ -4,6 +4,7 @@ import {
   addContext,
   removeContext,
   requestBindings,
+  requestCalendarPrefs,
   requestQuestionSwitches,
   requestSuggestedContexts,
   setBinding,
@@ -64,6 +65,10 @@ export function useBindingsWiring(
     // ADR-0038's list rides it too, for the same reason: one more
     // `settings` row.
     requestSuggestedContexts(worker);
+    // ADR-0040 decision 8's calendar choices are two more rows — and a
+    // completed cycle is when a calendar ticked on another device arrives,
+    // which `useCalendarWiring.ts` then starts polling.
+    requestCalendarPrefs(worker);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, syncOutcomeSeq]);
 

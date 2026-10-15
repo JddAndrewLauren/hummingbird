@@ -9,10 +9,8 @@ import {
   shouldKeepExistingConnection,
 } from "../calendar/connection";
 import {
-  readConnected,
-  readSelectedCalendarIds,
-  writeConnected,
-  writeSelectedCalendarIds,
+  clearLocalCalendarPrefs,
+  readLocalCalendarPrefs,
   type StorageLike,
 } from "../calendar/persistence";
 import {
@@ -21,10 +19,11 @@ import {
   recordSilentRemint,
   type RemintHealth,
 } from "../calendar/remint-health";
-import { acceptSelectionChange, effectiveSelection } from "../calendar/selection";
 import { createAuthorityTokenClient } from "../calendar/authority-token-client";
 import type { TokenClient } from "../calendar/token-client";
-import { coreStore, type CalendarState, type CoreStatus } from "../store/store";
+import { effectiveCalendarSelection } from "../decisions/seam";
+import type { CalendarPrefsDTO } from "../store/protocol";
+import { coreStore, type CalendarState, type CoreStatus, type TaskState } from "../store/store";
 import { createIndexedDbTaskTokenStore, type TaskTokenStoreLike } from "../task/token-store";
 import {
   pollRefresh,
@@ -32,7 +31,10 @@ import {
   pollTimer,
   pushTokenToWorker,
   requestCalendarList,
+  seedCalendarPrefs,
+  setCalendarConnected,
   setCalendarSelectionsOnWorker,
+  toggleCalendar,
   type WorkerLike,
 } from "../store/worker-client";
 
@@ -44,9 +46,22 @@ import {
 // and passes the handlers down.
 //
 // Everything here is intentionally thin: every decision (silent re-mint vs.
-// re-connect, staleness, selection toggling, which errors mean a human is
-// required) is delegated to a unit-tested pure module under `calendar/`;
-// this file only wires their results into the store and the worker.
+// re-connect, staleness, which errors mean a human is required) is delegated
+// to a unit-tested pure module under `calendar/` or to the core; this file
+// only wires their results into the store and the worker.
+//
+// **ADR-0040 decision 8: what to poll is synced, not this browser's.**
+// Whether the operator's devices poll Google Calendar at all, and which
+// calendars at which horizon, are two `settings` rows read off
+// `TaskState.calendarPrefs` and written through the core (`toggleCalendar`,
+// `setCalendarConnected`). So a calendar ticked on the phone starts being
+// polled here after the next sync, a Connect here connects every device,
+// and the polled set is the core's own union (`effectiveCalendarSelection`)
+// — this file holds no copy of either the choices or the rule. This
+// browser's pre-#843 `localStorage` copy is handed to the core's one-time
+// seed and deleted on any settled answer. The lane need not wait for it: a
+// row already there wins the seed anyway, and a missing one reads as not
+// connected until the seed lands.
 //
 // **#577/#583/#584: there is one path, and it never opens a popup or leaves
 // the page.** Every `TokenClient` call — the start-up re-mint, the proactive
@@ -112,9 +127,9 @@ function connectionDeps(worker: WorkerLike): ConnectionDeps {
 // trailing optional parameter. `connection` is exactly the `ConnectionDeps`
 // shape `calendar/connection.ts` already declares, not a new interface: the
 // deps a test hands in are the same deps `connectionDeps(worker)` builds for
-// the production path. `storage` covers the four persistence calls the same
-// way, so a test can start the hook from a known stored state and assert
-// what it writes, without a real `localStorage`.
+// the production path. `storage` holds only the pre-#843 copy the one-time
+// migration reads and clears, so a test can start the hook from a known
+// stored state and assert that it is cleared, without a real `localStorage`.
 export interface CalendarWiringDeps {
   connection: ConnectionDeps;
   storage: StorageLike;
@@ -129,8 +144,20 @@ function defaultCalendarWiringDeps(worker: WorkerLike): CalendarWiringDeps {
 
 export interface CalendarWiring {
   handleConnectClick: () => Promise<void>;
-  handleCalendarSelectionChange: (selectedCalendarIds: string[]) => void;
+  /** Ticks or unticks one calendar — through the core, which keeps every
+   * other calendar's horizon and refuses the bound Trips calendar. The
+   * re-push and poll follow the synced answer, not the tap. */
+  handleCalendarToggle: (id: string) => void;
   handleRefreshClick: () => void;
+}
+
+/** Mints a calendar-choice write's seed — `mintBindingSeed`'s rule
+ * (`useBindingsWiring.ts`): the row is the entity, so retrying the identical
+ * intent at the same `nowMs` must reproduce the identical queue entry. The
+ * `:calendar:` infix keeps it apart from every other `settings` vocabulary's
+ * seeds. */
+export function mintCalendarSeed(intent: string, nowMs: number): string {
+  return `${intent}:calendar:${nowMs}`;
 }
 
 export function useCalendarWiring(
@@ -141,6 +168,12 @@ export function useCalendarWiring(
    * table (`calendar/selection.ts`'s `tripsCalendarId`). It contributes to
    * the polled set at every push site below — derived, never persisted. */
   tripsCalendarId: string | null,
+  /** ADR-0040 decision 8: the synced calendar choices
+   * (`TaskState.calendarPrefs`), `null` until the core has answered — and
+   * nothing arms while it is. */
+  prefs: CalendarPrefsDTO | null,
+  /** The last one-time seed's answer (`TaskState.lastCalendarSeed`). */
+  lastCalendarSeed: TaskState["lastCalendarSeed"],
   /** #750: omitted, this is `defaultCalendarWiringDeps(worker)` — the exact
    * production path every call site used before this parameter existed.
    * Supplied, a test drives the whole lifecycle against fakes, never
@@ -148,6 +181,16 @@ export function useCalendarWiring(
   deps: CalendarWiringDeps = defaultCalendarWiringDeps(worker),
 ): CalendarWiring {
   const [expiresAtMs, setExpiresAtMs] = useState<number | null>(null);
+
+  // The seed sent and not yet answered, so a re-render never sends two.
+  const seedInFlightRef = useRef<string | null>(null);
+
+  // `null` = not read yet; the lane never acts on an unread answer.
+  const syncedConnected = prefs === null ? null : prefs.connected;
+  // What this device polls — the core's union of the synced selection and
+  // the bound Trips calendar, never a TS copy of it.
+  const polled = effectiveCalendarSelection(prefs?.selection ?? [], tripsCalendarId);
+  const polledKey = JSON.stringify(polled);
 
   // When the last credential-recovery retry went out (0 = never). See
   // `resumeAfterReconnect`.
@@ -193,8 +236,8 @@ export function useCalendarWiring(
   // union — ticked calendars ∪ the bound Trips calendar, each with its
   // horizon — cannot be applied at four call sites and forgotten at the
   // fifth.
-  function pushSelection(storedIds: string[]) {
-    setCalendarSelectionsOnWorker(worker, effectiveSelection(storedIds, tripsCalendarId));
+  function pushSelection() {
+    setCalendarSelectionsOnWorker(worker, polled);
   }
 
   // Re-polls and re-reads the tile after a credential *recovery* — the
@@ -221,52 +264,92 @@ export function useCalendarWiring(
     // trigger here does: a worker restarted by the browser holds an empty
     // one, and a zero-calendar poll succeeds with an empty snapshot that
     // would replace the last good one.
-    pushSelection(calendar.selectedCalendarIds);
+    pushSelection();
     pollRefresh(worker, now);
     requestCalendarList(worker);
   }
 
-  // Core-start wiring: attempt a silent re-mint for a previously-connected
-  // device, or stay disconnected (Agent Brief: "a never-connected device
-  // has no tile and unconstrained ranking").
+  // ADR-0040 decision 8's one-time migration: hand this browser's old
+  // `localStorage` choices to the core's seed, and delete them on any
+  // settled answer. Re-attempted on every fresh `calendarPrefs` answer —
+  // one arrives after every sync cycle — because the core answers "not yet"
+  // until this core has completed a full sweep.
   useEffect(() => {
-    if (status !== "ready") {
+    if (status !== "ready" || prefs === null || seedInFlightRef.current !== null) {
+      return;
+    }
+    const local = readLocalCalendarPrefs(deps.storage);
+    if (local === null) {
+      // Never held one, or already migrated — by this tab or another, since
+      // every tab shares the one `localStorage`.
+      return;
+    }
+    const nowMs = Date.now();
+    const seed = mintCalendarSeed("seed", nowMs);
+    seedInFlightRef.current = seed;
+    seedCalendarPrefs(worker, seed, local.connected, local.selectedIds, nowMs);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, prefs]);
+
+  useEffect(() => {
+    if (lastCalendarSeed === null) {
+      return;
+    }
+    if (lastCalendarSeed.seed === seedInFlightRef.current) {
+      seedInFlightRef.current = null;
+    }
+    // `null` (failed, or the core was busy) and "not_yet" both keep the
+    // local copy for the next attempt; anything else has settled it.
+    if (lastCalendarSeed.outcome === "seeded" || lastCalendarSeed.outcome === "adopted") {
+      clearLocalCalendarPrefs(deps.storage);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastCalendarSeed]);
+
+  // The lane follows the synced `calendar-connected` row: armed with a
+  // silent re-mint when it reads connected — at start, or the moment another
+  // device connects — and parked when it reads not connected, which is how
+  // a Disconnect on the phone reaches this browser. Never on an unread
+  // answer.
+  useEffect(() => {
+    if (status !== "ready" || syncedConnected === null) {
+      return;
+    }
+    if (!syncedConnected) {
+      if (calendar.connected) {
+        // The rotation timer and the poll timer both gate on `connected`,
+        // so this alone parks them.
+        coreStore.setCalendarState({ connected: false, needsReconnect: false });
+      }
+      return;
+    }
+    if (calendar.connected) {
       return;
     }
     const connection = deps.connection;
     let cancelled = false;
     void (async () => {
-      const wasConnected = readConnected(deps.storage);
-      const selectedCalendarIds = readSelectedCalendarIds(deps.storage);
-      const result = await initConnection(connection, wasConnected);
+      const result = await initConnection(connection, true);
       if (cancelled) {
         return;
       }
-      if (wasConnected) {
-        // Only then was this a silent re-mint. A never-opted-in device did
-        // not attempt one.
-        recordRemint(result);
-      }
-      writeConnected(deps.storage, result.connected);
+      recordRemint(result);
       coreStore.setCalendarState({
         connected: result.connected,
         needsReconnect: result.needsReconnect,
-        selectedCalendarIds,
       });
       setExpiresAtMs(result.expiresAtMs);
-      if (result.connected) {
-        // Runs even when the silent re-mint failed — the offline-start
-        // case, which is exactly when this matters most.
-        //
-        // Because the worker was constructed with an empty selection:
-        // leaving it empty means a later Reconnect polls zero calendars, and
-        // a zero-calendar poll SUCCEEDS with an empty snapshot, overwriting
-        // the last good one (`fetch_calendar_snapshot` simply iterates no
-        // ids). The last-good snapshot is a previously-connected device's
-        // only offline context; a reconnect must not be able to destroy it.
-        pushSelection(selectedCalendarIds);
-      }
-      if (result.connected && !result.needsReconnect) {
+      // Runs even when the silent re-mint failed — the offline-start case,
+      // which is exactly when this matters most.
+      //
+      // Because the worker was constructed with an empty selection: leaving
+      // it empty means a later Reconnect polls zero calendars, and a
+      // zero-calendar poll SUCCEEDS with an empty snapshot, overwriting the
+      // last good one (`fetch_calendar_snapshot` simply iterates no ids).
+      // The last-good snapshot is a previously-connected device's only
+      // offline context; a reconnect must not be able to destroy it.
+      pushSelection();
+      if (!result.needsReconnect) {
         pollStart(worker, Date.now());
         requestCalendarList(worker);
       }
@@ -275,7 +358,7 @@ export function useCalendarWiring(
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status]);
+  }, [status, syncedConnected]);
 
   // Answers a credential-needed round-trip from the core: silent re-mint
   // first, falling back to the re-connect affordance in Settings.
@@ -349,19 +432,20 @@ export function useCalendarWiring(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [calendar.connected, calendar.needsReconnect, calendar.silentRemintBlocked, expiresAtMs]);
 
-  // #121: a `trips-calendar` binding edited on ANY device reaches this one
-  // through the ordinary delta pull, and the polled set is derived from it —
-  // so the moment it moves, the worker's copy of the selection is stale and
-  // the newly-designated calendar has never been fetched. Re-push and poll,
-  // which is exactly what the picker does for a tick.
+  // The polled set moved: a calendar ticked here or on any other device
+  // (ADR-0040 decision 8), or a `trips-calendar` binding edited anywhere
+  // (#121) — all synced rows, all arriving through the ordinary delta pull
+  // or this device's own overlaid write. The worker's copy of the selection
+  // is then stale and the newly-polled calendar has never been fetched, so
+  // re-push and poll now rather than at the next 15-minute tick.
   useEffect(() => {
     if (status !== "ready" || !calendar.connected || calendar.needsReconnect) {
       return;
     }
-    pushSelection(calendar.selectedCalendarIds);
+    pushSelection();
     pollRefresh(worker, Date.now());
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, calendar.connected, calendar.needsReconnect, tripsCalendarId]);
+  }, [status, calendar.connected, calendar.needsReconnect, polledKey]);
 
   // The foreground 15-minute context-poll timer (#46, under ADR-0005).
   useEffect(() => {
@@ -403,37 +487,37 @@ export function useCalendarWiring(
       // timer stays parked and the stale `expiresAtMs` below is never used.)
       return;
     }
-    writeConnected(deps.storage, result.connected);
     coreStore.setCalendarState({
       connected: result.connected,
       needsReconnect: result.needsReconnect,
     });
     setExpiresAtMs(result.expiresAtMs);
     if (result.connected) {
+      // The synced half: connecting here connects every device (ADR-0040
+      // decision 8). Only a success writes — a failed first connect leaves
+      // no row, which already reads as not connected.
+      if (prefs?.connected !== true) {
+        const nowMs = Date.now();
+        setCalendarConnected(worker, mintCalendarSeed("connected", nowMs), true, nowMs);
+      }
       // Re-assert the selection before polling. This click is also the
       // Reconnect button, and the worker's copy of the selection can be
       // empty here (a startup whose silent re-mint failed, a worker
       // restarted by the browser) — polling with an empty selection would
       // quietly replace the last good snapshot with an empty one.
-      pushSelection(calendar.selectedCalendarIds);
+      pushSelection();
       pollStart(worker, Date.now());
       requestCalendarList(worker);
     }
   }
 
-  function handleCalendarSelectionChange(requestedCalendarIds: string[]) {
-    // #121: the bound Trips calendar's row is locked in the picker, and the
-    // refusal is repeated here rather than trusted to it — a handler that
-    // accepted the untick and let `effectiveSelection` silently re-add the
-    // calendar would leave the picker showing a control that springs back.
-    const selectedCalendarIds = acceptSelectionChange(requestedCalendarIds, tripsCalendarId);
-    if (selectedCalendarIds === null) {
-      return;
-    }
-    writeSelectedCalendarIds(deps.storage, selectedCalendarIds);
-    coreStore.setCalendarState({ selectedCalendarIds });
-    pushSelection(selectedCalendarIds);
-    pollRefresh(worker, Date.now());
+  function handleCalendarToggle(id: string) {
+    // No refusal here: the bound Trips calendar's row is drawn locked, and
+    // the core refuses an untick of it before anything is written
+    // (`Core::toggle_calendar`), so nothing can spring back. The re-push
+    // and poll follow the overlaid answer through the polled-set effect.
+    const nowMs = Date.now();
+    toggleCalendar(worker, mintCalendarSeed(`toggle:${id}`, nowMs), id, nowMs);
   }
 
   // The user-facing manual refresh (#46/#72). Without it the only way to
@@ -445,9 +529,9 @@ export function useCalendarWiring(
     // does: a worker restarted by the browser holds an empty one, and a
     // zero-calendar poll succeeds with an empty snapshot that would replace
     // the last good one.
-    pushSelection(calendar.selectedCalendarIds);
+    pushSelection();
     pollRefresh(worker, Date.now());
   }
 
-  return { handleConnectClick, handleCalendarSelectionChange, handleRefreshClick };
+  return { handleConnectClick, handleCalendarToggle, handleRefreshClick };
 }

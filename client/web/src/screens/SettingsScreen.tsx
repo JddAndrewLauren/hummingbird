@@ -33,11 +33,8 @@ import {
 import { questionRoster } from "./questions/roster";
 import { APP_VERSION } from "../shell/build-version";
 import { coreInstanceLabel } from "../shell/status-label";
-import {
-  TRIPS_CALENDAR_BINDING_KEY,
-  effectiveCalendarIds,
-  tripsCalendarId,
-} from "../calendar/selection";
+import { TRIPS_CALENDAR_BINDING_KEY, tripsCalendarId } from "../calendar/selection";
+import { effectiveCalendarSelection } from "../decisions/seam";
 import {
   deadLetterHeading,
   syncStatusLabel,
@@ -803,7 +800,9 @@ export interface SettingsScreenProps {
   dropboxLocalRoot: string | null;
   onDropboxLocalRoot: (value: string) => void;
   onConnect: () => void;
-  onSelectionChange: (selectedCalendarIds: string[]) => void;
+  /** ADR-0040 decision 8: ticks or unticks one calendar in the synced
+   * selection — `useCalendarWiring.ts`'s `handleCalendarToggle`. */
+  onToggleCalendar: (id: string) => void;
   onRefresh: () => void;
   /** #106/S8's device-token surface — entry, rest, and re-prompt. */
   taskTokenState: TaskTokenUiState;
@@ -858,7 +857,7 @@ export function SettingsScreen({
   dropboxLocalRoot,
   onDropboxLocalRoot,
   onConnect,
-  onSelectionChange,
+  onToggleCalendar,
   onRefresh,
   taskTokenState,
   taskTokenEnteredAtMs,
@@ -877,14 +876,17 @@ export function SettingsScreen({
   onClearDiagnostics,
 }: SettingsScreenProps) {
   const instanceLabel = coreInstanceLabel(coreId, viewOrdinal);
+  // ADR-0040 decision 8: the ticked calendars are the synced row, the same
+  // on every device — never this browser's own copy.
+  const tickedSelection = task.calendarPrefs?.selection ?? [];
   const unavailableIds = unavailableSelectedIds(
-    calendar.selectedCalendarIds,
+    tickedSelection.map((entry) => entry.id),
     calendar.availableCalendars,
   );
   // The board world's fixture calendar toggles a local copy and nothing
   // else: the fixture ids are not real calendars, and routing them through
-  // `onSelectionChange` would persist them to localStorage and poll the
-  // worker for calendars that do not exist.
+  // `onToggleCalendar` would write them into the synced selection and poll
+  // the worker for calendars that do not exist.
   const [demoSelectedIds, setDemoSelectedIds] = useState<string[]>(() => {
     const first = calendarIsDemo ? calendar.availableCalendars[0]?.id : undefined;
     return first === undefined ? [] : [first];
@@ -926,7 +928,7 @@ export function SettingsScreen({
     questionLabelForBinding(roster, TRIPS_CALENDAR_BINDING_KEY) ?? TRIPS_CALENDAR_BINDING_KEY;
   const polledIds = calendarIsDemo
     ? demoSelectedIds
-    : effectiveCalendarIds(calendar.selectedCalendarIds, tripsId);
+    : effectiveCalendarSelection(tickedSelection, tripsId).map((entry) => entry.id);
 
   // The design-system picker always renders its fieldset, so an empty one is
   // an empty box captioned "Calendars to poll" — a control over nothing.
@@ -959,7 +961,7 @@ export function SettingsScreen({
                 onToggle={(id) =>
                   calendarIsDemo
                     ? setDemoSelectedIds((current) => toggleCalendarId(current, id))
-                    : onSelectionChange(toggleCalendarId(polledIds, id))
+                    : onToggleCalendar(id)
                 }
               />
             </>
