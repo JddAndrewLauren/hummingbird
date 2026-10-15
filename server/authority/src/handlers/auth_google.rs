@@ -12,8 +12,11 @@
 //!
 //! 1. [`begin`] — method, config (503), body (400), the JWT and every claim
 //!    (403). Yields a [`PendingSignin`] naming the `kid` to look up.
-//! 2. *shim:* the JWKS key for that `kid` — [`PendingSignin::key`] decides
-//!    an unknown one (403) — then `crypto.subtle.verify`.
+//! 2. *shim:* the JWKS key for that `kid` — [`PendingSignin::cached_key`]
+//!    decides whether the cached set answers, a fetch is needed, or an
+//!    unknown `kid` is refused unfetched (403); [`PendingSignin::key`]
+//!    decides one missing from a fresh set (403) — then
+//!    `crypto.subtle.verify`.
 //! 3. [`PendingSignin::signature_checked`] turns the shim's bare `bool`
 //!    into a [`SignedIn`] (or a 403), and [`complete`] — the only function
 //!    that writes — takes nothing else. Nothing can mint from a token whose
@@ -22,9 +25,10 @@
 //! **Status contract.** 201 `{id, token}` once; 400 a bad body; 403 —
 //! empty, never 401 (ADR-0004 keeps 401 for a held credential the
 //! authority refuses) — for every rejected token, with the reason and the
-//! rejected `sub` in the log line the shim writes; 405 a wrong method; 429
-//! past the mint cap; 503 when either config value is unset, or when
-//! Google's JWKS cannot be fetched.
+//! rejected `sub` (escaped and capped: it is the caller's text) in the log
+//! line the shim writes; 405 a wrong method; 429 past the mint cap; 503
+//! when either config value is unset, or when Google's JWKS cannot be
+//! fetched.
 
 use hummingbird_domain::{DevicePlatform, GoogleSignIn, Scope, SignedInDevice};
 
@@ -34,8 +38,8 @@ use super::{
 };
 use crate::codec::RowReader;
 use crate::google_signin::{
-    device_id_base, parse_jwt, validate_name, verify_claims, JwksCache, Rejection, SigninConfig,
-    VerifiedIdentity,
+    device_id_base, parse_jwt, validate_name, verify_claims, JwksCache, KeyLookup, Rejection,
+    SigninConfig, VerifiedIdentity,
 };
 use crate::sql::{Sql, SqlError, SqlValue};
 
@@ -43,6 +47,10 @@ use crate::sql::{Sql, SqlError, SqlValue};
 pub const MINTS_PER_HOUR: i64 = 10;
 
 const HOUR_MS: i64 = 3_600_000;
+
+/// At most this many characters of a rejected `sub`, as escaped, reach
+/// the log. A Google subject id is 21 digits.
+const LOGGED_SUB_CHARS: usize = 64;
 
 /// A response the route gives without minting, and the line the shim logs
 /// for it — `Some` for every 403 (naming the rejected `sub`, so the
@@ -67,10 +75,29 @@ impl Refusal {
             log: Some(format!(
                 "google sign-in refused ({}): sub={}",
                 why.reason(),
-                sub.filter(|s| !s.is_empty()).unwrap_or("-"),
+                sub.filter(|s| !s.is_empty())
+                    .map_or_else(|| "-".to_string(), loggable_sub),
             )),
         }
     }
+}
+
+/// A `sub` as the log line carries it. The claim is read before the
+/// signature is checked, so its content and length are the caller's: every
+/// control character, quote and non-ASCII character is escaped (one line,
+/// always), and past [`LOGGED_SUB_CHARS`] it is cut between escapes and
+/// marked.
+fn loggable_sub(sub: &str) -> String {
+    let mut out = String::new();
+    for c in sub.chars() {
+        let escaped = c.escape_default();
+        if out.len() + escaped.len() > LOGGED_SUB_CHARS {
+            out.push_str("...[cut]");
+            break;
+        }
+        out.extend(escaped);
+    }
+    out
 }
 
 /// A sign-in whose claims all passed, waiting on the signature.
@@ -138,13 +165,34 @@ pub fn begin(
 }
 
 impl PendingSignin {
-    /// Step 2's decision: the SPKI DER for this token's `kid` in `jwks` — a
-    /// set the shim has just fetched, since a cached set that lacks the
-    /// `kid` is re-fetched first. Absent → 403.
+    /// Step 2's first decision, before any fetch: the key from the set the
+    /// shim holds (`Ok(Some)`), a fetch (`Ok(None)` — nothing cached, the
+    /// set expired, or an unknown `kid` whose re-fetch interval has run), or
+    /// a 403 for an unknown `kid` inside that interval, which costs Google
+    /// nothing ([`JwksCache::lookup`]).
+    #[allow(clippy::result_large_err)]
+    pub fn cached_key<'a>(
+        &self,
+        jwks: Option<&'a JwksCache>,
+        now_ms: i64,
+    ) -> Result<Option<&'a [u8]>, Refusal> {
+        match jwks.map(|jwks| jwks.lookup(&self.kid, now_ms)) {
+            Some(KeyLookup::Cached(spki)) => Ok(Some(spki)),
+            Some(KeyLookup::Unknown) => Err(self.unknown_kid()),
+            Some(KeyLookup::Fetch) | None => Ok(None),
+        }
+    }
+
+    /// Step 2's decision on a fetch: the SPKI DER for this token's `kid` in
+    /// `jwks` — a set the shim has just fetched because
+    /// [`Self::cached_key`] asked it to. Absent → 403.
     #[allow(clippy::result_large_err)]
     pub fn key<'a>(&self, jwks: &'a JwksCache) -> Result<&'a [u8], Refusal> {
-        jwks.key(&self.kid)
-            .ok_or_else(|| Refusal::rejected(Rejection::UnknownKid, Some(&self.identity.sub)))
+        jwks.key(&self.kid).ok_or_else(|| self.unknown_kid())
+    }
+
+    fn unknown_kid(&self) -> Refusal {
+        Refusal::rejected(Rejection::UnknownKid, Some(&self.identity.sub))
     }
 
     /// Step 3: the shim's `crypto.subtle.verify` answer, as a type. `false`

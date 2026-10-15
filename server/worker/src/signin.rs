@@ -34,8 +34,9 @@ use crate::http::get;
 pub struct GoogleSignin {
     config: Option<SigninConfig>,
     /// Google's keys, kept for as long as the JWKS response's `max-age`
-    /// says and re-fetched early on an unknown `kid`. Not persisted: an
-    /// evicted instance fetches again on its next sign-in.
+    /// says and re-fetched early on an unknown `kid`, at most once a minute
+    /// (`JwksCache::lookup` decides). Not persisted: an evicted instance
+    /// fetches again on its next sign-in.
     jwks: RefCell<Option<JwksCache>>,
 }
 
@@ -87,9 +88,10 @@ impl GoogleSignin {
         }
     }
 
-    /// The SPKI DER for the token's `kid`: from the cache while it is fresh
-    /// and holds the `kid`, otherwise from a fresh fetch, which replaces the
-    /// cache.
+    /// The SPKI DER for the token's `kid`: from the cache when
+    /// `cached_key` says it answers, a refusal when it says the `kid` is
+    /// unknown and was fetched for too recently, otherwise from a fresh
+    /// fetch, which replaces the cache.
     async fn spki_for(
         &self,
         pending: &auth_google::PendingSignin,
@@ -97,11 +99,8 @@ impl GoogleSignin {
     ) -> std::result::Result<Vec<u8>, Refusal> {
         // Copied out of the RefCell rather than borrowed across the await
         // below, as `FcmSender::access_token` does.
-        let cached = self
-            .jwks
-            .borrow()
-            .as_ref()
-            .and_then(|jwks| jwks.fresh_key(&pending.kid, now_ms))
+        let cached = pending
+            .cached_key(self.jwks.borrow().as_ref(), now_ms)?
             .map(<[u8]>::to_vec);
         if let Some(spki) = cached {
             return Ok(spki);
