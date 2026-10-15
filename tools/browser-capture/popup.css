@@ -110,6 +110,23 @@
   box-shadow: none;
   transform: scale(var(--press-scale));
 }
+/* The options page's paste-a-token Store, beside its one primary (Sign
+   in with Google): the design system's secondary Button. */
+.btn.secondary {
+  color: var(--text-primary);
+  background: var(--surface-card);
+  border-color: var(--border-default);
+  box-shadow: var(--shadow-1);
+}
+.btn.secondary:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-2);
+  transform: translateY(var(--lift-hover));
+}
+.btn.secondary:active:not(:disabled) {
+  box-shadow: none;
+  transform: scale(var(--press-scale));
+}
 .btn.ghost {
   color: var(--text-secondary);
   background: transparent;
@@ -132,6 +149,12 @@
 .options {
   font: var(--type-body-sm);
   align-self: flex-start;
+}
+/* The options page's ghost buttons sit on the column's left edge, as the
+   popup's Options link does; the hover fill reaches into the gutter. */
+.btn.ghost.options {
+  padding: 0 var(--space-4);
+  margin-left: calc(-1 * var(--space-4));
 }
 
 /* The three destination squares — the web IconButton's `solid` variant at

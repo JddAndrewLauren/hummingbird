@@ -101,7 +101,7 @@ async function save(token, id, draft, destination, today = false, retried = fals
 async function main() {
   const { token, pending } = await api.storage.local.get(["token", "pending"]);
   if (!token) {
-    say("No token yet. Paste one in options.", "warn");
+    say("No token yet. Sign in from options.", "warn");
     $("options").hidden = false;
     return;
   }

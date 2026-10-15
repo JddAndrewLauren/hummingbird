@@ -42,9 +42,41 @@ is a choice, not a capture source the system drains.
 
 Once per browser profile, per machine.
 
-1. **Mint a device token, vault-first.** The extension is an operator
-   device like a phone or a laptop shell, with its own token id so it can be
-   revoked alone and told apart in `request.finished` logs:
+1. **Load unpacked.** `chrome://extensions` → Developer mode → *Load
+   unpacked* → this directory. The id Chrome shows is
+   `eljlbpcfpddadchmlmcabfndadekconp` from any path: the manifest's `key`
+   pins it (below), and the token lives in `storage.local` *per id*, so
+   a load from another checkout or worktree is the same extension with the
+   same token — a stored-token check is that id under *Details*. Chrome
+   expects the "Unrecognized manifest key 'browser_specific_settings'"
+   warning under *Errors*; the key is Firefox's, mandatory for signing
+   there, and Chrome ignores it at runtime.
+
+2. **Sign in with Google.** Extension → *Options* → check the device name
+   (it defaults to the machine's OS — `Mac`, `Windows PC` — and is how this
+   browser is listed under Signed-in devices) → *Sign in with Google*. The
+   authority mints this profile its own `device` token, id
+   `device-chrome-<slug of the name>` (ADR-0040), and the page stores it
+   exactly where a pasted one goes. Each refusal says which it is: the
+   wrong Google account (403), too many sign-ins in the last hour (429),
+   sign-in not set up on the authority, or Google's keys unreachable
+   (503). The sign-in client is `GOOGLE_SIGNIN_CLIENT_ID` in `lib.js` — one
+   of `server/worker/wrangler.toml`'s `GOOGLE_SIGNIN_CLIENT_IDS`, pinned
+   by `signin.test.js` — and its authorized redirect URIs in Google Cloud
+   Console must list `https://eljlbpcfpddadchmlmcabfndadekconp.chromiumapp.org/`.
+
+3. Pin the toolbar button. `Alt+Shift+H` opens it from the keyboard; Enter
+   in the title or Ctrl+Enter in the description lands in Triage. A mint
+   is a click on its square, never a keystroke.
+
+### The fallback: a vault-first mint and a paste
+
+For when sign-in cannot run — the authority without sign-in configured, or
+Google unreachable. The extension is an operator device like a phone or a
+laptop shell, with its own token id so it can be revoked alone and told
+apart in `request.finished` logs:
+
+1. **Mint a device token, vault-first.**
 
    ```sh
    ./scripts/mint-device-token.sh device-chrome-hal2024 \
@@ -56,24 +88,11 @@ Once per browser profile, per machine.
    (id absent from `GET /api/admin/tokens`, `op item get <title>` misses)
    are worth the minute.
 
-2. **Load unpacked.** `chrome://extensions` → Developer mode → *Load
-   unpacked* → this directory. The id Chrome shows is
-   `eljlbpcfpddadchmlmcabfndadekconp` from any path: the manifest's `key`
-   pins it (below), and the token lives in `storage.local` *per id*, so
-   a load from another checkout or worktree is the same extension with the
-   same token — a stored-token check is that id under *Details*. Chrome
-   expects the "Unrecognized manifest key 'browser_specific_settings'"
-   warning under *Errors*; the key is Firefox's, mandatory for signing
-   there, and Chrome ignores it at runtime.
-
-3. **Paste the token.** Extension → *Options* → paste from 1Password
+2. **Paste the token.** Extension → *Options* → *Paste a token instead* →
+   paste from 1Password
    (`op read op://dev/hummingbird-device-chrome-hal2024/password`) → Store.
    The page trims a trailing newline and refuses anything that is not
    `hb_` + 64 hex; nothing else is checked until the first save.
-
-4. Pin the toolbar button. `Alt+Shift+H` opens it from the keyboard; Enter
-   in the title or Ctrl+Enter in the description lands in Triage. A mint
-   is a click on its square, never a keystroke.
 
 ### The manifest `key`
 
@@ -92,9 +111,11 @@ id is `gecko.id`.
 
 ### Rotation
 
-`DELETE /api/admin/tokens/device-chrome-<machine>` on the authority, a fresh
-mint under a **new** id (revoke is a soft delete that does not free the
-id), Options → Forget → paste. `CLAUDE.md`'s "Credential blast radius"
+Options → Forget → *Sign in with Google*: the authority mints under a
+fresh id (`-2`, `-3`… on a reused name — a revoked id is never reused),
+and the old token is revoked from Signed-in devices or with
+`DELETE /api/admin/tokens/<id>`. On the fallback lane, revoke, mint under
+a **new** id, Forget, paste. `CLAUDE.md`'s "Credential blast radius"
 section is the standing text on what a device token can reach.
 
 ## What the popup says, and what it means
@@ -103,7 +124,7 @@ section is the standing text on what a device token can reach.
 | --- | --- |
 | Added to Triage / Minted into Ready / Already saved | 201 at that destination, or a 200 replay of an id this popup already sent. The popup closes. |
 | Only http(s) pages can be captured. | `chrome://`, `about:`, `file:` — nothing was sent. |
-| The token was rejected. | 401. Options → paste a fresh one. |
+| The token was rejected. | 401. Options → sign in again, or paste a fresh token. |
 | This token cannot create items. | 403 from the authority: not a `device` (or `sweeper`) token. |
 | Blocked at the edge (Cloudflare) | 403 as an HTML page — the edge, not the authority. |
 | The authority answered with a page, not the API. | A 200 that was the static shell, or a row with the wrong id. Nothing was saved. |
@@ -122,7 +143,7 @@ and this is a new item, which goes out again under a fresh id.
 
 ```sh
 cd tools/browser-capture
-node --test            # lib, manifest and token-drift suites; CI runs the same
+node --test            # lib, sign-in, manifest and token-drift suites; CI runs the same
 node copy-tokens.js    # after a change to client/web/src/design/tokens/
 npx web-ext lint       # optional, local only: needs the network
 ```
