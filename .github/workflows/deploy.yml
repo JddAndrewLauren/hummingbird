@@ -54,8 +54,10 @@ jobs:
       # unreissuable minted token, and no behavioural test reaches it — the
       # mint is a live authenticated call that cannot run in CI. shellcheck is
       # the only gate it gets, which makes the quoting and expansion classes it
-      # catches worth more here than in a tested tree. `-S style` and
-      # assert-don't-skip both match `runner.yml`'s step, which covers
+      # catches worth more here than in a tested tree. `scripts/candidate/` is
+      # named separately because the glob is not recursive; unlike the rest of
+      # `scripts/`, its guard also has behavioural tests in `tests/`. `-S style`
+      # and assert-don't-skip both match `runner.yml`'s step, which covers
       # `runner/scripts/` the same way for the same reason.
       #
       # This job runs on both push to `main` and `pull_request` (see the
@@ -66,7 +68,7 @@ jobs:
       - name: shellcheck (scripts)
         run: |
           command -v shellcheck
-          shellcheck -S style scripts/*.sh
+          shellcheck -S style scripts/*.sh scripts/candidate/*.sh
 
   deploy:
     needs: test

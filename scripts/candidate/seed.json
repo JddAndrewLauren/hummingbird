@@ -1,0 +1,36 @@
+{
+  "projects": [
+    {"id": "cand-proj-house", "name": "Candidate: house"},
+    {"id": "cand-proj-launch", "name": "Candidate: launch"}
+  ],
+  "items": [
+    {"id": "cand-item-overdue", "title": "Renew the car registration", "stage": "ready", "context": "@errands", "project_id": "cand-proj-house", "deadline_in_min": -1440},
+    {"id": "cand-item-due-now", "title": "Call the plumber back", "stage": "ready", "context": "@phone", "project_id": "cand-proj-house", "deadline_in_min": 20},
+    {"id": "cand-item-due-soon", "title": "Draft the launch announcement", "stage": "ready", "context": "@computer", "project_id": "cand-proj-launch", "deadline_in_min": 2880},
+    {"id": "cand-item-ready-plain", "title": "Order replacement furnace filters", "stage": "ready", "context": "@computer", "project_id": "cand-proj-house"},
+    {"id": "cand-item-ready-launch", "title": "Review the pricing page copy", "stage": "ready", "context": "@computer", "project_id": "cand-proj-launch"},
+    {"id": "cand-item-triage", "title": "Something about the garage door noise", "stage": "triage"},
+    {"id": "cand-item-grilled", "title": "Plan the launch retrospective", "stage": "triage", "project_id": "cand-proj-launch"},
+    {"id": "cand-item-never-grilled", "title": "Figure out the storage unit", "stage": "triage"}
+  ],
+  "grills": [
+    {
+      "id": "cand-grill-1",
+      "item_id": "cand-item-grilled",
+      "transcript": "Q: What would done look like?\nA: Not sure yet; depends on who attends.",
+      "summary": "Attendees are still unknown, so the outcome is unclear.",
+      "verdict": "fog_remains",
+      "model_proposal": "{\"context\":\"@computer\"}",
+      "applied_patch": "{\"context\":\"@computer\"}"
+    },
+    {
+      "id": "cand-grill-2",
+      "item_id": "cand-item-grilled",
+      "transcript": "Q: Who attends?\nA: The four of us, Thursday.\nQ: What would done look like?\nA: A one-page list of what to change next time.",
+      "summary": "Four attendees on Thursday; done is a one-page list of changes.",
+      "verdict": "resolved",
+      "model_proposal": "{\"context\":\"@computer\",\"size\":\"deep\"}",
+      "applied_patch": "{\"context\":\"@meeting\",\"size\":\"normal\"}"
+    }
+  ]
+}

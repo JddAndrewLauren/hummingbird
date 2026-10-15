@@ -34,6 +34,9 @@ export type BuildVersionInput = {
   shallow: boolean;
   /** Whether this build is of `main` itself. */
   isMainBuild: boolean;
+  /** `git rev-parse --short=8 HEAD`, or `null` if git could not say. Only a
+   *  non-`main` build shows it. */
+  shortSha: string | null;
 };
 
 /** Three integers or nothing — a partial or decorated line is rejected
@@ -56,7 +59,11 @@ export function parseBase(text: string | null): BuildVersionBase | null {
  * clone, an unreadable `VERSION` and an unreadable git history all yield a
  * `+unknown` marker, the same discipline `Freshness::Unknown` follows in
  * `client/core/src/freshness.rs`. A local, non-`main` build gets `+dev`,
- * so a screenshot from a feature branch cannot read as the deployed build.
+ * so a screenshot from a feature branch cannot read as the deployed build,
+ * and `+dev.<short sha>` when git can name the commit: two branches the same
+ * number of commits past `VERSION` otherwise read identically (two local
+ * review candidates side by side, `scripts/candidate/`). A `main` build's
+ * string never carries the SHA.
  */
 export function computeBuildVersion(input: BuildVersionInput): string {
   const base = parseBase(input.baseText);
@@ -70,7 +77,8 @@ export function computeBuildVersion(input: BuildVersionInput): string {
   // The count adds to the file's own patch; it never resets to it, so an
   // override to 0.2.0 is 0.2.0, then 0.2.1 on the next merge.
   const version = `${stem}.${base.patch + input.commitCount}`;
-  return input.isMainBuild ? version : `${version}+dev`;
+  if (input.isMainBuild) return version;
+  return input.shortSha === null ? `${version}+dev` : `${version}+dev.${input.shortSha}`;
 }
 
 // Declared here rather than in `src/vite-env.d.ts`, which the node project
