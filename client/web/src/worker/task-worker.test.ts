@@ -38,6 +38,11 @@ function fakeHost(overrides: Partial<TaskHostLike> = {}): TaskHostLike {
     toggleCalendar: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     setCalendarConnected: vi.fn().mockResolvedValue('{"kind":"ok","error":null}'),
     seedCalendarPrefs: vi.fn().mockResolvedValue('{"kind":"ok","seed":"seeded","error":null}'),
+    signInWithGoogle: vi
+      .fn()
+      .mockResolvedValue('{"kind":"signed_in","id":"device-web-chrome-on-macos","token":"hb_minted","error":null}'),
+    devices: vi.fn().mockResolvedValue('{"kind":"no_credential","devices":[],"error":null}'),
+    revokeDevice: vi.fn().mockResolvedValue('{"kind":"revoked","device":null,"error":null}'),
     questionSwitches: vi.fn().mockReturnValue('{"kind":"ok","switches":[]}'),
     kindRegistry: vi
       .fn()
@@ -1577,6 +1582,60 @@ describe("handleTaskRequest", () => {
       ),
     ).toEqual([{ type: "seedCalendarPrefsResult", seed: "s-3", kind: "ok", outcome: "seeded" }]);
     expect(host.seedCalendarPrefs).toHaveBeenCalledWith("s-3", true, '["a","b"]', 3_000);
+  });
+
+  it("signInWithGoogle exchanges as platform web and hands the minted token back by seed", async () => {
+    const host = fakeHost();
+    expect(
+      await run(
+        { type: "signInWithGoogle", seed: "s-in", idToken: "id.tok.en", name: "Chrome on macOS", nowMs: 5_000 },
+        host,
+      ),
+    ).toEqual([{ type: "signInResult", seed: "s-in", kind: "signed_in", token: "hb_minted", error: null }]);
+    expect(host.signInWithGoogle).toHaveBeenCalledWith("id.tok.en", "Chrome on macOS", "web", 5_000);
+  });
+
+  it("a refused sign-in carries no token", async () => {
+    const host = fakeHost({
+      signInWithGoogle: vi.fn().mockResolvedValue('{"kind":"not_allowed","id":null,"token":null,"error":null}'),
+    });
+    expect(
+      await run({ type: "signInWithGoogle", seed: "s-no", idToken: "t", name: "n", nowMs: 1 }, host),
+    ).toEqual([{ type: "signInResult", seed: "s-no", kind: "not_allowed", token: null, error: null }]);
+  });
+
+  it("getDevices posts the authority's rows, and nothing when busy", async () => {
+    const row = {
+      id: "device-web",
+      name: "Web",
+      platform: "web",
+      created_at: 1,
+      last_seen: null,
+      revoked_at: null,
+      is_current: true,
+      revocable: true,
+    };
+    const host = fakeHost({
+      devices: vi.fn().mockResolvedValue(JSON.stringify({ kind: "listed", devices: [row], error: null })),
+    });
+    expect(await run({ type: "getDevices", nowMs: 7 }, host)).toEqual([
+      { type: "devices", devices: { kind: "listed", devices: [row], error: null } },
+    ]);
+    expect(host.devices).toHaveBeenCalledWith(7);
+    const busy = fakeHost({
+      devices: vi.fn().mockResolvedValue('{"kind":"busy","devices":[],"error":null}'),
+    });
+    expect(await run({ type: "getDevices", nowMs: 7 }, busy)).toEqual([]);
+  });
+
+  it("revokeDevice reaches the host and answers by seed with the id", async () => {
+    const host = fakeHost({
+      revokeDevice: vi.fn().mockResolvedValue('{"kind":"signed_out","device":{"id":"device-web"},"error":null}'),
+    });
+    expect(await run({ type: "revokeDevice", seed: "s-out", id: "device-web", nowMs: 9 }, host)).toEqual([
+      { type: "revokeDeviceResult", seed: "s-out", id: "device-web", kind: "signed_out", error: null },
+    ]);
+    expect(host.revokeDevice).toHaveBeenCalledWith("device-web", 9);
   });
 
   it("getQuestionSwitches posts every question's state", async () => {

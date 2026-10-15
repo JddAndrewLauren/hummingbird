@@ -475,6 +475,16 @@ const BOARD_ASSERTIONS: Record<Screen, ScreenAssertion> = {
     // regardless of scroll position.
     await expect(page.getByRole("button", { name: "Download diagnostics", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Clear diagnostics", exact: true })).toBeVisible();
+
+    // #840: Signed-in devices over the board seed's fictional rows. Six are
+    // seeded and one is revoked, so five drawing proves the core's decision
+    // is what ordered them; this browser's row leads, wearing "This device".
+    const devices = page.locator("#signed-in-devices");
+    await expect(devices.getByRole("listitem")).toHaveCount(5);
+    await expect(devices.getByRole("listitem").first()).toContainText("This device");
+    await expect(devices.getByRole("button", { name: "Sign out of this device" })).toHaveCount(1);
+    // The runner is seeded unrevocable: four controls for five rows.
+    await expect(devices.getByRole("button", { name: /^Sign out/ })).toHaveCount(4);
   },
 };
 
@@ -521,6 +531,13 @@ for (const theme of THEMES) {
           path: `visual/.captures/${screenId}-${testInfo.project.name}-${theme}.png`,
           fullPage: false,
         });
+        if (screenId === "settings") {
+          // #840: the section sits below the fold at every width, so the
+          // viewport frame above never shows it. Photographed on its own.
+          await page.locator("#signed-in-devices").screenshot({
+            path: `visual/.captures/settings-devices-${testInfo.project.name}-${theme}.png`,
+          });
+        }
       });
     }
 
@@ -1099,6 +1116,29 @@ for (const theme of THEMES) {
       await expectNoHorizontalOverflow(page);
       await page.screenshot({
         path: `visual/.captures/settings-empty-${testInfo.project.name}-${theme}.png`,
+        fullPage: false,
+      });
+
+      // #840: the signed-out device — the REAL core, holding no token, so
+      // Signed-in devices answers its signed-out note rather than rows, and
+      // the device-token card leads with Sign in with Google, the paste form
+      // shut behind its disclosure.
+      const signedOutDevices = page.locator("#signed-in-devices");
+      await expect(signedOutDevices.getByText(/^This device is signed out\./)).toBeVisible();
+      await expect(signedOutDevices.getByRole("listitem")).toHaveCount(0);
+      await signedOutDevices.screenshot({
+        path: `visual/.captures/settings-devices-signed-out-${testInfo.project.name}-${theme}.png`,
+      });
+      const signInButton = page.getByRole("button", { name: "Sign in with Google", exact: true });
+      await signInButton.scrollIntoViewIfNeeded();
+      await expect(signInButton).toBeVisible();
+      await expect(page.getByRole("button", { name: "Paste a token instead", exact: true })).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      );
+      await expect(page.getByLabel("Device token")).toHaveCount(0);
+      await page.screenshot({
+        path: `visual/.captures/settings-signed-out-${testInfo.project.name}-${theme}.png`,
         fullPage: false,
       });
 

@@ -12,6 +12,9 @@ import {
   reportNoTaskApiKey,
   discardGrillDraft,
   removeFileLink,
+  requestDevices,
+  revokeDevice,
+  signInWithGoogle,
   initTaskApiKey,
   pushTaskApiKey,
   pushTokenToWorker,
@@ -72,6 +75,7 @@ const initialTask: TaskState = {
   suggestedContexts: null,
   calendarPrefs: null,
   lastCalendarSeed: null,
+  devices: null,
   kindRegistry: null,
   rules: null,
   lastRuleWrite: null,
@@ -1971,5 +1975,64 @@ describe("the task send helpers (#105/S7)", () => {
     const worker = fakeWorker();
     triggerSyncManual(worker);
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "manualSyncTrigger" });
+  });
+});
+
+describe("sign-in and signed-in devices (#840)", () => {
+  function deliver(worker: WorkerLike, data: unknown): void {
+    worker.onmessage?.({ data } as MessageEvent);
+  }
+
+  it("signInWithGoogle resolves with the answer to its own seed, and nothing else's", async () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    const answer = signInWithGoogle(worker, "id.tok.en", "Chrome on macOS", 1_000);
+    const sent = worker.postMessage.mock.calls[0][0];
+    expect(sent).toMatchObject({ type: "signInWithGoogle", idToken: "id.tok.en", name: "Chrome on macOS", nowMs: 1_000 });
+
+    // Another view's answer is broadcast here too, and must be dropped.
+    deliver(worker, { type: "signInResult", seed: "someone-else", kind: "signed_in", token: "hb_theirs", error: null });
+    deliver(worker, { type: "signInResult", seed: sent.seed, kind: "signed_in", token: "hb_mine", error: null });
+    await expect(answer).resolves.toEqual({ kind: "signed_in", token: "hb_mine", error: null });
+    // The token never rests in shared view state.
+    expect(JSON.stringify(store.getSnapshot())).not.toContain("hb_mine");
+  });
+
+  it("a devices answer lands in the store", () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    requestDevices(worker, 5);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "getDevices", nowMs: 5 });
+    deliver(worker, { type: "devices", devices: { kind: "no_credential", devices: [], error: null } });
+    expect(store.getSnapshot().task.devices).toEqual({ kind: "no_credential", devices: [], error: null });
+  });
+
+  it("revokeDevice resolves by seed and re-reads the list after a sign-out", async () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    const answer = revokeDevice(worker, "device-web", 2_000);
+    const sent = worker.postMessage.mock.calls[0][0];
+    expect(sent).toMatchObject({ type: "revokeDevice", id: "device-web", nowMs: 2_000 });
+    deliver(worker, { type: "revokeDeviceResult", seed: sent.seed, id: "device-web", kind: "signed_out", error: null });
+    await expect(answer).resolves.toEqual({ kind: "signed_out", error: null });
+    expect(worker.postMessage).toHaveBeenLastCalledWith(expect.objectContaining({ type: "getDevices" }));
+  });
+
+  it("a refused revoke re-reads nothing", async () => {
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    const answer = revokeDevice(worker, "runner", 2_000);
+    const sent = worker.postMessage.mock.calls[0][0];
+    deliver(worker, { type: "revokeDeviceResult", seed: sent.seed, id: "runner", kind: "not_revocable", error: null });
+    await expect(answer).resolves.toEqual({ kind: "not_revocable", error: null });
+    expect(worker.postMessage).toHaveBeenCalledTimes(1);
   });
 });

@@ -159,7 +159,14 @@ import { OBSIDIAN_VAULT_BINDING_KEY } from "../obsidian/vault-uri";
 import { BINDING_KEY as FANTASY_BINDING_KEY } from "../screens/fantasy-pane/fantasy";
 import { DEFAULT_CONTEXTS } from "../screens/field-vocabulary";
 import { QUESTION_ORDER } from "../screens/questions/contract";
-import type { BindingDTO, LedgerRowDTO, ProjectDTO, RecallRowDTO, TaskItemDTO } from "../store/protocol";
+import type {
+  BindingDTO,
+  DeviceInfoDTO,
+  LedgerRowDTO,
+  ProjectDTO,
+  RecallRowDTO,
+  TaskItemDTO,
+} from "../store/protocol";
 import type { TaskState } from "../store/store";
 import { DEMO_DATA } from "./demo-data";
 import {
@@ -801,6 +808,28 @@ const boundFantasyBinding: BindingDTO = {
  * the first time round. Called once, from behind `demo.ts`'s dead-branch gate.
  * Reading the clock here rather than at import is the free improvement that
  * falls out: ages are relative to when the board is asked for. */
+/** One fictional `GET /api/devices` row (#840), never revoked. Its mint
+ * time is never drawn, so it is a month before it was last seen, or the
+ * epoch for a device never seen. */
+function demoDevice(
+  id: string,
+  name: string,
+  platform: DeviceInfoDTO["platform"],
+  lastSeen: number | null,
+  isCurrent = false,
+): DeviceInfoDTO {
+  return {
+    id,
+    name,
+    platform,
+    created_at: lastSeen === null ? 0 : lastSeen - 30 * 24 * 3_600_000,
+    last_seen: lastSeen,
+    revoked_at: null,
+    is_current: isCurrent,
+    revocable: true,
+  };
+}
+
 export function buildDemoTaskState(): TaskState {
   const loadedAt = Date.now();
   const frontier = FRONTIER_SEEDS.map((seed, index) => item(seed, index, loadedAt));
@@ -948,6 +977,26 @@ export function buildDemoTaskState(): TaskState {
     // copy (`calendarIsDemo`).
     calendarPrefs: null,
     lastCalendarSeed: null,
+    // #840: Signed-in devices, fictional. This browser first, a device of
+    // each other kind, and one holder the authority refuses to revoke
+    // (`runner`), so the board's Settings capture photographs both a row
+    // with a sign-out control and a row with none. A revoked row is seeded
+    // too and must never draw: the core's decision drops it.
+    devices: {
+      kind: "listed",
+      error: null,
+      devices: [
+        demoDevice("device-web-chrome-on-macos", "Chrome on macOS", "web", loadedAt - 2 * 60_000, true),
+        demoDevice("device-android-phone", "Phone", "android", loadedAt - 3 * 3_600_000),
+        demoDevice("device-chrome-laptop", "Laptop", "chrome", loadedAt - 26 * 3_600_000),
+        demoDevice("device-watch", "Watch", "watch", null),
+        { ...demoDevice("runner", "Skill runner", "other", loadedAt - 40 * 60_000), revocable: false },
+        {
+          ...demoDevice("device-web-old-laptop", "Old laptop", "web", loadedAt - 900 * 3_600_000),
+          revoked_at: loadedAt - 800 * 3_600_000,
+        },
+      ],
+    },
     // Moved from `demo-data.ts`'s kit-only `DEMO_DATA`, which already typed
     // these as the real `RuleDTO[]`/`KindRegistryDTO` (piece 1's "a move
     // rather than a rewrite") — the kit world keeps its own reference to the

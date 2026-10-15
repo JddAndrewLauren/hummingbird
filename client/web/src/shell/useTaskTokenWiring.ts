@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  clearSignedOutToken,
   forgetTaskToken,
   loadTaskToken,
   submitTaskToken,
@@ -29,6 +30,9 @@ export interface TaskTokenWiring {
   enteredAtMs: number | null;
   handleSubmitToken: (input: string) => Promise<TaskTokenSubmitOutcome>;
   handleForgetToken: () => Promise<void>;
+  /** This device signed itself out from Signed-in devices (#840): the core
+   * already holds no credential, so only the stored token goes. */
+  handleSignedOut: () => Promise<void>;
 }
 
 export function useTaskTokenWiring(
@@ -115,7 +119,13 @@ export function useTaskTokenWiring(
     setEnteredAtMs(result.enteredAtMs);
   }
 
-  return { hasToken, enteredAtMs, handleSubmitToken, handleForgetToken };
+  async function handleSignedOut(): Promise<void> {
+    const result = await clearSignedOutToken(deps());
+    setHasToken(result.hasToken);
+    setEnteredAtMs(result.enteredAtMs);
+  }
+
+  return { hasToken, enteredAtMs, handleSubmitToken, handleForgetToken, handleSignedOut };
 }
 
 let cachedStore: TaskTokenStoreLike | null = null;
