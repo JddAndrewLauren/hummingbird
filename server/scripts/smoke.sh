@@ -17,15 +17,28 @@ command -v curl >/dev/null || { echo "FAIL: curl is required" >&2; exit 1; }
 
 # Overlapping runs (several working copies at once) must not share a port or
 # a log (#869): a fixed port lets one run talk to another's server, and a
-# fixed log lets one run count another's lines. So with no `SMOKE_PORT` the
-# OS picks a free port, and every run logs to its own temporary file — which
-# both the readiness tail and the unsendable counter below read. The log is
-# kept and named on any failure, and removed after a clean pass. `node` is
-# already required, by `npx`.
+# fixed log lets one run count another's lines. So with no `SMOKE_PORT` each
+# run takes a random port that binds free, and logs to its own temporary file
+# — which both the readiness tail and the unsendable counter below read. The
+# log is kept and named on any failure, and removed after a clean pass.
+#
+# Not an OS-assigned port (`listen(0)`): that comes from the ephemeral range,
+# which the build, npx and the other run's workerd draw from meanwhile, and
+# macOS hands it out in sequence — so a port released here was re-issued
+# before wrangler could bind it. 20000-31999 sits below both macOS's (49152)
+# and Linux's (32768) ephemeral ranges. `node` is already required, by `npx`.
 if [ -n "${SMOKE_PORT:-}" ]; then
   PORT="$SMOKE_PORT"
 else
-  PORT=$(node -e 'const s = require("net").createServer().listen(0, "127.0.0.1", () => { console.log(s.address().port); s.close(); });')
+  PORT=$(node -e '
+    const net = require("net");
+    const pick = (tries) => {
+      const port = 20000 + Math.floor(Math.random() * 12000);
+      const s = net.createServer();
+      s.once("error", () => (tries > 1 ? pick(tries - 1) : process.exit(1)));
+      s.listen(port, "127.0.0.1", () => { console.log(port); s.close(); });
+    };
+    pick(20);') || { echo "FAIL: found no free port for wrangler dev" >&2; exit 1; }
 fi
 BASE="http://127.0.0.1:${PORT}"
 ADMIN_SECRET="smoke-admin-secret"
