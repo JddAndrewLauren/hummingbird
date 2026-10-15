@@ -170,6 +170,40 @@ class SettingsScreenStructuralTest {
         )
     }
 
+    /** ADR-0040 decision 8 (#843): the calendar choices are synced rows,
+     * read and written through the core. The picker's checked state is the
+     * core's polled set (the ticks plus the bound Trips calendar), the
+     * Trips row is locked on, and nothing on this screen keeps or edits a
+     * selection list of its own — a Kotlin toggle over a local list is
+     * exactly the second copy that let two devices drift. */
+    @Test
+    fun `the calendar picker reads the core's polled set and edits only through the core`() {
+        assertTrue(
+            "checked is the core's polled set",
+            screenSrc.contains("checked = polled.any { it.id == entry.id }"),
+        )
+        assertTrue(
+            "the bound Trips row is locked on",
+            screenSrc.contains("enabled = !locked") &&
+                screenSrc.contains("entry.id == prefs?.lockedId"),
+        )
+        assertTrue(
+            "a tap goes to the core's toggle",
+            viewModelSrc.contains("toggleCalendarFn(id)") &&
+                viewModelSrc.contains("core().toggleCalendar(id, System.currentTimeMillis())"),
+        )
+        for ((name, src) in both) {
+            assertFalse(
+                "$name must not keep a selection list of its own",
+                src.contains("MobileCalendarSelection(id = id"),
+            )
+            assertFalse(
+                "$name must not write the old per-device store",
+                src.contains("CalendarPrefs.write"),
+            )
+        }
+    }
+
     /** #709's Export/Clear diagnostics section, held to the same source-
      * gate shape as the rest of this class — a Robolectric-free repo means
      * a dropped `NonCancellable`/`Dispatchers.IO` compiles, runs, and looks

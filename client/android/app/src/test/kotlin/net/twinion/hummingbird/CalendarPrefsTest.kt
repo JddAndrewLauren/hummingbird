@@ -2,13 +2,18 @@ package net.twinion.hummingbird
 
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.mutablePreferencesOf
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import java.io.IOException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import uniffi.hummingbird_ffi_mobile.MobileCalendarSelection
@@ -16,15 +21,14 @@ import uniffi.hummingbird_ffi_mobile.MobileCalendarSelection
 // `CalendarPrefs` (#564) is `FrontierPrefs`/`PanePrefs`' sibling and
 // inherits their rules verbatim — a failed read is the default, a failed
 // write is silence — so these are those files' tests re-aimed through the
-// same `internal` store-taking overloads.
+// same `internal` store-taking overloads. Since #843 (ADR-0040 decision 8)
+// the store only ever feeds the core's one-time seed, so what is tested is
+// reading the pre-#843 copy back and clearing it.
 //
-// What is this file's own: the **absence-is-never-connected** convention,
-// the two-set representation of the selection (a calendar id is opaque
-// provider text, so no separator is safe to encode with), and the one
-// invariant that matters more than any of it — **nothing token-shaped is
-// stored here**, checked as a source gate below because a stored
-// credential compiles and passes every behavioural test anyone would
-// write.
+// The one invariant that matters more than any of it — **nothing
+// token-shaped is stored here** — is checked as a source gate below,
+// because a stored credential compiles and passes every behavioural test
+// anyone would write.
 class CalendarPrefsTest {
 
     private class FailingStore : DataStore<Preferences> {
@@ -35,8 +39,8 @@ class CalendarPrefsTest {
         ): Preferences = throw IOException("unwritable")
     }
 
-    private class WorkingStore : DataStore<Preferences> {
-        var stored: Preferences = emptyPreferences()
+    private class WorkingStore(initial: Preferences = emptyPreferences()) : DataStore<Preferences> {
+        var stored: Preferences = initial
 
         override val data: Flow<Preferences> = flow { emit(stored) }
 
@@ -45,80 +49,62 @@ class CalendarPrefsTest {
         ): Preferences = transform(stored).also { stored = it }
     }
 
+    /** The pre-#843 shape exactly as #564's `writeSelections` laid it down. */
+    private fun oldCopy(connected: Boolean?, selected: Set<String>?, long: Set<String>?) =
+        mutablePreferencesOf().apply {
+            connected?.let { this[booleanPreferencesKey("connected")] = it }
+            selected?.let { this[stringSetPreferencesKey("selected_calendars")] = it }
+            long?.let { this[stringSetPreferencesKey("long_horizon_calendars")] = it }
+        }
+
     @Test
-    fun `a fresh store has never connected`() = runBlocking {
-        assertFalse(CalendarPrefs.readConnected(WorkingStore()))
+    fun `a device that never connected has nothing to migrate`() = runBlocking {
+        assertNull(CalendarPrefs.readLocal(WorkingStore()))
     }
 
     @Test
-    fun `the connected flag round-trips and disconnecting removes it`() = runBlocking {
-        val store = WorkingStore()
+    fun `the old copy reads back with its horizons`() = runBlocking {
+        val store = WorkingStore(
+            oldCopy(
+                connected = true,
+                selected = setOf("trips@group.calendar.google.com", "primary"),
+                long = setOf("trips@group.calendar.google.com"),
+            ),
+        )
 
-        CalendarPrefs.writeConnected(store, true)
-        assertTrue(CalendarPrefs.readConnected(store))
+        assertEquals(
+            CalendarPrefs.Local(
+                connected = true,
+                selections = listOf(
+                    MobileCalendarSelection(id = "primary", longHorizon = false),
+                    MobileCalendarSelection(id = "trips@group.calendar.google.com", longHorizon = true),
+                ),
+            ),
+            CalendarPrefs.readLocal(store),
+        )
+    }
 
-        CalendarPrefs.writeConnected(store, false)
-        assertFalse(CalendarPrefs.readConnected(store))
-        // Absence, not a stored `false` — the same convention
-        // `FrontierPrefs` uses for its default axis.
+    @Test
+    fun `picked calendars without the flag read as not connected`() = runBlocking {
+        val local = CalendarPrefs.readLocal(WorkingStore(oldCopy(null, setOf("primary"), null)))
+        assertNotNull(local)
+        assertFalse(local!!.connected)
+    }
+
+    @Test
+    fun `clearing removes every key, so nothing is migrated twice`() = runBlocking {
+        val store = WorkingStore(oldCopy(true, setOf("primary"), setOf("primary")))
+
+        CalendarPrefs.clear(store)
+
         assertTrue(store.stored.asMap().isEmpty())
+        assertNull(CalendarPrefs.readLocal(store))
     }
 
     @Test
-    fun `selections round-trip with their horizons`() = runBlocking {
-        val store = WorkingStore()
-        val selections = listOf(
-            MobileCalendarSelection(id = "primary", longHorizon = false),
-            MobileCalendarSelection(id = "trips@group.calendar.google.com", longHorizon = true),
-        )
-
-        CalendarPrefs.writeSelections(store, selections)
-
-        assertEquals(selections.sortedBy { it.id }, CalendarPrefs.readSelections(store))
-    }
-
-    @Test
-    fun `a calendar id containing every plausible separator survives`() = runBlocking {
-        // The reason the selection is two sets rather than one encoded
-        // string: a provider id is opaque text, and any separator a
-        // hand-rolled encoding picked could appear inside one.
-        val store = WorkingStore()
-        val awkward = MobileCalendarSelection(id = "a,b;c|d\te\nf#g", longHorizon = true)
-
-        CalendarPrefs.writeSelections(store, listOf(awkward))
-
-        assertEquals(listOf(awkward), CalendarPrefs.readSelections(store))
-    }
-
-    @Test
-    fun `an empty selection removes both keys rather than storing emptiness`() = runBlocking {
-        val store = WorkingStore()
-        CalendarPrefs.writeSelections(
-            store,
-            listOf(MobileCalendarSelection(id = "primary", longHorizon = true)),
-        )
-
-        CalendarPrefs.writeSelections(store, emptyList())
-
-        assertEquals(emptyList<MobileCalendarSelection>(), CalendarPrefs.readSelections(store))
-        assertTrue(store.stored.asMap().isEmpty())
-    }
-
-    @Test
-    fun `a store that cannot be read answers the defaults rather than throwing`() = runBlocking {
-        assertFalse(CalendarPrefs.readConnected(FailingStore()))
-        assertEquals(emptyList<MobileCalendarSelection>(), CalendarPrefs.readSelections(FailingStore()))
-    }
-
-    @Test
-    fun `a store that cannot be written fails silently`() = runBlocking {
-        // A preference that cannot persist still applies for the session;
-        // there is nothing to report and nothing to retry.
-        CalendarPrefs.writeConnected(FailingStore(), true)
-        CalendarPrefs.writeSelections(
-            FailingStore(),
-            listOf(MobileCalendarSelection(id = "primary", longHorizon = false)),
-        )
+    fun `a store that cannot be read or written never throws`() = runBlocking {
+        assertNull(CalendarPrefs.readLocal(FailingStore()))
+        CalendarPrefs.clear(FailingStore())
     }
 
     @Test

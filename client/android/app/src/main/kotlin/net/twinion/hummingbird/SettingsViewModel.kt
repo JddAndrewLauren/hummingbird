@@ -14,7 +14,8 @@ import net.twinion.hummingbird.watch.SendOutcome
 import net.twinion.hummingbird.watch.WatchTokenSender
 import uniffi.hummingbird_ffi_mobile.MobileBindingRecord
 import uniffi.hummingbird_ffi_mobile.MobileCalendarList
-import uniffi.hummingbird_ffi_mobile.MobileCalendarSelection
+import uniffi.hummingbird_ffi_mobile.MobileCalendarEditException
+import uniffi.hummingbird_ffi_mobile.MobileCalendarPrefs
 import uniffi.hummingbird_ffi_mobile.MobileDeadLetterRecord
 import uniffi.hummingbird_ffi_mobile.MobileQuestionRosterEntry
 import uniffi.hummingbird_ffi_mobile.MobileQuestionSwitch
@@ -135,8 +136,14 @@ class SettingsViewModel(
     private val setBindingFn: suspend (key: String, value: String, nowMs: Long) -> Unit,
     private val deadLetterHeadingFn: (UInt) -> String = ::deadLetterHeading,
     private val listCalendarsFn: suspend () -> MobileCalendarList = { MobileCalendarList("no_credential", emptyList()) },
-    private val readSelectionsFn: suspend () -> List<MobileCalendarSelection> = { emptyList() },
-    private val writeSelectionsFn: suspend (List<MobileCalendarSelection>) -> Unit = {},
+    /** ADR-0040 decision 8: the synced calendar choices, read through the
+     * core — `MobileTaskHost.calendarPrefs` in production. `null` only
+     * before anything has been read. */
+    private val readCalendarPrefsFn: suspend () -> MobileCalendarPrefs? = { null },
+    /** Ticks or unticks one calendar through the core, which keeps every
+     * other calendar's horizon, refuses the bound Trips calendar, and polls
+     * at once — `MobileTaskHost.toggleCalendar` in production. */
+    private val toggleCalendarFn: suspend (String) -> Unit = {},
     /** #709's Export/Clear diagnostics buttons. Injected the same way
      * every other native-touching call on this class is, so a plain JVM
      * test drives the screen's control flow with no `.so` in the process —
@@ -193,12 +200,14 @@ class SettingsViewModel(
     private val _calendars = MutableStateFlow<MobileCalendarList?>(null)
     val calendars: StateFlow<MobileCalendarList?> = _calendars.asStateFlow()
 
-    /** Which calendars this device polls — the persisted selection, which
-     * is the picker's checked state. Held here rather than re-read per
-     * frame so a tap is visible before the store round-trips. */
-    private val _calendarSelections = MutableStateFlow<List<MobileCalendarSelection>>(emptyList())
-    val calendarSelections: StateFlow<List<MobileCalendarSelection>> =
-        _calendarSelections.asStateFlow()
+    /** The synced calendar choices (ADR-0040 decision 8): what is ticked,
+     * what this device polls (the ticked calendars plus the bound Trips
+     * calendar — the core's union, never re-derived here) and which row is
+     * locked on. The picker's checked state is `polled`. Re-read on every
+     * [load], so a calendar ticked on another device shows here after the
+     * next sync. */
+    private val _calendarPrefs = MutableStateFlow<MobileCalendarPrefs?>(null)
+    val calendarPrefs: StateFlow<MobileCalendarPrefs?> = _calendarPrefs.asStateFlow()
 
     /** The last binding write's failure, matched by key — `bindings.ts`'s
      * `bindingWriteError` own reasoning: a stale failure from a DIFFERENT
@@ -217,10 +226,11 @@ class SettingsViewModel(
         _deadLetters.value = read.deadLetters
         _queueDepth.value = read.queueDepth
         _questions.value = groupBindingsByQuestion(roster, read.bindings, read.switches)
+        _calendarPrefs.value = readCalendarPrefsFn()
     }
 
-    /** Reloads the picker: the persisted selection first (it renders even
-     * with no credential), then the option list.
+    /** Reloads the picker: the synced choices first (they render even with
+     * no credential), then the option list.
      *
      * `keepOptionsOnFailure` is the caller's read of whether the lane is
      * still armed. A failed list on an armed device (offline, or the
@@ -230,26 +240,26 @@ class SettingsViewModel(
      * disconnected passes `false`, so the options it can no longer read
      * back do go away. */
     suspend fun loadCalendars(keepOptionsOnFailure: Boolean) {
-        _calendarSelections.value = readSelectionsFn()
+        _calendarPrefs.value = readCalendarPrefsFn()
         val listed = listCalendarsFn()
         if (listed.kind == "ok" || _calendars.value == null || !keepOptionsOnFailure) {
             _calendars.value = listed
         }
     }
 
-    /** Adds or removes one calendar from the polled set, persisting it and
-     * pushing it through the seam. A newly-added calendar keeps the
-     * standard horizon; the long horizon is the Vacation pane's own
-     * business (#121) and no picker gesture here sets it. */
+    /** Ticks or unticks one calendar in the synced selection, through the
+     * core, then re-reads the choices — the core overlays the write, so the
+     * tap shows at once, offline or not. A newly ticked calendar polls at
+     * the standard horizon; every other calendar keeps its own. A refused
+     * tap (the locked Trips row, which the picker never offers) or a
+     * failed write changes nothing, and the re-read says so. */
     suspend fun toggleCalendar(id: String) {
-        val current = _calendarSelections.value
-        val next = if (current.any { it.id == id }) {
-            current.filterNot { it.id == id }
-        } else {
-            current + MobileCalendarSelection(id = id, longHorizon = false)
+        try {
+            toggleCalendarFn(id)
+        } catch (_: MobileCalendarEditException) {
+            // Nothing was written; the re-read below draws what is true.
         }
-        _calendarSelections.value = next
-        writeSelectionsFn(next)
+        _calendarPrefs.value = readCalendarPrefsFn()
     }
 
     /** The exported diagnostics bytes — one `application/json` document,
@@ -323,15 +333,13 @@ class SettingsViewModel(
                     core().setBinding(mintBindingSeed(key, nowMs), key, value, nowMs)
                 },
                 listCalendarsFn = { core().listCalendars() },
-                readSelectionsFn = { CalendarPrefs.readSelections(context.applicationContext) },
-                writeSelectionsFn = { selections ->
-                    CalendarPrefs.writeSelections(context.applicationContext, selections)
-                    // The seam is told immediately, not at the next launch,
-                    // and it polls on being told: the next timer tick may be
-                    // fifteen minutes away, and until it lands the panes
+                readCalendarPrefsFn = { core().calendarPrefs() },
+                toggleCalendarFn = { id ->
+                    // The seam polls on being told: the next timer tick may
+                    // be fifteen minutes away, and until it lands the panes
                     // would answer off a snapshot taken over the *previous*
                     // selection.
-                    core().setCalendarSelections(selections, System.currentTimeMillis())
+                    core().toggleCalendar(id, System.currentTimeMillis())
                 },
                 // #710 review round 1: drains the mobile FFI host's
                 // buffered `core.*`/`operation.*` spans before exporting —
