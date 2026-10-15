@@ -28,6 +28,18 @@ android {
         versionCode = rootProject.extra["hbVersionCode"] as Int
         versionName = rootProject.extra["hbVersionName"] as String
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // ADR-0040 decision 3 (#841): the `hummingbird-signin` **Web** client,
+        // passed to Credential Manager as `serverClientId` so the ID token's
+        // `aud` is the one audience the authority accepts. Public by design —
+        // it is `GOOGLE_SIGNIN_CLIENT_IDS` in `server/worker/wrangler.toml`,
+        // and `SignInClientIdDriftTest` fails if the two part. The Android
+        // clients registered under #836 (one per signing SHA-1) are never
+        // named here: Google matches them by package and signature.
+        buildConfigField(
+            "String",
+            "GOOGLE_SIGNIN_CLIENT_ID",
+            "\"309477759674-d169knsap6cuig582ii1mhv032u3ovb2.apps.googleusercontent.com\"",
+        )
     }
 
     buildTypes {
@@ -59,6 +71,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     testOptions {
@@ -148,6 +161,13 @@ dependencies {
     // `Task.await()` is the coroutines bridge for those calls.
     implementation(libs.play.services.wearable)
     implementation(libs.coroutines.play.services)
+
+    // ADR-0040 decision 3 (#841): Sign in with Google through Credential
+    // Manager. The Play-services provider is what answers the request on a
+    // phone; `googleid` carries the option and the ID-token credential type.
+    implementation(libs.credentials)
+    implementation(libs.credentials.play.services.auth)
+    implementation(libs.googleid)
 
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)
