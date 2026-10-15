@@ -49,6 +49,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub mod bindings;
 pub mod calendar;
+pub mod calendar_prefs;
 pub mod capture;
 pub mod context;
 pub mod contexts;
@@ -65,6 +66,13 @@ pub mod sync;
 pub mod task;
 
 use bindings::{Binding, BindingKey, BindingValue};
+use calendar::google::{CalendarHorizon, CalendarSelection};
+use calendar_prefs::{
+    connected_from_stored, sanitised, selection_from_stored, selection_to_wire, toggled,
+    with_horizon,
+    CalendarPrefs, CalendarSeed, CALENDAR_CONNECTED_KEY, CALENDAR_PREF_KEYS,
+    CALENDAR_SELECTION_KEY,
+};
 use contexts::{
     contexts_from_stored, default_contexts, normalise_context_name, same_context, ContextEntry,
     ContextNameError, SuggestedContexts, CONTEXTS_KEY,
@@ -734,6 +742,47 @@ impl<E: std::fmt::Debug> std::fmt::Display for ContextEditError<E> {
 }
 
 impl<E: std::fmt::Debug> std::error::Error for ContextEditError<E> {}
+
+/// A calendar-choice edit ([`Core::toggle_calendar`],
+/// [`Core::set_calendar_horizon`]) refused before reaching the outbound
+/// queue, or failed while durably enqueueing (ADR-0040 decision 8).
+#[derive(Debug)]
+pub enum CalendarPrefsError<E> {
+    /// The calendar is the bound Trips calendar, which every device polls
+    /// whatever the picker says — its row is locked on, and an untick that
+    /// was accepted would leave a control that springs back.
+    Locked,
+    /// A horizon was set on a calendar that is not ticked.
+    NotSelected,
+    /// [`sync::SyncCycle::enqueue`] itself failed to persist the queue.
+    Snapshot(SnapshotError<E>),
+}
+
+impl<E: std::fmt::Debug> std::fmt::Display for CalendarPrefsError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CalendarPrefsError::Locked => {
+                write!(f, "the Trips calendar is always polled while it is bound")
+            }
+            CalendarPrefsError::NotSelected => write!(f, "that calendar is not ticked"),
+            CalendarPrefsError::Snapshot(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl<E: std::fmt::Debug> std::error::Error for CalendarPrefsError<E> {}
+
+/// How [`Core::enqueue_setting`] defends its value against a row it did not
+/// know about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingWrite {
+    /// Every edit: a row this device never pulled, answered by the
+    /// authority's create-replay with a different value, is a conflict —
+    /// the edit did not land, and the journal says so.
+    Overwrite,
+    /// ADR-0040's one-time seed: any existing row wins and is adopted.
+    CreateIfAbsent,
+}
 
 /// One reviewed Grill session's outcome, ready to submit as the atomic
 /// completion mutation ([`Core::complete_grill`], #354, ADR-0023).
@@ -2274,6 +2323,9 @@ where
                 // vocabulary over this table, with a chip editor of its own
                 // — a JSON array in a free-text box is the same wrong control.
                 .filter(|key| key.as_str() != CONTEXTS_KEY)
+                // ADR-0040 decision 8: the calendar choices are the fourth,
+                // drawn by the calendar picker and its Connect control.
+                .filter(|key| !CALENDAR_PREF_KEYS.contains(&key.as_str()))
                 .map(|key| describe(key)),
         );
         bindings
@@ -2596,6 +2648,182 @@ where
         .map_err(ContextEditError::Snapshot)
     }
 
+    /// The calendar choices (ADR-0040 decision 8) as every reader sees them:
+    /// the synced `calendar-connected` and `calendar-selection` rows, read
+    /// through the same overlay-over-mirror view as [`Core::bindings`], so a
+    /// choice made offline reads back at once and `pending`. No row, or a
+    /// row this build cannot read, is not connected and an empty selection
+    /// — `calendar_prefs`' own rule, so an unreadable row never starts a
+    /// device polling and never crashes a reader.
+    pub fn calendar_prefs(&self) -> CalendarPrefs {
+        let overlaid = self.overlaid_settings();
+        CalendarPrefs {
+            connected: overlaid
+                .get(CALENDAR_CONNECTED_KEY)
+                .is_some_and(|setting| connected_from_stored(&setting.value)),
+            selection: overlaid
+                .get(CALENDAR_SELECTION_KEY)
+                .map(|setting| selection_from_stored(&setting.value))
+                .unwrap_or_default(),
+            pending: CALENDAR_PREF_KEYS
+                .iter()
+                .any(|key| self.binding_overlay.contains_key(*key)),
+        }
+    }
+
+    /// The bound Trips calendar's id (ADR-0015's `trips-calendar`
+    /// binding), or `None` when it is unset, not text, or blank — none of
+    /// which names a calendar to poll.
+    pub fn trips_calendar_id(&self) -> Option<String> {
+        let setting = self.overlaid_settings().remove(BindingKey::TripsCalendar.as_str())?;
+        match BindingValue::from_stored(&setting.value) {
+            BindingValue::Text { text } => {
+                let id = text.trim();
+                (!id.is_empty()).then(|| id.to_string())
+            }
+            _ => None,
+        }
+    }
+
+    /// What this device actually polls: the synced selection unioned with
+    /// the bound Trips calendar at the long horizon —
+    /// [`calendar::effective_selection`] over [`Core::calendar_prefs`] and
+    /// [`Core::trips_calendar_id`], so no host restates the union.
+    pub fn effective_calendar_selection(&self) -> Vec<CalendarSelection> {
+        calendar::effective_selection(
+            &self.calendar_prefs().selection,
+            self.trips_calendar_id().as_deref(),
+        )
+    }
+
+    /// Ticks or unticks one calendar in the synced selection (ADR-0040
+    /// decision 8), on [`Core::set_binding`]'s write path and overlaid. A
+    /// newly ticked calendar polls at the standard horizon; **every other
+    /// entry keeps its own**, so a toggle from the web — which has no
+    /// horizon control — never drops a long horizon the phone set.
+    ///
+    /// The bound Trips calendar is refused ([`CalendarPrefsError::Locked`]):
+    /// it is polled whatever the selection says, so its row is locked on in
+    /// both pickers and an untick here would be a control that springs back.
+    ///
+    /// `seed` mints this mutation's queue-entry id
+    /// ([`sync::write::deterministic_id`]), as everywhere else here.
+    pub async fn toggle_calendar(
+        &mut self,
+        seed: &str,
+        id: &str,
+        now_ms: i64,
+    ) -> Result<(), CalendarPrefsError<QS::Error>> {
+        if self.trips_calendar_id().as_deref() == Some(id) {
+            return Err(CalendarPrefsError::Locked);
+        }
+        let next = toggled(&self.calendar_prefs().selection, id);
+        self.write_calendar_selection(seed, &next, now_ms).await
+    }
+
+    /// Sets one ticked calendar's poll horizon (ADR-0040 decision 8). A
+    /// calendar that is not ticked is refused
+    /// ([`CalendarPrefsError::NotSelected`]) rather than ticked: a horizon
+    /// control is not a second way to start polling.
+    pub async fn set_calendar_horizon(
+        &mut self,
+        seed: &str,
+        id: &str,
+        horizon: CalendarHorizon,
+        now_ms: i64,
+    ) -> Result<(), CalendarPrefsError<QS::Error>> {
+        let next = with_horizon(&self.calendar_prefs().selection, id, horizon)
+            .ok_or(CalendarPrefsError::NotSelected)?;
+        self.write_calendar_selection(seed, &next, now_ms).await
+    }
+
+    /// Records whether the operator's devices poll Google Calendar
+    /// (ADR-0040 decision 8) — the Connect and Disconnect gestures' synced
+    /// half, on [`Core::set_question_enabled`]'s write path (a JSON
+    /// boolean, overlaid). `false` writes an explicit `false`: `settings`
+    /// has no DELETE, and no row and `false` read the same.
+    pub async fn set_calendar_connected(
+        &mut self,
+        seed: &str,
+        connected: bool,
+        now_ms: i64,
+    ) -> Result<(), SnapshotError<QS::Error>> {
+        self.enqueue_setting_write(
+            seed,
+            CALENDAR_CONNECTED_KEY,
+            serde_json::Value::Bool(connected),
+            now_ms,
+        )
+        .await
+    }
+
+    /// The one-time migration of a device's old local calendar choices
+    /// into the synced rows (ADR-0040 decision 8; `calendar_prefs`' header).
+    ///
+    /// Answers [`CalendarSeed::NotYet`] and writes nothing until this
+    /// process has completed a full sweep
+    /// ([`sync::SyncCycle::has_completed_full_sweep`]) — before that, a row
+    /// missing from the mirror may simply not have been pulled. After it,
+    /// each row is written from the local value **only when no row exists**
+    /// and the local value is not already the default (not connected, no
+    /// calendars); a row that exists is adopted as it stands. Every write
+    /// is create-shaped (`expected_version: 0`), so a second device seeding
+    /// the same row at the same moment is answered with the first's row by
+    /// the authority's create-replay rule and adopts it — no 409, no dead
+    /// letter. Any answer but `NotYet` means the host may delete its local
+    /// values ([`CalendarSeed::settled`]).
+    ///
+    /// The selection seeds standard and long horizons alike: the phone kept
+    /// both, the web only ids, and either is carried over as it was.
+    pub async fn seed_calendar_prefs(
+        &mut self,
+        seed: &str,
+        local_connected: bool,
+        local_selection: &[CalendarSelection],
+        now_ms: i64,
+    ) -> Result<CalendarSeed, SnapshotError<QS::Error>> {
+        if !self.cycle.has_completed_full_sweep() {
+            return Ok(CalendarSeed::NotYet);
+        }
+        let existing = self.overlaid_settings();
+        let mut outcome = CalendarSeed::Adopted;
+        if local_connected && !existing.contains_key(CALENDAR_CONNECTED_KEY) {
+            self.enqueue_setting(
+                &format!("{seed}:connected"),
+                CALENDAR_CONNECTED_KEY,
+                serde_json::Value::Bool(true),
+                SettingWrite::CreateIfAbsent,
+                now_ms,
+            )
+            .await?;
+            outcome = CalendarSeed::Seeded;
+        }
+        let local_selection = sanitised(local_selection.to_vec());
+        if !local_selection.is_empty() && !existing.contains_key(CALENDAR_SELECTION_KEY) {
+            self.enqueue_setting(
+                &format!("{seed}:selection"),
+                CALENDAR_SELECTION_KEY,
+                selection_to_wire(&local_selection),
+                SettingWrite::CreateIfAbsent,
+                now_ms,
+            )
+            .await?;
+            outcome = CalendarSeed::Seeded;
+        }
+        Ok(outcome)
+    }
+
+    async fn write_calendar_selection(
+        &mut self,
+        seed: &str,
+        selection: &[CalendarSelection],
+        now_ms: i64,
+    ) -> Result<(), CalendarPrefsError<QS::Error>> {
+        self.enqueue_setting_write(seed, CALENDAR_SELECTION_KEY, selection_to_wire(selection), now_ms)
+            .await
+            .map_err(CalendarPrefsError::Snapshot)
+    }
+
     /// The one `settings` write path both vocabularies share — the ordinary
     /// entity-level CAS, spelled once so a binding and a question switch can
     /// never drift on how a row is created, rebased or overlaid. Callers
@@ -2605,6 +2833,18 @@ where
         seed: &str,
         key: &str,
         wire_value: serde_json::Value,
+        now_ms: i64,
+    ) -> Result<(), SnapshotError<QS::Error>> {
+        self.enqueue_setting(seed, key, wire_value, SettingWrite::Overwrite, now_ms)
+            .await
+    }
+
+    async fn enqueue_setting(
+        &mut self,
+        seed: &str,
+        key: &str,
+        wire_value: serde_json::Value,
+        mode: SettingWrite,
         now_ms: i64,
     ) -> Result<(), SnapshotError<QS::Error>> {
         let current = self.overlaid_settings().get(key).cloned();
@@ -2645,7 +2885,17 @@ where
                 base,
                 base_updated_at,
                 patch_fields: serde_json::json!({ "value": wire_value }),
-                rebase_fields: Some(serde_json::json!({ "value": stored_value })),
+                rebase_fields: Some(match mode {
+                    SettingWrite::Overwrite => serde_json::json!({ "value": stored_value }),
+                    // A seed defends no field: it wants the row to exist,
+                    // and any row already there — another device's — is the
+                    // answer. With nothing to diff, the authority's
+                    // create-replay (the stored row, on 200) is a success
+                    // rather than `patch_with_rebase`'s divergent-replay
+                    // conflict, so the loser of two simultaneous seeds
+                    // adopts the winner and dead-letters nothing.
+                    SettingWrite::CreateIfAbsent => serde_json::json!({}),
+                }),
             },
             operation_id: None,
         };
@@ -8289,6 +8539,267 @@ mod tests {
         reader.run(&authority, &authority, 3_000, Trigger::User, true, 0.0).await;
         assert_eq!(reader.disabled_questions(), vec!["github".to_string()]);
         assert!(!switch_of(&reader.question_switches(), StandingQuestion::Github).pending);
+    }
+
+    // ------------------------------------- ADR-0040 decision 8: calendar choices
+
+    fn calendar_selection_row(json: &str, version: i64) -> hummingbird_domain::Setting {
+        fixture_setting(CALENDAR_SELECTION_KEY, json, version)
+    }
+
+    fn queued_setting_keys(core: &Core) -> Vec<String> {
+        core.cycle
+            .queue()
+            .entries()
+            .filter_map(|entry| match &entry.intent {
+                MutationIntent::Patch { path, .. } => {
+                    path.strip_prefix("/api/settings/").map(str::to_string)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    async fn swept_core(authority: &SettingsAuthority, token: &str) -> Core {
+        let mut core = Core::new();
+        core.push_api_key(token);
+        core.run(authority, authority, 1_000, Trigger::User, true, 0.0).await;
+        core
+    }
+
+    #[tokio::test]
+    async fn a_fresh_core_is_not_connected_with_nothing_selected() {
+        let core = Core::new();
+        assert_eq!(
+            core.calendar_prefs(),
+            CalendarPrefs { connected: false, selection: vec![], pending: false }
+        );
+        assert_eq!(core.effective_calendar_selection(), vec![]);
+    }
+
+    /// Criterion: "An unreadable row reads as not connected with an empty
+    /// selection, and never crashes either client" — the core half; both
+    /// clients read only this typed answer.
+    #[tokio::test]
+    async fn unreadable_rows_read_as_not_connected_and_empty() {
+        let authority = SettingsAuthority::seeded(vec![
+            fixture_setting(CALENDAR_CONNECTED_KEY, "\"yes\"", 1),
+            calendar_selection_row(r#"{"v":9,"calendars":[]}"#, 2),
+        ]);
+        let core = swept_core(&authority, "token").await;
+        assert_eq!(
+            core.calendar_prefs(),
+            CalendarPrefs { connected: false, selection: vec![], pending: false }
+        );
+    }
+
+    #[tokio::test]
+    async fn both_rows_are_subtracted_from_the_bindings() {
+        let authority = SettingsAuthority::seeded(vec![
+            fixture_setting(CALENDAR_CONNECTED_KEY, "true", 1),
+            calendar_selection_row(r#"{"v":1,"calendars":[]}"#, 2),
+        ]);
+        let core = swept_core(&authority, "token").await;
+        let keys: Vec<String> = core.bindings().into_iter().map(|b| b.key).collect();
+        assert!(!keys.contains(&CALENDAR_CONNECTED_KEY.to_string()), "{keys:?}");
+        assert!(!keys.contains(&CALENDAR_SELECTION_KEY.to_string()), "{keys:?}");
+        assert!(core.calendar_prefs().connected);
+    }
+
+    #[tokio::test]
+    async fn a_choice_made_offline_reads_back_at_once_and_pending() {
+        let mut core = Core::new();
+        core.toggle_calendar("seed-1", "work@g", 1_000).await.unwrap();
+        core.set_calendar_connected("seed-2", true, 1_000).await.unwrap();
+        assert_eq!(
+            core.calendar_prefs(),
+            CalendarPrefs {
+                connected: true,
+                selection: vec![CalendarSelection::standard("work@g")],
+                pending: true,
+            }
+        );
+    }
+
+    /// Criterion: "A toggle on one core reaches another core's effective
+    /// selection after a sync" — and the effective selection is the union
+    /// with the bound Trips calendar, read from the same synced table.
+    #[tokio::test]
+    async fn a_toggle_on_one_core_reaches_another_core_s_effective_selection() {
+        let authority = SettingsAuthority::seeded(vec![fixture_setting(
+            "trips-calendar",
+            "\"trips@g\"",
+            1,
+        )]);
+        let mut web = swept_core(&authority, "token-web").await;
+        let mut phone = swept_core(&authority, "token-phone").await;
+
+        web.toggle_calendar("seed-web", "work@g", 2_000).await.unwrap();
+        web.run(&authority, &authority, 3_000, Trigger::User, true, 0.0).await;
+        phone.run(&authority, &authority, 4_000, Trigger::User, true, 0.0).await;
+
+        assert_eq!(
+            phone.effective_calendar_selection(),
+            vec![CalendarSelection::standard("work@g"), CalendarSelection::long("trips@g")]
+        );
+        assert!(!phone.calendar_prefs().pending);
+    }
+
+    /// Criterion: "A web-side toggle preserves a long horizon set
+    /// elsewhere."
+    #[tokio::test]
+    async fn a_web_toggle_preserves_a_long_horizon_the_phone_set() {
+        let authority = SettingsAuthority::default();
+        let mut phone = swept_core(&authority, "token-phone").await;
+        phone.toggle_calendar("seed-1", "family@g", 2_000).await.unwrap();
+        phone
+            .set_calendar_horizon("seed-2", "family@g", CalendarHorizon::Long, 2_000)
+            .await
+            .unwrap();
+        phone.run(&authority, &authority, 3_000, Trigger::User, true, 0.0).await;
+
+        let mut web = swept_core(&authority, "token-web").await;
+        web.toggle_calendar("seed-3", "work@g", 4_000).await.unwrap();
+        web.run(&authority, &authority, 5_000, Trigger::User, true, 0.0).await;
+        phone.run(&authority, &authority, 6_000, Trigger::User, true, 0.0).await;
+
+        for core in [&web, &phone] {
+            assert_eq!(
+                core.calendar_prefs().selection,
+                vec![CalendarSelection::long("family@g"), CalendarSelection::standard("work@g")]
+            );
+        }
+        assert_eq!(authority.conflicts(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_bound_trips_calendar_is_locked_on() {
+        let authority = SettingsAuthority::seeded(vec![fixture_setting(
+            "trips-calendar",
+            "\"trips@g\"",
+            1,
+        )]);
+        let mut core = swept_core(&authority, "token").await;
+        assert!(matches!(
+            core.toggle_calendar("seed", "trips@g", 2_000).await,
+            Err(CalendarPrefsError::Locked)
+        ));
+        assert!(queued_setting_keys(&core).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_horizon_is_never_a_second_way_to_tick_a_calendar() {
+        let mut core = Core::new();
+        assert!(matches!(
+            core.set_calendar_horizon("seed", "work@g", CalendarHorizon::Long, 1_000).await,
+            Err(CalendarPrefsError::NotSelected)
+        ));
+        assert!(queued_setting_keys(&core).is_empty());
+    }
+
+    /// Criterion: "Seeding waits for the first full sweep." Before it a
+    /// missing row may just be one not pulled yet, so nothing is written
+    /// and the host keeps its local values.
+    #[tokio::test]
+    async fn seeding_waits_for_the_first_full_sweep() {
+        let authority = SettingsAuthority::default();
+        let mut core = Core::new();
+        let local = [CalendarSelection::standard("work@g")];
+
+        // No token: the cycle never pulls, so it never sweeps.
+        core.run(&authority, &authority, 500, Trigger::User, true, 0.0).await;
+        assert_eq!(
+            core.seed_calendar_prefs("seed", true, &local, 1_000).await.unwrap(),
+            CalendarSeed::NotYet
+        );
+        assert!(queued_setting_keys(&core).is_empty());
+
+        core.push_api_key("token");
+        core.run(&authority, &authority, 2_000, Trigger::User, true, 0.0).await;
+        assert_eq!(
+            core.seed_calendar_prefs("seed", true, &local, 3_000).await.unwrap(),
+            CalendarSeed::Seeded
+        );
+        assert_eq!(
+            core.calendar_prefs(),
+            CalendarPrefs {
+                connected: true,
+                selection: vec![CalendarSelection::standard("work@g")],
+                pending: true,
+            }
+        );
+    }
+
+    /// Criterion: "two cores seeding at once converge on one selection with
+    /// no dead-letter left behind." Both sweep an empty table, both seed,
+    /// and the authority's create-replay answers the second with the
+    /// first's row — so the loser adopts the winner without a 409.
+    #[tokio::test]
+    async fn two_cores_seeding_at_once_converge_with_no_dead_letter() {
+        let authority = SettingsAuthority::default();
+        let mut phone = swept_core(&authority, "token-phone").await;
+        let mut web = swept_core(&authority, "token-web").await;
+
+        assert_eq!(
+            phone
+                .seed_calendar_prefs("seed-phone", true, &[CalendarSelection::long("family@g")], 2_000)
+                .await
+                .unwrap(),
+            CalendarSeed::Seeded
+        );
+        assert_eq!(
+            web.seed_calendar_prefs("seed-web", true, &[CalendarSelection::standard("work@g")], 2_000)
+                .await
+                .unwrap(),
+            CalendarSeed::Seeded
+        );
+        phone.run(&authority, &authority, 3_000, Trigger::User, true, 0.0).await;
+        web.run(&authority, &authority, 3_000, Trigger::User, true, 0.0).await;
+
+        assert_eq!(authority.conflicts(), 0);
+        for core in [&phone, &web] {
+            assert!(core.dead_letters().is_empty(), "{:?}", core.dead_letters());
+            assert!(queued_setting_keys(core).is_empty());
+            assert_eq!(
+                core.calendar_prefs(),
+                CalendarPrefs {
+                    connected: true,
+                    selection: vec![CalendarSelection::long("family@g")],
+                    pending: false,
+                },
+                "the first write wins on both devices"
+            );
+        }
+    }
+
+    /// "A device that finds a row already present adopts it" — and writes
+    /// nothing, even when its local values differ.
+    #[tokio::test]
+    async fn a_device_that_finds_the_rows_adopts_them() {
+        let authority = SettingsAuthority::seeded(vec![
+            fixture_setting(CALENDAR_CONNECTED_KEY, "true", 1),
+            calendar_selection_row(r#"{"v":1,"calendars":[{"id":"family@g","horizon":"long"}]}"#, 2),
+        ]);
+        let mut core = swept_core(&authority, "token").await;
+        assert_eq!(
+            core.seed_calendar_prefs("seed", false, &[CalendarSelection::standard("work@g")], 2_000)
+                .await
+                .unwrap(),
+            CalendarSeed::Adopted
+        );
+        assert!(queued_setting_keys(&core).is_empty());
+        assert_eq!(core.calendar_prefs().selection, vec![CalendarSelection::long("family@g")]);
+    }
+
+    #[tokio::test]
+    async fn default_local_values_seed_nothing() {
+        let authority = SettingsAuthority::default();
+        let mut core = swept_core(&authority, "token").await;
+        assert_eq!(
+            core.seed_calendar_prefs("seed", false, &[], 2_000).await.unwrap(),
+            CalendarSeed::Adopted
+        );
+        assert!(queued_setting_keys(&core).is_empty());
     }
 
     // ------------------------------------------ ADR-0038: suggested contexts

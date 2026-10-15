@@ -1,20 +1,19 @@
-//! Which calendars a device actually polls — `client/web/src/calendar/
-//! selection.ts`'s `effectiveSelection`, sunk here by #564 because Android
-//! needs the identical rule and a second hand-written union is exactly the
-//! drift ADR-0025 exists to prevent. `acceptSelectionChange` (the refusal
-//! that keeps the bound row from being unticked) stays TS for now: it is a
-//! picker affordance, and Android has no locked row to refuse yet.
+//! Which calendars a device actually polls — sunk here from the web's
+//! `effectiveSelection` by #564 because Android needs the identical rule,
+//! and since #843 (ADR-0040 decision 8) the **only** copy: the web reaches
+//! it through `ffi-web`'s `effective_calendar_selection_json` and its own
+//! TS union is gone. The refusal that keeps the bound row from being
+//! unticked moved into the core with it (`Core::toggle_calendar`'s
+//! `CalendarPrefsError::Locked`).
 //!
-//! **The web is not rewired to this yet** (its copy still runs, unchanged,
-//! behind `useCalendarWiring.ts`): reaching these from a browser needs an
-//! `ffi-web` export that #564 did not scope. ADR-0025's row records the
-//! divergence rather than claiming a sink that only one client can see.
-//!
-//! The decision itself is one sentence: the *device's* ticked calendars are
-//! its own business, but the synced `trips-calendar` binding is polled
-//! whatever the device thinks, and always at the long horizon — the Vacation
-//! pane asks about trips up to two years out, and a calendar fetched at the
-//! standard window would answer it with a confident, wrong "nothing booked".
+//! The decision itself is one sentence: the ticked calendars are the
+//! operator's synced choice (`crate::calendar_prefs`), but the synced
+//! `trips-calendar` binding is polled whatever the selection says, and
+//! always at the long horizon — the Vacation pane asks about trips up to two
+//! years out, and a calendar fetched at the standard window would answer it
+//! with a confident, wrong "nothing booked". The union is derived at every
+//! read, never written into the selection row, so re-binding re-computes
+//! cleanly.
 
 use super::{CalendarHorizon, CalendarSelection};
 
