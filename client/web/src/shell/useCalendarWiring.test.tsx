@@ -187,7 +187,12 @@ describe("useCalendarWiring: the lane follows the synced connected row", () => {
 
   it("arms the moment another device connects, and parks when one disconnects", async () => {
     const worker = fakeWorker();
-    const tokenClient = fakeTokenClient([{ accessToken: "token-1", expiresAtMs: 5_000 }]);
+    // A far-future expiry, so the rotation timer never fires inside this
+    // test: an already-past one fires it at once and races the park below
+    // (the in-flight ordering itself is pinned under "timers").
+    const tokenClient = fakeTokenClient([
+      { accessToken: "token-1", expiresAtMs: Date.now() + 60 * 60 * 1000 },
+    ]);
     const { rerender } = mount(worker, calendarState(), connectionDepsFor(worker, tokenClient));
     await act(async () => {});
     expect(tokenClient.calls).toEqual([]);
@@ -540,6 +545,56 @@ describe("useCalendarWiring: timers", () => {
 
     expect(tokenClient.calls).toEqual(["none", "none"]);
     expect(coreStore.getSnapshot().calendar).toMatchObject({ connected: true, needsReconnect: false });
+  });
+
+  it("a rotation still in flight when another device disconnects lands nothing — the lane stays parked", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const worker = fakeWorker();
+    const expiresAtMs = 60 * 60 * 1000;
+    // The first (arming) re-mint answers at once; the rotation's re-mint is
+    // held open so the test decides when it lands.
+    let landRotation: (result: TokenResult) => void = () => {};
+    const calls: TokenPrompt[] = [];
+    const tokenClient: TokenClient = {
+      requestToken: (prompt) => {
+        calls.push(prompt);
+        if (calls.length === 1) {
+          return Promise.resolve({ accessToken: "initial-token", expiresAtMs });
+        }
+        return new Promise((resolve) => {
+          landRotation = resolve;
+        });
+      },
+    };
+    const deps = connectionDepsFor(worker, tokenClient);
+
+    const { rerender } = mount(worker, calendarState(), deps, { prefs: prefs(true) });
+    await act(async () => {});
+    rerender({ calendar: calendarState({ connected: true }), prefs: prefs(true), seed: null, trips: null });
+    await act(async () => {});
+
+    // The rotation timer fires; its re-mint is now in flight.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(expiresAtMs - ROTATION_MARGIN_MS);
+    });
+    expect(calls).toEqual(["none", "none"]);
+
+    // Another device disconnects: the synced row reads not connected and the
+    // lane parks — before the store's answer has come back round as the prop.
+    rerender({ calendar: calendarState({ connected: true }), prefs: prefs(false), seed: null, trips: null });
+    await act(async () => {});
+    expect(coreStore.getSnapshot().calendar.connected).toBe(false);
+
+    // Only now does the rotation's re-mint land. It must not re-arm the lane.
+    await act(async () => {
+      landRotation({ accessToken: "rotated-token", expiresAtMs: expiresAtMs + 3_600_000 });
+    });
+    expect(coreStore.getSnapshot().calendar).toMatchObject({ connected: false, needsReconnect: false });
+
+    rerender({ calendar: calendarState(), prefs: prefs(false), seed: null, trips: null });
+    await act(async () => {});
+    expect(coreStore.getSnapshot().calendar).toMatchObject({ connected: false, needsReconnect: false });
   });
 
   it("polls again every 15 minutes while connected and foregrounded", async () => {

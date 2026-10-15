@@ -187,6 +187,9 @@ export function useCalendarWiring(
 
   // `null` = not read yet; the lane never acts on an unread answer.
   const syncedConnected = prefs === null ? null : prefs.connected;
+  // The latest synced answer, for an async continuation that outlives the
+  // render it started in. See the rotation effect.
+  const syncedConnectedRef = useRef(syncedConnected);
   // What this device polls — the core's union of the synced selection and
   // the bound Trips calendar, never a TS copy of it.
   const polled = effectiveCalendarSelection(prefs?.selection ?? [], tripsCalendarId);
@@ -312,6 +315,7 @@ export function useCalendarWiring(
   // a Disconnect on the phone reaches this browser. Never on an unread
   // answer.
   useEffect(() => {
+    syncedConnectedRef.current = syncedConnected;
     if (status !== "ready" || syncedConnected === null) {
       return;
     }
@@ -417,9 +421,18 @@ export function useCalendarWiring(
     }
     const connection = deps.connection;
     const delayMs = msUntilRotation(expiresAtMs, Date.now());
+    let cancelled = false;
     const id = window.setTimeout(() => {
       void (async () => {
         const result = await handleCredentialNeeded(connection);
+        // A re-mint still in flight when another device disconnected must
+        // not resurrect `connected: true` over the park above: that effect
+        // only re-runs when the synced row moves, so nothing would park the
+        // lane again. The ref, not just `cancelled`, because the park's
+        // store write can land before the re-render that runs this cleanup.
+        if (cancelled || syncedConnectedRef.current === false) {
+          return;
+        }
         recordRemint(result);
         coreStore.setCalendarState({
           connected: result.connected,
@@ -428,7 +441,10 @@ export function useCalendarWiring(
         setExpiresAtMs(result.expiresAtMs);
       })();
     }, delayMs);
-    return () => window.clearTimeout(id);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(id);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [calendar.connected, calendar.needsReconnect, calendar.silentRemintBlocked, expiresAtMs]);
 
