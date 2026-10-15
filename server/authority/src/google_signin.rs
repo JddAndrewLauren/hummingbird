@@ -17,9 +17,13 @@
 //! nothing mints until both have passed (`auth_google`'s
 //! `PendingSignin::signature_checked` is the only way to the mint), and
 //! checking the cheap, pure half first means a junk token never costs a
-//! JWKS fetch. The one consequence is that a rejected `sub` in the log may
+//! JWKS fetch. Two consequences follow. A rejected `sub` in the log may
 //! come from a token whose signature was never checked — it is a hint for
-//! the operator setting `GOOGLE_SIGNIN_ALLOWED_SUB`, never an identity.
+//! the operator setting `GOOGLE_SIGNIN_ALLOWED_SUB`, never an identity, and
+//! `auth_google` logs it escaped and capped. And anyone who knows the
+//! allowed `sub` can pass the claims with an unsigned token naming a
+//! made-up `kid`, so the re-fetch an unknown `kid` causes is rate-limited
+//! here, in [`JwksCache::lookup`], rather than in the shim.
 
 use serde::Deserialize;
 
@@ -32,10 +36,18 @@ pub const GOOGLE_JWKS_URL: &str = "https://www.googleapis.com/oauth2/v3/certs";
 /// Both spellings Google documents for an ID token's `iss`.
 pub const GOOGLE_ISSUERS: [&str; 2] = ["accounts.google.com", "https://accounts.google.com"];
 
-/// How far `iat` may sit from now, either way (ADR-0040: "`iat` is under
-/// ten minutes old"). Symmetric, so a device clock running a little fast
-/// is tolerated by the same window that bounds a replay.
-pub const IAT_WINDOW_SECS: i64 = 600;
+/// How old `iat` may be (ADR-0040: "`iat` is under ten minutes old") —
+/// the window that bounds a replay.
+pub const IAT_MAX_AGE_SECS: i64 = 600;
+
+/// How far into the future `iat` may sit: clock skew between Google and
+/// the Worker, never a token issued ahead of time (#866).
+pub const IAT_MAX_SKEW_SECS: i64 = 60;
+
+/// The least time after one JWKS fetch before an unknown `kid` may cause
+/// another (#866). Google publishes a new key well before signing with it,
+/// so a real rotation is caught by the next fetch at most this late.
+pub const UNKNOWN_KID_REFETCH_MS: i64 = 60_000;
 
 /// The longest device name the route accepts, in characters. A label for a
 /// Settings row, not prose; anything longer is a bad body.
@@ -111,7 +123,7 @@ impl Rejection {
             Rejection::WrongIssuer => "iss is not Google",
             Rejection::WrongAudience => "aud is not a configured client id",
             Rejection::Expired => "exp has passed",
-            Rejection::StaleIat => "iat is outside the ten-minute window",
+            Rejection::StaleIat => "iat is over ten minutes old or over a minute ahead",
             Rejection::EmailUnverified => "email_verified is not true",
             Rejection::OtherSub => "sub is not the allowed subject",
             Rejection::UnknownKid => "kid is not in Google's JWKS",
@@ -228,10 +240,9 @@ pub fn verify_claims(
     if !claims.exp.is_some_and(|exp| now_secs < exp) {
         return Err(Rejection::Expired);
     }
-    if !claims
-        .iat
-        .is_some_and(|iat| (now_secs - iat).abs() <= IAT_WINDOW_SECS)
-    {
+    if !claims.iat.is_some_and(|iat| {
+        now_secs - iat <= IAT_MAX_AGE_SECS && iat - now_secs <= IAT_MAX_SKEW_SECS
+    }) {
         return Err(Rejection::StaleIat);
     }
     if claims.email_verified != Some(serde_json::Value::Bool(true)) {
@@ -252,12 +263,27 @@ pub fn verify_claims(
 // ---------------------------------------------------------------------------
 
 /// Google's signing keys, as SPKI DER ready for WebCrypto, with the moment
-/// the JWKS response said to stop trusting them. The shim keeps one of
-/// these on the Durable Object instance; it is never persisted.
+/// they were fetched and the moment the JWKS response said to stop trusting
+/// them. The shim keeps one of these on the Durable Object instance; it is
+/// never persisted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JwksCache {
     keys: Vec<(String, Vec<u8>)>,
+    fetched_at_ms: i64,
     expires_at_ms: i64,
+}
+
+/// What the cache says about a `kid` before anything is fetched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyLookup<'a> {
+    /// The set is fresh and holds the key.
+    Cached(&'a [u8]),
+    /// Fetch the set again: it has expired, or the `kid` is unknown and
+    /// the last fetch is at least [`UNKNOWN_KID_REFETCH_MS`] old.
+    Fetch,
+    /// The `kid` is unknown and the set was fetched too recently to fetch
+    /// again: refused like a `kid` missing from a fresh set.
+    Unknown,
 }
 
 #[derive(Deserialize)]
@@ -297,6 +323,7 @@ impl JwksCache {
         let max_age_secs = cache_control.and_then(max_age).unwrap_or(0);
         Some(JwksCache {
             keys,
+            fetched_at_ms: now_ms,
             expires_at_ms: now_ms.saturating_add(max_age_secs.saturating_mul(1000)),
         })
     }
@@ -310,15 +337,19 @@ impl JwksCache {
             .map(|(_, spki)| spki.as_slice())
     }
 
-    /// The key for `kid` only while the set is fresh: `None` tells the shim
-    /// to fetch — on expiry, and on an unknown `kid` (Google rotates keys,
-    /// and a token signed with a new one can arrive before the old set's
-    /// `max-age` runs out).
-    pub fn fresh_key(&self, kid: &str, now_ms: i64) -> Option<&[u8]> {
-        if now_ms >= self.expires_at_ms {
-            return None;
+    /// Whether the shim may answer `kid` from this set, must fetch, or
+    /// must refuse. A known `kid` is answered while the set is fresh and
+    /// fetched for once it has expired. An unknown one is fetched for too
+    /// (Google rotates keys, and a token signed with a new one can arrive
+    /// before the old set's `max-age` runs out) — but at most once per
+    /// [`UNKNOWN_KID_REFETCH_MS`], fresh or not, so a stream of made-up
+    /// `kid`s costs one fetch a minute, not one a request.
+    pub fn lookup(&self, kid: &str, now_ms: i64) -> KeyLookup<'_> {
+        match self.key(kid) {
+            Some(spki) if now_ms < self.expires_at_ms => KeyLookup::Cached(spki),
+            None if now_ms - self.fetched_at_ms < UNKNOWN_KID_REFETCH_MS => KeyLookup::Unknown,
+            _ => KeyLookup::Fetch,
         }
-        self.key(kid)
     }
 }
 
@@ -579,11 +610,11 @@ mod tests {
             ),
             (|_, c| c.exp = Some(1_760_000_060), Rejection::Expired),
             (
-                |_, c| c.iat = Some(1_760_000_060 - IAT_WINDOW_SECS - 1),
+                |_, c| c.iat = Some(1_760_000_060 - IAT_MAX_AGE_SECS - 1),
                 Rejection::StaleIat,
             ),
             (
-                |_, c| c.iat = Some(1_760_000_060 + IAT_WINDOW_SECS + 1),
+                |_, c| c.iat = Some(1_760_000_060 + IAT_MAX_SKEW_SECS + 1),
                 Rejection::StaleIat,
             ),
             (
@@ -607,11 +638,26 @@ mod tests {
         }
     }
 
+    /// Acceptance: ten minutes into the past and one minute into the
+    /// future are both inclusive; one second past either is refused.
     #[test]
-    fn the_iat_window_is_inclusive_at_ten_minutes() {
-        let mut claims = good_claims();
-        claims.iat = Some(1_760_000_060 - IAT_WINDOW_SECS);
-        assert!(verify_claims(&good_header(), &claims, NOW_MS, &config()).is_ok());
+    fn iat_may_be_ten_minutes_old_or_a_minute_ahead() {
+        let now_secs = NOW_MS / 1000;
+        for (iat, accepted) in [
+            (now_secs - 600, true),
+            (now_secs - 601, false),
+            (now_secs + 60, true),
+            (now_secs + 61, false),
+        ] {
+            let mut claims = good_claims();
+            claims.iat = Some(iat);
+            assert_eq!(
+                verify_claims(&good_header(), &claims, NOW_MS, &config()).err(),
+                (!accepted).then_some(Rejection::StaleIat),
+                "iat = now {:+}",
+                iat - now_secs,
+            );
+        }
     }
 
     #[test]
@@ -678,25 +724,54 @@ mod tests {
         assert_eq!(cache.key("ec-key"), None, "only RSA keys");
         assert_eq!(cache.key("broken"), None, "an undecodable key is skipped");
         assert_eq!(
-            cache.fresh_key("fixture-kid-1", 1_000 + 21_600_000 - 1),
-            cache.key("fixture-kid-1"),
+            cache.lookup("fixture-kid-1", 1_000 + 21_600_000 - 1),
+            KeyLookup::Cached(cache.key("fixture-kid-1").unwrap()),
         );
         assert_eq!(
-            cache.fresh_key("fixture-kid-1", 1_000 + 21_600_000),
-            None,
+            cache.lookup("fixture-kid-1", 1_000 + 21_600_000),
+            KeyLookup::Fetch,
             "expired: re-fetch"
         );
+    }
+
+    /// Acceptance: an unknown `kid` re-fetches at most once per
+    /// [`UNKNOWN_KID_REFETCH_MS`]. The cache stands for the set the first
+    /// such sign-in fetched; a second one inside the interval is refused
+    /// without a fetch, and one after it fetches. A known `kid` never does
+    /// while the set is fresh.
+    #[test]
+    fn an_unknown_kid_refetches_at_most_once_per_interval() {
+        let fetched_at = 1_000;
+        let jwks = fixture()["jwks"].to_string();
+        let cache = JwksCache::parse(&jwks, Some("max-age=21600"), fetched_at).unwrap();
+        for now in [fetched_at, fetched_at + UNKNOWN_KID_REFETCH_MS - 1] {
+            assert_eq!(cache.lookup("made-up", now), KeyLookup::Unknown, "{now}");
+            assert!(matches!(
+                cache.lookup("fixture-kid-1", now),
+                KeyLookup::Cached(_)
+            ));
+        }
+        let later = fetched_at + UNKNOWN_KID_REFETCH_MS;
+        assert_eq!(cache.lookup("made-up", later), KeyLookup::Fetch);
+        assert!(matches!(
+            cache.lookup("fixture-kid-1", later),
+            KeyLookup::Cached(_)
+        ));
+
+        // The interval holds even when the set has no `max-age` to keep it:
+        // an expired set still names the keys Google had a moment ago.
+        let unkept = JwksCache::parse(&jwks, None, fetched_at).unwrap();
+        assert_eq!(unkept.lookup("made-up", fetched_at + 1), KeyLookup::Unknown);
         assert_eq!(
-            cache.fresh_key("unknown-kid", 1_000),
-            None,
-            "unknown kid: re-fetch"
+            unkept.lookup("fixture-kid-1", fetched_at + 1),
+            KeyLookup::Fetch
         );
     }
 
     #[test]
     fn a_jwks_without_max_age_is_good_for_this_request_only() {
         let cache = JwksCache::parse(&fixture()["jwks"].to_string(), None, 5_000).unwrap();
-        assert_eq!(cache.fresh_key("fixture-kid-1", 5_000), None);
+        assert_eq!(cache.lookup("fixture-kid-1", 5_000), KeyLookup::Fetch);
         assert!(cache.key("fixture-kid-1").is_some());
         assert_eq!(JwksCache::parse("<html>", None, 0), None);
     }

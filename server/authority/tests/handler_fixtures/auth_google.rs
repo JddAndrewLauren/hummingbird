@@ -10,7 +10,7 @@ use hummingbird_authority::auth_google::{
     begin, complete, jwks_from_response, jwks_unavailable, Refusal,
 };
 use hummingbird_authority::{ApiResponse, HandleContext, JwksCache, SigninConfig, SqlValue};
-use hummingbird_domain::{SignedInDevice, TokenInfo};
+use hummingbird_domain::{DeviceListPlatform, DevicePlatform, SignedInDevice, TokenInfo};
 
 use crate::rig::*;
 
@@ -174,7 +174,7 @@ fn every_rejection_is_an_empty_403_that_mints_nothing_and_logs_the_sub() {
             "stale iat",
             token(good_header(), claims_with("iat", 1_759_999_000.into())),
             true,
-            "iat is outside",
+            "iat is over",
         ),
         (
             "unverified email",
@@ -238,6 +238,78 @@ fn every_rejection_is_an_empty_403_that_mints_nothing_and_logs_the_sub() {
         };
         assert!(log.ends_with(&format!("sub={logged_sub}")), "{why}: {log}");
     }
+}
+
+/// Acceptance: the rejected `sub` comes from a token whose signature was
+/// never checked, so the caller controls it. It reaches the log escaped —
+/// one line, whatever it holds — and cut to a bounded length with a marker.
+#[test]
+fn a_rejected_sub_is_logged_escaped_and_capped() {
+    let sql = RusqliteSql::new();
+    let refused_sub = |sub: String| {
+        let mut claims = good_claims();
+        claims["sub"] = sub.into();
+        let body = body(&token(good_header(), claims), "Pixel 9", "android");
+        let out = sign_in_with(&sql, Some(&config()), "POST", Some(&body), true, NOW_MS);
+        assert_eq!(out.response.status, 403);
+        out.log.unwrap()
+    };
+
+    let log = refused_sub(format!(
+        "evil\nsub={OPERATOR_SUB}\u{1b}[2J{}",
+        "x".repeat(500)
+    ));
+    assert!(!log.contains('\n') && !log.contains('\u{1b}'), "{log:?}");
+    assert!(log.contains("sub is not the allowed subject"), "{log}");
+    assert!(
+        log.contains(r"sub=evil\nsub=110000000000000000001\u{1b}[2J"),
+        "{log}"
+    );
+    assert!(log.ends_with("...[cut]"), "{log}");
+    assert!(log.len() < 160, "bounded: {} bytes", log.len());
+
+    // A `sub` inside the cap is logged whole, with no marker.
+    assert!(refused_sub("999\r".into()).ends_with(r"sub=999\r"));
+}
+
+/// Acceptance: an unknown `kid` inside the re-fetch interval is refused
+/// from the cache the shim holds — the same 403 and log line as a `kid`
+/// missing from a fresh fetch — and only after the interval asks for a
+/// fetch. A known `kid` is answered from the cache; no cache asks for one.
+#[test]
+fn an_unknown_kid_inside_the_interval_is_refused_without_a_fetch() {
+    let pending = |kid: &str| {
+        let mut header = good_header();
+        header["kid"] = kid.into();
+        let body = body(&token(header, good_claims()), "Pixel 9", "android");
+        begin("POST", Some(&body), NOW_MS, Some(&config())).unwrap()
+    };
+    let jwks = jwks(); // fetched at NOW_MS
+    let refusal = pending("made-up")
+        .cached_key(Some(&jwks), NOW_MS + 59_999)
+        .unwrap_err();
+    assert_eq!(refusal.response.status, 403);
+    assert_eq!(refusal.response.body, "");
+    let log = refusal.log.unwrap();
+    assert!(log.contains("kid is not in"), "{log}");
+    assert!(log.ends_with(&format!("sub={OPERATOR_SUB}")), "{log}");
+
+    assert_eq!(
+        pending("made-up")
+            .cached_key(Some(&jwks), NOW_MS + 60_000)
+            .unwrap(),
+        None,
+        "after the interval: fetch"
+    );
+    assert!(pending("fixture-kid-1")
+        .cached_key(Some(&jwks), NOW_MS + 60_000)
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        pending("fixture-kid-1").cached_key(None, NOW_MS).unwrap(),
+        None,
+        "nothing cached yet: fetch"
+    );
 }
 
 #[test]
@@ -454,6 +526,47 @@ fn the_cap_counts_revoked_mints_but_not_other_tokens() {
     assert_eq!(sign_in(&sql, "Pixel", "android", NOW_MS).status, 429);
 }
 
+/// Acceptance: the id shape has three readers — the mint that builds it,
+/// the cap that counts it and the device list that reads its platform back
+/// — and they agree. For every platform, a named and a bare (nothing
+/// sluggable) id, each with its `-2` replay, reads back as that platform
+/// and counts toward the cap: those four mints and six more leave the
+/// eleventh capped, which would mint if any of the four went uncounted.
+#[test]
+fn every_minted_id_shape_is_capped_and_listed_as_its_platform() {
+    for platform in DevicePlatform::ALL {
+        let want = match platform {
+            DevicePlatform::Web => DeviceListPlatform::Web,
+            DevicePlatform::Android => DeviceListPlatform::Android,
+            DevicePlatform::Chrome => DeviceListPlatform::Chrome,
+        };
+        let p = platform.as_str();
+        let sql = RusqliteSql::new();
+        let mint = |name: &str| {
+            let resp = sign_in(&sql, name, p, NOW_MS);
+            assert_eq!(resp.status, 201, "{p} {name}: {}", resp.body);
+            body_as::<SignedInDevice>(&resp).id
+        };
+        let ids = ["Box", "Box", "!!!", "!!!"].map(mint);
+        assert_eq!(
+            ids,
+            [
+                format!("device-{p}-box"),
+                format!("device-{p}-box-2"),
+                format!("device-{p}"),
+                format!("device-{p}-2"),
+            ],
+        );
+        for id in &ids {
+            assert_eq!(DeviceListPlatform::of_token_id(id), want, "{id}");
+        }
+        for i in 0..6 {
+            mint(&format!("Filler {i}"));
+        }
+        assert_eq!(sign_in(&sql, "Last", p, NOW_MS).status, 429, "{p}");
+    }
+}
+
 // ------------------------------------------------- config, body, method
 
 /// Acceptance: with either config value unset the route answers 503 —
@@ -563,5 +676,5 @@ fn an_unusable_jwks_response_is_a_503() {
     }
     assert_eq!(jwks_unavailable("timeout").response.status, 503);
     let cache = jwks_from_response(200, Some("max-age=60"), &jwks, NOW_MS).unwrap();
-    assert!(cache.fresh_key("fixture-kid-1", NOW_MS + 59_999).is_some());
+    assert!(cache.key("fixture-kid-1").is_some());
 }
