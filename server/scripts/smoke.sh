@@ -15,9 +15,47 @@ set -euo pipefail
 command -v jq >/dev/null || { echo "FAIL: jq is required" >&2; exit 1; }
 command -v curl >/dev/null || { echo "FAIL: curl is required" >&2; exit 1; }
 
-PORT="${SMOKE_PORT:-8787}"
+# Overlapping runs (several working copies at once) must not share a port or
+# a log (#869): a fixed port lets one run talk to another's server, and a
+# fixed log lets one run count another's lines. So with no `SMOKE_PORT` each
+# run takes a random port that binds free, and logs to its own temporary file
+# — which both the readiness tail and the unsendable counter below read. The
+# log is kept and named on any failure, and removed after a clean pass.
+#
+# Not an OS-assigned port (`listen(0)`): that comes from the ephemeral range,
+# which the build, npx and the other run's workerd draw from meanwhile, and
+# macOS hands it out in sequence — so a port released here was re-issued
+# before wrangler could bind it. 20000-31999 sits below both macOS's (49152)
+# and Linux's (32768) ephemeral ranges. `node` is already required, by `npx`.
+if [ -n "${SMOKE_PORT:-}" ]; then
+  PORT="$SMOKE_PORT"
+else
+  PORT=$(node -e '
+    const net = require("net");
+    const pick = (tries) => {
+      const port = 20000 + Math.floor(Math.random() * 12000);
+      const s = net.createServer();
+      s.once("error", () => (tries > 1 ? pick(tries - 1) : process.exit(1)));
+      s.listen(port, "127.0.0.1", () => { console.log(port); s.close(); });
+    };
+    pick(20);') || { echo "FAIL: found no free port for wrangler dev" >&2; exit 1; }
+fi
 BASE="http://127.0.0.1:${PORT}"
 ADMIN_SECRET="smoke-admin-secret"
+TMP_ROOT="${TMPDIR:-/tmp}"
+SMOKE_LOG=$(mktemp "${TMP_ROOT%/}/wrangler-smoke.XXXXXX")
+stop_wrangler() { :; }
+on_exit() {
+  local status=$?
+  stop_wrangler
+  if [ "$status" -ne 0 ]; then
+    echo "smoke: this run's wrangler log is $SMOKE_LOG" >&2
+  else
+    rm -f "$SMOKE_LOG"
+  fi
+}
+trap on_exit EXIT
+echo "smoke: port $PORT, log $SMOKE_LOG"
 cd "$(dirname "$0")/../worker"
 
 # A previous run's surviving workerd would answer the poll with a server
@@ -45,15 +83,15 @@ export CI=true WRANGLER_SEND_METRICS=false
 if command -v setsid >/dev/null; then
   setsid npx --yes wrangler@4 dev --port "$PORT" --var "ADMIN_SECRET:$ADMIN_SECRET" \
     --var "GOOGLE_SIGNIN_CLIENT_IDS:smoke-client" --var "GOOGLE_SIGNIN_ALLOWED_SUB:smoke-sub" \
-    >/tmp/wrangler-smoke.log 2>&1 &
+    >"$SMOKE_LOG" 2>&1 &
   WRANGLER_PID=$!
-  trap 'kill -- "-$WRANGLER_PID" 2>/dev/null || true' EXIT
+  stop_wrangler() { kill -- "-$WRANGLER_PID" 2>/dev/null || true; }
 else
   npx --yes wrangler@4 dev --port "$PORT" --var "ADMIN_SECRET:$ADMIN_SECRET" \
     --var "GOOGLE_SIGNIN_CLIENT_IDS:smoke-client" --var "GOOGLE_SIGNIN_ALLOWED_SUB:smoke-sub" \
-    >/tmp/wrangler-smoke.log 2>&1 &
+    >"$SMOKE_LOG" 2>&1 &
   WRANGLER_PID=$!
-  trap 'pkill -P "$WRANGLER_PID" 2>/dev/null || true; kill "$WRANGLER_PID" 2>/dev/null || true' EXIT
+  stop_wrangler() { pkill -P "$WRANGLER_PID" 2>/dev/null || true; kill "$WRANGLER_PID" 2>/dev/null || true; }
 fi
 
 # The build is warm; this budget covers the workerd download and boot. The
@@ -67,7 +105,7 @@ for _ in $(seq 1 60); do
 done
 if [ "${code:-}" != "401" ]; then
   echo "FAIL: wrangler dev never became ready; last 40 log lines:" >&2
-  tail -40 /tmp/wrangler-smoke.log >&2
+  tail -40 "$SMOKE_LOG" >&2
   exit 1
 fi
 
@@ -238,7 +276,7 @@ request 200 PATCH "/api/alerts/$ALERT_ID" "{\"expected_version\":$AV,\"dismissed
 # counter for this run, and asserting on it is asserting that the claim row
 # was committed, not that anything was sent (nothing is, and per CLAUDE.md
 # nothing may be retried).
-UNSENDABLE_LOG=/tmp/wrangler-smoke.log
+UNSENDABLE_LOG="$SMOKE_LOG"
 # Counted over the whole log with newlines collapsed, and on a single
 # unhyphenated word, so wrangler's own line wrapping cannot split a match.
 # `grep` exits 1 on no match, which under `pipefail` would abort the script
