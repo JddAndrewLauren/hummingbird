@@ -12,17 +12,29 @@
     <span id="state" class="hb-meta host"></span>
   </header>
 
-  <form id="form" class="stack">
+  <form id="signin" class="stack">
+    <div class="field">
+      <label for="name">Device name</label>
+      <input id="name" type="text" autocomplete="off" spellcheck="false" maxlength="64">
+      <span class="hint">How Signed-in devices lists this browser.</span>
+    </div>
+    <button id="google" type="submit" class="btn primary">Sign in with Google</button>
+  </form>
+
+  <button id="paste" type="button" class="btn ghost options">Paste a token instead</button>
+
+  <form id="form" class="stack" hidden>
     <div class="field">
       <label for="token">Device token</label>
       <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="hb_…">
       <span class="hint">From 1Password: hummingbird-device-chrome-&lt;machine&gt;. Kept in this browser profile only.</span>
     </div>
     <div class="row">
-      <button type="submit" class="btn primary">Store</button>
-      <button id="forget" type="button" class="btn ghost" hidden>Forget</button>
+      <button type="submit" class="btn secondary">Store</button>
     </div>
   </form>
+
+  <button id="forget" type="button" class="btn ghost options" hidden>Forget</button>
 
   <p id="status" class="status" role="status" aria-live="polite"></p>
 

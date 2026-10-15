@@ -17,8 +17,10 @@ test("manifest v3, popup only", () => {
   assert.equal(manifest.content_scripts, undefined, "a content script would be CORS-bound");
 });
 
-test("the permission set is exactly activeTab and storage", () => {
-  assert.deepEqual([...manifest.permissions].sort(), ["activeTab", "storage"]);
+// `identity` is ADR-0040's one addition: `launchWebAuthFlow` for the
+// options page's Sign in with Google.
+test("the permission set is exactly activeTab, storage and identity", () => {
+  assert.deepEqual([...manifest.permissions].sort(), ["activeTab", "identity", "storage"]);
   assert.equal(manifest.optional_permissions, undefined);
 });
 
