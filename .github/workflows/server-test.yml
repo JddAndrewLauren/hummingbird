@@ -60,7 +60,7 @@ jobs:
       # sign-in route `cargo test` cannot execute.
       - name: WebCrypto import-path test
         working-directory: server
-        run: node --test worker/tests/
+        run: node --test worker/tests/*.test.mjs
 
       - name: Smoke test against wrangler dev
         working-directory: server

@@ -14,7 +14,7 @@
 // at the bottom keeps the mirror honest — if the shim's import format or
 // algorithm changes, this test fails until it is changed to match.
 //
-// Run from the repo root: node --test server/worker/tests/
+// Run from the repo root: node --test server/worker/tests/*.test.mjs
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
