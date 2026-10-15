@@ -107,11 +107,14 @@ use hummingbird_core::storage::FsSnapshotStore;
 use hummingbird_core::sync::write::transport::{
     HttpMethod, MutationRequest, MutationTransport,
 };
-use hummingbird_core::sync::write::ReqwestMutationTransport;
+use hummingbird_core::sync::write::{DirectTransport, ReqwestMutationTransport};
 use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
+use hummingbird_core::decisions::devices;
+use hummingbird_core::devices::{DevicesOutcome, RevokeOutcome, SignInOutcome};
 use hummingbird_core::{search, CaptureOptions, Core, CoreCycleOutcome, CoreEvent, ItemAction};
 use hummingbird_domain::{
-    Alert, Condition, CreatePushTarget, Energy, FieldType, Item, Platform, Rule, Size, Stage, Tier,
+    Alert, Condition, CreatePushTarget, DeviceInfo, DeviceListPlatform, DevicePlatform, Energy,
+    FieldType, Item, Platform, Rule, Size, Stage, Tier,
 };
 use hummingbird_rules_engine::Operator;
 
@@ -4660,6 +4663,34 @@ impl MobileTaskHost {
             .to_string()
     }
 
+    /// Trades a Google ID token from Credential Manager for this phone's
+    /// token (#839, ADR-0040 decisions 1 and 3) — always as the `android`
+    /// platform: the watch never signs in (ADR-0039 is not amended), so
+    /// this seam has no other platform to name. Holds nothing: on
+    /// `SignedIn` the app stores the token and then calls
+    /// [`MobileTaskHost::push_api_key`] with it.
+    pub async fn sign_in_with_google(&self, id_token: String, name: String) -> MobileSignInOutcome {
+        let inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
+        sign_in_in(&inner, &inner.write_transport, &id_token, &name).await
+    }
+
+    /// The operator's devices (#839, ADR-0040 decision 6) — the
+    /// authority's rows; [`device_rows`] orders and words them.
+    pub async fn devices(&self) -> MobileDevicesOutcome {
+        let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
+        let transport = inner.write_transport.clone();
+        devices_in(&mut inner, &transport).await
+    }
+
+    /// Signs one device out (#839, ADR-0040 decision 6). `SignedOut` means
+    /// it was this one: the core and this seam's shadow both drop the
+    /// credential, and every queued write stays queued.
+    pub async fn revoke_device(&self, id: String) -> MobileRevokeOutcome {
+        let mut inner = self.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
+        let transport = inner.write_transport.clone();
+        revoke_device_in(&mut inner, &transport, &id).await
+    }
+
     /// Runs one observed sync cycle against the live transports (#769).
     /// `trigger` is the web protocol's string pair (`"timer"` gates on
     /// backoff, anything else is a deliberate `"user"` gesture); `now_ms`
@@ -7323,6 +7354,236 @@ pub fn dead_letter_heading(count: u32) -> String {
 #[uniffi::export]
 pub fn is_informative_sync_outcome(kind: String) -> bool {
     settings::is_informative_sync_outcome(&kind)
+}
+
+// -------------------------------------------------------------- #839: devices
+
+/// [`DeviceListPlatform`], mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileDeviceListPlatform {
+    Web,
+    Android,
+    Chrome,
+    Watch,
+    Other,
+}
+
+fn map_device_list_platform(platform: DeviceListPlatform) -> MobileDeviceListPlatform {
+    match platform {
+        DeviceListPlatform::Web => MobileDeviceListPlatform::Web,
+        DeviceListPlatform::Android => MobileDeviceListPlatform::Android,
+        DeviceListPlatform::Chrome => MobileDeviceListPlatform::Chrome,
+        DeviceListPlatform::Watch => MobileDeviceListPlatform::Watch,
+        DeviceListPlatform::Other => MobileDeviceListPlatform::Other,
+    }
+}
+
+fn unmap_device_list_platform(platform: MobileDeviceListPlatform) -> DeviceListPlatform {
+    match platform {
+        MobileDeviceListPlatform::Web => DeviceListPlatform::Web,
+        MobileDeviceListPlatform::Android => DeviceListPlatform::Android,
+        MobileDeviceListPlatform::Chrome => DeviceListPlatform::Chrome,
+        MobileDeviceListPlatform::Watch => DeviceListPlatform::Watch,
+        MobileDeviceListPlatform::Other => DeviceListPlatform::Other,
+    }
+}
+
+/// One row of `GET /api/devices` ([`DeviceInfo`]), mirrored — what
+/// [`MobileTaskHost::devices`] answers and [`device_rows`] decides over.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileDeviceInfo {
+    pub id: String,
+    pub name: String,
+    pub platform: MobileDeviceListPlatform,
+    pub created_at: i64,
+    pub last_seen: Option<i64>,
+    pub revoked_at: Option<i64>,
+    pub is_current: bool,
+    pub revocable: bool,
+}
+
+fn to_mobile_device(device: DeviceInfo) -> MobileDeviceInfo {
+    MobileDeviceInfo {
+        platform: map_device_list_platform(device.platform),
+        id: device.id,
+        name: device.name,
+        created_at: device.created_at,
+        last_seen: device.last_seen,
+        revoked_at: device.revoked_at,
+        is_current: device.is_current,
+        revocable: device.revocable,
+    }
+}
+
+fn from_mobile_device(device: MobileDeviceInfo) -> DeviceInfo {
+    DeviceInfo {
+        platform: unmap_device_list_platform(device.platform),
+        id: device.id,
+        name: device.name,
+        created_at: device.created_at,
+        last_seen: device.last_seen,
+        revoked_at: device.revoked_at,
+        is_current: device.is_current,
+        revocable: device.revocable,
+    }
+}
+
+/// [`SignInOutcome`], mirrored — one arm per refusal, so Settings can say
+/// "not your account", "too many sign-ins, try later" and "sign-in isn't
+/// set up" without reading a status code. `SignedIn` carries the token
+/// for the app to store and then push through
+/// [`MobileTaskHost::push_api_key`]; the core has not kept it.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileSignInOutcome {
+    SignedIn { id: String, token: String },
+    NotAllowed,
+    RateLimited,
+    Unconfigured,
+    Unavailable,
+    Invalid { detail: String },
+    Failed { detail: String },
+}
+
+fn map_sign_in_outcome(outcome: SignInOutcome) -> MobileSignInOutcome {
+    match outcome {
+        SignInOutcome::SignedIn(device) => MobileSignInOutcome::SignedIn {
+            id: device.id,
+            token: device.token,
+        },
+        SignInOutcome::NotAllowed => MobileSignInOutcome::NotAllowed,
+        SignInOutcome::RateLimited => MobileSignInOutcome::RateLimited,
+        SignInOutcome::Unconfigured => MobileSignInOutcome::Unconfigured,
+        SignInOutcome::Unavailable => MobileSignInOutcome::Unavailable,
+        SignInOutcome::Invalid { message } => MobileSignInOutcome::Invalid { detail: message },
+        SignInOutcome::Failed { message } => MobileSignInOutcome::Failed { detail: message },
+    }
+}
+
+/// [`DevicesOutcome`], mirrored.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileDevicesOutcome {
+    Listed { devices: Vec<MobileDeviceInfo> },
+    NoCredential,
+    CredentialRejected,
+    Failed { detail: String },
+}
+
+fn map_devices_outcome(outcome: DevicesOutcome) -> MobileDevicesOutcome {
+    match outcome {
+        DevicesOutcome::Listed(devices) => MobileDevicesOutcome::Listed {
+            devices: devices.into_iter().map(to_mobile_device).collect(),
+        },
+        DevicesOutcome::NoCredential => MobileDevicesOutcome::NoCredential,
+        DevicesOutcome::CredentialRejected => MobileDevicesOutcome::CredentialRejected,
+        DevicesOutcome::Failed { message } => MobileDevicesOutcome::Failed { detail: message },
+    }
+}
+
+/// [`RevokeOutcome`], mirrored. `SignedOut` is this device's own row: the
+/// core holds no credential now, the queue is untouched, and the app
+/// deletes its stored token.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileRevokeOutcome {
+    Revoked { device: MobileDeviceInfo },
+    SignedOut { device: MobileDeviceInfo },
+    NotRevocable,
+    NotFound,
+    NoCredential,
+    CredentialRejected,
+    Failed { detail: String },
+}
+
+fn map_revoke_outcome(outcome: RevokeOutcome) -> MobileRevokeOutcome {
+    match outcome {
+        RevokeOutcome::Revoked(device) => MobileRevokeOutcome::Revoked {
+            device: to_mobile_device(device),
+        },
+        RevokeOutcome::SignedOut(device) => MobileRevokeOutcome::SignedOut {
+            device: to_mobile_device(device),
+        },
+        RevokeOutcome::NotRevocable => MobileRevokeOutcome::NotRevocable,
+        RevokeOutcome::NotFound => MobileRevokeOutcome::NotFound,
+        RevokeOutcome::NoCredential => MobileRevokeOutcome::NoCredential,
+        RevokeOutcome::CredentialRejected => MobileRevokeOutcome::CredentialRejected,
+        RevokeOutcome::Failed { message } => MobileRevokeOutcome::Failed { detail: message },
+    }
+}
+
+/// [`MobileTaskHost::sign_in_with_google`]'s body, over any transport and
+/// under the caller's lock — the seam's tests script the authority
+/// through this, as through the two below.
+async fn sign_in_in(
+    inner: &Inner,
+    transport: &impl DirectTransport,
+    id_token: &str,
+    name: &str,
+) -> MobileSignInOutcome {
+    map_sign_in_outcome(
+        inner
+            .core
+            .sign_in_with_google(transport, id_token, name, DevicePlatform::Android)
+            .await,
+    )
+}
+
+/// [`MobileTaskHost::devices`]' body, over any transport and under the
+/// caller's lock — the seam's tests script the authority through this.
+async fn devices_in(inner: &mut Inner, transport: &impl DirectTransport) -> MobileDevicesOutcome {
+    map_devices_outcome(inner.core.devices(transport).await)
+}
+
+/// [`MobileTaskHost::revoke_device`]'s body, likewise. A sign-out clears
+/// the shadow token in the same critical section, so
+/// `register_push_target` and the calendar mint stop sending it.
+async fn revoke_device_in(
+    inner: &mut Inner,
+    transport: &impl DirectTransport,
+    id: &str,
+) -> MobileRevokeOutcome {
+    let outcome = inner.core.revoke_device(transport, id).await;
+    if matches!(outcome, RevokeOutcome::SignedOut(_)) {
+        inner.api_key = None;
+    }
+    map_revoke_outcome(outcome)
+}
+
+/// [`devices::DeviceRow`], mirrored.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct MobileDeviceRow {
+    pub id: String,
+    pub name: String,
+    pub is_current: bool,
+    pub this_device: Option<String>,
+    pub platform_label: String,
+    pub last_seen_label: String,
+    pub revocable: bool,
+}
+
+/// [`devices::device_rows`] — Signed-in devices' rows, ordered and worded
+/// in the core (ADR-0040 decision 7): revoked rows left out, this device
+/// first, then the most recently seen.
+#[uniffi::export]
+pub fn device_rows(devices: Vec<MobileDeviceInfo>, now_ms: i64) -> Vec<MobileDeviceRow> {
+    let devices: Vec<DeviceInfo> = devices.into_iter().map(from_mobile_device).collect();
+    devices::device_rows(&devices, now_ms)
+        .into_iter()
+        .map(|row| MobileDeviceRow {
+            id: row.id,
+            name: row.name,
+            is_current: row.is_current,
+            this_device: row.this_device,
+            platform_label: row.platform_label,
+            last_seen_label: row.last_seen_label,
+            revocable: row.revocable,
+        })
+        .collect()
+}
+
+/// [`devices::sign_out_confirmation`] — the sentence before this device
+/// signs itself out, naming how many unsent changes stay queued.
+#[uniffi::export]
+pub fn sign_out_confirmation(queue_depth: u32) -> String {
+    devices::sign_out_confirmation(queue_depth)
 }
 
 // -------------------------------------------------------------- #709: diagnostics
@@ -12686,6 +12947,222 @@ mod settings_tests {
                 }
             );
         }
+    }
+
+    // ---------------------------------------------------------- devices (#839)
+
+    /// The authority, scripted: answers in order, records each bearer.
+    #[derive(Default)]
+    struct ScriptedAuthority {
+        responses: std::sync::Mutex<Vec<(u16, String)>>,
+        bearers: std::sync::Mutex<Vec<Option<String>>>,
+    }
+
+    impl ScriptedAuthority {
+        fn answering(responses: &[(u16, &str)]) -> Self {
+            Self {
+                responses: std::sync::Mutex::new(
+                    responses.iter().rev().map(|(s, b)| (*s, b.to_string())).collect(),
+                ),
+                bearers: std::sync::Mutex::default(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DirectTransport for ScriptedAuthority {
+        async fn call(
+            &self,
+            access_token: Option<&str>,
+            _request: hummingbird_core::sync::write::DirectRequest,
+        ) -> Result<
+            hummingbird_core::sync::write::RawResponse,
+            hummingbird_core::sync::TransportError,
+        > {
+            self.bearers.lock().unwrap().push(access_token.map(str::to_string));
+            let (status, body) = self.responses.lock().unwrap().pop().expect("no more answers");
+            Ok(hummingbird_core::sync::write::RawResponse { status, body })
+        }
+    }
+
+    fn device_json(id: &str, is_current: bool) -> String {
+        format!(
+            r#"{{"id":"{id}","name":"{id}","platform":"android","created_at":1,
+            "last_seen":2,"revoked_at":null,"is_current":{is_current},"revocable":true}}"#
+        )
+    }
+
+    async fn device_host(dir: &tempfile::TempDir) -> Arc<MobileTaskHost> {
+        MobileTaskHost::init(
+            dir.path().join("devices-ns").to_str().unwrap().to_string(),
+            "http://127.0.0.1:1".to_string(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[test]
+    fn every_sign_in_outcome_reaches_kotlin_as_its_own_arm() {
+        assert_eq!(
+            map_sign_in_outcome(SignInOutcome::SignedIn(hummingbird_domain::SignedInDevice {
+                id: "device-android-pixel".to_string(),
+                token: "hb_new".to_string(),
+            })),
+            MobileSignInOutcome::SignedIn {
+                id: "device-android-pixel".to_string(),
+                token: "hb_new".to_string(),
+            }
+        );
+        for (outcome, mobile) in [
+            (SignInOutcome::NotAllowed, MobileSignInOutcome::NotAllowed),
+            (SignInOutcome::RateLimited, MobileSignInOutcome::RateLimited),
+            (SignInOutcome::Unconfigured, MobileSignInOutcome::Unconfigured),
+            (SignInOutcome::Unavailable, MobileSignInOutcome::Unavailable),
+        ] {
+            assert_eq!(map_sign_in_outcome(outcome), mobile);
+        }
+    }
+
+    #[tokio::test]
+    async fn each_sign_in_status_reaches_kotlin_as_its_own_arm_and_holds_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = device_host(&dir).await;
+        let authority = ScriptedAuthority::answering(&[
+            (201, r#"{"id":"device-android-pixel","token":"hb_new"}"#),
+            (403, ""),
+            (429, r#"{"error":"rate_limited","message":"later"}"#),
+            (503, r#"{"error":"signin_unconfigured","message":"unset"}"#),
+            (503, r#"{"error":"signin_unavailable","message":"retry"}"#),
+            (503, "Service Unavailable"),
+        ]);
+        let mut outcomes = Vec::new();
+        for _ in 0..6 {
+            let inner = host.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
+            outcomes.push(sign_in_in(&inner, &authority, "jwt", "Pixel").await);
+        }
+        assert_eq!(
+            outcomes,
+            [
+                MobileSignInOutcome::SignedIn {
+                    id: "device-android-pixel".to_string(),
+                    token: "hb_new".to_string(),
+                },
+                MobileSignInOutcome::NotAllowed,
+                MobileSignInOutcome::RateLimited,
+                MobileSignInOutcome::Unconfigured,
+                MobileSignInOutcome::Unavailable,
+                MobileSignInOutcome::Unavailable,
+            ]
+        );
+        assert!(authority.bearers.lock().unwrap().iter().all(Option::is_none));
+        assert_eq!(host.credential_arm().await, "unknown", "a sign-in holds nothing");
+    }
+
+    #[tokio::test]
+    async fn the_live_sign_in_fails_cleanly_when_the_authority_is_unreachable() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = device_host(&dir).await;
+        assert!(matches!(
+            host.sign_in_with_google("jwt".to_string(), "Pixel".to_string()).await,
+            MobileSignInOutcome::Failed { .. }
+        ));
+        assert_eq!(host.credential_arm().await, "unknown", "a sign-in holds nothing");
+        assert_eq!(host.devices().await, MobileDevicesOutcome::NoCredential);
+        assert_eq!(
+            host.revoke_device("device-android".to_string()).await,
+            MobileRevokeOutcome::NoCredential
+        );
+    }
+
+    #[tokio::test]
+    async fn the_device_list_reaches_kotlin_with_the_held_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = device_host(&dir).await;
+        host.push_api_key("hb_mine".to_string()).await;
+        let list = format!("[{}]", device_json("device-android-pixel", true));
+        let authority = ScriptedAuthority::answering(&[(200, &list), (401, "")]);
+
+        let outcome = {
+            let mut inner = host.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
+            devices_in(&mut inner, &authority).await
+        };
+        let MobileDevicesOutcome::Listed { devices } = outcome else {
+            panic!("{outcome:?}");
+        };
+        assert_eq!(devices[0].platform, MobileDeviceListPlatform::Android);
+        assert!(devices[0].is_current);
+
+        let rejected = {
+            let mut inner = host.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
+            devices_in(&mut inner, &authority).await
+        };
+        assert_eq!(rejected, MobileDevicesOutcome::CredentialRejected);
+        assert_eq!(host.credential_arm().await, "reprompt");
+        assert_eq!(*authority.bearers.lock().unwrap(), [Some("hb_mine".to_string()), Some("hb_mine".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn signing_this_phone_out_drops_both_tokens_and_keeps_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = device_host(&dir).await;
+        host.push_api_key("hb_mine".to_string()).await;
+        host.capture(title_only_draft("still queued"), 1_000).await.unwrap();
+        assert_eq!(host.queue_depth().await, 1);
+        let authority = ScriptedAuthority::answering(&[
+            (200, &device_json("device-watch", false)),
+            (200, &device_json("device-android-pixel", true)),
+        ]);
+
+        let other = {
+            let mut inner = host.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
+            revoke_device_in(&mut inner, &authority, "device-watch").await
+        };
+        assert!(matches!(other, MobileRevokeOutcome::Revoked { .. }));
+        assert_eq!(host.credential_arm().await, "resting");
+
+        let own = {
+            let mut inner = host.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
+            revoke_device_in(&mut inner, &authority, "device-android-pixel").await
+        };
+        assert!(matches!(own, MobileRevokeOutcome::SignedOut { .. }));
+        assert_eq!(host.credential_arm().await, "unset");
+        assert_eq!(host.device_token().await, None, "the shadow token went with it");
+        assert_eq!(host.queue_depth().await, 1, "the queued capture survives");
+    }
+
+    #[test]
+    fn the_device_rows_are_the_core_decision_verbatim() {
+        let device = |id: &str, last_seen: Option<i64>, is_current: bool, revoked_at: Option<i64>| {
+            MobileDeviceInfo {
+                id: id.to_string(),
+                name: id.to_string(),
+                platform: MobileDeviceListPlatform::Other,
+                created_at: 0,
+                last_seen,
+                revoked_at,
+                is_current,
+                revocable: true,
+            }
+        };
+        let rows = device_rows(
+            vec![
+                device("device-watch", Some(3_000_000), false, None),
+                device("device-old", Some(3_600_000), false, Some(3_600_000)),
+                device("device-android-pixel", Some(0), true, None),
+            ],
+            3_600_000,
+        );
+        assert_eq!(
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["device-android-pixel", "device-watch"]
+        );
+        assert_eq!(rows[0].this_device.as_deref(), Some("This device"));
+        assert_eq!(rows[0].last_seen_label, "Last seen 1h ago");
+        assert_eq!(rows[1].platform_label, "Other");
+        assert_eq!(
+            sign_out_confirmation(0),
+            "Sign out this device? Nothing is waiting to send."
+        );
     }
 }
 

@@ -26,7 +26,8 @@ use hummingbird_core::calendar_prefs::{CalendarPrefs, CalendarSeed};
 use hummingbird_core::contexts::SuggestedContexts;
 use hummingbird_core::question_switch::QuestionSwitch;
 use hummingbird_core::sync::queue::{DeadLetterEntry, DeadLetterReason, MutationIntent};
-use hummingbird_core::sync::write::ReqwestMutationTransport;
+use hummingbird_core::devices::{DevicesOutcome, RevokeOutcome, SignInOutcome};
+use hummingbird_core::sync::write::{DirectTransport, ReqwestMutationTransport};
 use hummingbird_core::sync::{ReqwestSyncTransport, Trigger};
 use hummingbird_core::freshness::Freshness;
 use hummingbird_core::pane::PaneSnapshot;
@@ -36,7 +37,8 @@ use hummingbird_core::{
     CoreInitError, GrillCompletion, ItemAction, TriagePatch,
 };
 use hummingbird_domain::{
-    core_field_type, is_valid_deadline, is_valid_github_repo, Alert, Condition, Energy,
+    core_field_type, is_valid_deadline, is_valid_github_repo, Alert, Condition, DeviceInfo,
+    DevicePlatform, Energy,
     EventKindEntry, FieldType, FileLink, Fog, Item, Project, ProjectLink, Route, Rule, Size,
     Stage, Step, Tier, CORE_FIELDS, EVENT_KINDS, GrillVerdict, GrillWithoutTranscript,
 };
@@ -927,6 +929,77 @@ pub struct SeedCalendarPrefsResponse {
 pub struct SetBindingResponse {
     pub kind: &'static str,
     pub error: Option<String>,
+}
+
+// -- #839: sign-in and devices ----------------------------------------
+
+/// What [`TaskHostCore::sign_in_with_google`] resolves to. `kind` is
+/// [`SignInOutcome::kind`] — `signed_in`, `not_allowed`, `rate_limited`,
+/// `unconfigured`, `unavailable`, `invalid`, `failed` — or `busy`. `id` and
+/// `token` are set on `signed_in` alone: the host stores `token` and then
+/// pushes it through `pushApiKey`, as it would a pasted one. `error` is the
+/// detail of `invalid`/`failed`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SignInResponse {
+    pub kind: &'static str,
+    pub id: Option<String>,
+    pub token: Option<String>,
+    pub error: Option<String>,
+}
+
+fn sign_in_response(outcome: SignInOutcome) -> SignInResponse {
+    let kind = outcome.kind();
+    let (id, token, error) = match outcome {
+        SignInOutcome::SignedIn(device) => (Some(device.id), Some(device.token), None),
+        SignInOutcome::Invalid { message } | SignInOutcome::Failed { message } => {
+            (None, None, Some(message))
+        }
+        _ => (None, None, None),
+    };
+    SignInResponse { kind, id, token, error }
+}
+
+/// What [`TaskHostCore::devices`] resolves to: `listed` with the
+/// authority's rows (its own snake_case wire shape — `deviceRowsJson` on
+/// the decisions seam orders and words them), or `no_credential`,
+/// `credential_rejected`, `failed`, `busy` with none.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct DevicesResponse {
+    pub kind: &'static str,
+    pub devices: Vec<DeviceInfo>,
+    pub error: Option<String>,
+}
+
+fn devices_response(outcome: DevicesOutcome) -> DevicesResponse {
+    let kind = outcome.kind();
+    match outcome {
+        DevicesOutcome::Listed(devices) => DevicesResponse { kind, devices, error: None },
+        DevicesOutcome::Failed { message } => DevicesResponse { kind, devices: Vec::new(), error: Some(message) },
+        _ => DevicesResponse { kind, devices: Vec::new(), error: None },
+    }
+}
+
+/// What [`TaskHostCore::revoke_device`] resolves to. `kind` is
+/// [`RevokeOutcome::kind`] or `busy`; `signed_out` means this device's own
+/// row was revoked, the core now holds no credential (the queue is
+/// untouched), and the host deletes its stored token. `device` is the row
+/// as it now stands, on `revoked`/`signed_out`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RevokeDeviceResponse {
+    pub kind: &'static str,
+    pub device: Option<DeviceInfo>,
+    pub error: Option<String>,
+}
+
+fn revoke_device_response(outcome: RevokeOutcome) -> RevokeDeviceResponse {
+    let kind = outcome.kind();
+    match outcome {
+        RevokeOutcome::Revoked(device) | RevokeOutcome::SignedOut(device) => {
+            RevokeDeviceResponse { kind, device: Some(device), error: None }
+        }
+        RevokeOutcome::Failed { message } => RevokeDeviceResponse { kind, device: None, error: Some(message) },
+        _ => RevokeDeviceResponse { kind, device: None, error: None },
+    }
 }
 
 // -- #140: rules --------------------------------------------------------
@@ -1875,6 +1948,51 @@ impl TaskHostCore {
             kind: "ok",
             arm: self.core.credential_arm().as_str(),
         }
+    }
+
+    /// Trades a Google ID token for this device's token, per
+    /// [`Core::sign_in_with_google`] (#839). `platform` is ADR-0040's closed
+    /// set (`web`, `android`, `chrome`); anything else answers `invalid`
+    /// without a request. Holds nothing: the token comes back in the
+    /// response for the host to store and push.
+    pub async fn sign_in_with_google(&self, id_token: &str, name: &str, platform: &str) -> SignInResponse {
+        self.sign_in_with_google_via(&self.write_transport, id_token, name, platform).await
+    }
+
+    async fn sign_in_with_google_via(
+        &self,
+        transport: &impl DirectTransport,
+        id_token: &str,
+        name: &str,
+        platform: &str,
+    ) -> SignInResponse {
+        let Some(platform) = DevicePlatform::parse(platform) else {
+            return sign_in_response(SignInOutcome::Invalid {
+                message: format!("unknown platform: {platform}"),
+            });
+        };
+        sign_in_response(self.core.sign_in_with_google(transport, id_token, name, platform).await)
+    }
+
+    /// The operator's devices, per [`Core::devices`] (#839).
+    pub async fn devices(&mut self) -> DevicesResponse {
+        let transport = self.write_transport.clone();
+        self.devices_via(&transport).await
+    }
+
+    async fn devices_via(&mut self, transport: &impl DirectTransport) -> DevicesResponse {
+        devices_response(self.core.devices(transport).await)
+    }
+
+    /// Signs one device out, per [`Core::revoke_device`] (#839) — this
+    /// device's own id answers `signed_out` and clears the credential.
+    pub async fn revoke_device(&mut self, id: &str) -> RevokeDeviceResponse {
+        let transport = self.write_transport.clone();
+        self.revoke_device_via(&transport, id).await
+    }
+
+    async fn revoke_device_via(&mut self, transport: &impl DirectTransport, id: &str) -> RevokeDeviceResponse {
+        revoke_device_response(self.core.revoke_device(transport, id).await)
     }
 
     /// Whether `item_id` currently has an unconfirmed capture overlaid on
@@ -7394,5 +7512,206 @@ mod fog_tests {
         assert_eq!(response.kind, "ok");
 
         assert_eq!(host.queue_depth(), QueueDepthResponse { kind: "ok", depth: 2 });
+    }
+}
+
+#[cfg(test)]
+mod device_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    use hummingbird_core::sync::write::{DirectRequest, RawResponse};
+    use hummingbird_core::sync::TransportError;
+
+    /// The authority, scripted: answers in order and records each bearer
+    /// and request.
+    #[derive(Default)]
+    struct ScriptedAuthority {
+        responses: Mutex<Vec<(u16, String)>>,
+        calls: Mutex<Vec<(Option<String>, DirectRequest)>>,
+    }
+
+    impl ScriptedAuthority {
+        fn answering(responses: &[(u16, &str)]) -> Self {
+            Self {
+                responses: Mutex::new(
+                    responses.iter().rev().map(|(s, b)| (*s, b.to_string())).collect(),
+                ),
+                calls: Mutex::default(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DirectTransport for ScriptedAuthority {
+        async fn call(
+            &self,
+            access_token: Option<&str>,
+            request: DirectRequest,
+        ) -> Result<RawResponse, TransportError> {
+            self.calls.lock().unwrap().push((access_token.map(str::to_string), request));
+            let (status, body) = self.responses.lock().unwrap().pop().expect("no more answers");
+            Ok(RawResponse { status, body })
+        }
+    }
+
+    async fn host(dir: &tempfile::TempDir) -> TaskHostCore {
+        let namespace = dir.path().join("ns-devices");
+        TaskHostCore::init(namespace.to_str().unwrap(), "http://127.0.0.1:9").await.unwrap()
+    }
+
+    fn row(id: &str, is_current: bool) -> String {
+        format!(
+            r#"{{"id":"{id}","name":"{id}","platform":"web","created_at":1,"last_seen":2,
+            "revoked_at":null,"is_current":{is_current},"revocable":true}}"#
+        )
+    }
+
+    fn arm(host: &TaskHostCore) -> &'static str {
+        host.credential_arm().arm
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_answers_the_token_and_the_seam_holds_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = host(&dir).await;
+        let authority =
+            ScriptedAuthority::answering(&[(201, r#"{"id":"device-web-laptop","token":"hb_new"}"#)]);
+
+        let response = host.sign_in_with_google_via(&authority, "jwt", "Laptop", "web").await;
+
+        assert_eq!(
+            response,
+            SignInResponse {
+                kind: "signed_in",
+                id: Some("device-web-laptop".to_string()),
+                token: Some("hb_new".to_string()),
+                error: None,
+            }
+        );
+        let calls = authority.calls.lock().unwrap();
+        assert_eq!(calls[0].0, None);
+        assert!(calls[0].1.body.as_deref().unwrap().contains(r#""platform":"web""#));
+        assert_eq!(arm(&host), "unknown", "the host pushes the token; the seam did not");
+    }
+
+    #[tokio::test]
+    async fn each_sign_in_refusal_reaches_the_host_as_its_own_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = host(&dir).await;
+        let authority = ScriptedAuthority::answering(&[
+            (403, ""),
+            (429, r#"{"error":"rate_limited","message":"later"}"#),
+            (503, r#"{"error":"signin_unconfigured","message":"unset"}"#),
+            (503, r#"{"error":"signin_unavailable","message":"retry"}"#),
+            (503, "Service Unavailable"),
+        ]);
+        let mut kinds = Vec::new();
+        for _ in 0..5 {
+            let response = host.sign_in_with_google_via(&authority, "jwt", "Pixel", "android").await;
+            assert_eq!(response.token, None);
+            kinds.push(response.kind);
+        }
+        assert_eq!(
+            kinds,
+            ["not_allowed", "rate_limited", "unconfigured", "unavailable", "unavailable"],
+            "only signin_unconfigured reads as not set up"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_platform_is_invalid_without_a_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = host(&dir).await;
+        let authority = ScriptedAuthority::default();
+
+        let response = host.sign_in_with_google_via(&authority, "jwt", "Watch", "watch").await;
+
+        assert_eq!(response.kind, "invalid");
+        assert!(authority.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_live_transport_answers_failed_when_the_authority_is_unreachable() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = host(&dir).await;
+        assert_eq!(host.sign_in_with_google("jwt", "Laptop", "web").await.kind, "failed");
+        assert_eq!(host.devices().await.kind, "no_credential");
+        host.push_api_key("hb_mine".to_string());
+        assert_eq!(host.devices().await.kind, "failed");
+        assert_eq!(host.revoke_device("device-web").await.kind, "failed");
+        assert_eq!(arm(&host), "resting", "an unreachable authority refuses nothing");
+    }
+
+    #[tokio::test]
+    async fn the_device_list_and_a_revoke_of_another_device_keep_the_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = host(&dir).await;
+        host.push_api_key("hb_mine".to_string());
+        let list = format!("[{},{}]", row("device-web-laptop", true), row("device-android-pixel", false));
+        let authority = ScriptedAuthority::answering(&[
+            (200, &list),
+            (200, &row("device-android-pixel", false)),
+            (403, ""),
+        ]);
+
+        let listed = host.devices_via(&authority).await;
+        assert_eq!(listed.kind, "listed");
+        assert_eq!(listed.devices.len(), 2);
+        let revoked = host.revoke_device_via(&authority, "device-android-pixel").await;
+        assert_eq!(revoked.kind, "revoked");
+        assert_eq!(revoked.device.unwrap().id, "device-android-pixel");
+        assert_eq!(host.revoke_device_via(&authority, "runner").await.kind, "not_revocable");
+        assert_eq!(arm(&host), "resting");
+        assert!(authority.calls.lock().unwrap().iter().all(|(t, _)| t.as_deref() == Some("hb_mine")));
+    }
+
+    #[tokio::test]
+    async fn signing_this_device_out_clears_the_credential_and_keeps_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = host(&dir).await;
+        host.push_api_key("hb_mine".to_string());
+        host.create_fog("seed-1", "p-1", "What permit?", 0, 1_000).await;
+        assert_eq!(host.queue_depth().depth, 1);
+        host.take_events();
+        let authority = ScriptedAuthority::answering(&[(200, &row("device-web-laptop", true))]);
+
+        let response = host.revoke_device_via(&authority, "device-web-laptop").await;
+
+        assert_eq!(response.kind, "signed_out");
+        assert_eq!(arm(&host), "unset");
+        assert_eq!(host.take_events(), vec![TaskEventDTO { kind: "credential_changed", arm: "unset" }]);
+        assert_eq!(host.queue_depth().depth, 1, "the queued write survives signing out");
+    }
+
+    #[tokio::test]
+    async fn a_401_on_a_device_call_moves_the_seam_to_reprompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut host = host(&dir).await;
+        host.push_api_key("hb_dead".to_string());
+        let authority = ScriptedAuthority::answering(&[(401, "")]);
+
+        assert_eq!(host.devices_via(&authority).await.kind, "credential_rejected");
+        assert_eq!(arm(&host), "reprompt");
+    }
+
+    #[test]
+    fn the_device_responses_serialize_with_the_keys_the_worker_reads() {
+        assert_eq!(
+            serde_json::to_string(&sign_in_response(SignInOutcome::NotAllowed)).unwrap(),
+            r#"{"kind":"not_allowed","id":null,"token":null,"error":null}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&devices_response(DevicesOutcome::NoCredential)).unwrap(),
+            r#"{"kind":"no_credential","devices":[],"error":null}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&revoke_device_response(RevokeOutcome::NotFound)).unwrap(),
+            r#"{"kind":"not_found","device":null,"error":null}"#
+        );
+        let device: DeviceInfo = serde_json::from_str(&row("device-web", true)).unwrap();
+        let json = serde_json::to_value(revoke_device_response(RevokeOutcome::SignedOut(device))).unwrap();
+        assert_eq!(json["kind"], "signed_out");
+        assert_eq!(json["device"]["is_current"], true);
     }
 }

@@ -15,7 +15,8 @@ use crate::diagnostics::route::{
 };
 
 use super::transport::{
-    HttpMethod, MutationRequest, MutationTransport, RawResponse, TransportError,
+    DirectMethod, DirectRequest, DirectTransport, HttpMethod, MutationRequest, MutationTransport,
+    RawResponse, TransportError,
 };
 
 fn build_url(base_url: &str, path: &str) -> String {
@@ -91,6 +92,31 @@ impl ReqwestMutationTransport {
             .map_err(|source| TransportError::new(source.to_string()))?;
         Ok(RawResponse { status, body })
     }
+
+    /// [`DirectTransport::call`]'s request, built but unsent — the same
+    /// no-network split as [`Self::request`]. No `authorization` header at
+    /// all when `access_token` is `None`.
+    fn direct_request(
+        &self,
+        request: &DirectRequest,
+        access_token: Option<&str>,
+    ) -> reqwest::RequestBuilder {
+        let url = build_url(&self.base_url, &request.path);
+        let mut builder = match request.method {
+            DirectMethod::Get => self.client.get(url),
+            DirectMethod::Post => self.client.post(url),
+            DirectMethod::Delete => self.client.delete(url),
+        };
+        if let Some(access_token) = access_token {
+            builder = builder.bearer_auth(access_token);
+        }
+        if let Some(body) = &request.body {
+            builder = builder
+                .header("content-type", "application/json")
+                .body(body.clone());
+        }
+        builder
+    }
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -111,6 +137,28 @@ impl MutationTransport for ReqwestMutationTransport {
         headers: &CorrelationHeaders<'_>,
     ) -> Result<RawResponse, TransportError> {
         self.send_inner(access_token, request, Some(headers)).await
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl DirectTransport for ReqwestMutationTransport {
+    async fn call(
+        &self,
+        access_token: Option<&str>,
+        request: DirectRequest,
+    ) -> Result<RawResponse, TransportError> {
+        let response = self
+            .direct_request(&request, access_token)
+            .send()
+            .await
+            .map_err(|source| TransportError::new(source.to_string()))?;
+        let status = response.status().as_u16();
+        let body = response
+            .text()
+            .await
+            .map_err(|source| TransportError::new(source.to_string()))?;
+        Ok(RawResponse { status, body })
     }
 }
 
@@ -171,5 +219,46 @@ mod tests {
         assert_eq!(request.headers().get(HEADER_REQUEST_ID).unwrap(), "cycle-9-3");
         assert_eq!(request.headers().get(HEADER_CLIENT_PLATFORM).unwrap(), "android");
         assert_eq!(request.headers().get(HEADER_CLIENT_BUILD).unwrap(), "42");
+    }
+
+    #[test]
+    fn a_direct_call_without_a_token_carries_no_authorization_header() {
+        let transport =
+            ReqwestMutationTransport::new(reqwest::Client::new(), "https://authority.example/");
+        let request = transport
+            .direct_request(
+                &DirectRequest {
+                    method: DirectMethod::Post,
+                    path: "/api/auth/google".to_string(),
+                    body: Some("{}".to_string()),
+                },
+                None,
+            )
+            .build()
+            .unwrap();
+        assert_eq!(request.method(), reqwest::Method::POST);
+        assert_eq!(request.url().as_str(), "https://authority.example/api/auth/google");
+        assert!(request.headers().get("authorization").is_none());
+        assert_eq!(request.headers().get("content-type").unwrap(), "application/json");
+    }
+
+    #[test]
+    fn a_direct_call_with_a_token_is_a_bearer_and_a_bodiless_one_has_no_content_type() {
+        let transport =
+            ReqwestMutationTransport::new(reqwest::Client::new(), "https://authority.example");
+        let request = transport
+            .direct_request(
+                &DirectRequest {
+                    method: DirectMethod::Delete,
+                    path: "/api/devices/device-web-laptop".to_string(),
+                    body: None,
+                },
+                Some("hb_token"),
+            )
+            .build()
+            .unwrap();
+        assert_eq!(request.method(), reqwest::Method::DELETE);
+        assert_eq!(request.headers().get("authorization").unwrap(), "Bearer hb_token");
+        assert!(request.headers().get("content-type").is_none());
     }
 }
