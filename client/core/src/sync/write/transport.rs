@@ -85,3 +85,41 @@ pub trait MutationTransport: Send + Sync {
         self.send(access_token, request).await
     }
 }
+
+/// The verb of a [`DirectRequest`] — its own enum rather than three more
+/// [`HttpMethod`] variants, because [`HttpMethod`] is persisted in the
+/// outbound queue and a `GET` or a `DELETE` must never be queueable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectMethod {
+    Get,
+    Post,
+    Delete,
+}
+
+/// One authority call that bypasses the outbound queue (#839): the
+/// sign-in exchange and the device routes (ADR-0040 decisions 1 and 6),
+/// which answer now or not at all. `body` is JSON when present.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DirectRequest {
+    pub method: DirectMethod,
+    pub path: String,
+    pub body: Option<String>,
+}
+
+/// The seam [`crate::Core::sign_in_with_google`], [`crate::Core::devices`]
+/// and [`crate::Core::revoke_device`] are injected with — a second trait on
+/// the same live transport ([`super::ReqwestMutationTransport`] implements
+/// both), so these calls reach the authority over the client and origin
+/// the sync cycle already uses. Like [`MutationTransport`], every response
+/// comes back whole; only a connection-level failure is an `Err`.
+/// `access_token` is `None` for the one unauthenticated route, the
+/// sign-in exchange, whose credential is the Google ID token in its body.
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+pub trait DirectTransport: Send + Sync {
+    async fn call(
+        &self,
+        access_token: Option<&str>,
+        request: DirectRequest,
+    ) -> Result<RawResponse, TransportError>;
+}

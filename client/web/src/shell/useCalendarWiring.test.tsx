@@ -301,7 +301,11 @@ describe("useCalendarWiring: credential-needed round trip", () => {
     const tokenClient = fakeTokenClient([{ accessToken: "fresh-token", expiresAtMs: 9_000 }]);
     const deps = connectionDepsFor(worker, tokenClient);
 
-    mount(worker, calendarState({ needsReconnect: true, silentRemintBlocked: false }), deps);
+    // The synced row reads connected: since #867 a re-mint landing under a
+    // not-connected row writes nothing (the case below).
+    mount(worker, calendarState({ connected: true, needsReconnect: true, silentRemintBlocked: false }), deps, {
+      prefs: prefs(true),
+    });
     await act(async () => {});
 
     expect(tokenClient.calls).toEqual(["none"]);
@@ -321,6 +325,46 @@ describe("useCalendarWiring: credential-needed round trip", () => {
 
     expect(tokenClient.calls).toEqual([]);
     expect(worker.postMessage).not.toHaveBeenCalled();
+  });
+
+  it("a re-mint still in flight when another device disconnects lands nothing and polls nothing", async () => {
+    // #867: the rotation path's #865 guard, on the credential-needed path.
+    const worker = fakeWorker();
+    let landRemint: (result: TokenResult) => void = () => {};
+    const tokenClient: TokenClient = {
+      requestToken: () =>
+        new Promise((resolve) => {
+          landRemint = resolve;
+        }),
+    };
+    const deps = connectionDepsFor(worker, tokenClient);
+
+    // A core 401 left the lane at needsReconnect; its silent re-mint is now
+    // in flight.
+    const { rerender } = mount(worker, calendarState({ connected: true, needsReconnect: true }), deps, {
+      prefs: prefs(true),
+    });
+    await act(async () => {});
+
+    // Another device disconnects: the synced row reads not connected and the
+    // lane parks — before the store's answer has come back round as the prop.
+    rerender({
+      calendar: calendarState({ connected: true, needsReconnect: true }),
+      prefs: prefs(false),
+      seed: null,
+      trips: null,
+    });
+    await act(async () => {});
+    expect(coreStore.getSnapshot().calendar.connected).toBe(false);
+    worker.postMessage.mockClear();
+
+    // Only now does the re-mint land. It must not re-arm the lane or poll.
+    await act(async () => {
+      landRemint({ accessToken: "fresh-token", expiresAtMs: Date.now() + 60 * 60 * 1000 });
+    });
+    expect(coreStore.getSnapshot().calendar).toMatchObject({ connected: false, needsReconnect: false });
+    expect(types(worker)).not.toContain("pollRefresh");
+    expect(types(worker)).not.toContain("pollStart");
   });
 });
 

@@ -7,12 +7,12 @@
 //! [`Core`] is the one storage/sync public API that both `ffi-mobile` and
 //! `ffi-web` surface verbatim (ADR-0001 seam rule 2). As of S6/#104 it is no
 //! longer a stub: [`Core::init`] loads the durable [`sync::SyncCycle`] state
-//! for a host-supplied storage namespace and holds the host-supplied API key
-//! in memory only (never persisted — see the `compile_fail` proof on
-//! [`Core`] itself); [`Core::frontier`] reads the mirror with every
+//! for a host-supplied storage namespace, and the host-supplied API key is
+//! held in memory only (never persisted — see the `compile_fail` proof on
+//! [`Core`] itself), in one of four [`CredentialArm`]s (#846); [`Core::frontier`] reads the mirror with every
 //! not-yet-confirmed capture overlaid, so a capture is visible the instant
 //! it is made and never flickers backwards mid-queue; and events (today,
-//! just [`CoreEvent::CredentialNeeded`]) reach the host by
+//! just [`CoreEvent::CredentialChanged`]) reach the host by
 //! [`Core::take_events`] draining a queue, never by a host-implemented
 //! callback (ADR-0003).
 //!
@@ -54,6 +54,7 @@ pub mod capture;
 pub mod context;
 pub mod contexts;
 pub mod decisions;
+pub mod devices;
 pub mod diagnostics;
 pub mod freshness;
 pub mod item_detail;
@@ -83,8 +84,8 @@ use question_switch::{
 };
 use hummingbird_domain::{
     resulting_stage, Alert, AlertPatch, Condition, CreateFileLink, CreateFog, CreateGrill,
-    CreateItem, CreateProject, CreateProjectLink, CreateRule, CreateStep, Energy, FileLink,
-    FileLinkPatch, Fog, FogPatch, GrillVerdict, GrillWithoutTranscript, Item, Project, ProjectLink, ProjectLinkPatch,
+    CreateItem, CreateProject, CreateProjectLink, CreateRule, CreateStep, DevicePlatform, Energy,
+    FileLink, FileLinkPatch, Fog, FogPatch, GrillVerdict, GrillWithoutTranscript, Item, Project, ProjectLink, ProjectLinkPatch,
     ProjectPatch, Route, RoutePatch, Rule, RulePatch, Setting, Size, Stage, Step, StepPatch, Tier,
 };
 
@@ -95,7 +96,7 @@ use storage::{
 };
 use sync::queue::{MutationIntent, QueueEntry};
 use sync::transport::ChangesTransport;
-use sync::write::transport::{HttpMethod, MutationTransport};
+use sync::write::transport::{DirectTransport, HttpMethod, MutationTransport};
 use sync::{CycleOutcome, LoadError, SyncCycle, Trigger};
 
 /// The public API version both FFI crates surface.
@@ -172,8 +173,47 @@ impl std::fmt::Display for CoreInitError {
 
 impl std::error::Error for CoreInitError {}
 
-/// The host-facing credential slot: the API key [`Core::init`] receives, or
-/// whatever [`Core::push_api_key`] most recently supplied. In memory only —
+/// Where this device's credential stands (#846) — the core's own answer,
+/// read through [`Core::credential_arm`] and carried by every
+/// [`CoreEvent::CredentialChanged`], so no host works it out for itself from
+/// its own storage and flags. The web shell's words (`unset` / `resting` /
+/// `reprompt`) plus the fourth arm a core needs before any host has spoken.
+///
+/// | arm | meaning |
+/// | --- | --- |
+/// | [`Unknown`](CredentialArm::Unknown) | no host has yet reported what its storage holds |
+/// | [`Unset`](CredentialArm::Unset) | storage was read, and no credential is available to this device (empty or unreadable storage alike) |
+/// | [`Resting`](CredentialArm::Resting) | a credential is held |
+/// | [`Reprompt`](CredentialArm::Reprompt) | a 401 was seen, and every attempt holds until a fresh push |
+///
+/// `Unknown` never resolves by itself: a host's start-up token load calls
+/// either [`Core::rehydrate_api_key`] or [`Core::report_no_api_key`].
+/// A [`Core::run`] in `Unknown` or `Unset` sends no request and reports
+/// [`CoreCycleOutcome::NoCredential`] — readers tell the two apart by the
+/// arm, not by the outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialArm {
+    Unknown,
+    Unset,
+    Resting,
+    Reprompt,
+}
+
+impl CredentialArm {
+    /// The arm's wire name — what both seams hand their hosts, so a client
+    /// on either side reads the same four words.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CredentialArm::Unknown => "unknown",
+            CredentialArm::Unset => "unset",
+            CredentialArm::Resting => "resting",
+            CredentialArm::Reprompt => "reprompt",
+        }
+    }
+}
+
+/// The host-facing credential slot: whatever [`Core::push_api_key`] or
+/// [`Core::rehydrate_api_key`] most recently supplied. In memory only —
 /// this type never derives `Serialize`/`Deserialize` and never implements
 /// [`storage::Persistable`], and never will; see the `compile_fail` proof on
 /// [`Core`] for the mechanical guarantee.
@@ -182,22 +222,50 @@ impl std::error::Error for CoreInitError {}
 /// (that type is private to `context`, so this is a second small copy
 /// rather than a cross-module reuse) — a rejected credential holds every
 /// future attempt until a fresh push, and a push unconditionally resumes.
+///
+/// **An empty key is never stored (#846).** `""` is not a credential: a
+/// push of one is a clear, and a rehydration of one is an absence report.
+/// So no value a host can pass reads as "I hold one" when it doesn't.
 #[derive(Debug, Clone, Default)]
 struct AccessTokenSlot {
     key: Option<String>,
     held: bool,
+    /// Whether any host has reported what its storage holds — the bit that
+    /// tells [`CredentialArm::Unknown`] ("never told") from
+    /// [`CredentialArm::Unset`] ("told: nothing"). Set by every door below
+    /// except [`AccessTokenSlot::hold`], and never cleared.
+    reported: bool,
 }
 
 impl AccessTokenSlot {
     fn push(&mut self, key: String) {
+        if key.is_empty() {
+            self.clear();
+            return;
+        }
         self.key = Some(key);
         self.held = false;
+        self.reported = true;
     }
 
     /// Issue #196: rehydrates a key WITHOUT resuming a hold — see
     /// [`Core::rehydrate_api_key`] for the full contract this backs.
     fn rehydrate(&mut self, key: String) {
+        if key.is_empty() {
+            self.report_absent();
+            return;
+        }
         self.key = Some(key);
+        self.reported = true;
+    }
+
+    /// #846: the host read its storage and found nothing. Moves
+    /// [`CredentialArm::Unknown`] to [`CredentialArm::Unset`] and nothing
+    /// else — a key some other door already supplied is not withdrawn by a
+    /// storage read that merely came back empty (that is
+    /// [`AccessTokenSlot::clear`]'s job).
+    fn report_absent(&mut self) {
+        self.reported = true;
     }
 
     fn token(&self) -> Option<&str> {
@@ -216,8 +284,8 @@ impl AccessTokenSlot {
         self.held
     }
 
-    /// "Forget token" (#106/S8): returns to the "no key has ever been
-    /// pushed" state, distinct from [`AccessTokenSlot::hold`] — a hold
+    /// "Forget token" (#106/S8): returns to the "no key" state, distinct
+    /// from [`AccessTokenSlot::hold`] — a hold
     /// means a previously-good key was just rejected and a fresh push is
     /// expected to resume it; a clear means the host discarded the key
     /// itself, so the next [`Core::run`] should report
@@ -225,6 +293,22 @@ impl AccessTokenSlot {
     fn clear(&mut self) {
         self.key = None;
         self.held = false;
+        self.reported = true;
+    }
+
+    /// The arm this slot is in — derived, never stored, so it cannot drift
+    /// from the fields it summarises. A hold outranks the key it holds: a
+    /// rehydration while held leaves the arm at `Reprompt` (#196).
+    fn arm(&self) -> CredentialArm {
+        if self.held {
+            CredentialArm::Reprompt
+        } else if self.key.is_some() {
+            CredentialArm::Resting
+        } else if self.reported {
+            CredentialArm::Unset
+        } else {
+            CredentialArm::Unknown
+        }
     }
 }
 
@@ -887,18 +971,26 @@ fn unticked_steps_changed(session_steps: &[Step], live_steps: &[Step]) -> bool {
 /// (ADR-0003 rules out a host-implemented callback into the core).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoreEvent {
-    /// [`Core::run`] just held on a rejected credential — the host's cue to
-    /// surface a re-auth prompt. Nothing further is attempted until
-    /// [`Core::push_api_key`] supplies a fresh one.
-    CredentialNeeded { at_ms: i64 },
+    /// The credential was just mutated (#846): a push, a rehydration, a
+    /// clear, an absence report, or a 401 that [`Core::run`] held on.
+    /// Carries the [`CredentialArm`] it left the slot in — `Reprompt` after
+    /// a 401 is the host's cue to surface a re-auth prompt, and nothing
+    /// further is attempted until [`Core::push_api_key`] supplies a fresh
+    /// one. Fires even when the arm did not change (a straight re-entry),
+    /// because views re-read host-side metadata on it (#849). Never carries
+    /// the token. Every mutation appends its own event, so a host reads the
+    /// newest one for the current arm.
+    CredentialChanged { arm: CredentialArm },
 }
 
 /// What one [`Core::run`] call did — [`sync::CycleOutcome`] plus the two
 /// credential-hold states that never reach [`sync::SyncCycle::run`] at all.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CoreCycleOutcome {
-    /// No API key has ever been pushed — a valid steady state, not an
-    /// error (mirrors [`context::PollOutcome::NoCredential`]).
+    /// No credential is held — [`CredentialArm::Unknown`] or
+    /// [`CredentialArm::Unset`], told apart by [`Core::credential_arm`]. A
+    /// valid steady state, not an error (mirrors
+    /// [`context::PollOutcome::NoCredential`]).
     NoCredential,
     /// Held on a previously rejected credential; nothing was attempted, not
     /// even a queue-empty no-op cycle.
@@ -941,7 +1033,7 @@ impl Persistable for GrillDrafts {}
 /// # use hummingbird_core::storage::{save_snapshot, MemorySnapshotStore};
 /// # async fn example() {
 /// let store = MemorySnapshotStore::default();
-/// // `Core::init` receives the API key as a `String` — the same type the
+/// // A host hands `Core` the API key as a `String` — the same type the
 /// // storage module's own compile-fail proof already pins as never
 /// // `Persistable`. This is that same unrepresentable-by-construction rule,
 /// // named at the API key specifically: there is no way to route it
@@ -997,23 +1089,24 @@ impl Default for Core<MemorySnapshotStore, MemorySnapshotStore> {
 
 impl Core<CoreStore, CoreStore> {
     /// Loads (or starts fresh, if nothing is durable yet) the sync state
-    /// under `namespace`, and holds `api_key` in memory for the session.
+    /// under `namespace`.
     ///
     /// `namespace` is the one thing the host contributes at init (ADR-0003)
     /// — an IndexedDB database name prefix in the browser, a directory
-    /// (created if it does not exist) everywhere else. `api_key` is never
-    /// persisted — see the `compile_fail` proof on [`Core`].
-    pub async fn init(
-        namespace: impl Into<String>,
-        api_key: impl Into<String>,
-    ) -> Result<Self, CoreInitError> {
+    /// (created if it does not exist) everywhere else.
+    ///
+    /// **Takes no credential (#846).** The core starts in
+    /// [`CredentialArm::Unknown`], and the host's start-up token load moves
+    /// it on: [`Core::rehydrate_api_key`] with a stored token, or
+    /// [`Core::report_no_api_key`] without one. No init argument can claim a
+    /// credential the host doesn't hold.
+    pub async fn init(namespace: impl Into<String>) -> Result<Self, CoreInitError> {
         let namespace = namespace.into();
         prepare_namespace(&namespace)?;
         let cycle = SyncCycle::load(queue_store(&namespace), mirror_store(&namespace))
             .await
             .map_err(|error: LoadError<_, _>| CoreInitError(error.to_string()))?;
-        let mut credential = AccessTokenSlot::default();
-        credential.push(api_key.into());
+        let credential = AccessTokenSlot::default();
         let overlay = overlay_from_queue(cycle.queue())?;
         let binding_overlay = binding_overlay_from_queue(cycle.queue())?;
         let grill_draft_store = grill_draft_store(&namespace);
@@ -3698,56 +3791,161 @@ where
         .await
     }
 
-    /// The host calls this at init and on every credential rotation.
+    /// The host calls this on every fresh entry or rotation of a token.
     /// Always resumes (a fresh push is the only way out of a hold), the
-    /// same contract [`context::ContextPoller::push_token`] documents.
+    /// same contract [`context::ContextPoller::push_token`] documents, and
+    /// moves the arm to [`CredentialArm::Resting`] — except for an empty
+    /// key, which is not a credential and lands in
+    /// [`CredentialArm::Unset`] exactly as [`Core::clear_api_key`] would.
     ///
-    /// Also drops any not-yet-drained [`CoreEvent::CredentialNeeded`]: once
-    /// a fresh key is pushed, that prompt is moot — a host that had not
-    /// gotten around to draining it yet must not see it fire after the
-    /// rotation it is asking for already happened.
+    /// Emits [`CoreEvent::CredentialChanged`] with the new arm. An earlier,
+    /// undrained `Reprompt` event stays queued behind it: a host reads the
+    /// newest event for the current arm, so the stale prompt is superseded
+    /// rather than retracted.
     pub fn push_api_key(&mut self, api_key: impl Into<String>) {
         self.credential.push(api_key.into());
-        self.events
-            .retain(|event| !matches!(event, CoreEvent::CredentialNeeded { .. }));
+        self.credential_changed();
     }
 
     /// Issue #196 (shape 2): the REHYDRATION half of what used to be a
     /// single `push_api_key` call site — a host reloading a token it
     /// already had stored (core start, or a later view reaching `ready`
     /// under #126's one-shared-core-per-origin), not a genuinely new or
-    /// re-entered one. Unlike [`Core::push_api_key`], never resumes a hold
-    /// and never drops a pending [`CoreEvent::CredentialNeeded`]: those two
-    /// side effects are the rotation contract, and a second view rehydrating
+    /// re-entered one. Unlike [`Core::push_api_key`], never resumes a hold:
+    /// that is the rotation contract, and a second view rehydrating
     /// the very token that just got rejected must not be able to trigger
-    /// them, or the client silently retries a credential already known to
-    /// be dead and Settings loses the prompt it was about to show.
+    /// it, or the client silently retries a credential already known to
+    /// be dead. So a rehydration while held leaves the arm at
+    /// [`CredentialArm::Reprompt`], and the event it emits says so.
     ///
     /// Still sets the token when nothing is held — a first-run device with
     /// a stored (never-yet-rejected) token still needs this to actually
-    /// reach the credential slot, exactly as [`Core::push_api_key`] would.
+    /// reach the credential slot, exactly as [`Core::push_api_key`] would,
+    /// and lands in [`CredentialArm::Resting`]. An empty key is an absence
+    /// report ([`Core::report_no_api_key`]), never a credential.
     /// Only a genuinely fresh [`Core::push_api_key`] call resumes a hold.
     pub fn rehydrate_api_key(&mut self, api_key: impl Into<String>) {
         self.credential.rehydrate(api_key.into());
+        self.credential_changed();
+    }
+
+    /// #846: the host read its credential storage and found nothing — empty
+    /// and unreadable storage alike. Moves [`CredentialArm::Unknown`] to
+    /// [`CredentialArm::Unset`]; every host's start-up token load calls
+    /// either this or [`Core::rehydrate_api_key`], so `Unknown` always
+    /// resolves. From any other arm it changes nothing — a storage read
+    /// that came back empty does not withdraw a key another door already
+    /// supplied — but still emits [`CoreEvent::CredentialChanged`], like
+    /// every credential door.
+    pub fn report_no_api_key(&mut self) {
+        self.credential.report_absent();
+        self.credential_changed();
     }
 
     /// "Forget token" (#106/S8): discards the in-memory credential outright
-    /// rather than holding it — the next [`Core::run`] reports
-    /// [`CoreCycleOutcome::NoCredential`], the same steady state a device
-    /// that has never pushed a key sees, not [`CoreCycleOutcome::Held`]
+    /// rather than holding it — the arm moves to [`CredentialArm::Unset`]
+    /// and the next [`Core::run`] reports
+    /// [`CoreCycleOutcome::NoCredential`], not [`CoreCycleOutcome::Held`]
     /// (which would wrongly imply a key was rejected and is waiting to be
-    /// retried). Never touches anything durable: the credential was never
-    /// persisted in the first place (see the `compile_fail` proof on
-    /// [`Core`]), so there is nothing here to clean up.
-    ///
-    /// Also drops any not-yet-drained [`CoreEvent::CredentialNeeded`], for
-    /// the same reason [`Core::push_api_key`] does — forgetting the key is
-    /// this host's own deliberate action, not something a stale prompt
-    /// should re-litigate.
+    /// retried). Signing this device out (#839) uses this same door. Never
+    /// touches anything durable — the queue and mirror stay as they are, and
+    /// the credential was never persisted in the first place (see the
+    /// `compile_fail` proof on [`Core`]), so there is nothing here to clean
+    /// up. Emits [`CoreEvent::CredentialChanged`].
     pub fn clear_api_key(&mut self) {
         self.credential.clear();
-        self.events
-            .retain(|event| !matches!(event, CoreEvent::CredentialNeeded { .. }));
+        self.credential_changed();
+    }
+
+    /// Where this device's credential stands (#846) — see [`CredentialArm`].
+    pub fn credential_arm(&self) -> CredentialArm {
+        self.credential.arm()
+    }
+
+    /// Trades a Google ID token for this device's `device` token through
+    /// `POST /api/auth/google` (#839, ADR-0040 decision 1) — `name` and
+    /// `platform` are what the authority names the token from.
+    ///
+    /// **Touches no credential and persists nothing.** A
+    /// [`devices::SignInOutcome::SignedIn`] carries the token back to the
+    /// host, which stores it and then calls [`Core::push_api_key`] with it,
+    /// exactly as a pasted token flows; until then this core's arm is
+    /// whatever it was. Every refusal is its own arm of the outcome — see
+    /// [`devices::SignInOutcome`].
+    pub async fn sign_in_with_google(
+        &self,
+        transport: &impl DirectTransport,
+        id_token: &str,
+        name: &str,
+        platform: DevicePlatform,
+    ) -> devices::SignInOutcome {
+        let request = devices::sign_in_request(id_token, name, platform);
+        devices::sign_in_outcome(transport.call(None, request).await)
+    }
+
+    /// The operator's devices, per `GET /api/devices` (#839, ADR-0040
+    /// decision 6), in the authority's order —
+    /// [`decisions::devices::device_rows`] orders and words them. Sends
+    /// nothing without a usable credential
+    /// ([`devices::DevicesOutcome::NoCredential`]); a 401 holds the
+    /// credential exactly as [`Core::run`] does, and the arm moves to
+    /// [`CredentialArm::Reprompt`].
+    pub async fn devices(&mut self, transport: &impl DirectTransport) -> devices::DevicesOutcome {
+        let Some(token) = self.credential.token().map(str::to_string) else {
+            return devices::DevicesOutcome::NoCredential;
+        };
+        let outcome = devices::devices_outcome(
+            transport.call(Some(&token), devices::devices_request()).await,
+        );
+        if outcome == devices::DevicesOutcome::CredentialRejected {
+            self.hold_rejected_credential();
+        }
+        outcome
+    }
+
+    /// Signs one device out, per `DELETE /api/devices/:id` (#839, ADR-0040
+    /// decision 6). When the authority says the revoked row is this
+    /// device's own ([`devices::RevokeOutcome::SignedOut`]), the core
+    /// drops its credential through [`Core::clear_api_key`] — the arm
+    /// moves to [`CredentialArm::Unset`] and **every queued write stays
+    /// queued** (ADR-0004), to drain once a fresh token is pushed. The
+    /// host deletes its stored copy on that outcome. A 401 holds the
+    /// credential as [`Core::devices`] does; an id no route can name
+    /// answers [`devices::RevokeOutcome::NotFound`] without a request.
+    pub async fn revoke_device(
+        &mut self,
+        transport: &impl DirectTransport,
+        id: &str,
+    ) -> devices::RevokeOutcome {
+        let Some(token) = self.credential.token().map(str::to_string) else {
+            return devices::RevokeOutcome::NoCredential;
+        };
+        let Some(request) = devices::revoke_request(id) else {
+            return devices::RevokeOutcome::NotFound;
+        };
+        let outcome = devices::revoke_outcome(transport.call(Some(&token), request).await);
+        match outcome {
+            devices::RevokeOutcome::SignedOut(_) => self.clear_api_key(),
+            devices::RevokeOutcome::CredentialRejected => self.hold_rejected_credential(),
+            _ => {}
+        }
+        outcome
+    }
+
+    /// A 401 outside a sync cycle — the same hold, and the same event,
+    /// [`Core::apply_cycle_outcome`] gives one inside it.
+    fn hold_rejected_credential(&mut self) {
+        self.credential.hold();
+        self.credential_changed();
+    }
+
+    /// Records one [`CoreEvent::CredentialChanged`] carrying the slot's
+    /// current arm — the one place every credential mutation reports
+    /// itself, so none of them can forget to.
+    fn credential_changed(&mut self) {
+        self.events.push(CoreEvent::CredentialChanged {
+            arm: self.credential.arm(),
+        });
     }
 
     /// Drains every [`CoreEvent`] recorded since the last drain — poll-style
@@ -3759,8 +3957,8 @@ where
     /// Runs one [`sync::SyncCycle::run`] cycle, held outright
     /// ([`CoreCycleOutcome::Held`], no transport ever reached — not even a
     /// [`sync::Backoff`]-gated no-op) if the credential is currently held,
-    /// or reported as [`CoreCycleOutcome::NoCredential`] if none has ever
-    /// been pushed.
+    /// or reported as [`CoreCycleOutcome::NoCredential`] — no request sent
+    /// — in [`CredentialArm::Unknown`] or [`CredentialArm::Unset`].
     ///
     /// **Closes the pull-side 401 gap `sync::cycle`'s module docs name.** A
     /// [`sync::CycleOutcome::CredentialNeeded`] — from either half of the
@@ -3814,7 +4012,7 @@ where
             )
             .await;
 
-        self.apply_cycle_outcome(outcome, dead_letters_before_this_cycle, now_ms)
+        self.apply_cycle_outcome(outcome, dead_letters_before_this_cycle)
     }
 
     /// [`Core::run`]'s observed twin (#706) — every credential/overlay/
@@ -3858,7 +4056,7 @@ where
             )
             .await;
 
-        self.apply_cycle_outcome(outcome, dead_letters_before_this_cycle, now_ms)
+        self.apply_cycle_outcome(outcome, dead_letters_before_this_cycle)
     }
 
     /// The bookkeeping [`Core::run`] and [`Core::run_observed`] share once
@@ -3872,7 +4070,6 @@ where
         &mut self,
         outcome: CycleOutcome,
         dead_letters_before_this_cycle: usize,
-        now_ms: i64,
     ) -> CoreCycleOutcome {
         // A dead-lettered entry reverts to server truth regardless of what
         // the rest of this cycle did — matched by the queue entry id every
@@ -3911,8 +4108,7 @@ where
         }
 
         if matches!(outcome, CycleOutcome::CredentialNeeded { .. }) {
-            self.credential.hold();
-            self.events.push(CoreEvent::CredentialNeeded { at_ms: now_ms });
+            self.hold_rejected_credential();
         }
 
         CoreCycleOutcome::Cycle(outcome)
@@ -3977,7 +4173,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let namespace = dir.path().join("ns-1");
 
-        let core = Core::init(namespace.to_str().unwrap(), "api-key-1")
+        let core = Core::init(namespace.to_str().unwrap())
             .await
             .unwrap();
 
@@ -3991,7 +4187,7 @@ mod tests {
         let namespace = dir.path().join("ns-2");
         let ns = namespace.to_str().unwrap();
 
-        let mut first = Core::init(ns, "api-key-1").await.unwrap();
+        let mut first = Core::init(ns).await.unwrap();
         first
             .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
@@ -4000,7 +4196,7 @@ mod tests {
         // reloading must still see the captured mutation queued.
         drop(first);
 
-        let second = Core::init(ns, "api-key-2").await.unwrap();
+        let second = Core::init(ns).await.unwrap();
         assert_eq!(
             second.frontier().len(),
             1,
@@ -4011,7 +4207,7 @@ mod tests {
     /// #104 acceptance: "No method returns or persists the API key" — the
     /// mechanical half beyond the `compile_fail` doctest on [`Core`] itself:
     /// the persisted bytes on disk must never contain the key a caller
-    /// passed to `init`.
+    /// pushed.
     #[tokio::test]
     async fn the_api_key_never_reaches_the_durable_snapshot_bytes() {
         let dir = tempfile::tempdir().unwrap();
@@ -4019,7 +4215,8 @@ mod tests {
         let ns = namespace.to_str().unwrap();
         let secret = "sk-do-not-persist-me";
 
-        let mut core = Core::init(ns, secret).await.unwrap();
+        let mut core = Core::init(ns).await.unwrap();
+        core.push_api_key(secret);
         core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
             .unwrap();
@@ -4695,7 +4892,7 @@ mod tests {
         let namespace = dir.path().join("ns-act-reload");
         let ns = namespace.to_str().unwrap();
 
-        let mut first = Core::init(ns, "api-key-1").await.unwrap();
+        let mut first = Core::init(ns).await.unwrap();
         let id = first
             .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
@@ -4709,7 +4906,7 @@ mod tests {
         // would be when the last view closes mid-queue.
         drop(first);
 
-        let second = Core::init(ns, "api-key-2").await.unwrap();
+        let second = Core::init(ns).await.unwrap();
         assert!(
             second.is_pending(&id),
             "a reload must not silently lose a still-queued act's pending state"
@@ -4733,7 +4930,7 @@ mod tests {
         let namespace = dir.path().join("ns-triage-reload");
         let ns = namespace.to_str().unwrap();
 
-        let mut first = Core::init(ns, "api-key-1").await.unwrap();
+        let mut first = Core::init(ns).await.unwrap();
         let id = first
             .capture("seed-1", "someday maybe", Stage::Triage, 1_000, CaptureOptions::default(), None)
             .await
@@ -4755,7 +4952,7 @@ mod tests {
         // Only the queue is durable at this point (no cycle ever ran).
         drop(first);
 
-        let second = Core::init(ns, "api-key-2").await.unwrap();
+        let second = Core::init(ns).await.unwrap();
         assert!(
             second.is_pending(&id),
             "a reload must not silently lose a still-queued triage's pending state"
@@ -5178,10 +5375,13 @@ mod tests {
         ));
 
         // The host's cue to prompt for re-auth, drained rather than
-        // delivered by callback.
+        // delivered by callback — the push's own event first, then the 401's.
         assert_eq!(
             core.take_events(),
-            vec![CoreEvent::CredentialNeeded { at_ms: 1_000 }]
+            vec![
+                CoreEvent::CredentialChanged { arm: CredentialArm::Resting },
+                CoreEvent::CredentialChanged { arm: CredentialArm::Reprompt },
+            ]
         );
         assert_eq!(core.take_events(), Vec::new(), "draining twice yields nothing new");
 
@@ -5525,7 +5725,7 @@ mod tests {
     // -------------------------------------------------------- push_api_key
 
     #[tokio::test]
-    async fn pushing_a_fresh_key_drops_an_undrained_credential_needed_event() {
+    async fn pushing_a_fresh_key_supersedes_an_undrained_reprompt_event() {
         let mut core = Core::new();
         core.push_api_key("stale-token");
 
@@ -5534,13 +5734,14 @@ mod tests {
         core.run(&read, &write, 1_000, Trigger::User, true, 1.0)
             .await;
 
-        // The event is recorded but deliberately never drained here.
+        // The 401's event is recorded but deliberately never drained here.
         core.push_api_key("fresh-token");
 
         assert_eq!(
-            core.take_events(),
-            Vec::new(),
-            "a fresh push must retract a prompt for a hold it just resolved"
+            core.take_events().last(),
+            Some(&CoreEvent::CredentialChanged { arm: CredentialArm::Resting }),
+            "a host reading the newest event must see the push that resolved the hold, \
+             never the prompt it resolved"
         );
     }
 
@@ -5574,10 +5775,12 @@ mod tests {
         assert_eq!(held, CoreCycleOutcome::Held);
 
         // Nor does it retract the pending prompt — Settings must still see
-        // it on whichever view drains next.
+        // it on whichever view drains next: the rehydration's own event
+        // still says `Reprompt`.
+        assert_eq!(core.credential_arm(), CredentialArm::Reprompt);
         assert_eq!(
-            core.take_events(),
-            vec![CoreEvent::CredentialNeeded { at_ms: 1_000 }],
+            core.take_events().last(),
+            Some(&CoreEvent::CredentialChanged { arm: CredentialArm::Reprompt }),
             "a rehydration must never retract a hold prompt it did not resolve"
         );
     }
@@ -5693,7 +5896,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clearing_the_key_drops_an_undrained_credential_needed_event() {
+    async fn clearing_the_key_supersedes_an_undrained_reprompt_event() {
         let mut core = Core::new();
         core.push_api_key("stale-token");
         let read = ScriptedRead::sweep_only(vec![Err(TransportError::http(401, "revoked"))]);
@@ -5701,12 +5904,12 @@ mod tests {
         core.run(&read, &write, 1_000, Trigger::User, true, 1.0)
             .await;
 
-        // The event is recorded but deliberately never drained here.
+        // The 401's event is recorded but deliberately never drained here.
         core.clear_api_key();
 
         assert_eq!(
-            core.take_events(),
-            Vec::new(),
+            core.take_events().last(),
+            Some(&CoreEvent::CredentialChanged { arm: CredentialArm::Unset }),
             "forgetting the key is this host's own action, not something a stale re-prompt \
              should re-litigate"
         );
@@ -5728,6 +5931,162 @@ mod tests {
             "clearing the credential must not touch a queued capture's overlay"
         );
         assert_eq!(core.frontier().len(), 1);
+    }
+
+    // ------------------------------------------- #846: the credential's arm
+
+    /// A 401 on the pull, run against `core` — the one way into `Reprompt`.
+    async fn run_into_a_401(core: &mut Core) {
+        let read = ScriptedRead::sweep_only(vec![Err(TransportError::http(401, "revoked"))]);
+        let write = ScriptedWrite::new(vec![]);
+        core.run(&read, &write, 1_000, Trigger::User, true, 1.0).await;
+    }
+
+    /// A cycle that must reach no transport: both scripted transports are
+    /// empty, so any request would panic.
+    async fn run_without_transport(core: &mut Core) -> CoreCycleOutcome {
+        core.run(&ScriptedRead::default(), &ScriptedWrite::default(), 2_000, Trigger::User, true, 1.0)
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_core_started_with_no_credential_is_unknown_and_sends_no_request() {
+        let mut core = Core::new();
+
+        assert_eq!(core.credential_arm(), CredentialArm::Unknown);
+        assert_eq!(run_without_transport(&mut core).await, CoreCycleOutcome::NoCredential);
+        assert_eq!(core.credential_arm(), CredentialArm::Unknown, "unknown never resolves by itself");
+        assert!(core.take_events().is_empty(), "a no-credential cycle is not a credential mutation");
+    }
+
+    #[tokio::test]
+    async fn an_initialised_core_is_unknown_until_its_host_reports() {
+        let dir = tempfile::tempdir().unwrap();
+        let namespace = dir.path().join("ns-arm");
+        let core = Core::init(namespace.to_str().unwrap()).await.unwrap();
+
+        assert_eq!(core.credential_arm(), CredentialArm::Unknown);
+    }
+
+    #[tokio::test]
+    async fn an_absence_report_moves_unknown_to_unset_and_still_sends_no_request() {
+        let mut core = Core::new();
+        core.report_no_api_key();
+
+        assert_eq!(core.credential_arm(), CredentialArm::Unset);
+        assert_eq!(run_without_transport(&mut core).await, CoreCycleOutcome::NoCredential);
+        assert_eq!(
+            core.take_events(),
+            vec![CoreEvent::CredentialChanged { arm: CredentialArm::Unset }]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_absence_report_never_withdraws_a_key_another_door_supplied() {
+        let mut resting = Core::new();
+        resting.push_api_key("device-token");
+        resting.report_no_api_key();
+        assert_eq!(resting.credential_arm(), CredentialArm::Resting);
+
+        let mut reprompt = Core::new();
+        reprompt.push_api_key("stale-token");
+        run_into_a_401(&mut reprompt).await;
+        reprompt.report_no_api_key();
+        assert_eq!(reprompt.credential_arm(), CredentialArm::Reprompt);
+    }
+
+    #[tokio::test]
+    async fn an_empty_key_is_never_a_credential() {
+        let mut pushed = Core::new();
+        pushed.push_api_key("");
+        assert_eq!(pushed.credential_arm(), CredentialArm::Unset);
+        assert_eq!(run_without_transport(&mut pushed).await, CoreCycleOutcome::NoCredential);
+
+        // Pushing "" over a real key is a clear, not a credential.
+        let mut replaced = Core::new();
+        replaced.push_api_key("device-token");
+        replaced.push_api_key("");
+        assert_eq!(replaced.credential_arm(), CredentialArm::Unset);
+        assert_eq!(run_without_transport(&mut replaced).await, CoreCycleOutcome::NoCredential);
+
+        // Rehydrating "" is an absence report.
+        let mut rehydrated = Core::new();
+        rehydrated.rehydrate_api_key("");
+        assert_eq!(rehydrated.credential_arm(), CredentialArm::Unset);
+        assert_eq!(run_without_transport(&mut rehydrated).await, CoreCycleOutcome::NoCredential);
+    }
+
+    #[tokio::test]
+    async fn every_door_moves_the_arm_as_the_table_says() {
+        let mut core = Core::new();
+
+        core.push_api_key("device-token");
+        assert_eq!(core.credential_arm(), CredentialArm::Resting, "push -> resting");
+
+        run_into_a_401(&mut core).await;
+        assert_eq!(core.credential_arm(), CredentialArm::Reprompt, "401 -> reprompt");
+
+        core.rehydrate_api_key("device-token");
+        assert_eq!(
+            core.credential_arm(),
+            CredentialArm::Reprompt,
+            "a rehydrate never resumes a hold (#196)"
+        );
+
+        core.push_api_key("fresh-token");
+        assert_eq!(core.credential_arm(), CredentialArm::Resting, "push resumes a hold");
+
+        core.clear_api_key();
+        assert_eq!(core.credential_arm(), CredentialArm::Unset, "clear -> unset");
+
+        core.rehydrate_api_key("device-token");
+        assert_eq!(core.credential_arm(), CredentialArm::Resting, "rehydrate -> resting");
+
+        let mut held_then_cleared = Core::new();
+        held_then_cleared.push_api_key("stale-token");
+        run_into_a_401(&mut held_then_cleared).await;
+        held_then_cleared.clear_api_key();
+        assert_eq!(held_then_cleared.credential_arm(), CredentialArm::Unset, "clear ends a hold");
+    }
+
+    #[tokio::test]
+    async fn every_credential_mutation_emits_one_event_carrying_the_arm_even_a_re_entry() {
+        let mut core = Core::new();
+
+        core.report_no_api_key();
+        core.report_no_api_key();
+        core.rehydrate_api_key("device-token");
+        core.rehydrate_api_key("device-token");
+        core.push_api_key("device-token");
+        run_into_a_401(&mut core).await;
+        core.clear_api_key();
+        core.clear_api_key();
+
+        use CredentialArm::*;
+        let arms: Vec<CredentialArm> = core
+            .take_events()
+            .into_iter()
+            .map(|CoreEvent::CredentialChanged { arm }| arm)
+            .collect();
+        assert_eq!(
+            arms,
+            vec![Unset, Unset, Resting, Resting, Resting, Reprompt, Unset, Unset],
+            "one event per mutation, re-entries that leave the arm unchanged included"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_credential_event_or_arm_ever_carries_the_token() {
+        let secret = "sk-never-in-an-event";
+        let mut core = Core::new();
+        core.push_api_key(secret);
+        core.rehydrate_api_key(secret);
+        let read = ScriptedRead::sweep_only(vec![Err(TransportError::http(401, "revoked"))]);
+        let write = ScriptedWrite::new(vec![]);
+        core.run(&read, &write, 1_000, Trigger::User, true, 1.0).await;
+
+        let rendered = format!("{:?} {:?}", core.take_events(), core.credential_arm());
+        assert!(!rendered.contains(secret), "{rendered}");
     }
 
     // -------------------------------------------------------------- triage_inbox
@@ -6649,11 +7008,11 @@ mod tests {
         let namespace = dir.path().join("ns-grill-draft-reload");
         let ns = namespace.to_str().unwrap();
 
-        let mut first = Core::init(ns, "api-key-1").await.unwrap();
+        let mut first = Core::init(ns).await.unwrap();
         first.save_grill_draft("a-1", sample_turns(), 1_000).await.unwrap();
         drop(first);
 
-        let second = Core::init(ns, "api-key-2").await.unwrap();
+        let second = Core::init(ns).await.unwrap();
         assert!(second.has_grill_draft("a-1"), "reopening must resume the same draft");
         assert_eq!(second.grill_draft("a-1"), Some(&sample_turns()));
     }
@@ -6666,12 +7025,12 @@ mod tests {
         let namespace = dir.path().join("ns-grill-draft-discard-reload");
         let ns = namespace.to_str().unwrap();
 
-        let mut first = Core::init(ns, "api-key-1").await.unwrap();
+        let mut first = Core::init(ns).await.unwrap();
         first.save_grill_draft("a-1", sample_turns(), 1_000).await.unwrap();
         first.discard_grill_draft("a-1", 2_000).await.unwrap();
         drop(first);
 
-        let second = Core::init(ns, "api-key-2").await.unwrap();
+        let second = Core::init(ns).await.unwrap();
         assert!(!second.has_grill_draft("a-1"));
     }
 
@@ -7375,14 +7734,14 @@ mod tests {
         let namespace = dir.path().join("ns-binding-reload");
         let ns = namespace.to_str().unwrap();
 
-        let mut first = Core::init(ns, "api-key-1").await.unwrap();
+        let mut first = Core::init(ns).await.unwrap();
         first
             .set_binding("seed-1", BindingKey::TripsCalendar, "cal-trips", 1_000)
             .await
             .unwrap();
         drop(first);
 
-        let second = Core::init(ns, "api-key-2").await.unwrap();
+        let second = Core::init(ns).await.unwrap();
         let bindings = second.bindings();
         let trips = binding(&bindings, "trips-calendar");
         assert_eq!(trips.value, BindingValue::Text { text: "cal-trips".to_string() });
@@ -8266,14 +8625,14 @@ mod tests {
         let namespace = dir.path().join("ns-switch-reload");
         let ns = namespace.to_str().unwrap();
 
-        let mut first = Core::init(ns, "api-key-1").await.unwrap();
+        let mut first = Core::init(ns).await.unwrap();
         first
             .set_question_enabled("seed-1", StandingQuestion::Vacation, false, 1_000)
             .await
             .unwrap();
         drop(first);
 
-        let second = Core::init(ns, "api-key-2").await.unwrap();
+        let second = Core::init(ns).await.unwrap();
         let vacation = switch_of(&second.question_switches(), StandingQuestion::Vacation).clone();
         assert!(!vacation.enabled);
         assert!(vacation.pending);
@@ -8973,6 +9332,32 @@ mod tests {
         assert_eq!(core.cycle.queue().entries().count(), 0);
     }
 
+    /// #867: #843's create-replay rebase (`patch_with_rebase`), through the
+    /// contexts vocabulary. Two edits before the first sync are two
+    /// create-shaped PUTs to a row nobody has yet; the second is answered
+    /// with the first's row, which is still this core's own base, so it is
+    /// reapplied rather than dead-lettered as someone else's.
+    #[tokio::test]
+    async fn two_context_edits_before_the_first_sync_both_land() {
+        let authority = SettingsAuthority::default();
+        let mut core = Core::new();
+        core.push_api_key("token-1");
+
+        core.add_context("seed-1", "@calls", 1_000).await.unwrap();
+        core.add_context("seed-2", "@reading", 1_001).await.unwrap();
+        core.run(&authority, &authority, 2_000, Trigger::User, true, 0.0).await;
+
+        let stored = authority.settings().into_iter().find(|row| row.key == "contexts").unwrap();
+        let stored: Vec<String> = serde_json::from_str(&stored.value).unwrap();
+        assert_eq!(
+            stored,
+            ["@home", "@computer", "@phone", "@errands", "@garden", "@homework", "@calls", "@reading"]
+        );
+        assert!(core.dead_letters().is_empty());
+        assert_eq!(core.cycle.queue().entries().count(), 0);
+        assert_eq!(context_names(&core), stored);
+    }
+
     #[tokio::test]
     async fn removing_an_unknown_context_enqueues_nothing() {
         let mut core = core_with_contexts(vec![], vec![], vec![]).await;
@@ -9089,11 +9474,11 @@ mod tests {
         let namespace = dir.path().join("ns-contexts-reload");
         let ns = namespace.to_str().unwrap();
 
-        let mut first = Core::init(ns, "api-key-1").await.unwrap();
+        let mut first = Core::init(ns).await.unwrap();
         first.add_context("seed-1", "@calls", 2_000).await.unwrap();
         drop(first);
 
-        let second = Core::init(ns, "api-key-2").await.unwrap();
+        let second = Core::init(ns).await.unwrap();
         let read = second.suggested_contexts();
         assert!(read.pending, "a reload must not silently drop a still-queued list edit");
         assert!(context_names(&second).iter().any(|n| n == "@calls"));
@@ -9944,7 +10329,7 @@ mod tests {
         let namespace = dir.path().join("ns-cancel-reload");
         let ns = namespace.to_str().unwrap();
 
-        let mut first = Core::init(ns, "api-key-1").await.unwrap();
+        let mut first = Core::init(ns).await.unwrap();
         let id = first
             .capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
             .await
@@ -9955,7 +10340,7 @@ mod tests {
             .unwrap();
         drop(first);
 
-        let second = Core::init(ns, "api-key-2").await.unwrap();
+        let second = Core::init(ns).await.unwrap();
         assert!(
             second.frontier().is_empty(),
             "a reload must not resurrect a cancelled item onto the frontier"
@@ -10059,5 +10444,238 @@ mod tests {
             .unwrap();
 
         assert_eq!(core.cycle.queue().entries().count(), 1);
+    }
+
+    // ------------------------------------------------------------ #839
+
+    /// A [`DirectTransport`] double: answers from a script and records the
+    /// bearer and request of every call.
+    #[derive(Default)]
+    struct ScriptedDirect {
+        responses: Mutex<std::collections::VecDeque<Result<RawResponse, TransportError>>>,
+        calls: Mutex<Vec<(Option<String>, sync::write::DirectRequest)>>,
+    }
+
+    impl ScriptedDirect {
+        fn new(responses: Vec<Result<RawResponse, TransportError>>) -> Self {
+            Self {
+                responses: Mutex::new(responses.into_iter().collect()),
+                calls: Mutex::default(),
+            }
+        }
+
+        fn calls(&self) -> Vec<(Option<String>, sync::write::DirectRequest)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+    impl DirectTransport for ScriptedDirect {
+        async fn call(
+            &self,
+            access_token: Option<&str>,
+            request: sync::write::DirectRequest,
+        ) -> Result<RawResponse, TransportError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((access_token.map(str::to_string), request));
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| panic!("no more scripted direct responses"))
+        }
+    }
+
+    fn device_row_json(id: &str, is_current: bool) -> String {
+        format!(
+            r#"{{"id":"{id}","name":"{id}","platform":"web","created_at":1,"last_seen":2,
+            "revoked_at":3,"is_current":{is_current},"revocable":true}}"#
+        )
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_hands_the_token_back_and_leaves_the_credential_alone() {
+        let mut core = Core::new();
+        let transport = ScriptedDirect::new(vec![ok(
+            201,
+            r#"{"id":"device-web-laptop","token":"hb_minted"}"#,
+        )]);
+
+        let outcome = core
+            .sign_in_with_google(&transport, "id.token.jwt", "Laptop", DevicePlatform::Web)
+            .await;
+
+        assert_eq!(
+            outcome,
+            devices::SignInOutcome::SignedIn(hummingbird_domain::SignedInDevice {
+                id: "device-web-laptop".to_string(),
+                token: "hb_minted".to_string(),
+            })
+        );
+        let calls = transport.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, None, "the exchange is unauthenticated");
+        assert_eq!(calls[0].1.path, "/api/auth/google");
+        // Nothing was taken in: the arm is where it was, no event fired, and
+        // nothing was queued. The host's push is what makes it a credential.
+        assert_eq!(core.credential_arm(), CredentialArm::Unknown);
+        assert!(core.take_events().is_empty());
+        assert_eq!(core.queue_depth(), 0);
+
+        core.push_api_key("hb_minted");
+        assert_eq!(core.credential_arm(), CredentialArm::Resting);
+    }
+
+    #[tokio::test]
+    async fn each_sign_in_refusal_is_its_own_outcome_and_holds_nothing() {
+        let core = Core::new();
+        let transport = ScriptedDirect::new(vec![
+            ok(403, ""),
+            ok(429, r#"{"error":"rate_limited","message":"later"}"#),
+            ok(503, r#"{"error":"signin_unconfigured","message":"unset"}"#),
+        ]);
+        let mut kinds = Vec::new();
+        for _ in 0..3 {
+            kinds.push(
+                core.sign_in_with_google(&transport, "t", "Pixel", DevicePlatform::Android)
+                    .await
+                    .kind(),
+            );
+        }
+        assert_eq!(kinds, ["not_allowed", "rate_limited", "unconfigured"]);
+        assert_eq!(core.credential_arm(), CredentialArm::Unknown);
+    }
+
+    #[tokio::test]
+    async fn the_device_list_sends_the_held_token_and_reads_every_row() {
+        let mut core = Core::new();
+        core.push_api_key("hb_held");
+        let body = format!(
+            "[{},{}]",
+            device_row_json("device-web-laptop", true),
+            device_row_json("device-android-pixel", false)
+        );
+        let transport = ScriptedDirect::new(vec![ok(200, body)]);
+
+        let outcome = core.devices(&transport).await;
+
+        let devices::DevicesOutcome::Listed(rows) = outcome else {
+            panic!("{outcome:?}");
+        };
+        assert_eq!(rows.len(), 2);
+        let calls = transport.calls();
+        assert_eq!(calls[0].0.as_deref(), Some("hb_held"));
+        assert_eq!(calls[0].1.method, sync::write::DirectMethod::Get);
+        assert_eq!(calls[0].1.path, "/api/devices");
+    }
+
+    #[tokio::test]
+    async fn without_a_credential_neither_device_call_sends_anything() {
+        let mut core = Core::new();
+        let transport = ScriptedDirect::new(vec![]);
+        assert_eq!(core.devices(&transport).await, devices::DevicesOutcome::NoCredential);
+        assert_eq!(
+            core.revoke_device(&transport, "device-web").await,
+            devices::RevokeOutcome::NoCredential
+        );
+        assert!(transport.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_401_on_a_device_call_holds_the_credential_like_a_sync_cycle() {
+        let mut core = Core::new();
+        core.push_api_key("hb_dead");
+        core.take_events();
+        let transport = ScriptedDirect::new(vec![ok(401, "")]);
+
+        assert_eq!(core.devices(&transport).await, devices::DevicesOutcome::CredentialRejected);
+
+        assert_eq!(core.credential_arm(), CredentialArm::Reprompt);
+        assert_eq!(
+            core.take_events(),
+            vec![CoreEvent::CredentialChanged {
+                arm: CredentialArm::Reprompt
+            }]
+        );
+        // Held: the next call sends nothing.
+        assert_eq!(
+            core.revoke_device(&transport, "device-web").await,
+            devices::RevokeOutcome::NoCredential
+        );
+        assert_eq!(transport.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn revoking_this_device_clears_the_credential_and_keeps_every_queued_write() {
+        let mut core = Core::new();
+        core.push_api_key("hb_mine");
+        core.capture("seed-1", "buy milk", Stage::Ready, 1_000, CaptureOptions::default(), None)
+            .await
+            .unwrap();
+        core.capture("seed-2", "call mum", Stage::Ready, 1_001, CaptureOptions::default(), None)
+            .await
+            .unwrap();
+        let queued_before: Vec<String> =
+            core.cycle.queue().entries().map(|entry| entry.id.clone()).collect();
+        assert_eq!(queued_before.len(), 2);
+        core.take_events();
+        let transport =
+            ScriptedDirect::new(vec![ok(200, device_row_json("device-web-laptop", true))]);
+
+        let outcome = core.revoke_device(&transport, "device-web-laptop").await;
+
+        assert_eq!(outcome.kind(), "signed_out");
+        assert_eq!(transport.calls()[0].0.as_deref(), Some("hb_mine"));
+        assert_eq!(transport.calls()[0].1.method, sync::write::DirectMethod::Delete);
+        assert_eq!(core.credential_arm(), CredentialArm::Unset);
+        assert_eq!(
+            core.take_events(),
+            vec![CoreEvent::CredentialChanged {
+                arm: CredentialArm::Unset
+            }]
+        );
+        let queued_after: Vec<String> =
+            core.cycle.queue().entries().map(|entry| entry.id.clone()).collect();
+        assert_eq!(queued_after, queued_before, "signing out drops no queued write");
+        assert!(core.dead_letters().is_empty());
+        assert_eq!(
+            core.frontier().len(),
+            2,
+            "the unconfirmed captures stay overlaid"
+        );
+    }
+
+    #[tokio::test]
+    async fn revoking_another_device_keeps_this_ones_credential() {
+        let mut core = Core::new();
+        core.push_api_key("hb_mine");
+        let transport = ScriptedDirect::new(vec![
+            ok(200, device_row_json("device-android-pixel", false)),
+            ok(403, ""),
+            ok(404, r#"{"error":"not_found","message":"no such device"}"#),
+        ]);
+
+        assert_eq!(
+            core.revoke_device(&transport, "device-android-pixel").await.kind(),
+            "revoked"
+        );
+        assert_eq!(
+            core.revoke_device(&transport, "runner").await,
+            devices::RevokeOutcome::NotRevocable
+        );
+        assert_eq!(
+            core.revoke_device(&transport, "device-gone").await,
+            devices::RevokeOutcome::NotFound
+        );
+        assert_eq!(
+            core.revoke_device(&transport, "../tokens").await,
+            devices::RevokeOutcome::NotFound,
+            "an id no route can name is not sent"
+        );
+        assert_eq!(transport.calls().len(), 3);
+        assert_eq!(core.credential_arm(), CredentialArm::Resting);
     }
 }

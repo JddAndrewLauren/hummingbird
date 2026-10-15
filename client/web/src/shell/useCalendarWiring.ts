@@ -188,7 +188,7 @@ export function useCalendarWiring(
   // `null` = not read yet; the lane never acts on an unread answer.
   const syncedConnected = prefs === null ? null : prefs.connected;
   // The latest synced answer, for an async continuation that outlives the
-  // render it started in. See the rotation effect.
+  // render it started in. See the rotation and credential-needed effects.
   const syncedConnectedRef = useRef(syncedConnected);
   // What this device polls — the core's union of the synced selection and
   // the bound Trips calendar, never a TS copy of it.
@@ -379,7 +379,10 @@ export function useCalendarWiring(
     let cancelled = false;
     void (async () => {
       const result = await handleCredentialNeeded(connection);
-      if (cancelled) {
+      // The rotation effect's guard, for the same reason (#867): a re-mint
+      // in flight when another device disconnected must neither resurrect
+      // `connected: true` over the park nor resume a poll.
+      if (cancelled || syncedConnectedRef.current === false) {
         return;
       }
       recordRemint(result);

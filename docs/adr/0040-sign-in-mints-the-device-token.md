@@ -54,6 +54,18 @@ which device-local settings start syncing. Amends
    authority refuses), and the rejected `sub` is logged so the operator
    can find their own on the first try.
 
+   *Amended 2026-10-15 (#866): "`iat` is under ten minutes old" bounded
+   only the past, and the verifier read it as a symmetric window, so a
+   token stamped up to ten minutes ahead passed. `iat` is accepted from
+   ten minutes in the past to **one minute in the future** (clock skew
+   between Google and the Worker), inclusive at both ends; anything
+   further ahead is refused like any other claim. Two hardenings from the
+   same review: the logged `sub` — read before the signature is checked,
+   so the caller's text — is escaped and capped; and the JWKS re-fetch an
+   unknown `kid` causes happens at most once a minute
+   (`google_signin::UNKNOWN_KID_REFETCH_MS`), so a stream of made-up
+   `kid`s cannot make the Worker call Google once per request.*
+
 3. **One new Google OAuth client, of type Web application, is the
    audience for all three surfaces, and it is not the calendar client.**
    Revoking or rotating one must never break the other.

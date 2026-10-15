@@ -421,6 +421,10 @@ mod wasm_bindings {
         fn clear_api_key(&self) {
             self.core.clear_api_key();
         }
+
+        fn report_no_api_key(&self) {
+            self.core.report_no_api_key();
+        }
     }
 
     /// `"busy"` for every JSON response shape this host resolves to, when
@@ -499,6 +503,11 @@ mod wasm_bindings {
         r#"{"kind":"busy","prefs":{"connected":false,"selection":[],"pending":false}}"#;
     const BUSY_EDIT_CALENDAR_PREFS: &str = r#"{"kind":"busy","error":null}"#;
     const BUSY_SEED_CALENDAR_PREFS: &str = r#"{"kind":"busy","seed":null,"error":null}"#;
+    // #839: busy is no answer — never `not_allowed`, never an empty device
+    // list (which would read as "no devices are signed in").
+    const BUSY_SIGN_IN: &str = r#"{"kind":"busy","id":null,"token":null,"error":null}"#;
+    const BUSY_DEVICES: &str = r#"{"kind":"busy","devices":[],"error":null}"#;
+    const BUSY_REVOKE_DEVICE: &str = r#"{"kind":"busy","device":null,"error":null}"#;
     // #140: same "no answer, never an empty one" contract as BUSY_BINDINGS.
     const BUSY_RULES: &str = r#"{"kind":"busy","rules":[]}"#;
     const BUSY_CREATE_RULE: &str = r#"{"kind":"busy","id":null,"error":null}"#;
@@ -524,6 +533,8 @@ mod wasm_bindings {
     const BUSY_GRILL_DRAFT_ITEM_IDS: &str = r#"{"kind":"busy","item_ids":[]}"#;
     const BUSY_RUN: &str = r#"{"kind":"busy","retry_after_ms":null,"active_item_count":null,"was_full_sweep":null,"dead_lettered":null}"#;
     const BUSY_QUEUE_DEPTH: &str = r#"{"kind":"busy","depth":0}"#;
+    // No answer, not a guessed arm — a busy core must not claim `unknown`.
+    const BUSY_CREDENTIAL_ARM: &str = r#"{"kind":"busy","arm":null}"#;
     const BUSY_DEAD_LETTERS: &str = r#"{"kind":"busy","entries":[]}"#;
     const BUSY_MIRROR_SNAPSHOT: &str = r#"{"kind":"busy","mirror":null}"#;
 
@@ -543,13 +554,13 @@ mod wasm_bindings {
     /// itself. Rejects if the durable load fails (a corrupt snapshot) — the
     /// worker surfaces that the same way it surfaces a wasm import failure
     /// (see `core.worker.ts`).
+    ///
+    /// Takes no credential (#846): the core starts in `unknown`, and the
+    /// host's start-up token load calls `rehydrateApiKey` or
+    /// `reportNoApiKey`.
     #[wasm_bindgen(js_name = createTaskHost)]
-    pub async fn create_task_host(
-        namespace: String,
-        base_url: String,
-        api_key: String,
-    ) -> Result<TaskHost, JsValue> {
-        let host = TaskHostCore::init(namespace, base_url, api_key)
+    pub async fn create_task_host(namespace: String, base_url: String) -> Result<TaskHost, JsValue> {
+        let host = TaskHostCore::init(namespace, base_url)
             .await
             .map_err(|error| JsValue::from_str(&error.to_string()))?;
         Ok(TaskHost {
@@ -593,6 +604,25 @@ mod wasm_bindings {
         #[wasm_bindgen(js_name = clearApiKey)]
         pub fn clear_api_key(&self) {
             self.inner.clear_api_key();
+        }
+
+        /// #846: the host's start-up token load read its storage and found
+        /// nothing (empty or unreadable alike) — moves the core from
+        /// `unknown` to `unset`. Fire and forget, like `clearApiKey`, and
+        /// queued rather than dropped if the host is currently checked out
+        /// — see [`TaskShared`]'s doc.
+        #[wasm_bindgen(js_name = reportNoApiKey)]
+        pub fn report_no_api_key(&self) {
+            self.inner.report_no_api_key();
+        }
+
+        /// Where this device's credential stands (#846), as JSON:
+        /// `{"kind": "ok"|"busy", "arm": "unknown"|"unset"|"resting"|"reprompt"|null}`.
+        #[wasm_bindgen(js_name = credentialArm)]
+        pub fn credential_arm(&self) -> String {
+            self.inner.core.read(js_sys::Date::now() as i64, BUSY_CREDENTIAL_ARM.to_string(), |host| {
+                serde_json::to_string(&host.credential_arm()).expect("CredentialArmResponse serializes")
+            })
         }
 
         /// The frontier, as JSON: `{"kind": "ok"|"busy", "items": [Item & {"pending": bool}]}`
@@ -1529,6 +1559,69 @@ mod wasm_bindings {
             })
         }
 
+        /// Trades a Google ID token for this device's token (#839, ADR-0040
+        /// decision 1). Resolves to JSON: `{"kind": "signed_in"|"not_allowed"|
+        /// "rate_limited"|"unconfigured"|"unavailable"|"invalid"|"failed"|
+        /// "busy", "id": string|null, "token": string|null, "error":
+        /// string|null}`. The core keeps nothing: on `signed_in` the host
+        /// stores `token` and then calls `pushApiKey` with it.
+        #[wasm_bindgen(js_name = signInWithGoogle)]
+        pub fn sign_in_with_google(
+            &self,
+            id_token: String,
+            name: String,
+            platform: String,
+            now_ms: f64,
+        ) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(host) = inner.core.checkout(CoreOwner::Settings, now_ms as i64) else {
+                    return Ok(JsValue::from_str(BUSY_SIGN_IN));
+                };
+                let response = host.sign_in_with_google(&id_token, &name, &platform).await;
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("SignInResponse serializes"),
+                ))
+            })
+        }
+
+        /// The operator's devices (#839, ADR-0040 decision 6). Resolves to
+        /// JSON: `{"kind": "listed"|"no_credential"|"credential_rejected"|
+        /// "failed"|"busy", "devices": [DeviceInfo], "error": string|null}`
+        /// — the authority's rows; `deviceRowsJson` orders and words them.
+        pub fn devices(&self, now_ms: f64) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Settings, now_ms as i64) else {
+                    return Ok(JsValue::from_str(BUSY_DEVICES));
+                };
+                let response = host.devices().await;
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("DevicesResponse serializes"),
+                ))
+            })
+        }
+
+        /// Signs one device out (#839, ADR-0040 decision 6). Resolves to
+        /// JSON: `{"kind": "revoked"|"signed_out"|"not_revocable"|
+        /// "not_found"|"no_credential"|"credential_rejected"|"failed"|
+        /// "busy", "device": DeviceInfo|null, "error": string|null}`. On
+        /// `signed_out` the core holds no credential and the queue is
+        /// untouched; the host deletes its stored token.
+        #[wasm_bindgen(js_name = revokeDevice)]
+        pub fn revoke_device(&self, id: String, now_ms: f64) -> js_sys::Promise {
+            let inner = self.inner.clone();
+            future_to_promise(async move {
+                let Some(mut host) = inner.core.checkout(CoreOwner::Settings, now_ms as i64) else {
+                    return Ok(JsValue::from_str(BUSY_REVOKE_DEVICE));
+                };
+                let response = host.revoke_device(&id).await;
+                Ok(JsValue::from_str(
+                    &serde_json::to_string(&response).expect("RevokeDeviceResponse serializes"),
+                ))
+            })
+        }
+
         /// Every rule (#140), as JSON: `{"kind": "ok"|"busy", "rules": [Rule]}`.
         pub fn rules(&self) -> String {
             self.inner.core.read(js_sys::Date::now() as i64, BUSY_RULES.to_string(), |host| serde_json::to_string(&host.rules()).expect("RuleListResponse serializes"))
@@ -1663,8 +1756,9 @@ mod wasm_bindings {
                 })
         }
 
-        /// Drains every credential-needed event since the last drain, as
-        /// JSON: `[{"kind": "credential_needed", "at_ms": number}]`.
+        /// Drains every credential-mutation event since the last drain, as
+        /// JSON: `[{"kind": "credential_changed", "arm": "unknown"|"unset"|"resting"|"reprompt"}]`
+        /// (#846) — never the token.
         #[wasm_bindgen(js_name = takeEvents)]
         pub fn take_events(&self) -> String {
             let events = self.inner.core.read_mut(js_sys::Date::now() as i64, Vec::new(), |host| host.take_events());

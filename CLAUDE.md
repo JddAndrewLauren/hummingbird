@@ -33,6 +33,7 @@ grepping it.
 | The which-cans poller | `server/city-waste/` | `src/lib.rs`, then `src/judge.rs` |
 | Evaluated-stream pollers | `server/{gmail-poll,calendar-poll,graph-poll}/` | each `src/lib.rs`, ADR-0011 |
 | The race lane (2 binaries) | `server/race-poll/` | `src/lib.rs` |
+| The fantasy poller — one binary with a conditional fetch (its lib half is #853; the Yahoo wire and the binary are #854) | `server/fantasy-poll/` | `src/lib.rs` |
 | The client sync engine | `client/core/src/sync/` | `sync/mod.rs`, then `sync/cycle.rs`, ADR-0007/0008 |
 | The one client API | `client/core/src/lib.rs` | its `Core` docs — every mutation entry point carries its own, including whether it overlays |
 | Ranking / freshness / panes / bindings | `client/core/src/{rank,freshness,pane,bindings}.rs` | each header; ADR-0015 for the Rust/TS carve-out, **as redrawn by ADR-0025** |

@@ -35,6 +35,12 @@ export interface TaskTokenDeps {
    * token. This is the wire message (`clearTaskApiKey`) that closes that
    * gap by reaching `Core::clear_api_key` (client/core/src/lib.rs). */
   clearApiKey: () => void;
+  /** `worker-client.ts`'s `reportNoTaskApiKey`, bound to the live worker
+   * (#846). `loadTaskToken` calls this whenever it finds no token — an empty
+   * store and an unreadable one alike — so the core's credential leaves
+   * `unknown` for `unset` exactly as explicitly as a stored token moves it to
+   * `resting` through `initApiKey`. */
+  reportNoApiKey: () => void;
 }
 
 export interface TaskTokenLoadResult {
@@ -57,7 +63,8 @@ const NO_TOKEN: TaskTokenLoadResult = { hasToken: false, enteredAtMs: null };
  * and, if present, rehydrates it into the core immediately — mirroring
  * `calendar/connection.ts`'s `initConnection`, but for a token the user
  * typed in rather than one the authority silently re-mints. A never-entered
- * device does nothing here and stays in the "unset" state.
+ * device reports the absence instead (`deps.reportNoApiKey`, #846), so the
+ * core's credential resolves to "unset" rather than staying "unknown".
  *
  * Calls `deps.initApiKey`, deliberately NOT `deps.pushApiKey` (issue #196):
  * this fires on EVERY view that reaches `ready`, not just the first, and
@@ -77,9 +84,11 @@ export async function loadTaskToken(deps: TaskTokenDeps): Promise<TaskTokenLoadR
     record = await deps.store.read();
   } catch (error) {
     console.error("failed to read the stored device token", error);
+    deps.reportNoApiKey();
     return NO_TOKEN;
   }
   if (record === null) {
+    deps.reportNoApiKey();
     return NO_TOKEN;
   }
   deps.initApiKey(record.token);

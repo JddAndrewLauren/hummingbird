@@ -25,13 +25,14 @@ class CoreBindingTest {
     fun a_durable_core_initialises_under_an_app_local_namespace() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val namespace = File(context.filesDir, "binding-test-ns").absolutePath
-        val host = MobileTaskHost.init(namespace, "https://authority.example", "")
+        val host = MobileTaskHost.init(namespace, "https://authority.example")
 
         assertEquals(coreApiVersion(), host.apiVersion())
         assertEquals(0u, host.activeItemCount())
         assertEquals(0u, host.queueDepth())
 
         // Without a credential, a run reaches no transport and reports so.
+        assertEquals("unknown", host.credentialArm())
         val outcome = host.run(1_000L, "user", false, 0.0)
         assertEquals("no_credential", outcome.kind)
     }

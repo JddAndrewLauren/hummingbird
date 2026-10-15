@@ -1,0 +1,49 @@
+{
+  "team": {
+    "team_key": "449.l.123456.t.7",
+    "league_key": "449.l.123456",
+    "team_name": "Gridiron Hummingbirds",
+    "league_name": "Twinion Family League"
+  },
+  "week": 4,
+  "starters": [
+    {
+      "position": "WR",
+      "occupant": {
+        "player_key": "449.p.31700",
+        "name": "Thad Early",
+        "eligible_positions": [
+          "WR",
+          "W/R/T"
+        ],
+        "bye_week": 12,
+        "designation": "out",
+        "kickoff_ms": 1790900100000
+      }
+    }
+  ],
+  "bench": [
+    {
+      "player_key": "449.p.31800",
+      "name": "Lon Sunday",
+      "eligible_positions": [
+        "WR",
+        "W/R/T"
+      ],
+      "bye_week": 9,
+      "designation": null,
+      "kickoff_ms": 1791120600000
+    },
+    {
+      "player_key": "449.p.31900",
+      "name": "Sam Afternoon",
+      "eligible_positions": [
+        "WR",
+        "W/R/T"
+      ],
+      "bye_week": 10,
+      "designation": null,
+      "kickoff_ms": 1791133200000
+    }
+  ]
+}

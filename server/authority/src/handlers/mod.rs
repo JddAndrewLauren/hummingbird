@@ -4,8 +4,8 @@
 
 mod admin_tokens;
 mod alerts;
-pub mod auth_google;
 mod auth;
+pub mod auth_google;
 mod blocked_by;
 mod calendar_token;
 mod changes;

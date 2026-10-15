@@ -724,11 +724,17 @@ export interface RouteDTO {
   version: number;
 }
 
+/** Where this device's credential stands — `Core`'s `CredentialArm`
+ * (`client/core/src/lib.rs`, #846). */
+export type CredentialArmName = "unknown" | "unset" | "resting" | "reprompt";
+
 /** One drained `CoreEvent` (`client/core/src/lib.rs`), as the web host's
- * JSON shape. `"credential_needed"` is the only kind `Core` produces today. */
+ * JSON shape. `"credential_changed"` is the only kind `Core` produces today:
+ * one per credential mutation (push, rehydrate, clear, absence report, or a
+ * 401), carrying the arm it left — never the token (#846). */
 export interface TaskEventDTO {
-  kind: "credential_needed";
-  atMs: number;
+  kind: "credential_changed";
+  arm: CredentialArmName;
 }
 
 /** One field a dead-lettered conflict disagreed on — S9's "1 edit didn't
@@ -818,6 +824,10 @@ export type TaskWorkerRequest =
    * Carries nothing — there is no key to carry — and gets no reply; the
    * host fires this and moves on. Never touches the mirror or the queue. */
   | { type: "clearTaskApiKey" }
+  /** #846: the core-start token load read storage and found no token (empty
+   * or unreadable alike) — moves the core's credential from `unknown` to
+   * `unset`. Carries nothing and gets no reply, like `clearTaskApiKey`. */
+  | { type: "reportNoTaskApiKey" }
   /** `seed` mints the deterministic id `Core::capture` derives from it
    * (`client/core/src/sync/write/id.rs`) — caller-supplied so the view that
    * issued the capture can match its own seed back against the

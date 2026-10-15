@@ -1,0 +1,17 @@
+{
+  "body": {
+    "game_key": "449",
+    "leagues": [
+      {
+        "league_key": "449.l.123456",
+        "league_name": "Twinion Family League"
+      },
+      {
+        "league_key": "449.l.789012",
+        "league_name": "Office Pool"
+      }
+    ]
+  },
+  "polled_every_ms": 21600000,
+  "schema": "yahoo-discovered-leagues/v1"
+}

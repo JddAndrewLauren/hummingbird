@@ -9,6 +9,7 @@ import {
   pollStart,
   pollTimer,
   clearTaskApiKey,
+  reportNoTaskApiKey,
   discardGrillDraft,
   removeFileLink,
   initTaskApiKey,
@@ -1558,16 +1559,42 @@ describe("attachWorkerClient", () => {
     });
   });
 
-  it("flags task needsReconnect on a taskEvents message carrying a credential_needed event", () => {
+  it("flags task needsReconnect when the newest credential event leaves the core in reprompt", () => {
     const worker = fakeWorker();
     const store = createCoreStore();
     attachWorkerClient(worker, store);
 
     worker.onmessage?.({
-      data: { type: "taskEvents", events: [{ kind: "credential_needed", atMs: 1_000 }] },
+      data: {
+        type: "taskEvents",
+        events: [
+          { kind: "credential_changed", arm: "resting" },
+          { kind: "credential_changed", arm: "reprompt" },
+        ],
+      },
     } as MessageEvent);
 
     expect(store.getSnapshot().task.needsReconnect).toBe(true);
+  });
+
+  it("does not flag task needsReconnect when a later credential event supersedes a reprompt", () => {
+    // #846: every credential mutation emits an event, so a push that
+    // resolved an undrained 401 lands after it in the same drain.
+    const worker = fakeWorker();
+    const store = createCoreStore();
+    attachWorkerClient(worker, store);
+
+    worker.onmessage?.({
+      data: {
+        type: "taskEvents",
+        events: [
+          { kind: "credential_changed", arm: "reprompt" },
+          { kind: "credential_changed", arm: "resting" },
+        ],
+      },
+    } as MessageEvent);
+
+    expect(store.getSnapshot().task.needsReconnect).toBe(false);
   });
 
   it("does not flag task needsReconnect on an empty taskEvents message", () => {
@@ -1683,6 +1710,12 @@ describe("the task send helpers (#105/S7)", () => {
     const worker = fakeWorker();
     clearTaskApiKey(worker);
     expect(worker.postMessage).toHaveBeenCalledWith({ type: "clearTaskApiKey" });
+  });
+
+  it("reportNoTaskApiKey posts a reportNoTaskApiKey request carrying nothing", () => {
+    const worker = fakeWorker();
+    reportNoTaskApiKey(worker);
+    expect(worker.postMessage).toHaveBeenCalledWith({ type: "reportNoTaskApiKey" });
   });
 
   it("captureTask posts a capture request carrying its seed, with every field absent by default", () => {

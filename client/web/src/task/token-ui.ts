@@ -9,7 +9,7 @@ export type TaskTokenUiState = "unset" | "resting" | "reprompt";
 
 /** Derives the surface's state from only what this device knows locally:
  * whether a token is stored, and whether the core has flagged it as no
- * longer working (a `credential_needed` event — `store.ts`'s
+ * longer working (a `credential_changed` event in `reprompt` — `store.ts`'s
  * `TaskState.needsReconnect`). `hasToken` wins over a stale reconnect flag:
  * forgetting a token during a 401 hold moves the surface back to "unset",
  * not "reprompt" — there is nothing left to re-enter *against*, just a
