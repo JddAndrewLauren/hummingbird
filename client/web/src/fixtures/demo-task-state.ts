@@ -788,26 +788,6 @@ const boundFantasyBinding: BindingDTO = {
   value: { state: "text", text: "449.l.123456" },
 };
 
-/** The seeded state, typed as the real `TaskState` so a field added to that
- * interface fails this file at build time rather than shipping a fixture that
- * silently omits it.
- *
- * #452 grew this from "the frontier and the inbox, nothing else" to the
- * whole shape a synced board device actually holds — the header's four
- * pieces. What is STILL left at its honest `null`/`{}`/`false` is exactly
- * what a real board device would not have answered either:
- * `lastRuleWrite`/`lastGrillCompletion`/`lastBindingWrite` (no write has
- * been issued this session), `pending`/`stepsByItem` (nothing has been
- * asked about yet), and `queueDepth`/`deadLetters`/`needsReconnect`/
- * `hostError` (S9's sync-status affordance, outside this issue's four
- * pieces).
- *
- * A **function**, not a const, and that is the bundling requirement in the
- * header: a const would have to be constructed at import, which is a top-level
- * side effect, which is what kept 5.3 KB of this file in the production bundle
- * the first time round. Called once, from behind `demo.ts`'s dead-branch gate.
- * Reading the clock here rather than at import is the free improvement that
- * falls out: ages are relative to when the board is asked for. */
 /** One fictional `GET /api/devices` row (#840), never revoked. Its mint
  * time is never drawn, so it is a month before it was last seen, or the
  * epoch for a device never seen. */
@@ -830,6 +810,26 @@ function demoDevice(
   };
 }
 
+/** The seeded state, typed as the real `TaskState` so a field added to that
+ * interface fails this file at build time rather than shipping a fixture that
+ * silently omits it.
+ *
+ * #452 grew this from "the frontier and the inbox, nothing else" to the
+ * whole shape a synced board device actually holds — the header's four
+ * pieces. What is STILL left at its honest `null`/`{}`/`false` is exactly
+ * what a real board device would not have answered either:
+ * `lastRuleWrite`/`lastGrillCompletion`/`lastBindingWrite` (no write has
+ * been issued this session), `pending`/`stepsByItem` (nothing has been
+ * asked about yet), and `queueDepth`/`deadLetters`/`needsReconnect`/
+ * `hostError` (S9's sync-status affordance, outside this issue's four
+ * pieces).
+ *
+ * A **function**, not a const, and that is the bundling requirement in the
+ * header: a const would have to be constructed at import, which is a top-level
+ * side effect, which is what kept 5.3 KB of this file in the production bundle
+ * the first time round. Called once, from behind `demo.ts`'s dead-branch gate.
+ * Reading the clock here rather than at import is the free improvement that
+ * falls out: ages are relative to when the board is asked for. */
 export function buildDemoTaskState(): TaskState {
   const loadedAt = Date.now();
   const frontier = FRONTIER_SEEDS.map((seed, index) => item(seed, index, loadedAt));

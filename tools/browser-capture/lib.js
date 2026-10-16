@@ -1,6 +1,9 @@
 // The pure half of the capture extension (ADR-0037): everything decidable
 // without a `chrome`/`browser` global, so `node --test` covers it and the
-// two page scripts (`popup.js`, `options.js`) hold only DOM wiring.
+// two page scripts hold only DOM wiring — `popup.js` the capture, and
+// `options.js` the sign-in that gets the extension its device token. This
+// header is the capture half's; the sign-in half (ADR-0040 decision 3) has
+// its own, at "Sign in with Google" below. `canSubmit` serves both pages.
 //
 // **This is a third copy of two rules the core owns**, re-stated here on
 // purpose. `client/core/src/decisions/share.rs` decides what a shared
@@ -119,10 +122,11 @@ export function draftFromTab(tab) {
   return { title, host, url };
 }
 
-/// The form's one gate, the same one every capture form has: a blank title
-/// does not submit.
-export function canSubmit(title) {
-  return typeof title === "string" && title.trim() !== "";
+/// Each form's one gate: a blank required field does not submit. The popup
+/// gates on the capture's title, the same gate every capture form has; the
+/// options page gates its sign-in on the device name.
+export function canSubmit(value) {
+  return typeof value === "string" && value.trim() !== "";
 }
 
 /// The two stages a new capture may be born into — the web capture box's
