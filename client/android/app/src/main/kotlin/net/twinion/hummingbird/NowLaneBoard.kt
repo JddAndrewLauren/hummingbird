@@ -53,9 +53,10 @@ import uniffi.hummingbird_ffi_mobile.NowItemRecord
 // Everything drawn here is `NowScreen.kt`'s own pieces — `ColumnHeader`,
 // `NowRow`, `SelectedItemCard`, `cappedColumnRows`, the "N more" toggle —
 // so a column renders identically whichever width it lands on; only WHERE
-// it is drawn is decided here, and that from a measured width plus rendered
-// row counts, never from anything on an item (this file reads no field of
-// a record beyond `id` for the selection test).
+// it is drawn is decided here, and that from a measured width plus each
+// column's resting height (its item count against `COLUMN_CAP`, never its
+// collapsed, revealed or selected state), never from anything on an item
+// (this file reads no field of a record beyond `id` for the selection test).
 //
 // **Since #801 a card is also carried between columns here** (ADR-0021
 // decision 9), on the wide window alone: the phone stacks its columns down
@@ -77,8 +78,9 @@ private val LANE_MAX_WIDTH = 380.dp
  * rather than as a box drawn around cards. */
 private val COLUMN_SHAPE = RoundedCornerShape(14.dp)
 
-/** One column's render plan, computed once so the lane weights and the
- * drawing below cannot disagree about what is visible. */
+/** One column's render plan: what the drawing below shows of it. The lane
+ * weights deliberately do NOT come from here — they are resting heights
+ * (`laneWeightsFor`), so a toggle redraws a column without repacking. */
 private data class ColumnPlan(
     val column: NowColumnRecord,
     val key: String,
@@ -88,12 +90,7 @@ private data class ColumnPlan(
     val visible: List<NowItemRecord>,
     val hidden: Int,
     val hasMoreRow: Boolean,
-) {
-    /** The lane-packing weight: rendered rows, not item counts — a
-     * collapsed column weighs its header alone (`packLanes`' own doc). */
-    val weight: Int
-        get() = if (isCollapsed) 1 else 1 + visible.size + (if (hasMoreRow) 1 else 0)
-}
+)
 
 private fun planFor(
     column: NowColumnRecord,
@@ -138,7 +135,7 @@ internal fun FrontierLaneBoard(
     syncTick: Int,
     /** The board container's measured width — `BoxWithConstraints`' answer,
      * null only on an unmeasured first frame (one lane per column then,
-     * `laneCountFor`'s own doc). */
+     * `frontierLanes`' own doc). */
     boardWidthDp: Int?,
     onToggleCollapsed: (String) -> Unit,
     onToggleExpanded: (String) -> Unit,
@@ -159,8 +156,14 @@ internal fun FrontierLaneBoard(
     onMoveItem: (itemId: String, targetColumnKey: String) -> Unit = { _, _ -> },
 ) {
     val plans = board.columns.map { planFor(it, axis, collapsed, expanded, selectedId) }
-    val laneCount = laneCountFor(boardWidthDp, plans.size)
-    val lanes = packLanes(plans.map { it.weight }, laneCount)
+    // Resting heights, not what is drawn: a collapse, a reveal or the
+    // selected card's cap override changes one column's height and moves no
+    // column between lanes. Only the lanes the packing reached are drawn,
+    // and the survivors widen up to LANE_MAX_WIDTH.
+    val lanes = frontierLanes(
+        laneWeightsFor(board.columns.map { it.items.size }, COLUMN_CAP),
+        boardWidthDp,
+    )
     val drag = rememberBoardDrag(board, plans.map { it.key }, onDroppableColumns, onMoveItem)
 
     Row(horizontalArrangement = Arrangement.spacedBy(LANE_GAP_DP.dp)) {

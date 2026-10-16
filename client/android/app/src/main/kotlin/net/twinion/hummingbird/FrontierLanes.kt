@@ -2,9 +2,11 @@ package net.twinion.hummingbird
 
 // How Now's frontier columns are distributed across the wide board's width —
 // a verbatim Kotlin port of `client/web/src/screens/frontier-lanes.ts`
-// (`laneCountFor`/`packLanes`), which is the parity source: any change lands
-// there first and is ported here, and `FrontierLanesTest` pins the two
-// files' constants against each other so they cannot drift apart.
+// (`laneCountFor`/`laneWeightsFor`/`packLanes`/`frontierLanes`), which is
+// the parity source — its header carries why the packing fills lanes in
+// order and weighs resting heights. Any change lands there first and is
+// ported here, and `FrontierLanesTest` pins the two files' constants and
+// rules against each other so they cannot drift apart.
 //
 // Client-side under ADR-0025's carve-out, like its web twin: the decision
 // consumes a *measured width* — a fact only the rendering runtime has —
@@ -35,31 +37,46 @@ internal fun laneCountFor(widthDp: Int?, columnCount: Int): Int {
     return fits.coerceAtLeast(1).coerceAtMost(columnCount)
 }
 
-/** Which columns land in which lane, as indices into [weights].
+/** What each column costs the packing in rows — the web's
+ * `laneWeightsFor`: a heading, the cards it shows at rest, and the "n more"
+ * control if it has one.
  *
- * Greedy, in the given order: each column goes to the lane with the least
- * in it so far, leftmost on a tie. Two properties follow, and both are the
- * point: the first `laneCount` columns fan across the top exactly as the
- * ordering put them — every lane starts empty, so each takes the next one —
- * and a short column then stacks under whichever lane is currently shortest
- * instead of opening a track of its own.
+ * It takes item counts and a cap and nothing else, on purpose: a column's
+ * weight is its RESTING height, so no collapse, reveal or selection can
+ * repack the board. The web module's doc carries why. */
+internal fun laneWeightsFor(itemCounts: List<Int>, columnCap: Int): List<Int> =
+    itemCounts.map { count -> 1 + minOf(count, columnCap) + (if (count > columnCap) 1 else 0) }
+
+/** Which columns land in which lane, as indices into [weights] — the web's
+ * `packLanes`, whose doc carries the reasoning.
  *
- * [weights] are rendered rows, not item counts: what costs vertical space
- * is what is on screen, so a collapsed column weighs its header alone. The
- * caller computes them, because only it knows what it is about to draw. */
+ * Sequential fill, in the given order: every lane aims at `total /
+ * laneCount` or the tallest single column, whichever is larger, and a
+ * column that would carry a non-empty open lane past that share opens the
+ * next lane instead, while lanes remain. Only the lanes reached are
+ * returned — never an empty one, and possibly fewer than [laneCount]. */
 internal fun packLanes(weights: List<Int>, laneCount: Int): List<List<Int>> {
-    if (laneCount <= 0) return emptyList()
-    val lanes = List(laneCount) { mutableListOf<Int>() }
-    val totals = IntArray(laneCount)
+    val count = minOf(laneCount.coerceAtLeast(0), weights.size)
+    if (count == 0) return emptyList()
+    val target = maxOf(weights.sum().toDouble() / count, weights.max().toDouble())
+    val lanes = mutableListOf(mutableListOf<Int>())
+    var carried = 0
     weights.forEachIndexed { index, weight ->
-        var pick = 0
-        for (lane in 1 until laneCount) {
-            // Strictly less, so an equal total leaves the leftmost lane the
-            // winner.
-            if (totals[lane] < totals[pick]) pick = lane
+        if (carried > 0 && carried + weight > target && lanes.size < count) {
+            lanes.add(mutableListOf())
+            carried = 0
         }
-        lanes[pick].add(index)
-        totals[pick] += weight
+        lanes.last().add(index)
+        carried += weight
     }
     return lanes
+}
+
+/** The lanes the board draws — the web's `frontierLanes` without its
+ * `spare` (Android draws no column across lanes). An unmeasured width
+ * (null) answers one lane per column here rather than through the packer,
+ * which would stack them: that is the pre-lanes layout, not a packing. */
+internal fun frontierLanes(weights: List<Int>, widthDp: Int?): List<List<Int>> {
+    if (widthDp == null) return weights.indices.map { listOf(it) }
+    return packLanes(weights, laneCountFor(widthDp, weights.size))
 }
