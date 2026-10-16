@@ -504,8 +504,10 @@ export interface DeviceRowDTO {
   revocable: boolean;
 }
 
-/** What `Core::sign_in_with_google` answered, with `busy` from the seam.
- * `token` is set on `signed_in` alone. */
+/** What `Core::sign_in_with_google` answered, with `busy` from the seam and
+ * `abandoned` from the worker's task queue (#889): the exchange timed out or
+ * threw before the core answered, so nobody knows whether a token was
+ * minted. `token` is set on `signed_in` alone. */
 export type SignInKind =
   | "signed_in"
   | "not_allowed"
@@ -514,7 +516,8 @@ export type SignInKind =
   | "unavailable"
   | "invalid"
   | "failed"
-  | "busy";
+  | "busy"
+  | "abandoned";
 
 /** What `Core::revoke_device` answered, with `busy` from the seam.
  * `signed_out` is this device's own row: the core already holds no

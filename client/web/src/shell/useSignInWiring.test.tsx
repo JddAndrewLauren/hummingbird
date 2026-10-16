@@ -136,6 +136,22 @@ describe("useSignInWiring", () => {
     });
   });
 
+  it("leaves the card signed out with a readable message when the exchange is abandoned (#889)", async () => {
+    const worker = fakeWorker();
+    const submitToken = vi.fn();
+    const { result } = mount(worker, "ready", { kind: "token", idToken: "id.tok.en" }, submitToken);
+    expect(result.current.signIn).toEqual({ kind: "pending" });
+    const seed = (worker.postMessage.mock.calls[0][0] as { seed: string }).seed;
+    await act(async () => {
+      answer(worker, { type: "signInResult", seed, kind: "abandoned", token: null, error: null });
+    });
+    expect(submitToken).not.toHaveBeenCalled();
+    expect(result.current.signIn).toEqual({
+      kind: "error",
+      message: "Sign-in didn't finish. Try again, or paste a token instead.",
+    });
+  });
+
   it("says so when the minted token could not be saved", async () => {
     const worker = fakeWorker();
     const submitToken = vi.fn().mockResolvedValue("storeError");

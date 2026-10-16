@@ -1984,6 +1984,36 @@ describe("createTaskRequestQueue", () => {
       expect(posted).toContainEqual({ type: "frontier", items: [] });
       consoleError.mockRestore();
     });
+
+    it("answers an abandoned sign-in exchange, so the view that asked stops waiting (#889)", async () => {
+      const host = fakeHost({
+        signInWithGoogle: vi.fn().mockReturnValue(new Promise<string>(() => {})),
+      });
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      const posted: TaskWorkerResponse[] = [];
+      const enqueue = createTaskRequestQueue(host, (response) => posted.push(response));
+
+      const exchange = enqueue({ type: "signInWithGoogle", seed: "s-hang", idToken: "t", name: "n", nowMs: 1 });
+      await vi.advanceTimersByTimeAsync(30_100);
+      await exchange;
+
+      expect(posted).toEqual([{ type: "signInResult", seed: "s-hang", kind: "abandoned", token: null, error: null }]);
+      consoleError.mockRestore();
+    });
+  });
+
+  it("answers a sign-in exchange whose host call threw (#889)", async () => {
+    const host = fakeHost({
+      signInWithGoogle: vi.fn().mockRejectedValue(new Error("boom")),
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const posted: TaskWorkerResponse[] = [];
+    const enqueue = createTaskRequestQueue(host, (response) => posted.push(response));
+
+    await enqueue({ type: "signInWithGoogle", seed: "s-boom", idToken: "t", name: "n", nowMs: 1 });
+
+    expect(posted).toEqual([{ type: "signInResult", seed: "s-boom", kind: "abandoned", token: null, error: null }]);
+    consoleError.mockRestore();
   });
 });
 

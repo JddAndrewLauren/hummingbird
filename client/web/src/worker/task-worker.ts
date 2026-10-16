@@ -1969,10 +1969,25 @@ export function createTaskRequestQueue(
       onTimeout: (request) => {
         diagnostics.recordAbandoned();
         console.error("task worker request abandoned after timeout", request.type);
+        answerAbandoned(request, post);
       },
       onError: (request, error) => {
         console.error("task worker request failed", request.type, error);
+        answerAbandoned(request, post);
       },
     },
   );
+}
+
+/** #889: a view awaits its sign-in exchange's answer by seed
+ * (`worker-client.ts`'s `signInWithGoogle`) and shows "Signing in" until
+ * one comes, so an exchange this queue gave up on, or whose host call threw,
+ * still owes it one — `abandoned`, carrying no token. A straggler that does
+ * settle after the timeout posts its own answer too, which no view is
+ * waiting for any more: a token minted that late is a device row with
+ * nobody holding it, and signing it out from Signed-in devices removes it. */
+function answerAbandoned(request: TaskWorkerRequest, post: (response: TaskWorkerResponse) => void): void {
+  if (request.type === "signInWithGoogle") {
+    post({ type: "signInResult", seed: request.seed, kind: "abandoned", token: null, error: null });
+  }
 }
