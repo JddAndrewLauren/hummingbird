@@ -456,14 +456,17 @@ step_web() {
 # The worker config, from this revision's own wrangler.toml so its bindings
 # and migrations carry over: an allowlist of keys, `main` pointed at the
 # prebuilt shim (so wrangler runs no build and watches nothing), and the
-# build/routes/observability keys dropped. Any key not named here fails the
-# build: a revision that adds a binding needs a person to decide.
+# build/routes/observability keys dropped. `vars` carries over: they are
+# committed plain strings (the guard refuses a URL among them), and the
+# sign-in route needs GOOGLE_SIGNIN_CLIENT_IDS. Any key not named here fails
+# the build: a revision that adds a binding needs a person to decide. The
+# temp file is removed on that failure, so no empty config is left behind.
 gen_wrangler_config() {
   echo "+ generate $STATE/wrangler.json from $WT/server/worker/wrangler.toml"
-  python3 - "$WT/server/worker/wrangler.toml" "$WT/server/worker/build/worker/shim.mjs" <<'PY' >"$STATE/wrangler.json.tmp"
+  python3 - "$WT/server/worker/wrangler.toml" "$WT/server/worker/build/worker/shim.mjs" <<'PY' >"$STATE/wrangler.json.tmp" || { rm -f "$STATE/wrangler.json.tmp"; return 1; }
 import json, sys, tomllib
 c = tomllib.load(open(sys.argv[1], "rb"))
-keep = ("name", "compatibility_date", "compatibility_flags", "durable_objects", "migrations")
+keep = ("name", "compatibility_date", "compatibility_flags", "durable_objects", "migrations", "vars")
 dropped = {"main", "build", "routes", "route", "observability"}
 unknown = sorted(set(c) - set(keep) - dropped)
 if unknown:
@@ -672,11 +675,12 @@ up_fail() {
 }
 
 # The binding table wrangler prints at startup: exactly AUTHORITY (a Durable
-# Object) and ADMIN_SECRET (from admin.env), every row local. A missing
-# table fails too.
+# Object), ADMIN_SECRET (from admin.env) and the `vars` the generated config
+# names, every row local. A missing table fails too.
 check_bindings() {
-  python3 - "$LOGS/wrangler.log" <<'PY'
-import re, sys
+  python3 - "$LOGS/wrangler.log" "$STATE/wrangler.json" <<'PY'
+import json, re, sys
+expected = {"AUTHORITY", "ADMIN_SECRET"} | set(json.load(open(sys.argv[2])).get("vars") or {})
 text = re.sub(r"\x1b\[[0-9;]*m", "", open(sys.argv[1], errors="replace").read())
 m = re.search(r"following bindings:\n(.*?)(?:\n\s*\n|\Z)", text, re.S)
 if not m:
@@ -689,8 +693,8 @@ if bad:
 for need in ("AUTHORITY", "ADMIN_SECRET"):
     if need not in names:
         sys.exit(f"no {need} binding")
-if names - {"AUTHORITY", "ADMIN_SECRET"}:
-    sys.exit("unexpected bindings: " + ", ".join(sorted(names - {"AUTHORITY", "ADMIN_SECRET"})))
+if names - expected:
+    sys.exit("unexpected bindings: " + ", ".join(sorted(names - expected)))
 PY
 }
 
