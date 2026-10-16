@@ -22,6 +22,7 @@ mod file_links;
 mod fog;
 mod grills;
 mod items;
+mod perch_source;
 mod project_links;
 mod projects_routes;
 mod push_targets;

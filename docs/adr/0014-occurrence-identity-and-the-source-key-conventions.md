@@ -268,6 +268,7 @@ only ever meets this rule on a genuinely reordered delivery.*
 | `yahoo-waivers/v1` ***(#717)*** | event | `<season>-<week>`, week zero-padded — `2026-04` |
 | `starling/v1` ***(#830)*** | **state** | the cockpit's own attention item id, kind prefix included — `gate:<id>`, `question:<id>` |
 | `auk/v1` ***(#845)*** | **state** | machine, record id and cause, authored by Auk — never the wait episode |
+| `perch/v1` ***(#891)*** | **state** | `<host>/<app>/<service>`, or `<host>/<app>/<child>/recovered/<leader start time>` for a crash recovery — authored by Perch, never the episode |
 
 *Amended 2026-09-23 ([#717](https://github.com/JddAndrewLauren/hummingbird/issues/717)):
 the fantasy lane (#713) enrolls **two** sources, not one, because its two
@@ -310,6 +311,27 @@ one; every other source may carry one and behaves as before without it.
 Tapping such an alert lands on the alert, per
 [ADR-0027](0027-an-alert-opens-the-thing-it-is-about.md), whose link then
 opens the factory's map.*
+
+*Amended 2026-10-15 ([#891](https://github.com/JddAndrewLauren/hummingbird/issues/891)):
+every app built on Perch, the operator's shared base for Mac menu-bar apps
+(Guardian and Bearing first), reports its failures under **one** source,
+`perch/v1` — not a source per app, so one pair of Rules covers an app that
+adopts Perch later with no change here; the reasons are
+JddAndrewLauren/Perch's ADR 0005. It is a pushed **state** source that writes
+alerts only and never expires. Its key is authored by Perch and names the
+thing, never the episode: `<host>/<app>/<service>` for a Service's state,
+resolved by Perch when the Service next runs or answers, and
+`<host>/<app>/<child>/recovered/<leader start time>` for a crash recovery,
+which is raised and never resolved — it leaves live only by the operator's
+ack. Severity is `high`, `normal` or `low`; whether each rings is the
+operator's own Rules. Perch sends no link, and one token is shared by every
+Perch app on every Mac, so `perch/v1` is the second source whose tokens
+cannot be minted without an allowed link origin, and its token carries
+Hummingbird's own: a leaked one can post noise but cannot point the operator
+at a page of its choosing. ADR-0012's delivery rules are unchanged; this is
+one more pushed source. The source and its key recipe are a contract on both
+sides, so changing either is a `perch/v2` the two repositories make together.
+Pinned by the frozen table and a key vector in `sources.rs`.*
 
 Two of these are judgment calls rather than consequences:
 
@@ -492,6 +514,7 @@ swipe-equals-ack, which ADR-0012 rejected outright.
 | `yahoo-lineup/v1` ***(#717)*** | the earliest kickoff among the invalid slots' eligible replacements (the lock the alert warns about) |
 | `yahoo-waivers/v1` ***(#717)*** | the waiver deadline instant |
 | `auk/v1` ***(#845)*** | none, ever |
+| `perch/v1` ***(#891)*** | none, ever |
 | `starling/v1` ***(#830)*** | none, ever |
 
 *Amended 2026-10-15 (#853, operator ruling): the `yahoo-lineup/v1` row's

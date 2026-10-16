@@ -309,6 +309,7 @@ export const DEMO_DATA: DemoData = {
       { source: "gmail-alert/v1", retiredAs: null },
       { source: "auk/v1", retiredAs: null },
       { source: "starling/v1", retiredAs: null },
+      { source: "perch/v1", retiredAs: null },
     ],
   },
   ruleBacktestItems: [
