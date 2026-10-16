@@ -26,6 +26,9 @@ on:
       # `design/tokens.css` is a copy of these, pinned by tokens.test.js:
       # a token change that is not re-copied must fail here, not drift.
       - "client/web/src/design/tokens/**"
+      # The sign-in client id in lib.js must stay one of this file's
+      # GOOGLE_SIGNIN_CLIENT_IDS, pinned by signin.test.js.
+      - "server/worker/wrangler.toml"
       - ".github/workflows/browser-capture.yml"
   # No `branches:` filter on purpose (server.yml does the same): a PR into a
   # batch integration branch must be gated exactly like a PR into main.
@@ -33,6 +36,7 @@ on:
     paths:
       - "tools/browser-capture/**"
       - "client/web/src/design/tokens/**"
+      - "server/worker/wrangler.toml"
       - ".github/workflows/browser-capture.yml"
 
 # Superseded PR pushes cancel their stale runs.
@@ -43,7 +47,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Three files of pure-function tests; anything slower than this is a
+    # Four files of pure-function tests; anything slower than this is a
     # hung test, not a slow one.
     timeout-minutes: 5
     steps:

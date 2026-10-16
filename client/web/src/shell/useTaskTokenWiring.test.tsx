@@ -64,6 +64,7 @@ describe("useTaskTokenWiring", () => {
       enteredAtMs: null,
       handleSubmitToken: expect.any(Function),
       handleForgetToken: expect.any(Function),
+      handleSignedOut: expect.any(Function),
     });
   });
 
@@ -126,6 +127,24 @@ describe("useTaskTokenWiring", () => {
     expect(worker.postMessage).not.toHaveBeenCalled();
     expect(result.current.hasToken).toBe(false);
     expect(coreStore.getSnapshot().task.needsReconnect).toBe(true);
+  });
+
+  it("handleSignedOut (#840) deletes the stored token and sends the core nothing", async () => {
+    const worker = fakeWorker();
+    const store = fakeStore({ token: "secret-token", enteredAtMs: 1_000 });
+    const { result } = mount(worker, "ready", store);
+    await act(async () => {});
+    worker.postMessage.mockClear();
+
+    await act(async () => {
+      await result.current.handleSignedOut();
+    });
+
+    // `Core::revoke_device` already cleared the live credential.
+    expect(worker.postMessage).not.toHaveBeenCalled();
+    expect(result.current.hasToken).toBe(false);
+    expect(result.current.enteredAtMs).toBeNull();
+    await expect(store.read()).resolves.toBeNull();
   });
 
   it("handleForgetToken clears the store and the live key via clearTaskApiKey", async () => {

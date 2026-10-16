@@ -69,6 +69,18 @@ wearRemoteInteractions = "1.2.0"
 # `CallbackToFutureAdapter`, the tile service's way to answer a
 # `ListenableFuture` without Guava. `tiles` already pulls it at runtime.
 concurrentFutures = "1.3.0"
+# ADR-0040 decision 3 (#841): Sign in with Google on the phone. Credential
+# Manager and its Play-services provider are released in lockstep (the
+# provider's POM pins `credentials` to exactly `[1.6.0]`), so they share one
+# pin; `googleid` is the `GetSignInWithGoogleOption`/`GoogleIdTokenCredential`
+# library. Read off Google's Maven index on 2026-10-15. **`googleid` stays on
+# 1.1.x until `kotlin` above is 2.3 or later:** 1.2.x is compiled with
+# Kotlin 2.4 metadata, which this compiler refuses to read ("incompatible
+# version of Kotlin"). 1.1.1's own POM names `credentials` 1.3.0-beta01;
+# Gradle resolves that up to the pin here, and the provider's own POM
+# depends on `googleid` 1.1.0, so 1.1.1 is the newest that pair accepts.
+credentials = "1.6.0"
+googleid = "1.1.1"
 
 [libraries]
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
@@ -137,6 +149,11 @@ wear-protolayout-material3 = { group = "androidx.wear.protolayout", name = "prot
 play-services-wearable = { group = "com.google.android.gms", name = "play-services-wearable", version.ref = "playServicesWearable" }
 # `Task.await()` for the Data Layer calls, versioned with `coroutines`.
 coroutines-play-services = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-play-services", version.ref = "coroutines" }
+# Sign in with Google (ADR-0040, #841): Credential Manager, the Play-services
+# provider that actually answers it on a phone, and the Google ID token types.
+credentials = { group = "androidx.credentials", name = "credentials", version.ref = "credentials" }
+credentials-play-services-auth = { group = "androidx.credentials", name = "credentials-play-services-auth", version.ref = "credentials" }
+googleid = { group = "com.google.android.libraries.identity.googleid", name = "googleid", version.ref = "googleid" }
 androidx-concurrent-futures = { group = "androidx.concurrent", name = "concurrent-futures", version.ref = "concurrentFutures" }
 
 [plugins]

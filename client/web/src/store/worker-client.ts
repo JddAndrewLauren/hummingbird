@@ -15,6 +15,8 @@ import type {
   GrillVerdictName,
   ProjectDTO,
   FileLinkDTO,
+  RevokeDeviceKind,
+  SignInKind,
   ProjectLinkDTO,
   RouteDTO,
   RuleDTO,
@@ -412,6 +414,27 @@ export function attachWorkerClient(
           requestCalendarPrefs(worker);
         }
         return;
+      case "signInResult": {
+        // Broadcast to every view; only the one holding this seed asked, and
+        // every other drops the answer — token included — unread.
+        const resolve = pendingSignIns.get(message.seed);
+        pendingSignIns.delete(message.seed);
+        resolve?.({ kind: message.kind, token: message.token, error: message.error });
+        return;
+      }
+      case "devices":
+        store.setTaskState({ devices: message.devices });
+        return;
+      case "revokeDeviceResult": {
+        const resolve = pendingRevokes.get(message.seed);
+        pendingRevokes.delete(message.seed);
+        resolve?.({ kind: message.kind, error: message.error });
+        if (message.kind === "revoked" || message.kind === "signed_out") {
+          // The list changed under every view showing it.
+          requestDevices(worker, Date.now());
+        }
+        return;
+      }
       case "seedCalendarPrefsResult":
         store.setTaskState({
           lastCalendarSeed: { seed: message.seed, outcome: message.outcome },
@@ -1005,6 +1028,70 @@ export function requestQuestionSwitches(worker: WorkerLike): void {
 /** The suggested-contexts list (ADR-0038). */
 export function requestSuggestedContexts(worker: WorkerLike): void {
   worker.postMessage({ type: "getSuggestedContexts" });
+}
+
+// -- #840: sign-in and signed-in devices (ADR-0040) ---------------------
+
+/** What a sign-in exchange answered. `token` is the freshly minted device
+ * token, on `signed_in` alone; the caller stores and pushes it and keeps
+ * it nowhere else. */
+export interface SignInAnswer {
+  kind: SignInKind;
+  token: string | null;
+  error: string | null;
+}
+
+/** What a revoke answered. */
+export interface RevokeDeviceAnswer {
+  kind: RevokeDeviceKind;
+  error: string | null;
+}
+
+// The two answers a caller awaits rather than reads off the store: a
+// sign-in's carries a token that must never rest in shared view state, and
+// both are acted on by the one view that asked. Keyed by the seed minted
+// here; per view, since each view is its own realm.
+const pendingSignIns = new Map<string, (answer: SignInAnswer) => void>();
+const pendingRevokes = new Map<string, (answer: RevokeDeviceAnswer) => void>();
+
+function mintAnswerSeed(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `answer-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/** Trades a Google ID token for this browser's device token through
+ * `Core::sign_in_with_google`, as platform `web`. Resolves once the worker
+ * answers. */
+export function signInWithGoogle(
+  worker: WorkerLike,
+  idToken: string,
+  name: string,
+  nowMs: number,
+): Promise<SignInAnswer> {
+  const seed = mintAnswerSeed();
+  return new Promise((resolve) => {
+    pendingSignIns.set(seed, resolve);
+    worker.postMessage({ type: "signInWithGoogle", seed, idToken, name, nowMs });
+  });
+}
+
+/** Asks for the operator's devices; the answer lands in
+ * `TaskState.devices`. */
+export function requestDevices(worker: WorkerLike, nowMs: number): void {
+  worker.postMessage({ type: "getDevices", nowMs });
+}
+
+/** Signs one device out through `Core::revoke_device`. On `signed_out` —
+ * this device's own row — the core already holds no credential and the
+ * caller deletes the stored token. */
+export function revokeDevice(worker: WorkerLike, id: string, nowMs: number): Promise<RevokeDeviceAnswer> {
+  const seed = mintAnswerSeed();
+  return new Promise((resolve) => {
+    pendingRevokes.set(seed, resolve);
+    worker.postMessage({ type: "revokeDevice", seed, id, nowMs });
+  });
 }
 
 /** The calendar choices (ADR-0040 decision 8). */

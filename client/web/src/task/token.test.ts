@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  clearSignedOutToken,
   forgetTaskToken,
   isBlankTokenInput,
   loadTaskToken,
@@ -234,6 +235,17 @@ describe("forgetTaskToken", () => {
     await forgetTaskToken(d);
 
     expect(d.clearApiKey).toHaveBeenCalledTimes(1);
+    expect(d.pushApiKey).not.toHaveBeenCalled();
+  });
+});
+
+describe("clearSignedOutToken (#840)", () => {
+  it("deletes the stored token and leaves the core's already-cleared slot alone", async () => {
+    const store = fakeStore({ token: "hb_x", enteredAtMs: 1 });
+    const d = deps(store);
+    await expect(clearSignedOutToken(d)).resolves.toEqual({ hasToken: false, enteredAtMs: null });
+    await expect(store.read()).resolves.toBeNull();
+    expect(d.clearApiKey).not.toHaveBeenCalled();
     expect(d.pushApiKey).not.toHaveBeenCalled();
   });
 });

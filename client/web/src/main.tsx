@@ -6,6 +6,7 @@ import { initDecisions } from "./decisions/seam";
 import { appUpdateSignal } from "./shell/app-update";
 import { watchForActivation } from "./shell/reload-on-activate";
 import { SeamFailure } from "./shell/SeamFailure";
+import { readSignInReturn, SIGNIN_PATH } from "./task/google-signin";
 import { coreStore } from "./store/store";
 import { watchForReadyTimeout } from "./store/ready-timeout";
 import { attachWorkerClient } from "./store/worker-client";
@@ -95,6 +96,20 @@ sharedWorker.onerror = (event) => {
 // leaving it stuck forever.
 watchForReadyTimeout(coreStore, 10_000);
 
+// #840 (ADR-0040 decision 3): Google returns a sign-in to `/signin` with
+// the ID token in the URL fragment. Read here, exactly once per page load
+// and before anything renders — the nonce it is checked against is
+// consumed by the read, so StrictMode's double render could never read it
+// twice — and then the URL is put back to `/`, so the token leaves the
+// address bar and the history entry, and a reload starts the app normally.
+const signInReturn =
+  window.location.pathname === SIGNIN_PATH
+    ? readSignInReturn(window.location.hash, sessionStorage)
+    : null;
+if (signInReturn !== null) {
+  window.history.replaceState(null, "", "/");
+}
+
 const root = document.getElementById("root");
 if (!root) {
   throw new Error("missing #root element");
@@ -124,7 +139,7 @@ initDecisions().then(
   () => {
     createRoot(root).render(
       <StrictMode>
-        <App worker={worker} />
+        <App worker={worker} signInReturn={signInReturn} />
       </StrictMode>,
     );
   },

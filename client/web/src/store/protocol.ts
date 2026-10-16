@@ -464,6 +464,71 @@ export interface CalendarPrefsDTO {
  * `"not_yet"` means keep the local values and ask again after a cycle. */
 export type CalendarSeedOutcome = "not_yet" | "seeded" | "adopted";
 
+// -- signed-in devices (#840, ADR-0040 decisions 6-7) --------------------
+
+/** One row of `GET /api/devices`, in the authority's own snake_case wire
+ * shape (`hummingbird_domain::DeviceInfo`) and deliberately not mapped:
+ * the only reader is the decision seam's `deviceRows`, which takes exactly
+ * this shape back, so a camelCase copy would be a map and an unmap for
+ * nothing. Times are epoch ms. */
+export interface DeviceInfoDTO {
+  id: string;
+  name: string;
+  platform: "web" | "android" | "chrome" | "watch" | "other";
+  created_at: number;
+  last_seen: number | null;
+  revoked_at: number | null;
+  is_current: boolean;
+  revocable: boolean;
+}
+
+/** The last `devices` answer: `listed` with the rows, or why there are
+ * none — `no_credential` is a signed-out device, `credential_rejected` a
+ * held one. A `"busy"` read is never posted (an empty list would read as
+ * "no devices are signed in"). */
+export interface DevicesDTO {
+  kind: "listed" | "no_credential" | "credential_rejected" | "failed";
+  devices: DeviceInfoDTO[];
+  error: string | null;
+}
+
+/** `hummingbird_core::decisions::devices::DeviceRow` — one Signed-in
+ * devices row, ordered and worded by the core. */
+export interface DeviceRowDTO {
+  id: string;
+  name: string;
+  isCurrent: boolean;
+  thisDevice: string | null;
+  platformLabel: string;
+  lastSeenLabel: string;
+  revocable: boolean;
+}
+
+/** What `Core::sign_in_with_google` answered, with `busy` from the seam.
+ * `token` is set on `signed_in` alone. */
+export type SignInKind =
+  | "signed_in"
+  | "not_allowed"
+  | "rate_limited"
+  | "unconfigured"
+  | "unavailable"
+  | "invalid"
+  | "failed"
+  | "busy";
+
+/** What `Core::revoke_device` answered, with `busy` from the seam.
+ * `signed_out` is this device's own row: the core already holds no
+ * credential, and the view deletes its stored token. */
+export type RevokeDeviceKind =
+  | "revoked"
+  | "signed_out"
+  | "not_revocable"
+  | "not_found"
+  | "no_credential"
+  | "credential_rejected"
+  | "failed"
+  | "busy";
+
 // -- rules (#140, ADR-0012/0013) --------------------------------------------
 //
 // The rules screen: condition rows, a per-row "not" toggle, the
@@ -974,6 +1039,15 @@ export type TaskWorkerRequest =
       selectedIds: string[];
       nowMs: number;
     }
+  /** #840 (ADR-0040 decisions 1 and 6): trading a Google ID token for
+   * this browser's device token, listing the operator's devices, and
+   * signing one out — all through the core. `signInWithGoogle` and
+   * `revokeDevice` keep the caller-mints-`seed` contract, so the view that
+   * asked is the one that acts on the answer. The ID token is forwarded and
+   * never echoed. */
+  | { type: "signInWithGoogle"; seed: string; idToken: string; name: string; nowMs: number }
+  | { type: "getDevices"; nowMs: number }
+  | { type: "revokeDevice"; seed: string; id: string; nowMs: number }
   /** #140: the kind registry export. Carries no argument and needs no
    * `Core` state — see `TaskHostCore::kind_registry`'s own doc. */
   | { type: "getKindRegistry" }
@@ -1494,6 +1568,30 @@ export type TaskWorkerResponse =
       seed: string;
       kind: "ok" | "failed" | "busy";
       outcome: CalendarSeedOutcome | null;
+    }
+  /** #840: the sign-in exchange's answer, matched back by `seed`. The ONE
+   * worker message that carries a device token: `token` is the freshly
+   * minted one, on `signed_in` alone, handed back so the view that asked
+   * can store it and push it (`task/token.ts`'s `signInWithToken`). It is
+   * broadcast like every answer here, which reaches only this origin's own
+   * views — each of which can already read the stored token — and every
+   * view but the asking one drops it unread (`worker-client.ts`). */
+  | {
+      type: "signInResult";
+      seed: string;
+      kind: SignInKind;
+      token: string | null;
+      error: string | null;
+    }
+  /** Answers `getDevices`; never posted for a `"busy"` read. */
+  | { type: "devices"; devices: DevicesDTO }
+  /** Answers `revokeDevice`, matched back by `seed`. */
+  | {
+      type: "revokeDeviceResult";
+      seed: string;
+      id: string;
+      kind: RevokeDeviceKind;
+      error: string | null;
     }
   /** #140's rule create result, matched back by `seed` — same
    * broadcast-not-reply contract as `captureResult`. `"failed"` covers both

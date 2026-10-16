@@ -219,7 +219,7 @@ export function classify({ status, contentType, bodyText, id }) {
     return { kind: "saved", replay: status === 200, row, message: status === 201 ? "Saved" : "Already saved" };
   }
   if (status === 401) {
-    return { kind: "token", message: "The token was rejected. Paste a fresh one in the extension's options." };
+    return { kind: "token", message: "The token was rejected. Sign in again in the extension's options." };
   }
   if (status === 403) {
     // The authority's 403 is an empty body; Cloudflare's is an HTML page
@@ -240,4 +240,148 @@ export function classify({ status, contentType, bodyText, id }) {
     return { kind: "rejected", message };
   }
   return { kind: "error", message: `The authority answered ${status}. Save again to retry.` };
+}
+
+// ---------------------------------------------------------------------------
+// Sign in with Google (ADR-0040 decision 3, the extension leg). The options
+// page opens `authUrl` through `chrome.identity.launchWebAuthFlow` — an
+// implicit `response_type=id_token` request, because `getAuthToken` yields
+// only access tokens — reads the ID token off the redirect's fragment, and
+// trades it at `POST /api/auth/google` for an ordinary `device` token, which
+// it stores exactly where a pasted one goes. The nonce is checked here
+// (`parseSigninRedirect`) so an answer meant for another request is never
+// sent; everything else about the ID token — signature, audience, `sub`,
+// freshness — is the authority's to verify, and nothing here tries.
+//
+// `signinOutcome` is the core's `sign_in_outcome`
+// (`client/core/src/devices.rs`) re-stated, with `classify`'s
+// content-type-first guard in front for the same reason `classify` has one.
+
+/// The Google OAuth Web client every surface signs in through — public by
+/// design, and one of the authority's accepted audiences
+/// (`GOOGLE_SIGNIN_CLIENT_IDS` in `server/worker/wrangler.toml`;
+/// `signin.test.js` pins that it still is). Its authorized redirect URIs
+/// must list this extension's `https://<id>.chromiumapp.org/`.
+export const GOOGLE_SIGNIN_CLIENT_ID = "309477759674-d169knsap6cuig582ii1mhv032u3ovb2.apps.googleusercontent.com";
+
+const GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
+
+/// The sign-in route: unauthenticated, the ID token is the credential.
+export const SIGNIN_PATH = "/api/auth/google";
+
+/// A fresh nonce: 16 random bytes as hex. `bytes` is for tests.
+export function newNonce(bytes = crypto.getRandomValues(new Uint8Array(16))) {
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/// The URL `launchWebAuthFlow` opens. `redirectUri` is
+/// `identity.getRedirectURL()`: `https://<extension-id>.chromiumapp.org/`,
+/// stable because the manifest carries a `key`.
+export function authUrl({ redirectUri, nonce, clientId = GOOGLE_SIGNIN_CLIENT_ID }) {
+  const params = new URLSearchParams({
+    client_id: clientId,
+    response_type: "id_token",
+    scope: "openid email",
+    redirect_uri: redirectUri,
+    nonce,
+  });
+  return `${GOOGLE_AUTH_ENDPOINT}?${params}`;
+}
+
+/// A JWT's payload, or `null` when it is not three segments around a
+/// base64url JSON object. The signature is not checked: that is the
+/// authority's job.
+function jwtClaims(jwt) {
+  const parts = jwt.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const binary = atob(b64.padEnd(Math.ceil(b64.length / 4) * 4, "="));
+    const claims = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0))));
+    return claims !== null && typeof claims === "object" ? claims : null;
+  } catch {
+    return null;
+  }
+}
+
+/// The ID token from the URL `launchWebAuthFlow` resolved with, or the
+/// reason there is none. An `error` in the fragment is Google's refusal
+/// (`access_denied` is the person closing the consent); a token whose
+/// `nonce` is not this request's is refused unsent.
+export function parseSigninRedirect(redirectedTo, nonce) {
+  let fragment;
+  try {
+    fragment = new URLSearchParams(new URL(redirectedTo).hash.slice(1));
+  } catch {
+    return { problem: "Google's answer carried no ID token." };
+  }
+  const error = fragment.get("error");
+  if (error === "access_denied") return { problem: "Sign-in was cancelled." };
+  if (error) {
+    const detail = fragment.get("error_description");
+    return { problem: `Google refused the sign-in: ${error}${detail ? ` (${detail})` : ""}.` };
+  }
+  const idToken = fragment.get("id_token");
+  if (!idToken) return { problem: "Google's answer carried no ID token." };
+  const claims = jwtClaims(idToken);
+  if (claims === null) return { problem: "Google's ID token could not be read." };
+  if (typeof nonce !== "string" || nonce === "" || claims.nonce !== nonce) {
+    return { problem: "Google's answer is not for this sign-in. Sign in again." };
+  }
+  return { idToken };
+}
+
+/// The name a sign-in offers by default: the machine this profile runs on,
+/// as far as an extension can know it — `runtime.getPlatformInfo().os`; a
+/// hostname is out of its reach. Editable before signing in; the authority
+/// derives the token id from it (`device-chrome-<slug>`).
+export function defaultDeviceName(os) {
+  const names = { mac: "Mac", win: "Windows PC", linux: "Linux", cros: "Chromebook" };
+  return names[os] ?? "Browser";
+}
+
+/// `GoogleSignIn` (`server/domain/src/api.rs`, `deny_unknown_fields`):
+/// exactly these three keys.
+export function signinBody({ idToken, name }) {
+  return { id_token: idToken, name: name.trim(), platform: "chrome" };
+}
+
+/// What a `POST /api/auth/google` response means. `signed_in` carries the
+/// token to store; every other kind is a message and nothing stored.
+export function signinOutcome({ status, contentType, bodyText }) {
+  const type = (contentType ?? "").toLowerCase();
+  const isJson = type.startsWith("application/json");
+  const body = () => {
+    try {
+      return isJson ? JSON.parse(bodyText) : null;
+    } catch {
+      return null;
+    }
+  };
+  if (status === 201 || status === 200) {
+    const minted = body();
+    if (status !== 201 || typeof minted?.id !== "string" || tokenProblem(minted.token) !== null) return MISROUTED;
+    return { kind: "signed_in", id: minted.id, token: minted.token, message: `Signed in as ${minted.id}.` };
+  }
+  if (status === 403) {
+    if (type.startsWith("text/html")) return { kind: "edge", message: "Blocked at the edge (Cloudflare), not by the authority. Nothing was stored." };
+    return { kind: "not_allowed", message: "The authority refused that Google account: it is not the one allowed to sign in." };
+  }
+  if (status === 429) {
+    return { kind: "rate_limited", message: "Too many sign-ins in the last hour. Try again later, or paste a token." };
+  }
+  if (status === 503) {
+    if (body()?.error === "signin_unconfigured") {
+      return { kind: "unconfigured", message: "Sign-in is not set up on the authority. Paste a token instead." };
+    }
+    return { kind: "unavailable", message: "The authority could not check the sign-in with Google. Try again shortly." };
+  }
+  if (status === 400) {
+    const detail = body()?.message;
+    return {
+      kind: "invalid",
+      message: typeof detail === "string" && detail !== "" ? `The authority refused the device name: ${detail}` : "The authority refused the device name.",
+    };
+  }
+  return { kind: "error", message: `The authority answered ${status}. Nothing was stored.` };
 }

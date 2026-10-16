@@ -47,6 +47,8 @@ import type {
   CalendarSelectionDTO,
   CalendarReadDTO,
   ConditionDTO,
+  DeviceInfoDTO,
+  DeviceRowDTO,
   FieldTypeName,
   FreshnessDTO,
   KindFieldDTO,
@@ -269,6 +271,9 @@ export interface DecisionsModule {
   scps_answer_json(inputsJson: string, zoneFactsJson: string): string;
   scps_constants_json(): string;
   device_zone(): string;
+  // #840: Signed-in devices (ADR-0040 decision 7).
+  device_rows_json(devicesJson: string, nowMs: number): string;
+  sign_out_confirmation(queueDepth: number): string;
 }
 
 let loaded: DecisionsModule | null = null;
@@ -804,6 +809,21 @@ export function effectiveCalendarSelection(
   return JSON.parse(
     required().effective_calendar_selection_json(JSON.stringify(selection), tripsId ?? undefined),
   ) as CalendarSelectionDTO[];
+}
+
+/** `hummingbird_core::decisions::devices::device_rows` — the Signed-in
+ * devices section's rows: revoked ones left out, this device first, then
+ * most recently seen, each worded once for every client (ADR-0040
+ * decision 7). */
+export function deviceRows(devices: readonly DeviceInfoDTO[], nowMs: number): DeviceRowDTO[] {
+  return JSON.parse(required().device_rows_json(JSON.stringify(devices), nowMs)) as DeviceRowDTO[];
+}
+
+/** `hummingbird_core::decisions::devices::sign_out_confirmation` — the
+ * sentence before this device signs itself out, naming how many unsent
+ * changes stay queued (signing out keeps the queue, ADR-0004). */
+export function signOutConfirmation(queueDepth: number): string {
+  return required().sign_out_confirmation(queueDepth);
 }
 
 function queuePayload(items: readonly TaskItemDTO[]): string {

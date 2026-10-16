@@ -83,8 +83,20 @@ an NDK (Studio's SDK manager, or `sdkmanager "ndk;<version>"`).
   `hummingbird-device-pixel-fold` into Settings' DEVICE TOKEN card. The
   emulator is the place for debug builds; `connectedDebugAndroidTest` has
   the same cost (see "Proving the lane on hardware").
-- On device, the app asks once for a `device` token (minted by the
-  operator against the authority); it rests in the Android Keystore.
+- On device, the app asks once for a `device` token; it rests in the
+  Android Keystore. Since #841 (ADR-0040) Settings' DEVICE TOKEN card leads
+  with **Sign in with Google**: Credential Manager's Sign in with Google
+  option, with the `hummingbird-signin` Web client as `serverClientId`
+  (`app/build.gradle.kts`'s `GOOGLE_SIGNIN_CLIENT_ID`, held to
+  `server/worker/wrangler.toml` by `SignInClientIdDriftTest`), trades the ID
+  token through the mobile seam for this phone's own token, which then takes
+  the pasted token's save path unchanged (`signin/GoogleSignIn.kt`'s header).
+  Pasting stays behind "Paste a token instead". **Google only answers an APK
+  whose signing SHA-1 has an Android OAuth client registered** (#836 holds
+  the release key's and the Mac's debug key's); a debug build signed on any
+  other machine, CI's included, cannot sign in until that machine's debug
+  SHA-1 gets one, and pasting still works there. The Signed-in devices
+  section below it lists the core's rows and signs a device out.
 
 ## The watch (ADR-0039)
 

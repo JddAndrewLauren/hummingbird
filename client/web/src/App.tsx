@@ -56,6 +56,9 @@ import { useProjectsWiring } from "./shell/useProjectsWiring";
 import { useRulesWiring } from "./shell/useRulesWiring";
 import { useSyncWiring } from "./shell/useSyncWiring";
 import { useTaskTokenWiring } from "./shell/useTaskTokenWiring";
+import { useSignInWiring } from "./shell/useSignInWiring";
+import { useDevicesWiring } from "./shell/useDevicesWiring";
+import type { SignInReturn } from "./task/google-signin";
 import { taskTokenUiState } from "./task/token-ui";
 import { useStore } from "./store/useStore";
 import type { CaptureFields, WorkerLike } from "./store/worker-client";
@@ -77,6 +80,10 @@ interface AppProps {
    * by a fake in a future DOM-environment test without touching production
    * wiring. */
   worker?: WorkerLike;
+  /** What a `/signin` return carried (#840) — read off the URL once, by
+   * `main.tsx`, before the first render. Non-null opens Settings, where the
+   * exchange's progress shows. */
+  signInReturn?: SignInReturn | null;
 }
 
 // The app shell (#107's decomposition): a fixed nav rail, a header, and one
@@ -88,7 +95,7 @@ interface AppProps {
 // the theme to `useTheme`, and each display decision to a unit-tested pure
 // module. What is not backed by a real feature is not rendered — demo mode
 // (dev-only) is the one place fixtures appear.
-export function App({ worker: injectedWorker }: AppProps = {}) {
+export function App({ worker: injectedWorker, signInReturn = null }: AppProps = {}) {
   const status = useStore((state) => state.status);
   const apiVersion = useStore((state) => state.apiVersion);
   // #172's ADR-0010 diagnostic, read straight off the handshake and rendered
@@ -133,7 +140,8 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
   // start a real poll timer against a worker with no token.
   const [settingsDemoCalendar] = useState(demoCalendar);
 
-  const [screen, setScreen] = useState<Screen>("now");
+  // A sign-in returns to Settings, where the device-token card says how it went.
+  const [screen, setScreen] = useState<Screen>(signInReturn === null ? "now" : "settings");
   // Device-local view preference, same storage guard `NowScreen`'s ranked
   // region uses — absent storage means the preference lasts the session.
   const [railCollapsed, setRailCollapsed] = useState(() =>
@@ -184,7 +192,18 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
     enteredAtMs: taskTokenEnteredAtMs,
     handleSubmitToken: handleSubmitTaskToken,
     handleForgetToken: handleForgetTaskToken,
+    handleSignedOut: handleTaskTokenSignedOut,
   } = useTaskTokenWiring(worker, status);
+  // #840 (ADR-0040): a minted token goes through the paste form's own
+  // submit, so it is stored and pushed exactly as a pasted one.
+  const { signIn, beginSignIn } = useSignInWiring(worker, status, signInReturn, handleSubmitTaskToken);
+  const { handleRevokeDevice } = useDevicesWiring(
+    worker,
+    status,
+    screen === "settings",
+    hasTaskToken,
+    handleTaskTokenSignedOut,
+  );
   const taskTokenState = taskTokenUiState(hasTaskToken, task.needsReconnect);
 
   const online = useOnlineStatus();
@@ -790,6 +809,9 @@ export function App({ worker: injectedWorker }: AppProps = {}) {
               taskTokenEnteredAtMs={taskTokenEnteredAtMs}
               onSubmitTaskToken={handleSubmitTaskToken}
               onForgetTaskToken={() => void handleForgetTaskToken()}
+              signIn={signIn}
+              onBeginSignIn={beginSignIn}
+              onRevokeDevice={handleRevokeDevice}
               task={task}
               onSetBinding={handleSetBinding}
               onSetQuestionEnabled={handleSetQuestionEnabled}

@@ -34,7 +34,7 @@ import { questionRoster } from "./questions/roster";
 import { APP_VERSION } from "../shell/build-version";
 import { coreInstanceLabel } from "../shell/status-label";
 import { TRIPS_CALENDAR_BINDING_KEY, tripsCalendarId } from "../calendar/selection";
-import { effectiveCalendarSelection } from "../decisions/seam";
+import { deviceRows, effectiveCalendarSelection, signOutConfirmation } from "../decisions/seam";
 import {
   deadLetterHeading,
   syncStatusLabel,
@@ -45,6 +45,7 @@ import type {
   BindingDTO,
   ContextEntryDTO,
   DeadLetterEntryDTO,
+  DeviceRowDTO,
   LedgerRowDTO,
 } from "../store/protocol";
 import type { StorageLike } from "./storage";
@@ -53,6 +54,8 @@ import type { TaskTokenSubmitOutcome } from "../task/token";
 import { formatEnteredAt, taskQueueStatusCopy, type TaskTokenUiState } from "../task/token-ui";
 import type { ThemePreference } from "../theme/theme";
 import { deadLetterSubject } from "./dead-letter-subject";
+import { devicesNote, otherDeviceConfirmation } from "./devices";
+import type { SignInUiState } from "../shell/useSignInWiring";
 import { Aside, Column, Section, TwoColumn } from "./layout";
 
 const THEME_OPTIONS = [
@@ -198,6 +201,218 @@ function TokenEntryForm({
         Save token
       </Button>
     </div>
+  );
+}
+
+/** The device-token card's way in (#840, ADR-0040 decisions 3 and 7):
+ * Sign in with Google first, and the paste form behind "Paste a token
+ * instead" — the fallback for a build or origin with no sign-in client and
+ * for recovery while Google is unreachable, working exactly as it did
+ * before. With no `onBeginSignIn` there is nothing to lead with, so the
+ * paste form is drawn open. */
+function SignInControls({
+  signIn,
+  onBeginSignIn,
+  onSubmitToken,
+}: {
+  signIn: SignInUiState;
+  onBeginSignIn: (() => void) | null;
+  onSubmitToken: (input: string) => Promise<TaskTokenSubmitOutcome>;
+}) {
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const pending = signIn.kind === "pending";
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+      {signIn.kind === "error" ? (
+        <p role="alert" style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>
+          {signIn.message}
+        </p>
+      ) : null}
+      {onBeginSignIn === null ? (
+        <TokenEntryForm onSubmit={onSubmitToken} />
+      ) : (
+        <>
+          <Button
+            iconLeft="log-in"
+            onClick={onBeginSignIn}
+            fullWidth
+            loading={pending}
+            disabled={pending}
+          >
+            {pending ? "Signing in" : "Sign in with Google"}
+          </Button>
+          <ControlButton
+            aria-expanded={pasteOpen}
+            onClick={() => setPasteOpen(!pasteOpen)}
+            baseStyle={{ ...sectionToggleStyle(!pasteOpen), font: "var(--type-body-sm)" }}
+            hoverStyle={SECTION_TOGGLE_HOVER}
+          >
+            <Icon
+              name="chevron-down"
+              size={14}
+              style={{
+                color: "var(--text-muted)",
+                transform: pasteOpen ? "none" : "rotate(-90deg)",
+                transition: "transform var(--dur-fast) var(--ease-flit)",
+              }}
+            />
+            Paste a token instead
+          </ControlButton>
+          {pasteOpen ? <TokenEntryForm onSubmit={onSubmitToken} /> : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** One Signed-in devices row (#840). Its words are the core's; its sign-out
+ * is two clicks, `ContextChip`'s idiom — the first replaces the control
+ * with the sentence saying what signing out does, the second does it. A
+ * row the authority will not revoke draws no control at all. */
+function DeviceRow({
+  row,
+  first,
+  confirmation,
+  confirming,
+  error,
+  busy,
+  onConfirm,
+  onCancel,
+  onSignOut,
+}: {
+  row: DeviceRowDTO;
+  /** The card's own edge sits above the first row, so it draws no rule. */
+  first: boolean;
+  confirmation: string;
+  confirming: boolean;
+  error: string | null;
+  busy: boolean;
+  onConfirm?: () => void;
+  onCancel: () => void;
+  onSignOut: () => void;
+}) {
+  // Focus is carried across each step by hand, as `ContextChip` does: the
+  // control that was pressed unmounts.
+  const itemRef = useRef<HTMLLIElement>(null);
+  const wasConfirming = useRef(false);
+  useEffect(() => {
+    if (confirming || wasConfirming.current) {
+      itemRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    }
+    wasConfirming.current = confirming;
+  }, [confirming]);
+  return (
+    <li
+      ref={itemRef}
+      aria-label={row.thisDevice === null ? row.name : `${row.name}, ${row.thisDevice}`}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "var(--space-3)",
+        padding: "var(--space-4) 0",
+        borderTop: first ? "none" : "1px solid var(--border-subtle)",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-4)", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-1)", flex: "1 1 12rem", minWidth: 0 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: "var(--space-3)", flexWrap: "wrap" }}>
+            <span style={{ font: "var(--type-body-strong)", color: "var(--text-primary)", overflowWrap: "anywhere" }}>
+              {row.name}
+            </span>
+            {row.thisDevice !== null ? (
+              <Badge dot tone="brand">
+                {row.thisDevice}
+              </Badge>
+            ) : null}
+          </span>
+          <span className="hb-meta">
+            {row.platformLabel} · {row.lastSeenLabel}
+          </span>
+        </div>
+        {confirming || onConfirm === undefined ? null : (
+          <Button variant="secondary" size="sm" iconLeft="log-out" onClick={onConfirm}>
+            {row.isCurrent ? "Sign out of this device" : "Sign out"}
+          </Button>
+        )}
+      </div>
+      {confirming ? (
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-4)", flexWrap: "wrap" }}>
+          <Button variant="danger" size="sm" onClick={onSignOut} loading={busy} disabled={busy}>
+            Confirm
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+          <span style={{ font: "var(--type-body-sm)", color: "var(--text-secondary)", flex: "1 1 14rem" }}>
+            {confirmation}
+          </span>
+        </div>
+      ) : null}
+      {error !== null ? (
+        <span role="alert" style={{ font: "var(--type-body-sm)", color: "var(--status-danger-fg)" }}>
+          {error}
+        </span>
+      ) : null}
+    </li>
+  );
+}
+
+/** The Signed-in devices section's body (#840, ADR-0040 decision 7): the
+ * core's rows — this device first, then most recently seen — each with
+ * its sign-out where the authority allows one. */
+function DevicesCard({
+  rows,
+  queueDepth,
+  onRevokeDevice,
+}: {
+  rows: DeviceRowDTO[];
+  queueDepth: number;
+  onRevokeDevice?: (id: string) => Promise<string | null>;
+}) {
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<{ id: string; message: string } | null>(null);
+
+  async function signOut(id: string) {
+    if (onRevokeDevice === undefined) {
+      return;
+    }
+    setBusyId(id);
+    const failure = await onRevokeDevice(id);
+    setBusyId(null);
+    setConfirmingId(null);
+    setError(failure === null ? null : { id, message: failure });
+  }
+
+  if (rows.length === 0) {
+    return <Note>No devices are signed in.</Note>;
+  }
+  return (
+    <Card padding="var(--space-2) var(--space-6)">
+      <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+        {rows.map((row, index) => (
+          <DeviceRow
+            key={row.id}
+            row={row}
+            first={index === 0}
+            confirmation={row.isCurrent ? signOutConfirmation(queueDepth) : otherDeviceConfirmation(row.name)}
+            confirming={confirmingId === row.id}
+            busy={busyId === row.id}
+            error={error?.id === row.id ? error.message : null}
+            onConfirm={
+              row.revocable && onRevokeDevice !== undefined
+                ? () => {
+                    setConfirmingId(row.id);
+                    setError(null);
+                  }
+                : undefined
+            }
+            onCancel={() => setConfirmingId(null)}
+            onSignOut={() => void signOut(row.id)}
+          />
+        ))}
+      </ul>
+    </Card>
   );
 }
 
@@ -809,6 +1024,16 @@ export interface SettingsScreenProps {
   taskTokenEnteredAtMs: number | null;
   onSubmitTaskToken: (input: string) => Promise<TaskTokenSubmitOutcome>;
   onForgetTaskToken: () => void;
+  /** #840: where a Google sign-in stands, and the way to start one —
+   * `null` (or absent) on a build with no sign-in client, which draws the
+   * paste form alone. */
+  signIn?: SignInUiState;
+  onBeginSignIn?: (() => void) | null;
+  /** #840: signs one device out — `useDevicesWiring.ts`'s
+   * `handleRevokeDevice`, resolving to `null` or why it did not. Absent
+   * draws every row without a control, `onSetBinding`'s own contract. The
+   * rows themselves are `task.devices`. */
+  onRevokeDevice?: (id: string) => Promise<string | null>;
   /** S9's sync-status affordance: last sweep, queue depth, the dead-letter
    * journal, and the mirror download — and #118's bindings, read from
    * `task.bindings`. */
@@ -863,6 +1088,9 @@ export function SettingsScreen({
   taskTokenEnteredAtMs,
   onSubmitTaskToken,
   onForgetTaskToken,
+  signIn = { kind: "idle" },
+  onBeginSignIn = null,
+  onRevokeDevice,
   task,
   onSetBinding,
   onSetQuestionEnabled,
@@ -1094,6 +1322,23 @@ export function SettingsScreen({
             />
           </Card>
         </Section>
+
+        {/* #840 (ADR-0040 decision 7). Not token-gated the way the
+            calendar section is: a signed-out device says so here, which is
+            the section's own answer rather than an absence. */}
+        <Section title="Signed-in devices" id="signed-in-devices">
+          {status !== "ready" ? (
+            <Note>Signed-in devices are unavailable until the local core loads.</Note>
+          ) : devicesNote(task.devices) !== null ? (
+            <Note>{devicesNote(task.devices)}</Note>
+          ) : (
+            <DevicesCard
+              rows={deviceRows(task.devices?.devices ?? [], syncNowMs)}
+              queueDepth={task.queueDepth ?? 0}
+              onRevokeDevice={onRevokeDevice}
+            />
+          )}
+        </Section>
       </Column>
 
       <Aside label="Core and calendar status">
@@ -1294,7 +1539,11 @@ export function SettingsScreen({
                   </Button>
                 </>
               ) : (
-                <TokenEntryForm onSubmit={onSubmitTaskToken} />
+                <SignInControls
+                  signIn={signIn}
+                  onBeginSignIn={onBeginSignIn}
+                  onSubmitToken={onSubmitTaskToken}
+                />
               )}
             </Card>
           </>

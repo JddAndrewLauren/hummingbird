@@ -19,7 +19,20 @@ export default defineConfig({
   // deploy (#586 retired the one env var that used to illustrate this). It
   // touches nothing in `core.worker.ts`'s static import graph, so the
   // top-level-`await` invariant is unaffected.
-  define: { __APP_VERSION__: JSON.stringify(readBuildVersion()) },
+  //
+  // The Google sign-in client id (#840, ADR-0040 decision 3) is a literal
+  // for the same reason, and because it is public by design: the
+  // `hummingbird-signin` Web client recorded on #836, the one id
+  // `server/worker/wrangler.toml`'s `GOOGLE_SIGNIN_CLIENT_IDS` accepts. Its
+  // registered redirect URIs are `https://hb.twinion.net/signin` and
+  // `http://127.0.0.1:5181/signin` (the `web-local` rig); any other origin's
+  // sign-in is refused by Google, and pasting a token still works there.
+  define: {
+    __APP_VERSION__: JSON.stringify(readBuildVersion()),
+    __GOOGLE_SIGNIN_CLIENT_ID__: JSON.stringify(
+      "309477759674-d169knsap6cuig582ii1mhv032u3ovb2.apps.googleusercontent.com",
+    ),
+  },
   plugins: [
     react(),
     tailwindcss(),
