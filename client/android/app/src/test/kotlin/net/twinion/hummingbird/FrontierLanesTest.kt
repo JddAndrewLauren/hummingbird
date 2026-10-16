@@ -10,7 +10,8 @@ import org.junit.Test
 // case for case so the two implementations cannot quietly diverge on a
 // boundary. The last test is the drift gate the mirroring depends on: it
 // reads the web source and pins LANE_MIN/GAP equal to this port's
-// constants, the `BottomNavStructuralTest` idiom.
+// constants, and the packing and weighing rules as the web writes them,
+// the `BottomNavStructuralTest` idiom.
 class FrontierLanesTest {
 
     // ------------------------------------------------------- laneCountFor
@@ -55,49 +56,132 @@ class FrontierLanesTest {
 
     // ---------------------------------------------------------- packLanes
 
+    private fun lanes(vararg lanes: List<Int>): List<List<Int>> = lanes.toList()
+
     @Test
-    fun `fans the first columns across the lanes before stacking anything`() {
-        // Every lane starts empty, so the fullest columns — which arrive
-        // first — read left to right along the top.
-        assertEquals(listOf(listOf(0), listOf(1), listOf(2)), packLanes(listOf(9, 8, 7), 3))
+    fun `fans the fullest columns across the lanes before stacking anything`() {
+        // A heavy column carries its whole share on its own, so the next
+        // one starts a fresh lane.
+        assertEquals(lanes(listOf(0), listOf(1), listOf(2)), packLanes(listOf(9, 8, 7), 3))
     }
 
     @Test
-    fun `stacks the short columns under whichever lane is shortest`() {
+    fun `stacks the short columns under the lane already open`() {
+        assertEquals(lanes(listOf(0), listOf(1, 2, 3)), packLanes(listOf(9, 2, 2, 2), 2))
+    }
+
+    @Test
+    fun `stacks the sparse bands the urgency axis leads with`() {
+        // The shape #822 is about: overdue/now/soon arrive first in severity
+        // order, one card each, ahead of a capped `calm`. Greedy balancing
+        // answered [[0,3],[1],[2]] here — a lane per band and `calm` under
+        // the first.
+        assertEquals(lanes(listOf(0, 1, 2), listOf(3)), packLanes(listOf(2, 2, 2, 8), 3))
+    }
+
+    @Test
+    fun `does not swallow a column that dwarfs the ones already in the lane`() {
+        assertEquals(lanes(listOf(0, 1, 2), listOf(3)), packLanes(listOf(2, 2, 2, 31), 3))
+        assertEquals(lanes(listOf(0), listOf(1)), packLanes(listOf(1, 8), 2))
+    }
+
+    @Test
+    fun `aims no lane lower than the tallest single column`() {
+        assertEquals(lanes(listOf(0, 1, 2), listOf(3)), packLanes(listOf(2, 2, 2, 8), 3))
+    }
+
+    @Test
+    fun `draws no lane the weights never reached`() {
+        assertEquals(2, packLanes(listOf(2, 2, 2, 8), 3).size)
+        assertEquals(lanes(listOf(0), listOf(1, 2)), packLanes(listOf(5, 1, 1), 3))
+    }
+
+    @Test
+    fun `keeps a lumpy fullest-first axis on all the lanes it affords`() {
         assertEquals(
-            listOf(listOf(0), listOf(1, 2, 3)),
-            packLanes(listOf(9, 2, 2, 2), 2),
+            lanes(listOf(0), listOf(1, 2), listOf(3, 4, 5)),
+            packLanes(listOf(8, 5, 4, 3, 3, 8), 3),
         )
     }
 
     @Test
-    fun `breaks a tie leftwards`() {
-        assertEquals(
-            listOf(listOf(0, 2), listOf(1, 3)),
-            packLanes(listOf(1, 1, 1, 1), 2),
-        )
+    fun `splits a run of equal columns in reading order`() {
+        // Greedy interleaved these [[0,2],[1,3]]; filling reads them down
+        // the left lane first.
+        assertEquals(lanes(listOf(0, 1), listOf(2, 3)), packLanes(listOf(1, 1, 1, 1), 2))
     }
 
     @Test
     fun `preserves the given order outright in a single lane`() {
-        assertEquals(listOf(listOf(0, 1, 2)), packLanes(listOf(1, 9, 3), 1))
+        assertEquals(lanes(listOf(0, 1, 2)), packLanes(listOf(1, 9, 3), 1))
     }
 
     @Test
-    fun `returns one lane per column when asked for exactly that`() {
-        assertEquals(
-            listOf(listOf(0), listOf(1), listOf(2)),
-            packLanes(listOf(5, 1, 1), 3),
-        )
+    fun `gives every column its own lane when each fills one`() {
+        assertEquals(lanes(listOf(0), listOf(1), listOf(2)), packLanes(listOf(1, 1, 1), 3))
     }
 
     @Test
-    fun `returns no lanes for no lanes, whatever the weights`() {
+    fun `returns no lanes for no lanes, and none for no columns`() {
         assertEquals(emptyList<List<Int>>(), packLanes(listOf(1, 2), 0))
+        assertEquals(emptyList<List<Int>>(), packLanes(emptyList(), 3))
+    }
+
+    // ------------------------------------------------------- frontierLanes
+
+    @Test
+    fun `gives every column its own lane when the board is unmeasured`() {
+        // Answered before the packer, as the web's `frontierLanes` does: the
+        // packer itself would stack these into two lanes.
         assertEquals(
-            listOf(emptyList<Int>(), emptyList(), emptyList()),
-            packLanes(emptyList(), 3),
+            lanes(listOf(0), listOf(1), listOf(2), listOf(3)),
+            frontierLanes(listOf(2, 2, 2, 8), null),
         )
+        assertEquals(emptyList<List<Int>>(), frontierLanes(emptyList(), null))
+    }
+
+    @Test
+    fun `packs into the lanes the measured width affords`() {
+        // Three lanes afforded at 830dp, two drawn.
+        assertEquals(lanes(listOf(0, 1, 2), listOf(3)), frontierLanes(listOf(2, 2, 2, 8), 830))
+        assertEquals(
+            lanes(listOf(0), listOf(1, 2), listOf(3, 4, 5)),
+            frontierLanes(listOf(8, 5, 4, 3, 3, 8), 830),
+        )
+    }
+
+    @Test
+    fun `stacks the whole board in one lane where only one fits`() {
+        assertEquals(lanes(listOf(0, 1, 2, 3)), frontierLanes(listOf(2, 2, 2, 8), 390))
+    }
+
+    // ----------------------------------------------------- laneWeightsFor
+
+    @Test
+    fun `charges a heading, the cards shown, and the control if there is one`() {
+        assertEquals(listOf(2, 4, 7), laneWeightsFor(listOf(1, 3, 6), 6))
+        assertEquals(listOf(8, 8), laneWeightsFor(listOf(7, 29), 6))
+        assertEquals(listOf(7), laneWeightsFor(listOf(6), 6))
+    }
+
+    @Test
+    fun `costs an empty column its heading alone`() {
+        assertEquals(listOf(1), laneWeightsFor(listOf(0), 6))
+    }
+
+    @Test
+    fun `takes counts and a cap, and nothing about what is on screen`() {
+        // A column's weight is its RESTING height: there is no parameter
+        // for collapsed or expanded, so no toggle can repack the board.
+        // `FrontierLaneBoardLayoutTest` drives the toggles themselves.
+        assertEquals(listOf(2, 2, 2, 8), laneWeightsFor(listOf(1, 1, 1, 29), 6))
+        assertEquals(listOf(2, 2, 2, 16), laneWeightsFor(listOf(1, 1, 1, 29), 14))
+    }
+
+    @Test
+    fun `grows the cap without changing what a small column costs`() {
+        assertEquals(listOf(3, 3, 3, 8), laneWeightsFor(listOf(2, 2, 2, 29), 6))
+        assertEquals(listOf(3, 3, 3, 16), laneWeightsFor(listOf(2, 2, 2, 29), 14))
     }
 
     // ------------------------------------------------------- the parity pin
@@ -118,6 +202,18 @@ class FrontierLanesTest {
         assertTrue(
             "frontier-lanes.ts must still say GAP = $LANE_GAP_DP — same porting rule",
             web.contains("const GAP = $LANE_GAP_DP;"),
+        )
+        // The rule itself, not only its constants: if the web stops filling
+        // in order or starts weighing what is drawn, this port must follow.
+        assertTrue(
+            "frontier-lanes.ts's packLanes must still open a lane only past the share — " +
+                "if the web changed its packing rule, port it here",
+            web.contains("if (carried > 0 && carried + weight > target && lanes.length < count) {"),
+        )
+        assertTrue(
+            "frontier-lanes.ts's laneWeightsFor must still weigh resting height alone — " +
+                "same porting rule",
+            web.contains("(count) => 1 + Math.min(count, columnCap) + (count > columnCap ? 1 : 0),"),
         )
     }
 }

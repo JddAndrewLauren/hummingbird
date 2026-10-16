@@ -407,8 +407,13 @@ Past 640dp the list screens reflow rather than stretch. `AppRoot` provides
 Activity. Three consumers:
 
 - **Now packs lanes.** `FrontierLanes.kt` is a verbatim port of the web's
-  `frontier-lanes.ts` (`laneCountFor`/`packLanes`, LANE_MIN 240 / GAP 24 —
-  `FrontierLanesTest` mirrors that file's tests and pins its constants);
+  `frontier-lanes.ts` (`laneCountFor`/`laneWeightsFor`/`packLanes`/
+  `frontierLanes`, LANE_MIN 240 / GAP 24 — `FrontierLanesTest` mirrors that
+  file's tests and pins its constants and rules). Since #822 it fills lanes
+  in the core's column order rather than balancing them, so the Urgency
+  board stacks its sparse bands in one lane and gives `calm` its own, and it
+  weighs each column's resting height, so a collapse or `n more` moves no
+  other column; only the lanes reached are drawn (`FrontierLaneBoardLayoutTest`).
   `NowLaneBoard.kt` renders the packed lanes out of `NowScreen.kt`'s own
   pieces as ONE entry of the screen's one lazy list, so the one-scroll rule
   (#537) holds — the lanes inside are non-scrolling. Width comes from a
