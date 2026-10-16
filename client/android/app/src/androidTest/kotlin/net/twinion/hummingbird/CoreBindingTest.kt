@@ -7,6 +7,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
+import uniffi.hummingbird_ffi_mobile.MobileDeviceForm
 import uniffi.hummingbird_ffi_mobile.MobileTaskHost
 import uniffi.hummingbird_ffi_mobile.coreApiVersion
 
@@ -25,7 +26,7 @@ class CoreBindingTest {
     fun a_durable_core_initialises_under_an_app_local_namespace() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val namespace = File(context.filesDir, "binding-test-ns").absolutePath
-        val host = MobileTaskHost.init(namespace, "https://authority.example")
+        val host = MobileTaskHost.init(namespace, "https://authority.example", MobileDeviceForm.PHONE)
 
         assertEquals(coreApiVersion(), host.apiVersion())
         assertEquals(0u, host.activeItemCount())

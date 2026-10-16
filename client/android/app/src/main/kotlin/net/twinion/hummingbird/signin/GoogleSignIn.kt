@@ -102,6 +102,8 @@ fun exchangeMessage(outcome: MobileSignInOutcome): String? = when (outcome) {
         "The authority couldn't check with Google just now. Try again in a minute."
     is MobileSignInOutcome.Invalid -> "The authority refused this device's name — ${outcome.detail}"
     is MobileSignInOutcome.Failed -> "Sign-in didn't reach the authority — ${outcome.detail}"
+    MobileSignInOutcome.RefusedOnWatch ->
+        "A watch doesn't sign in — it takes its token from the phone. Nothing was sent."
 }
 
 /** The sentence for a [GoogleCredential] that carries no ID token. */

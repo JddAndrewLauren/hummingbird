@@ -5,6 +5,7 @@ import java.io.File
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.twinion.hummingbird.diagnostics.DiagnosticsRecorder
+import uniffi.hummingbird_ffi_mobile.MobileDeviceForm
 import uniffi.hummingbird_ffi_mobile.MobileDiagnosticEvent
 import uniffi.hummingbird_ffi_mobile.MobileTaskHost
 
@@ -17,6 +18,14 @@ import uniffi.hummingbird_ffi_mobile.MobileTaskHost
 // With no token stored, or a store that cannot be read, the absence is
 // reported instead, so the core's credential always leaves `unknown` (#846).
 object CoreHolder {
+    // Phone or watch (#880): the phone's and the watch's Application each
+    // set this first thing in `onCreate`, before any component can reach
+    // `get`, and the seam is told it once at init. No default: a host that
+    // forgot would otherwise start as whichever form the default named, and
+    // only the watch form refuses a Google sign-in.
+    @Volatile
+    var form: MobileDeviceForm? = null
+
     @Volatile
     private var host: MobileTaskHost? = null
     private val initLock = Mutex()
@@ -32,7 +41,8 @@ object CoreHolder {
         val namespace = File(context.filesDir, "hummingbird-core").absolutePath
         // Init takes no key (#846); app start is a reload of a token we
         // already had, or a report that there is none.
-        val core = MobileTaskHost.init(namespace, BuildConfig.AUTHORITY_BASE_URL)
+        val form = checkNotNull(form) { "CoreHolder.form unset: the Application's onCreate sets it before any get" }
+        val core = MobileTaskHost.init(namespace, BuildConfig.AUTHORITY_BASE_URL, form)
         val stored = runCatching { TokenStore.load(context) }.getOrNull()
         if (stored != null) core.rehydrateApiKey(stored) else core.reportNoApiKey()
         // The mobile FFI host's own diagnostic touch point (#709): this is
