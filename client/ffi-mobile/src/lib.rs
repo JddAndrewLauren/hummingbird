@@ -8058,6 +8058,7 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("stalled-sync-ns").to_str().unwrap().to_string(),
             base_url.clone(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
