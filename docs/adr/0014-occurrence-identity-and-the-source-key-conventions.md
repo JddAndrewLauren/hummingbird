@@ -333,6 +333,24 @@ one more pushed source. The source and its key recipe are a contract on both
 sides, so changing either is a `perch/v2` the two repositories make together.
 Pinned by the frozen table and a key vector in `sources.rs`.*
 
+*Amended 2026-10-15 ([#893](https://github.com/JddAndrewLauren/hummingbird/issues/893)):
+`healthchecks/v1` gets its first sender, Healthchecks.io itself, and with it
+the first **receiver**: `POST /api/alerts/healthchecks`, under the same
+`ingest` scope and bound to `healthchecks/v1` alone. It exists because
+Healthchecks.io cannot fill an integer timestamp (its one time placeholder,
+`$NOW`, is ISO 8601), so its up event cannot carry the `resolved_at` this
+ADR's lifecycle needs, and a re-raise after a resolution cannot carry a
+fresh `raised_at`. The receiver supplies both from the server clock: a down
+raises one alert keyed by the check's UUID, titled with the check's name and
+at severity `high`, and restamps `raised_at` only when it clears a
+resolution (#120's `restamp_on_change`), so a check that comes back and goes
+quiet again rings again while a retried down rings nothing; an up writes
+`resolved_at` and nothing else. One Webhook integration covers every check,
+so a new check needs nothing here. The integration's exact settings live in
+the receiver's module header (`server/authority/src/handlers/healthchecks.rs`).
+The key recipe and the registry entry are unchanged, and no other source's
+writes move.*
+
 Two of these are judgment calls rather than consequences:
 
 - **Mail keys on the message, not the thread.** A twenty-reply thread that

@@ -53,6 +53,20 @@ pub fn ingest(
         Ok(v) => v,
         Err(resp) => return Ok(resp),
     };
+    ingest_parsed(ingest, now_ms, token_source, token_origin, sql)
+}
+
+/// [`ingest`] past its body parse — every check, the upsert and the ring.
+/// The Healthchecks.io receiver (#893, `handlers/healthchecks.rs`) enters
+/// here with the [`AlertIngest`] it translated a down event into, so a
+/// receiver-raised alert is held to exactly what a posted one is.
+pub(super) fn ingest_parsed(
+    ingest: AlertIngest,
+    now_ms: i64,
+    token_source: Option<&str>,
+    token_origin: Option<&str>,
+    sql: &dyn Sql,
+) -> Result<ApiResponse, SqlError> {
     if ingest.source.is_empty() || ingest.source_key.is_empty() {
         return Ok(error(400, "validation", "source and source_key must be non-empty"));
     }
