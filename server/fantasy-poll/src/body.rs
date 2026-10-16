@@ -14,10 +14,13 @@
 //! with one. The alert's `source_key` is a different thing — the team,
 //! `team:<team_key>` (`hummingbird_domain::yahoo_lineup_v1_key`), #720's.
 //!
-//! **`tests/fixtures/golden-lineup.json` and `golden-discovered.json` pin
-//! both bodies byte for byte.** They are the contract #855's pane parser and
-//! Settings' discovered-leagues line are written against; a diff there is a
-//! decision about that contract, not a chore.
+//! **`tests/fixtures/golden-lineup.json` (invalid),
+//! `golden-lineup-valid.json` (the same team fixed) and
+//! `golden-discovered.json` pin both bodies byte for byte.** They are the
+//! contract the pane's parser (`client/core`'s `fantasy.rs`, #855) and
+//! Settings' discovered-leagues line are written against — and both read
+//! these very files in their tests; a diff there is a decision about that
+//! contract, not a chore.
 //!
 //! # What the lineup body carries
 //!

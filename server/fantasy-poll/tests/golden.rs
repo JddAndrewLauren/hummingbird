@@ -22,6 +22,8 @@ use hummingbird_fantasy_poll::roster::{Roster, Team};
 const ROSTER: &str = include_str!("fixtures/roster.json");
 const TEAMS: &str = include_str!("fixtures/teams.json");
 const GOLDEN_LINEUP: &str = include_str!("fixtures/golden-lineup.json");
+const ROSTER_VALID: &str = include_str!("fixtures/roster-valid.json");
+const GOLDEN_LINEUP_VALID: &str = include_str!("fixtures/golden-lineup-valid.json");
 const GOLDEN_DISCOVERED: &str = include_str!("fixtures/golden-discovered.json");
 
 /// The fixture's fetch instant: Tue 2026-09-29 15:00Z, before week 4's
@@ -41,6 +43,22 @@ fn the_lineup_envelope_is_the_golden_body_byte_for_byte() {
         pretty(LineupBody::from_roster(&roster, AS_OF_MS).envelope()),
         GOLDEN_LINEUP,
         "the lineup body has moved away from tests/fixtures/golden-lineup.json — the \
+         pane's parser contract (#855), not a snapshot to regenerate"
+    );
+}
+
+/// The same team after the operator fixed it in Yahoo — every starting slot
+/// valid. The pane's valid arm (#855) is tested over these bytes, so they
+/// are pinned here the same way.
+#[test]
+fn the_valid_lineup_envelope_is_the_golden_body_byte_for_byte() {
+    let roster: Roster = serde_json::from_str(ROSTER_VALID).expect("the valid fixture roster parses");
+    let lineup = LineupBody::from_roster(&roster, AS_OF_MS);
+    assert!(lineup.is_valid(), "the valid fixture has no invalid starting slot");
+    assert_eq!(
+        pretty(lineup.envelope()),
+        GOLDEN_LINEUP_VALID,
+        "the lineup body has moved away from tests/fixtures/golden-lineup-valid.json — the \
          pane's parser contract (#855), not a snapshot to regenerate"
     );
 }

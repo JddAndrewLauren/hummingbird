@@ -14,6 +14,7 @@
 // the production bundle. Its caller is itself gated behind
 // `import.meta.env.DEV`, so this module carries no gate of its own.
 
+import { LINEUP_SOURCE as FANTASY_LINEUP_SOURCE } from "../screens/fantasy-pane/fantasy";
 import { SOURCE as GITHUB_SOURCE } from "../screens/github-pane/github";
 import { SNAPSHOT_KEY as KIMI_SNAPSHOT_KEY, SOURCE as KIMI_SOURCE } from "../screens/kimi-pane/kimi";
 import {
@@ -25,6 +26,7 @@ import { BINDING_KEY as WASTE_BINDING_KEY, SNAPSHOT_KEY, SOURCE as WASTE_SOURCE 
 import type { BindingDTO, PaneReadDTO } from "../store/protocol";
 
 export {
+  FANTASY_LINEUP_SOURCE,
   GITHUB_SOURCE,
   KIMI_SOURCE,
   RACE_SOURCE,
@@ -294,6 +296,124 @@ export function uptimeRead(nowMs: number): PaneReadDTO {
       serviceSnapshot("authority", 401),
       serviceSnapshot("web", 200),
       serviceSnapshot("runner", 401),
+    ],
+    liveAlerts: [],
+  };
+}
+
+/** The board world's three fictional Yahoo leagues (#855), one per lineup
+ * state the visual gate photographs — the order the `yahoo-leagues` binding
+ * names them in. */
+export const FANTASY_LEAGUES = ["449.l.123456", "449.l.234567", "449.l.345678"] as const;
+
+/** One lineup row, in the poller's own `yahoo-lineup/v1` body shape
+ * (`server/fantasy-poll/tests/fixtures/golden-lineup.json`) — four slots
+ * rather than a full roster, so the expanded cards stay a fixture, not a
+ * screenful. */
+function lineupSnapshot(
+  nowMs: number,
+  leagueKey: string,
+  leagueName: string,
+  slots: { position: string; name: string | null; kickoffMs: number | null; invalid: string | null; deadlineMs?: number }[],
+  ageMs: number,
+): PaneReadDTO["snapshots"][number] {
+  const body = {
+    team_key: `${leagueKey}.t.3`,
+    team_name: "Gridiron Hummingbirds",
+    league_key: leagueKey,
+    league_name: leagueName,
+    week: 7,
+    slots: slots.map((slot, index) => ({
+      position: slot.position,
+      occupant:
+        slot.name === null
+          ? null
+          : {
+              player_key: `449.p.${4000 + index}`,
+              name: slot.name,
+              bye_week: slot.kickoffMs === null ? 7 : 11,
+              designation: slot.invalid === "out" ? "out" : null,
+              kickoff_ms: slot.kickoffMs,
+            },
+      invalid: slot.invalid === null ? null : { reason: slot.invalid, deadline_ms: slot.deadlineMs ?? null },
+    })),
+  };
+  return {
+    key: leagueKey,
+    fetchedAtMs: nowMs - ageMs,
+    envelope: { kind: "ok", schema: FANTASY_LINEUP_SOURCE, polledEveryMs: 6 * 60 * 60 * 1000, body: JSON.stringify(body) },
+    freshness: { kind: "age", ageMs, declaredCadenceMs: 6 * 60 * 60 * 1000 },
+  };
+}
+
+/** The three lineup states the tile has: **valid** (Twinion Family League,
+ * dormant, locking in two days), **invalid** more than a day out (Office
+ * Pool, two empty slots, `near`) and **invalid in crunch time but hours
+ * old** (Sunday Night Six, a starter on bye with the lock 4h away and the
+ * row 3h old — `imminent`, and the headline says when it was last checked).
+ * Plus the poller's discovered-leagues row, which Settings lists beside the
+ * `yahoo-leagues` field. Instants are snapped to the hour, like `raceRead`'s. */
+export function fantasyLineupRead(nowMs: number): PaneReadDTO {
+  const hour = 3_600_000;
+  const at = (hours: number) => Math.floor((nowMs + hours * hour) / hour) * hour;
+  const [valid, near, crunch] = FANTASY_LEAGUES;
+  return {
+    source: FANTASY_LINEUP_SOURCE,
+    snapshots: [
+      lineupSnapshot(
+        nowMs,
+        valid,
+        "Twinion Family League",
+        [
+          { position: "QB", name: "Quinn Arrow", kickoffMs: at(52), invalid: null },
+          { position: "RB", name: "Benny Sunday", kickoffMs: at(52), invalid: null },
+          { position: "WR", name: "Thor Thursday", kickoffMs: at(49), invalid: null },
+          { position: "TE", name: "Ty Steady", kickoffMs: at(55), invalid: null },
+        ],
+        40 * 60_000,
+      ),
+      lineupSnapshot(
+        nowMs,
+        near,
+        "Office Pool",
+        [
+          { position: "QB", name: "Backup Signal", kickoffMs: at(54), invalid: null },
+          { position: "RB", name: null, kickoffMs: null, invalid: "empty", deadlineMs: at(30) },
+          { position: "WR", name: null, kickoffMs: null, invalid: "empty", deadlineMs: at(33) },
+          { position: "TE", name: "Lon Don", kickoffMs: at(54), invalid: null },
+        ],
+        40 * 60_000,
+      ),
+      lineupSnapshot(
+        nowMs,
+        crunch,
+        "Sunday Night Six",
+        [
+          { position: "QB", name: "Monty Night", kickoffMs: at(9), invalid: null },
+          { position: "RB", name: "Rex Maybe", kickoffMs: at(6), invalid: null },
+          { position: "WR", name: "Wade Byeman", kickoffMs: null, invalid: "bye", deadlineMs: at(4) },
+          { position: "TE", name: "Owen Steady", kickoffMs: at(9), invalid: null },
+        ],
+        3 * hour,
+      ),
+      {
+        key: "discovered-leagues",
+        fetchedAtMs: nowMs - 40 * 60_000,
+        envelope: {
+          kind: "ok",
+          schema: "yahoo-discovered-leagues/v1",
+          polledEveryMs: 6 * 60 * 60 * 1000,
+          body: JSON.stringify({
+            game_key: "449",
+            leagues: [
+              { league_key: valid, league_name: "Twinion Family League" },
+              { league_key: near, league_name: "Office Pool" },
+              { league_key: crunch, league_name: "Sunday Night Six" },
+            ],
+          }),
+        },
+        freshness: { kind: "age", ageMs: 40 * 60_000, declaredCadenceMs: 6 * 60 * 60 * 1000 },
+      },
     ],
     liveAlerts: [],
   };

@@ -172,6 +172,9 @@ import { DEMO_DATA } from "./demo-data";
 import {
   boundRaceBinding,
   boundWasteBinding,
+  FANTASY_LEAGUES,
+  FANTASY_LINEUP_SOURCE,
+  fantasyLineupRead,
   githubRead,
   GITHUB_SOURCE,
   kimiRead,
@@ -778,14 +781,16 @@ const boundVaultBinding: BindingDTO = {
 };
 
 /** #717's league list, seeded so the board world photographs the fantasy
- * question's **bound, never-polled** arm (a lineup and a waivers pane, both
- * gaps — nothing polls Yahoo yet), while the empty world's captures keep
- * its unbound setup prompt. The league key is fictional. */
+ * question, while the empty world's captures keep its unbound setup prompt.
+ * Since #855 it names three fictional leagues, one per lineup state
+ * (`demo-pane-reads.ts`'s `fantasyLineupRead`: valid, invalid, and invalid
+ * but hours old in crunch time); each league's waivers pane stays the
+ * never-polled gap until #719. */
 const boundFantasyBinding: BindingDTO = {
   key: FANTASY_BINDING_KEY,
   known: true,
   pending: false,
-  value: { state: "text", text: "449.l.123456" },
+  value: { state: "text", text: FANTASY_LEAGUES.join(",") },
 };
 
 /** The seeded state, typed as the real `TaskState` so a field added to that
@@ -1096,6 +1101,7 @@ export function buildDemoTaskState(): TaskState {
     paneReads: {
       [WASTE_SOURCE]: wasteRead(loadedAt),
       [RACE_SOURCE]: raceRead(loadedAt),
+      [FANTASY_LINEUP_SOURCE]: fantasyLineupRead(loadedAt),
       [KIMI_SOURCE]: kimiRead(loadedAt),
       [GITHUB_SOURCE]: githubRead(loadedAt),
       [UPTIME_SOURCE]: uptimeRead(loadedAt),
