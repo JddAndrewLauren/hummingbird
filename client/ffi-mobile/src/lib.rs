@@ -6383,9 +6383,11 @@ pub fn calendar_poll_interval_ms() -> i64 {
 
 /// One `reqwest::Client` per host, cloned into both transports — connection
 /// pooling shared across reads and writes, exactly `TaskHostCore::init`'s
-/// arrangement.
+/// arrangement. The core's [`hummingbird_core::sync::sync_client`], so the
+/// connect phase is bounded too (#870); each sync request's total bound
+/// rides on the transports themselves.
 fn reqwest_client() -> reqwest::Client {
-    reqwest::Client::new()
+    hummingbird_core::sync::sync_client()
 }
 
 // ------------------------------------------------------------- M4 (#538)
@@ -8000,6 +8002,58 @@ mod tests {
             Some(operation_id.as_str()),
             "http.started must carry the enqueuing capture's operation id"
         );
+    }
+
+    /// #870 {android-capture-proceeds}: a capture issued while a sync holds
+    /// the core on a request the authority accepted and never answered
+    /// commits locally once the bound expires — not when the OS gives the
+    /// socket up. The transports are swapped for ones with a shortened
+    /// bound; the production value is pinned by the core's own tests.
+    #[tokio::test]
+    async fn a_capture_waiting_on_a_stalled_sync_commits_once_the_bound_expires() {
+        use std::time::{Duration, Instant};
+
+        const BOUND: Duration = Duration::from_millis(400);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let held: Vec<_> = listener.incoming().take(4).collect();
+            std::thread::sleep(Duration::from_secs(60));
+            drop(held);
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let host = MobileTaskHost::init(
+            dir.path().join("stalled-sync-ns").to_str().unwrap().to_string(),
+            base_url.clone(),
+        )
+        .await
+        .unwrap();
+        host.push_api_key("device-token".to_string()).await;
+        {
+            let mut inner = host.inner.lock().await;
+            inner.read_transport =
+                ReqwestSyncTransport::new(reqwest_client(), base_url.clone()).with_timeout(BOUND);
+            inner.write_transport =
+                ReqwestMutationTransport::new(reqwest_client(), base_url).with_timeout(BOUND);
+        }
+
+        let (run, (captured, waited)) = tokio::join!(
+            host.run(1_000, "user".to_string(), true, 0.0),
+            async {
+                // Lets `run` take the core and reach its unanswered request.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let started = Instant::now();
+                let captured = host.capture(title_only_draft("milk"), 1_100).await;
+                (captured, started.elapsed())
+            }
+        );
+
+        assert_eq!(run.kind, "pull_failed");
+        assert!(captured.is_ok(), "{captured:?}");
+        assert!(waited >= BOUND / 2, "the capture waited on the stalled sync: {waited:?}");
+        assert!(waited < Duration::from_secs(5), "the bound released the core: {waited:?}");
+        assert_eq!(host.queue_depth().await, 1);
     }
 
     // ---------------------------------------------- the calendar (#564)
