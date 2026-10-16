@@ -173,7 +173,8 @@ class GuardTest(SlotCase):
             ({"routes": [{"pattern": "hb.twinion.net/api/*", "zone_name": "twinion.net"}]}, "routes"),
             ({"workers_dev": True}, "workers_dev"),
             ({"secrets": {"required": ["ADMIN_SECRET"]}}, "secrets"),
-            ({"vars": {"RUNNER_BASE_URL": "https://x.fly.dev"}}, "vars"),
+            ({"vars": {"RUNNER_BASE_URL": "https://x.fly.dev"}}, "contains a URL"),
+            ({"vars": {"RETRIES": 3}}, "plain strings"),
             ({"name": "hummingbird-authority-staging"}, "name"),
             ({"durable_objects": {"bindings": [
                 {"name": "AUTHORITY", "class_name": "Authority", "remote": True}]}}, "remote"),
@@ -184,6 +185,11 @@ class GuardTest(SlotCase):
             with self.subTest(fragment=fragment):
                 self.write_wrangler(self.slot, overrides)
                 self.assertRefused(self.guard(), fragment)
+
+    def test_plain_string_vars_pass(self):
+        self.write_wrangler(self.slot, {"vars": {"GOOGLE_SIGNIN_CLIENT_IDS": "1-abc.apps.googleusercontent.com"}})
+        g = self.guard()
+        self.assertEqual(g.returncode, 0, g.stderr)
 
     def test_production_hostname_in_built_artifacts_is_refused(self):
         js = self.slot / "hb-a/client/web/dist/assets/x.js"
@@ -238,6 +244,7 @@ class GeneratedConfigTest(SlotCase):
         self.assertNotIn("routes", c)
         self.assertNotIn("build", c)
         self.assertEqual(c["name"], "hummingbird-authority")
+        self.assertIn("GOOGLE_SIGNIN_CLIENT_IDS", c["vars"])
         g = self.guard()
         self.assertEqual(g.returncode, 0, g.stderr)
 
@@ -248,6 +255,8 @@ class GeneratedConfigTest(SlotCase):
         r = self.candidate("init_root; slot_paths a; gen_wrangler_config")
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("kv_namespaces", r.stderr)
+        self.assertFalse((self.slot / "state/wrangler.json.tmp").exists())
+        self.assertIn('"name"', (self.slot / "state/wrangler.json").read_text())
 
 
 class BindingCheckTest(SlotCase):
@@ -272,6 +281,13 @@ class BindingCheckTest(SlotCase):
             'env.RUNNER_BEARER_TOKEN ("(hidden)")      Environment Variable      local\nenv.ADMIN_SECRET'))
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("RUNNER_BEARER_TOKEN", r.stderr)
+
+    def test_a_var_named_in_the_config_passes(self):
+        self.write_wrangler(self.slot, {"vars": {"GOOGLE_SIGNIN_CLIENT_IDS": "x"}})
+        r = self.check(GOOD_TABLE.replace(
+            "env.ADMIN_SECRET",
+            'env.GOOGLE_SIGNIN_CLIENT_IDS ("x")      Environment Variable      local\nenv.ADMIN_SECRET'))
+        self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_a_missing_admin_secret_fails(self):
         r = self.check(GOOD_TABLE.replace(

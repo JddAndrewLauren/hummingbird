@@ -47,8 +47,9 @@
 #   wrangler   the generated `state/wrangler.json` holds only the allowlisted
 #              keys, is named `hummingbird-authority` with an `Authority`
 #              Durable Object (the persisted state is filed under that pair),
-#              its `main` is inside this slot's worktree, nothing anywhere in
-#              it says `remote: true`, and it contains no URL at all.
+#              its `main` is inside this slot's worktree, its `vars` (when
+#              present) are plain strings, nothing anywhere in it says
+#              `remote: true`, and it contains no URL at all.
 #   preview    the generated `state/vite.preview.config.mjs` is exactly
 #              `export default <json>;`, binds 127.0.0.1 on this slot's web
 #              port with strictPort, and the only URL in it is this slot's
@@ -185,7 +186,7 @@ elif check == "wrangler":
     path = os.path.join(state, "wrangler.json")
     c = json.load(open(path))
     allowed = {"name", "main", "compatibility_date", "compatibility_flags",
-               "durable_objects", "migrations"}
+               "durable_objects", "migrations", "vars"}
     extra = sorted(set(c) - allowed)
     if extra:
         out.append(f"wrangler.json has keys outside the allowlist: {', '.join(extra)}")
@@ -197,6 +198,9 @@ elif check == "wrangler":
     for b in bindings:
         if set(b) - {"name", "class_name"}:
             out.append(f"wrangler.json Durable Object binding has extra keys: {sorted(set(b) - {'name', 'class_name'})}")
+    vars_ = c.get("vars", {})
+    if not (isinstance(vars_, dict) and all(isinstance(v, str) for v in vars_.values())):
+        out.append("wrangler.json vars must be a table of plain strings")
     main = c.get("main")
     real_wt = os.path.realpath(wt)
     if not (isinstance(main, str) and os.path.isabs(main)
