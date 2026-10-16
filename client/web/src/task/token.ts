@@ -8,9 +8,11 @@ import type { TaskTokenStoreLike } from "./token-store";
 //
 // There is no rotation timer here (unlike the calendar's authority-backed
 // `connection.ts`, whose token is minted server-side and rotated roughly
-// hourly): a device token is long-lived and entered by hand, so the only
-// lifecycle events are "load whatever is stored, once, at startup", "a
-// fresh one was typed in", and "forget the one that's here".
+// hourly): a device token is long-lived — minted by signing in with Google
+// (`shell/useSignInWiring.ts`, ADR-0040) or pasted by hand, both through
+// `submitTaskToken` — so the only lifecycle events are "load whatever is
+// stored, once, at startup", "a fresh one arrived", and "forget the one
+// that's here".
 
 export interface TaskTokenDeps {
   store: TaskTokenStoreLike;

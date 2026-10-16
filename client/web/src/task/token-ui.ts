@@ -29,7 +29,7 @@ export function taskTokenUiState(hasToken: boolean, needsReconnect: boolean): Ta
 export function taskQueueStatusCopy(state: TaskTokenUiState): string {
   switch (state) {
     case "unset":
-      return "No device token yet. Captures are still queued and pending — they will sync once a token is entered.";
+      return "No device token yet. Captures are still queued and pending — they will sync once this device signs in.";
     case "reprompt":
       return "This device token no longer works. Captures are queued and held, not draining, until a fresh token is entered.";
     case "resting":
