@@ -504,8 +504,10 @@ export interface DeviceRowDTO {
   revocable: boolean;
 }
 
-/** What `Core::sign_in_with_google` answered, with `busy` from the seam.
- * `token` is set on `signed_in` alone. */
+/** What `Core::sign_in_with_google` answered, with `busy` from the seam and
+ * `abandoned` from the worker's task queue (#889): the exchange timed out or
+ * threw before the core answered, so nobody knows whether a token was
+ * minted. `token` is set on `signed_in` alone. */
 export type SignInKind =
   | "signed_in"
   | "not_allowed"
@@ -514,7 +516,8 @@ export type SignInKind =
   | "unavailable"
   | "invalid"
   | "failed"
-  | "busy";
+  | "busy"
+  | "abandoned";
 
 /** What `Core::revoke_device` answered, with `busy` from the seam.
  * `signed_out` is this device's own row: the core already holds no
@@ -1572,7 +1575,8 @@ export type TaskWorkerResponse =
   /** #840: the sign-in exchange's answer, matched back by `seed`. The ONE
    * worker message that carries a device token: `token` is the freshly
    * minted one, on `signed_in` alone, handed back so the view that asked
-   * can store it and push it (`task/token.ts`'s `signInWithToken`). It is
+   * can store it and push it (`shell/useSignInWiring.ts` hands it to the
+   * token wiring's submit, `task/token.ts`'s `submitTaskToken`). It is
    * broadcast like every answer here, which reaches only this origin's own
    * views — each of which can already read the stored token — and every
    * view but the asking one drops it unread (`worker-client.ts`). */

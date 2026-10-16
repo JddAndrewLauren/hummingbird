@@ -2,9 +2,10 @@ import type { DevicesDTO, RevokeDeviceKind } from "../store/protocol";
 
 // The Signed-in devices section's own words (#840) — the ones the core's
 // devices decision does not already supply. Its rows' order and wording,
-// and the sentence before this device signs itself out, are the core's
-// (`decisions/seam.ts`'s `deviceRows`/`signOutConfirmation`, ADR-0040
-// decision 7); what is left here is the section's states and its write
+// and the sentences before this device or another signs out, are the
+// core's (`decisions/seam.ts`'s `deviceRows`/`signOutConfirmation`/
+// `otherDeviceSignOutConfirmation`, ADR-0040 decision 7, #887); what is
+// left here is the section's states and its write
 // failures, which, like every other write error on this screen, are worded
 // per client.
 
@@ -24,11 +25,6 @@ export function devicesNote(devices: DevicesDTO | null): string | null {
     case "failed":
       return `Could not read the devices: ${devices.error ?? "unknown error"}`;
   }
-}
-
-/** The confirmation before signing out another device. */
-export function otherDeviceConfirmation(name: string): string {
-  return `Sign out ${name}? It stops syncing until it signs in again.`;
 }
 
 /** What a sign-out that did not happen says. */

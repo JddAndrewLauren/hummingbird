@@ -71,6 +71,20 @@ mod tests {
         assert_eq!(classify_transport_error(&error), FailureClass::Timeout);
     }
 
+    /// The text `sync::reqwest_transport::transport_error` gives a timed-out
+    /// request on either host (#870) — including the wasm body-read abort,
+    /// whose reqwest error is a *decode* error: the timeout must win.
+    #[test]
+    fn a_bounded_sync_request_that_timed_out_classifies_as_timeout_on_both_hosts() {
+        for message in [
+            "request timed out: error sending request for url (http://127.0.0.1:1/api/sweep)",
+            "request timed out: request or response body error",
+            "request timed out: error decoding response body",
+        ] {
+            assert_eq!(classify_transport_error(&TransportError::new(message)), FailureClass::Timeout, "{message}");
+        }
+    }
+
     #[test]
     fn a_connection_level_connect_failure_classifies_as_connect() {
         let error = TransportError::new("failed to connect: connection refused");

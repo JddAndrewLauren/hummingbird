@@ -101,7 +101,8 @@ pub fn authenticate(
 /// The whole scope matrix. Device is a full task client: everything except
 /// alert ingest. Sweeper is its retarget contract and nothing else:
 /// `POST /api/items`. Ingest is the webhook lane and nothing else:
-/// `POST /api/alerts`. Admin routes never reach here.
+/// `POST /api/alerts` and its Healthchecks.io receiver. Admin routes never
+/// reach here.
 ///
 /// This is the scope check only — it has no access to the request body, so
 /// it cannot see which source a `POST /api/alerts` payload names. The
@@ -111,6 +112,11 @@ pub fn permitted(scope: Scope, method: &str, segments: &[&str]) -> bool {
     match (method, segments) {
         ("POST", ["items"]) => matches!(scope, Scope::Device | Scope::Sweeper),
         ("POST", ["alerts"]) => matches!(scope, Scope::Ingest),
+        // #893: the Healthchecks.io receiver is the same webhook lane, in
+        // Healthchecks.io's own body shape; it binds to `healthchecks/v1`
+        // in the handler, exactly as `POST /api/alerts` binds to the
+        // payload's source.
+        ("POST", ["alerts", "healthchecks"]) => matches!(scope, Scope::Ingest),
         ("POST", ["snapshots"]) => matches!(scope, Scope::Ingest),
         // The first read a non-device scope got (#120; #135-137 below add
         // two more, `rules` and `snapshots`). An ingest token's

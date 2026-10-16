@@ -1,6 +1,9 @@
 // The pure half of the capture extension (ADR-0037): everything decidable
 // without a `chrome`/`browser` global, so `node --test` covers it and the
-// two page scripts (`popup.js`, `options.js`) hold only DOM wiring.
+// two page scripts hold only DOM wiring — `popup.js` the capture, and
+// `options.js` the sign-in that gets the extension its device token. This
+// header is the capture half's; the sign-in half (ADR-0040 decision 3) has
+// its own, at "Sign in with Google" below. `canSubmit` serves both pages.
 //
 // **This is a third copy of two rules the core owns**, re-stated here on
 // purpose. `client/core/src/decisions/share.rs` decides what a shared
@@ -119,10 +122,11 @@ export function draftFromTab(tab) {
   return { title, host, url };
 }
 
-/// The form's one gate, the same one every capture form has: a blank title
-/// does not submit.
-export function canSubmit(title) {
-  return typeof title === "string" && title.trim() !== "";
+/// Each form's one gate: a blank required field does not submit. The popup
+/// gates on the capture's title, the same gate every capture form has; the
+/// options page gates its sign-in on the device name.
+export function canSubmit(value) {
+  return typeof value === "string" && value.trim() !== "";
 }
 
 /// The two stages a new capture may be born into — the web capture box's
@@ -257,6 +261,20 @@ export function classify({ status, contentType, bodyText, id }) {
 // (`client/core/src/devices.rs`) re-stated, with `classify`'s
 // content-type-first guard in front for the same reason `classify` has one.
 
+/// What a refused sign-in says. **The core owns these four sentences**
+/// (`client/core/src/decisions/devices.rs`'s `sign_in_refusal`, #887): the
+/// web and the phone read them through their seams, and this tree cannot
+/// reach the core, so they are re-stated here once, keyed by the core's
+/// own kinds (`SignInOutcome::kind`), with `signin.test.js` pinning the
+/// same strings the core's tests do. If the core's wording changes, this
+/// changes.
+export const SIGNIN_REFUSALS = Object.freeze({
+  not_allowed: "That Google account isn't allowed to sign in here. Nothing on this device changed.",
+  rate_limited: "Too many sign-ins in the last hour. Try again later, or paste a token instead.",
+  unconfigured: "Sign-in isn't set up on the authority yet. Paste a token instead.",
+  unavailable: "The authority couldn't check with Google just now. Try again in a minute.",
+});
+
 /// The Google OAuth Web client every surface signs in through — public by
 /// design, and one of the authority's accepted audiences
 /// (`GOOGLE_SIGNIN_CLIENT_IDS` in `server/worker/wrangler.toml`;
@@ -365,16 +383,16 @@ export function signinOutcome({ status, contentType, bodyText }) {
   }
   if (status === 403) {
     if (type.startsWith("text/html")) return { kind: "edge", message: "Blocked at the edge (Cloudflare), not by the authority. Nothing was stored." };
-    return { kind: "not_allowed", message: "The authority refused that Google account: it is not the one allowed to sign in." };
+    return { kind: "not_allowed", message: SIGNIN_REFUSALS.not_allowed };
   }
   if (status === 429) {
-    return { kind: "rate_limited", message: "Too many sign-ins in the last hour. Try again later, or paste a token." };
+    return { kind: "rate_limited", message: SIGNIN_REFUSALS.rate_limited };
   }
   if (status === 503) {
     if (body()?.error === "signin_unconfigured") {
-      return { kind: "unconfigured", message: "Sign-in is not set up on the authority. Paste a token instead." };
+      return { kind: "unconfigured", message: SIGNIN_REFUSALS.unconfigured };
     }
-    return { kind: "unavailable", message: "The authority could not check the sign-in with Google. Try again shortly." };
+    return { kind: "unavailable", message: SIGNIN_REFUSALS.unavailable };
   }
   if (status === 400) {
     const detail = body()?.message;

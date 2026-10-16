@@ -21,6 +21,10 @@ on:
       # change there changes what this suite's `screens/rules/*` tests
       # assert, through the wasm seam, with nothing else to notice.
       - "server/rules-engine/**"
+      # The authority's accepted sign-in audiences (`GOOGLE_SIGNIN_CLIENT_IDS`):
+      # `task/google-signin.test.ts` holds the web's client id to them, so a
+      # change to this file alone must run that test.
+      - "server/worker/wrangler.toml"
   pull_request:
     paths:
       - "client/**"
@@ -28,6 +32,7 @@ on:
       - ".github/workflows/client.yml"
       - "server/race-poll/tests/fixtures/**"
       - "server/rules-engine/**"
+      - "server/worker/wrangler.toml"
 
 jobs:
   test:

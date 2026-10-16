@@ -13,6 +13,7 @@ mod devices;
 mod file_links;
 mod fog;
 mod grills;
+mod healthchecks;
 mod items;
 mod project_links;
 mod projects;
@@ -240,6 +241,16 @@ fn route(req: &ApiRequest, ctx: &HandleContext, sql: &dyn Sql) -> Result<ApiResp
             settings::put(key, req.body, now_ms, sql)
         }
         ("POST", ["alerts"]) => alerts::ingest(
+            req.body,
+            now_ms,
+            principal.source.as_deref(),
+            principal.allowed_origin.as_deref(),
+            sql,
+        ),
+        // #893: Healthchecks.io's own webhook, onto `healthchecks/v1`.
+        // Above the `["alerts", id]` arms, so `healthchecks` is never read
+        // as an alert id.
+        ("POST", ["alerts", "healthchecks"]) => healthchecks::receive(
             req.body,
             now_ms,
             principal.source.as_deref(),

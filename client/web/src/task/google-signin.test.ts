@@ -8,7 +8,10 @@ import {
   readSignInReturn,
   signInFailureMessage,
 } from "./google-signin";
+import { signInRefusal } from "../decisions/seam";
 import type { StorageLike } from "../screens/storage";
+import viteConfigSource from "../../vite.config.ts?raw";
+import authorityWranglerSource from "../../../../server/worker/wrangler.toml?raw";
 
 function memoryStorage(initial: Record<string, string> = {}): StorageLike & { data: Record<string, string> } {
   const data = { ...initial };
@@ -166,15 +169,34 @@ describe("deviceNameFromUserAgent", () => {
 });
 
 describe("signInFailureMessage", () => {
-  it("words every refusal the core can answer", () => {
-    expect(signInFailureMessage("not_allowed", null)).toBe(
-      "This Google account is not allowed to sign in to hummingbird.",
-    );
-    expect(signInFailureMessage("rate_limited", null)).toMatch(/too many sign-ins/i);
-    expect(signInFailureMessage("unconfigured", null)).toMatch(/not set up/i);
-    expect(signInFailureMessage("unavailable", null)).toMatch(/try again/i);
+  it.each(["not_allowed", "rate_limited", "unconfigured", "unavailable"] as const)(
+    "words a %s refusal with the core's sentence (#887)",
+    (kind) => {
+      expect(signInFailureMessage(kind, null)).toBe(signInRefusal(kind));
+    },
+  );
+
+  it("words the rest itself", () => {
     expect(signInFailureMessage("invalid", "name must be non-empty")).toContain("name must be non-empty");
     expect(signInFailureMessage("failed", "connection refused")).toContain("connection refused");
     expect(signInFailureMessage("busy", null)).toMatch(/try again/i);
+  });
+});
+
+// The web's client id is a copy of the authority's own audience list
+// (`GOOGLE_SIGNIN_CLIENT_IDS`, `server/worker/wrangler.toml`'s `[vars]`), as
+// the extension's (`signin.test.js`) and the phone's
+// (`SignInClientIdDriftTest`) are: a token minted for any other client is a
+// 403 every web sign-in would hit. `?raw` source text, as
+// `same-origin-api.test.ts` reads both files, because vitest's build
+// supplies no `define` and `GOOGLE_SIGNIN_CLIENT_ID` is `null` here.
+describe("the web's sign-in client id", () => {
+  it("is one the authority accepts", () => {
+    const define = viteConfigSource.match(/__GOOGLE_SIGNIN_CLIENT_ID__:\s*JSON\.stringify\(\s*"([^"]*)"/);
+    expect(define, "vite.config.ts defines __GOOGLE_SIGNIN_CLIENT_ID__ as a string literal").not.toBeNull();
+    const line = authorityWranglerSource.match(/^GOOGLE_SIGNIN_CLIENT_IDS\s*=\s*"([^"]*)"/m);
+    expect(line, "wrangler.toml sets GOOGLE_SIGNIN_CLIENT_IDS").not.toBeNull();
+    const accepted = line![1].split(",").map((id) => id.trim());
+    expect(accepted).toContain(define![1]);
   });
 });

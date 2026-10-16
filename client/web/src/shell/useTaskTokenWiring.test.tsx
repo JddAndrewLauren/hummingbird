@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { coreStore, type CoreStatus } from "../store/store";
-import type { WorkerLike } from "../store/worker-client";
+import { coreStore, createCoreStore, type CoreStatus } from "../store/store";
+import { attachWorkerClient, type WorkerLike } from "../store/worker-client";
 import { renderHook } from "../test/component";
 import { act } from "../test/component";
 import type { TaskTokenRecord, TaskTokenStoreLike } from "../task/token-store";
+import { syncStatusToneWord } from "./sync-status";
 import { useTaskTokenWiring } from "./useTaskTokenWiring";
 
 // Mounted (via renderHook) rather than called, for
@@ -129,7 +130,7 @@ describe("useTaskTokenWiring", () => {
     expect(coreStore.getSnapshot().task.needsReconnect).toBe(true);
   });
 
-  it("handleSignedOut (#840) deletes the stored token and sends the core nothing", async () => {
+  it("handleSignedOut (#840) deletes the stored token and sends the core no credential change", async () => {
     const worker = fakeWorker();
     const store = fakeStore({ token: "secret-token", enteredAtMs: 1_000 });
     const { result } = mount(worker, "ready", store);
@@ -140,8 +141,9 @@ describe("useTaskTokenWiring", () => {
       await result.current.handleSignedOut();
     });
 
-    // `Core::revoke_device` already cleared the live credential.
-    expect(worker.postMessage).not.toHaveBeenCalled();
+    // `Core::revoke_device` already cleared the live credential; the one
+    // message is #889's cycle, so the Sync card hears the core say so.
+    expect(types(worker)).toEqual(["manualSyncTrigger"]);
     expect(result.current.hasToken).toBe(false);
     expect(result.current.enteredAtMs).toBeNull();
     await expect(store.read()).resolves.toBeNull();
@@ -158,9 +160,76 @@ describe("useTaskTokenWiring", () => {
       await result.current.handleForgetToken();
     });
 
-    expect(worker.postMessage).toHaveBeenCalledWith({ type: "clearTaskApiKey" });
+    expect(types(worker)).toEqual(["clearTaskApiKey", "manualSyncTrigger"]);
     expect(result.current.hasToken).toBe(false);
     expect(result.current.enteredAtMs).toBeNull();
     await expect(store.read()).resolves.toBeNull();
+  });
+
+  describe("the Sync card once this device holds no token (#889)", () => {
+    // The worker is a fake whose one answer is what the core answers a cycle
+    // run with no credential (`Core::run`'s `NoCredential`, pinned in Rust),
+    // delivered through the real `attachWorkerClient` into a real store, so
+    // the card's words below are the ones Settings would render.
+    function syncingWorker() {
+      const store = createCoreStore();
+      const worker = fakeWorker();
+      attachWorkerClient(worker, store);
+      const outcome = (kind: string, atMs: number) =>
+        worker.onmessage?.({
+          data: {
+            type: "syncOutcome",
+            kind,
+            retryAfterMs: null,
+            activeItemCount: null,
+            wasFullSweep: null,
+            deadLettered: null,
+            atMs,
+          },
+        } as MessageEvent);
+      worker.postMessage.mockImplementation((message: { type: string }) => {
+        if (message.type === "manualSyncTrigger") {
+          outcome("no_credential", 9_000);
+        }
+      });
+      outcome("completed", 8_000);
+      const word = () => {
+        const { task } = store.getSnapshot();
+        return syncStatusToneWord({
+          online: true,
+          lastSyncOutcome: task.lastSyncOutcome,
+          lastSyncAtMs: task.lastSyncAtMs,
+          queueDepth: task.queueDepth,
+          nowMs: 9_000,
+        });
+      };
+      return { worker, word };
+    }
+
+    it("stops saying synced after signing out of this device", async () => {
+      const { worker, word } = syncingWorker();
+      const { result } = mount(worker, "ready", fakeStore({ token: "secret-token", enteredAtMs: 1_000 }));
+      await act(async () => {});
+      expect(word()).toBe("synced");
+
+      await act(async () => {
+        await result.current.handleSignedOut();
+      });
+
+      expect(word()).toBe("held");
+    });
+
+    it("stops saying synced after Forget token", async () => {
+      const { worker, word } = syncingWorker();
+      const { result } = mount(worker, "ready", fakeStore({ token: "secret-token", enteredAtMs: 1_000 }));
+      await act(async () => {});
+      expect(word()).toBe("synced");
+
+      await act(async () => {
+        await result.current.handleForgetToken();
+      });
+
+      expect(word()).toBe("held");
+    });
   });
 });

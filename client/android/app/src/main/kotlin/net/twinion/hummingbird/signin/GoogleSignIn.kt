@@ -13,6 +13,7 @@ import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.android.libraries.identity.googleid.GoogleIdTokenParsingException
 import net.twinion.hummingbird.BuildConfig
 import uniffi.hummingbird_ffi_mobile.MobileSignInOutcome
+import uniffi.hummingbird_ffi_mobile.signInRefusal
 
 // The phone's Sign in with Google (#841, ADR-0040 decisions 1 and 3), in two
 // halves:
@@ -89,19 +90,20 @@ object GoogleCredentialSource {
 /** The sentence for a sign-in that did not mint a token, or `null` for
  * [MobileSignInOutcome.SignedIn]. One arm per refusal the authority can
  * give — the seam already split the two 503s — and no `else`, so an arm
- * added to the seam is a compile error here rather than a silent fold. */
+ * added to the seam is a compile error here rather than a silent fold.
+ * The four refusals are the core's sentences (`signInRefusal`, #887), the
+ * same ones the web and the extension show; the arms carrying a detail,
+ * and the watch's own refusal, are worded here. */
 fun exchangeMessage(outcome: MobileSignInOutcome): String? = when (outcome) {
     is MobileSignInOutcome.SignedIn -> null
-    MobileSignInOutcome.NotAllowed ->
-        "That Google account isn't allowed to sign in here. Nothing on this device changed."
-    MobileSignInOutcome.RateLimited ->
-        "Too many sign-ins in the last hour. Try again later, or paste a token instead."
-    MobileSignInOutcome.Unconfigured ->
-        "Sign-in isn't set up on the authority yet. Paste a token instead."
-    MobileSignInOutcome.Unavailable ->
-        "The authority couldn't check with Google just now. Try again in a minute."
+    MobileSignInOutcome.NotAllowed,
+    MobileSignInOutcome.RateLimited,
+    MobileSignInOutcome.Unconfigured,
+    MobileSignInOutcome.Unavailable -> signInRefusal(outcome)
     is MobileSignInOutcome.Invalid -> "The authority refused this device's name — ${outcome.detail}"
     is MobileSignInOutcome.Failed -> "Sign-in didn't reach the authority — ${outcome.detail}"
+    MobileSignInOutcome.RefusedOnWatch ->
+        "A watch doesn't sign in — it takes its token from the phone. Nothing was sent."
 }
 
 /** The sentence for a [GoogleCredential] that carries no ID token. */

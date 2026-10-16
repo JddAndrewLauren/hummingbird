@@ -565,6 +565,23 @@ pub struct AlertIngest {
     pub restamp_on_change: bool,
 }
 
+/// `POST /api/alerts/healthchecks` body (`ingest` scope, #893): one
+/// Healthchecks.io webhook event, in the shape the documented integration's
+/// request body fills in (`$CODE`, `$NAME_JSON`, `$STATUS`). The receiver
+/// translates it onto a `healthchecks/v1` [`AlertIngest`] or resolution —
+/// Healthchecks.io has no placeholder that can fill an integer timestamp,
+/// so its events cannot be an `AlertIngest` themselves.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HealthchecksEvent {
+    /// The check's UUID — the alert's `source_key`.
+    pub check: String,
+    /// The check's name — the alert's title. Empty for an unnamed check.
+    pub name: String,
+    /// `down` or `up`: the status the check just flipped to.
+    pub status: String,
+}
+
 /// `PATCH /api/alerts/:id` body (`device` scope): the human-owned dismiss
 /// flag, set or cleared under CAS. The only alert field a device may write.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

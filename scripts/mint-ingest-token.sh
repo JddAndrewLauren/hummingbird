@@ -7,6 +7,7 @@
 #   ./scripts/mint-ingest-token.sh <token-id> <source> <1password title> [allowed-origin]
 #   ./scripts/mint-ingest-token.sh starling-ingest starling/v1 hummingbird-starling-ingest
 #   ./scripts/mint-ingest-token.sh perch-ingest perch/v1 perch-hummingbird-ingest https://hb.twinion.net
+#   ./scripts/mint-ingest-token.sh healthchecks-ingest healthchecks/v1 hummingbird-healthchecks-ingest
 #
 # This is `scripts/mint-device-token.sh` with a different scope, and it is a
 # fourth script rather than a flag on that one for the reason that header gives

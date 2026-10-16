@@ -21,6 +21,7 @@ mod fcm;
 mod file_links;
 mod fog;
 mod grills;
+mod healthchecks_source;
 mod items;
 mod perch_source;
 mod project_links;

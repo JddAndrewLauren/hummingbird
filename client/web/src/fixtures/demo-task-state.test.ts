@@ -242,6 +242,7 @@ describe("buildDemoTaskState — #452 grows the seed past the frontier and the i
       [
         "city-waste/v2",
         "race-schedule/v1",
+        "yahoo-lineup/v1",
         "github-hummingbird/v1",
         "kimi-balance/v1",
         "uptime/v1",

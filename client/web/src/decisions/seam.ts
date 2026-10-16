@@ -244,6 +244,7 @@ export interface DecisionsModule {
   fantasy_parse_subject_key_json(subjectKey: string): string;
   fantasy_facts_json(subjectKey: string, inputsJson: string): string;
   fantasy_answer_json(subjectKey: string, inputsJson: string): string;
+  fantasy_discovered_leagues_json(inputsJson: string): string;
   fantasy_constants_json(): string;
   homework_zone_queries_json(inputsJson: string): string;
   homework_facts_json(inputsJson: string, zoneFactsJson: string): string;
@@ -274,6 +275,9 @@ export interface DecisionsModule {
   // #840: Signed-in devices (ADR-0040 decision 7).
   device_rows_json(devicesJson: string, nowMs: number): string;
   sign_out_confirmation(queueDepth: number): string;
+  // #887: the other device's confirmation and the refused sign-ins.
+  other_device_sign_out_confirmation(name: string): string;
+  sign_in_refusal(kind: string): string | undefined;
 }
 
 let loaded: DecisionsModule | null = null;
@@ -824,6 +828,20 @@ export function deviceRows(devices: readonly DeviceInfoDTO[], nowMs: number): De
  * changes stay queued (signing out keeps the queue, ADR-0004). */
 export function signOutConfirmation(queueDepth: number): string {
   return required().sign_out_confirmation(queueDepth);
+}
+
+/** `hummingbird_core::decisions::devices::other_device_sign_out_confirmation`
+ * — the sentence before signing out another device (#887). */
+export function otherDeviceSignOutConfirmation(name: string): string {
+  return required().other_device_sign_out_confirmation(name);
+}
+
+/** `hummingbird_core::decisions::devices::sign_in_refusal_for_kind` — what
+ * a refused Google sign-in says, one sentence per refusal the route gives
+ * (`not_allowed`, `rate_limited`, `unconfigured`, `unavailable`), or
+ * `null` for any other kind (#887). */
+export function signInRefusal(kind: string): string | null {
+  return required().sign_in_refusal(kind) ?? null;
 }
 
 function queuePayload(items: readonly TaskItemDTO[]): string {
@@ -2202,7 +2220,7 @@ export function raceConstantsFromCore(): RaceConstants {
   return JSON.parse(required().race_constants_json()) as RaceConstants;
 }
 
-// -- fantasy (#717) --------------------------------------------------------
+// -- fantasy (#717, the lineup's real answer #855) -------------------------
 
 export type FantasySubjectCore = "lineup" | "waivers";
 
@@ -2216,10 +2234,59 @@ export type FantasyGap =
   | { gap: "notFetched" }
   | { gap: "malformed"; reason: string }
   | { gap: "unknownSchema"; schema: string }
-  | { gap: "bodyNotRead" };
+  | { gap: "bodyNotRead" }
+  | { gap: "badBody" };
 
-/** Only the gap arm exists yet — the fact sets arrive with #718/#719. */
-export type FantasyResolved = { kind: "gap"; gap: FantasyGap };
+/** `fantasy.rs`'s `SlotProblem` — why a starting slot is invalid. */
+export type SlotProblemCore = "empty" | "bye" | "out" | "injuredReserve";
+
+/** `fantasy.rs`'s `LineupSlot`. `designation` is the poller's own spelling
+ * (`questionable`, `doubtful`, `out`, `injured_reserve`), an open string. */
+export interface LineupSlotCore {
+  position: string;
+  occupant: {
+    playerKey: string;
+    name: string;
+    byeWeek: number | null;
+    designation: string | null;
+    kickoffMs: number | null;
+  } | null;
+  invalid: { reason: SlotProblemCore; deadlineMs: number | null } | null;
+}
+
+/** `fantasy.rs`'s `LineupHeadline` — the headline as a decision, worded
+ * per client. */
+export type LineupHeadlineCore =
+  | { kind: "set"; locksAtMs: number | null }
+  | {
+      kind: "invalid";
+      count: number;
+      reason: SlotProblemCore | null;
+      locksAtMs: number | null;
+      checkedAgoMs: number | null;
+    };
+
+/** `fantasy.rs`'s `LineupFacts`. */
+export interface LineupFactsCore {
+  leagueKey: string;
+  leagueName: string;
+  teamKey: string;
+  teamName: string;
+  week: number;
+  slots: LineupSlotCore[];
+  headline: LineupHeadlineCore;
+  stale: boolean;
+  freshness: FreshnessDTO;
+}
+
+/** The lineup's facts (#855) or a gap; the waivers arm arrives with #719. */
+export type FantasyResolved = ({ kind: "lineup" } & LineupFactsCore) | { kind: "gap"; gap: FantasyGap };
+
+/** `fantasy.rs`'s `FantasyDiscovered` — the poller's discovered leagues. */
+export type FantasyDiscoveredCore =
+  | { kind: "none" }
+  | { kind: "leagues"; gameKey: string; leagues: { leagueKey: string; leagueName: string }[] }
+  | { kind: "unreadable" };
 
 export function fantasyLeaguesFromBindingFromCore(text: string): string[] {
   return JSON.parse(required().fantasy_leagues_from_binding_json(text)) as string[];
@@ -2254,11 +2321,18 @@ export function fantasyAnswerFromCore(subjectKey: string, inputs: PaneInputsSour
   ) as PaneAnswerCore;
 }
 
+export function fantasyDiscoveredLeaguesFromCore(inputs: PaneInputsSource): FantasyDiscoveredCore {
+  return JSON.parse(
+    required().fantasy_discovered_leagues_json(paneInputsPayload(inputs)),
+  ) as FantasyDiscoveredCore;
+}
+
 export interface FantasyConstants {
   lineupSource: string;
   waiversSource: string;
   bindingKey: string;
   setupLeague: string;
+  discoveredKey: string;
 }
 
 export function fantasyConstantsFromCore(): FantasyConstants {

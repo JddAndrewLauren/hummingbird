@@ -172,6 +172,9 @@ import { DEMO_DATA } from "./demo-data";
 import {
   boundRaceBinding,
   boundWasteBinding,
+  FANTASY_LEAGUES,
+  FANTASY_LINEUP_SOURCE,
+  fantasyLineupRead,
   githubRead,
   GITHUB_SOURCE,
   kimiRead,
@@ -778,36 +781,18 @@ const boundVaultBinding: BindingDTO = {
 };
 
 /** #717's league list, seeded so the board world photographs the fantasy
- * question's **bound, never-polled** arm (a lineup and a waivers pane, both
- * gaps — nothing polls Yahoo yet), while the empty world's captures keep
- * its unbound setup prompt. The league key is fictional. */
+ * question, while the empty world's captures keep its unbound setup prompt.
+ * Since #855 it names three fictional leagues, one per lineup state
+ * (`demo-pane-reads.ts`'s `fantasyLineupRead`: valid, invalid, and invalid
+ * but hours old in crunch time); each league's waivers pane stays the
+ * never-polled gap until #719. */
 const boundFantasyBinding: BindingDTO = {
   key: FANTASY_BINDING_KEY,
   known: true,
   pending: false,
-  value: { state: "text", text: "449.l.123456" },
+  value: { state: "text", text: FANTASY_LEAGUES.join(",") },
 };
 
-/** The seeded state, typed as the real `TaskState` so a field added to that
- * interface fails this file at build time rather than shipping a fixture that
- * silently omits it.
- *
- * #452 grew this from "the frontier and the inbox, nothing else" to the
- * whole shape a synced board device actually holds — the header's four
- * pieces. What is STILL left at its honest `null`/`{}`/`false` is exactly
- * what a real board device would not have answered either:
- * `lastRuleWrite`/`lastGrillCompletion`/`lastBindingWrite` (no write has
- * been issued this session), `pending`/`stepsByItem` (nothing has been
- * asked about yet), and `queueDepth`/`deadLetters`/`needsReconnect`/
- * `hostError` (S9's sync-status affordance, outside this issue's four
- * pieces).
- *
- * A **function**, not a const, and that is the bundling requirement in the
- * header: a const would have to be constructed at import, which is a top-level
- * side effect, which is what kept 5.3 KB of this file in the production bundle
- * the first time round. Called once, from behind `demo.ts`'s dead-branch gate.
- * Reading the clock here rather than at import is the free improvement that
- * falls out: ages are relative to when the board is asked for. */
 /** One fictional `GET /api/devices` row (#840), never revoked. Its mint
  * time is never drawn, so it is a month before it was last seen, or the
  * epoch for a device never seen. */
@@ -830,6 +815,26 @@ function demoDevice(
   };
 }
 
+/** The seeded state, typed as the real `TaskState` so a field added to that
+ * interface fails this file at build time rather than shipping a fixture that
+ * silently omits it.
+ *
+ * #452 grew this from "the frontier and the inbox, nothing else" to the
+ * whole shape a synced board device actually holds — the header's four
+ * pieces. What is STILL left at its honest `null`/`{}`/`false` is exactly
+ * what a real board device would not have answered either:
+ * `lastRuleWrite`/`lastGrillCompletion`/`lastBindingWrite` (no write has
+ * been issued this session), `pending`/`stepsByItem` (nothing has been
+ * asked about yet), and `queueDepth`/`deadLetters`/`needsReconnect`/
+ * `hostError` (S9's sync-status affordance, outside this issue's four
+ * pieces).
+ *
+ * A **function**, not a const, and that is the bundling requirement in the
+ * header: a const would have to be constructed at import, which is a top-level
+ * side effect, which is what kept 5.3 KB of this file in the production bundle
+ * the first time round. Called once, from behind `demo.ts`'s dead-branch gate.
+ * Reading the clock here rather than at import is the free improvement that
+ * falls out: ages are relative to when the board is asked for. */
 export function buildDemoTaskState(): TaskState {
   const loadedAt = Date.now();
   const frontier = FRONTIER_SEEDS.map((seed, index) => item(seed, index, loadedAt));
@@ -1096,6 +1101,7 @@ export function buildDemoTaskState(): TaskState {
     paneReads: {
       [WASTE_SOURCE]: wasteRead(loadedAt),
       [RACE_SOURCE]: raceRead(loadedAt),
+      [FANTASY_LINEUP_SOURCE]: fantasyLineupRead(loadedAt),
       [KIMI_SOURCE]: kimiRead(loadedAt),
       [GITHUB_SOURCE]: githubRead(loadedAt),
       [UPTIME_SOURCE]: uptimeRead(loadedAt),

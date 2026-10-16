@@ -1687,6 +1687,21 @@ pub fn sign_out_confirmation(queue_depth: u32) -> String {
     devices::sign_out_confirmation(queue_depth)
 }
 
+/// [`devices::other_device_sign_out_confirmation`] — the sentence before
+/// signing out another device (#887).
+#[wasm_bindgen]
+pub fn other_device_sign_out_confirmation(name: &str) -> String {
+    devices::other_device_sign_out_confirmation(name)
+}
+
+/// [`devices::sign_in_refusal_for_kind`] — what a refused Google sign-in
+/// says, keyed by the worker's `signInResult` kind (#887); `undefined` for
+/// a kind that is not one of the four refusals.
+#[wasm_bindgen]
+pub fn sign_in_refusal(kind: &str) -> Option<String> {
+    devices::sign_in_refusal_for_kind(kind).map(str::to_string)
+}
+
 // ------------------------------------------------------------------- #534
 // The remaining seven panes: the status four (kimi/github/uptime/
 // reachability) and the now three (race/weekend/vacation) — same house
@@ -2042,9 +2057,10 @@ pub fn race_constants_json() -> String {
     .to_string()
 }
 
-// -- fantasy (#717) --------------------------------------------------------
-// The no-data arms only: setup, subjects and the gap kind. `waste_facts_json`'s
-// shape, one export per decision, structured values and never a sentence.
+// -- fantasy (#717, the lineup's real answer #855) -------------------------
+// Setup, subjects, the facts (the lineup's headline among them, as a
+// decision) and the discovered leagues. `waste_facts_json`'s shape, one
+// export per decision, structured values and never a sentence.
 
 #[wasm_bindgen]
 pub fn fantasy_leagues_from_binding_json(text: &str) -> String {
@@ -2093,6 +2109,16 @@ pub fn fantasy_answer_json(subject_key: &str, inputs_json: &str) -> String {
     }
 }
 
+/// [`fantasy::fantasy_discovered_leagues`] — Settings' list beside the
+/// `yahoo-leagues` field.
+#[wasm_bindgen]
+pub fn fantasy_discovered_leagues_json(inputs_json: &str) -> String {
+    match parse_inputs(inputs_json) {
+        Ok(inputs) => serde_json::to_string(&fantasy::fantasy_discovered_leagues(&inputs)).unwrap(),
+        Err(error) => error_json(error),
+    }
+}
+
 #[wasm_bindgen]
 pub fn fantasy_constants_json() -> String {
     serde_json::json!({
@@ -2100,6 +2126,7 @@ pub fn fantasy_constants_json() -> String {
         "waiversSource": fantasy::WAIVERS_SOURCE,
         "bindingKey": fantasy::BINDING_KEY,
         "setupLeague": fantasy::SETUP_LEAGUE,
+        "discoveredKey": fantasy::DISCOVERED_KEY,
     })
     .to_string()
 }
@@ -3538,6 +3565,23 @@ mod tests {
     }
 
     #[test]
+    fn the_other_device_confirmation_and_the_sign_in_refusals_are_the_core_sentences() {
+        assert_eq!(
+            other_device_sign_out_confirmation("Phone"),
+            devices::other_device_sign_out_confirmation("Phone")
+        );
+        for kind in ["not_allowed", "rate_limited", "unconfigured", "unavailable"] {
+            assert_eq!(
+                sign_in_refusal(kind).as_deref(),
+                devices::sign_in_refusal_for_kind(kind),
+                "{kind}"
+            );
+            assert!(sign_in_refusal(kind).is_some(), "{kind}");
+        }
+        assert_eq!(sign_in_refusal("invalid"), None);
+    }
+
+    #[test]
     fn sync_status_summary_reports_unparseable_input_rather_than_panicking() {
         let json = sync_status_summary_json("not json");
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -3591,6 +3635,47 @@ mod tests {
         );
         assert_eq!(fantasy_parse_subject_key_json("nope"), "null");
         assert_eq!(fantasy_leagues_from_binding_json("a, b,,"), r#"["a","b"]"#);
+        assert_eq!(fantasy_discovered_leagues_json(&inputs), r#"{"kind":"none"}"#);
+    }
+
+    /// #855: the lineup's headline crosses as a decision — its arm, the
+    /// count, the shared reason, the lock and the crunch-time age — and the
+    /// band beside it, over the poller's own invalid golden body.
+    #[test]
+    fn fantasy_crosses_the_lineup_headline_and_band_as_data() {
+        let golden: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../server/fantasy-poll/tests/fixtures/golden-lineup.json"
+        ))
+        .unwrap();
+        let lock = 1_790_900_100_000i64;
+        let hour = 3_600_000i64;
+        let inputs = |age_ms: i64| {
+            serde_json::json!({
+                "nowMs": lock - 4 * hour,
+                "bindings": [{"key":"yahoo-leagues","value":{"state":"text","text":"449.l.123456"}}],
+                "paneReads": {"yahoo-lineup/v1": {"snapshots": [{
+                    "key": "449.l.123456",
+                    "envelope": {"kind":"ok","schema":"yahoo-lineup/v1","body": golden["body"].to_string()},
+                    "freshness": {"kind":"age","ageMs": age_ms,"declaredCadenceMs": 21_600_000},
+                }], "liveAlerts": []}},
+            })
+            .to_string()
+        };
+        let crossed: serde_json::Value =
+            serde_json::from_str(&fantasy_facts_json("449.l.123456:lineup", &inputs(3 * hour))).unwrap();
+        assert_eq!(crossed["kind"], "lineup");
+        assert_eq!(
+            crossed["headline"],
+            serde_json::json!({"kind":"invalid","count":3,"reason":null,"locksAtMs":lock,"checkedAgoMs":3 * hour}),
+        );
+        assert_eq!(crossed["slots"][2]["invalid"], serde_json::json!({"reason":"empty","deadlineMs":1_791_133_200_000i64}));
+        let fresh: serde_json::Value =
+            serde_json::from_str(&fantasy_facts_json("449.l.123456:lineup", &inputs(60_000))).unwrap();
+        assert_eq!(fresh["headline"]["checkedAgoMs"], serde_json::Value::Null);
+        assert_eq!(
+            fantasy_answer_json("449.l.123456:lineup", &inputs(60_000)),
+            format!(r#"{{"answerState":"answered","band":"imminent","withinBand":{lock}}}"#),
+        );
     }
 
     #[test]

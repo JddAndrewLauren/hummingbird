@@ -7,10 +7,12 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import java.util.concurrent.TimeUnit
+import net.twinion.hummingbird.core.CoreHolder
 import net.twinion.hummingbird.core.SyncHistoryStore
 import net.twinion.hummingbird.diagnostics.DiagnosticsRecorder
 import net.twinion.hummingbird.sync.SyncWorker
 import net.twinion.hummingbird.wear.tile.TileRefresh
+import uniffi.hummingbird_ffi_mobile.MobileDeviceForm
 import uniffi.hummingbird_ffi_mobile.isInformativeSyncOutcome
 
 // The watch's Application (ADR-0039): the phone's `HummingbirdApp` minus
@@ -21,6 +23,10 @@ import uniffi.hummingbird_ffi_mobile.isInformativeSyncOutcome
 class WearApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        // #880: before anything can reach the core — the seam is told once,
+        // at init, that this is the watch, so it refuses a Google sign-in:
+        // the watch's token only ever comes from the phone (ADR-0039).
+        CoreHolder.form = MobileDeviceForm.WATCH
         DiagnosticsRecorder.get(this)
         // The background leg's aftermath (the 2026-09-10 design handoff):
         // the cycle goes into the sync history the tile's count line is

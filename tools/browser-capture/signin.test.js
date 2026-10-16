@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import {
   GOOGLE_SIGNIN_CLIENT_ID,
   SIGNIN_PATH,
+  SIGNIN_REFUSALS,
   authUrl,
   defaultDeviceName,
   newNonce,
@@ -124,11 +125,22 @@ test("403, 429 and 503 each say their own thing", () => {
   assert.equal(unavailable.kind, "unavailable");
   const messages = [forbidden, limited, unconfigured, unavailable].map((o) => o.message);
   assert.equal(new Set(messages).size, 4, "four distinct messages");
-  assert.match(forbidden.message, /not the one allowed/);
-  assert.match(limited.message, /Too many sign-ins/);
-  assert.match(unconfigured.message, /not set up/);
-  assert.match(unavailable.message, /try again/i);
+  for (const outcome of [forbidden, limited, unconfigured, unavailable]) {
+    assert.equal(outcome.message, SIGNIN_REFUSALS[outcome.kind], outcome.kind);
+  }
   assert.equal(signinOutcome({ status: 503, contentType: "text/plain", bodyText: "upstream" }).kind, "unavailable", "only the explicit code reads as not set up");
+});
+
+// The core owns these sentences (`client/core/src/decisions/devices.rs`'s
+// `sign_in_refusal`, #887); these are its tests' own cases, so a wording
+// change there that misses this copy fails here.
+test("each refusal is the core's sentence, re-stated", () => {
+  assert.deepEqual({ ...SIGNIN_REFUSALS }, {
+    not_allowed: "That Google account isn't allowed to sign in here. Nothing on this device changed.",
+    rate_limited: "Too many sign-ins in the last hour. Try again later, or paste a token instead.",
+    unconfigured: "Sign-in isn't set up on the authority yet. Paste a token instead.",
+    unavailable: "The authority couldn't check with Google just now. Try again in a minute.",
+  });
 });
 
 test("Cloudflare's HTML 403 is the edge, not the allowlist", () => {

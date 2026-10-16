@@ -25,6 +25,12 @@ describe("taskQueueStatusCopy", () => {
     expect(reprompt.toLowerCase()).toContain("held");
   });
 
+  it("tells a signed-out device that signing in is what starts the sync (#890)", () => {
+    const unset = taskQueueStatusCopy("unset").toLowerCase();
+    expect(unset).toContain("signs in");
+    expect(unset).not.toContain("once a token is entered");
+  });
+
   it("never claims the token expired — revocation is the real cause, not expiry", () => {
     expect(taskQueueStatusCopy("reprompt").toLowerCase()).not.toContain("expired");
   });

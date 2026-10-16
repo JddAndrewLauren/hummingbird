@@ -31,6 +31,10 @@ on:
       # The token CSS the drift gate (#483) checks Color.kt against — the
       # PRs that change tokens are exactly the ones that must run it.
       - ".claude/skills/hummingbird-design/tokens/**"
+      # The authority's accepted sign-in audiences (`GOOGLE_SIGNIN_CLIENT_IDS`):
+      # `SignInClientIdDriftTest` holds the phone's client id to them, so a
+      # change to this file alone must run that test.
+      - "server/worker/wrangler.toml"
       - "rust-toolchain.toml"
       - ".github/workflows/android.yml"
   pull_request:
@@ -41,6 +45,7 @@ on:
       - "server/domain/**"
       - "server/rules-engine/**"
       - ".claude/skills/hummingbird-design/tokens/**"
+      - "server/worker/wrangler.toml"
       - "rust-toolchain.toml"
       - ".github/workflows/android.yml"
 

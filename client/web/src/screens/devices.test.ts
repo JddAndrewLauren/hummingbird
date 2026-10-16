@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { devicesNote, otherDeviceConfirmation, revokeFailureMessage } from "./devices";
+import { devicesNote, revokeFailureMessage } from "./devices";
 
 describe("devicesNote (#840)", () => {
   it("says why there are no rows, or nothing when there are", () => {
@@ -12,12 +12,6 @@ describe("devicesNote (#840)", () => {
       "Could not read the devices: offline",
     );
     expect(devicesNote({ kind: "listed", devices: [], error: null })).toBeNull();
-  });
-});
-
-describe("otherDeviceConfirmation", () => {
-  it("names the device and what signing it out means", () => {
-    expect(otherDeviceConfirmation("Phone")).toBe("Sign out Phone? It stops syncing until it signs in again.");
   });
 });
 

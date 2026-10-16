@@ -1,3 +1,4 @@
+import { signInRefusal } from "../decisions/seam";
 import type { StorageLike } from "../screens/storage";
 
 // The web leg of signing in with Google (ADR-0040 decision 3, #840): a
@@ -161,7 +162,8 @@ export function deviceNameFromUserAgent(userAgent: string): string {
 }
 
 /** The sign-in outcomes that are not `signed_in`: the core's arms
- * (`SignInOutcome::kind`) plus the seam's `busy`. */
+ * (`SignInOutcome::kind`) plus the seam's `busy` and the task queue's
+ * `abandoned` (#889). */
 export type SignInFailureKind =
   | "not_allowed"
   | "rate_limited"
@@ -169,25 +171,27 @@ export type SignInFailureKind =
   | "unavailable"
   | "invalid"
   | "failed"
-  | "busy";
+  | "busy"
+  | "abandoned";
 
 /** What the device-token card says when the exchange did not mint a token.
- * `detail` is the core's own message on `invalid`/`failed`. */
+ * `detail` is the core's own message on `invalid`/`failed`. The four
+ * refusals the route gives are the core's sentences (#887), the same ones
+ * the phone and the extension show; the rest are this client's. */
 export function signInFailureMessage(kind: SignInFailureKind, detail: string | null): string {
   switch (kind) {
     case "not_allowed":
-      return "This Google account is not allowed to sign in to hummingbird.";
     case "rate_limited":
-      return "Too many sign-ins in the last hour. Wait a while, or paste a token instead.";
     case "unconfigured":
-      return "Sign-in with Google is not set up on the server. Paste a token instead.";
     case "unavailable":
-      return "The server could not check the sign-in right now. Try again.";
+      return signInRefusal(kind) ?? `The server refused the sign-in: ${kind}`;
     case "invalid":
       return `The server refused the sign-in request: ${detail ?? "invalid request"}`;
     case "failed":
       return `The sign-in did not reach the server: ${detail ?? "unknown error"}`;
     case "busy":
       return "The local core was busy. Try again.";
+    case "abandoned":
+      return "Sign-in didn't finish. Try again, or paste a token instead.";
   }
 }

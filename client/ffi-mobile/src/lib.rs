@@ -3185,17 +3185,134 @@ pub enum MobileFantasyGap {
     Malformed { reason: String },
     UnknownSchema { schema: String },
     BodyNotRead,
+    BadBody,
 }
 
-/// [`fantasy::FantasyResolved`], mirrored — only its gap arm exists yet
-/// (#717; the fact sets arrive with #718/#719).
+/// [`fantasy::SlotProblem`], mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileSlotProblem {
+    Empty,
+    Bye,
+    Out,
+    InjuredReserve,
+}
+
+fn map_slot_problem(problem: fantasy::SlotProblem) -> MobileSlotProblem {
+    match problem {
+        fantasy::SlotProblem::Empty => MobileSlotProblem::Empty,
+        fantasy::SlotProblem::Bye => MobileSlotProblem::Bye,
+        fantasy::SlotProblem::Out => MobileSlotProblem::Out,
+        fantasy::SlotProblem::InjuredReserve => MobileSlotProblem::InjuredReserve,
+    }
+}
+
+/// [`fantasy::LineupOccupant`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileLineupOccupant {
+    pub player_key: String,
+    pub name: String,
+    pub bye_week: Option<u8>,
+    /// The body's own spelling, an open string — the core's own reason.
+    pub designation: Option<String>,
+    pub kickoff_ms: Option<i64>,
+}
+
+/// [`fantasy::InvalidSlot`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileInvalidSlot {
+    pub reason: MobileSlotProblem,
+    pub deadline_ms: Option<i64>,
+}
+
+/// [`fantasy::LineupSlot`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileLineupSlot {
+    pub position: String,
+    pub occupant: Option<MobileLineupOccupant>,
+    pub invalid: Option<MobileInvalidSlot>,
+}
+
+/// [`fantasy::LineupHeadline`], mirrored — the headline as a decision; the
+/// phone sets its own words from it (#723).
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobileLineupHeadline {
+    Set { locks_at_ms: Option<i64> },
+    Invalid {
+        count: u32,
+        reason: Option<MobileSlotProblem>,
+        locks_at_ms: Option<i64>,
+        checked_ago_ms: Option<i64>,
+    },
+}
+
+/// [`fantasy::LineupFacts`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileLineupFacts {
+    pub league_key: String,
+    pub league_name: String,
+    pub team_key: String,
+    pub team_name: String,
+    pub week: u8,
+    pub slots: Vec<MobileLineupSlot>,
+    pub headline: MobileLineupHeadline,
+    pub stale: bool,
+    pub freshness: MobilePaneFreshness,
+}
+
+/// [`fantasy::FantasyResolved`], mirrored — the lineup's facts (#855) or a
+/// gap; the waivers arm arrives with #719.
 #[derive(Debug, Clone, PartialEq, uniffi::Enum)]
 pub enum MobileFantasyResolved {
+    Lineup { facts: MobileLineupFacts },
     Gap { gap: MobileFantasyGap },
+}
+
+fn map_lineup_headline(headline: fantasy::LineupHeadline) -> MobileLineupHeadline {
+    match headline {
+        fantasy::LineupHeadline::Set { locks_at_ms } => MobileLineupHeadline::Set { locks_at_ms },
+        fantasy::LineupHeadline::Invalid { count, reason, locks_at_ms, checked_ago_ms } => {
+            MobileLineupHeadline::Invalid {
+                count,
+                reason: reason.map(map_slot_problem),
+                locks_at_ms,
+                checked_ago_ms,
+            }
+        }
+    }
+}
+
+fn map_lineup_slot(slot: fantasy::LineupSlot) -> MobileLineupSlot {
+    MobileLineupSlot {
+        position: slot.position,
+        occupant: slot.occupant.map(|occupant| MobileLineupOccupant {
+            player_key: occupant.player_key,
+            name: occupant.name,
+            bye_week: occupant.bye_week,
+            designation: occupant.designation,
+            kickoff_ms: occupant.kickoff_ms,
+        }),
+        invalid: slot.invalid.map(|invalid| MobileInvalidSlot {
+            reason: map_slot_problem(invalid.reason),
+            deadline_ms: invalid.deadline_ms,
+        }),
+    }
 }
 
 fn map_fantasy_resolved(resolved: fantasy::FantasyResolved) -> MobileFantasyResolved {
     match resolved {
+        fantasy::FantasyResolved::Lineup(facts) => MobileFantasyResolved::Lineup {
+            facts: MobileLineupFacts {
+                league_key: facts.league_key,
+                league_name: facts.league_name,
+                team_key: facts.team_key,
+                team_name: facts.team_name,
+                week: facts.week,
+                slots: facts.slots.into_iter().map(map_lineup_slot).collect(),
+                headline: map_lineup_headline(facts.headline),
+                stale: facts.stale,
+                freshness: map_pane_freshness(facts.freshness),
+            },
+        },
         fantasy::FantasyResolved::Gap { gap } => MobileFantasyResolved::Gap {
             gap: match gap {
                 fantasy::FantasyGap::NotFetched => MobileFantasyGap::NotFetched,
@@ -3204,6 +3321,7 @@ fn map_fantasy_resolved(resolved: fantasy::FantasyResolved) -> MobileFantasyReso
                     MobileFantasyGap::UnknownSchema { schema }
                 }
                 fantasy::FantasyGap::BodyNotRead => MobileFantasyGap::BodyNotRead,
+                fantasy::FantasyGap::BadBody => MobileFantasyGap::BadBody,
             },
         },
     }
@@ -4353,6 +4471,20 @@ struct Inner {
     /// `rehydrate_api_key`, `clear_api_key`), so there is no second
     /// credential lifecycle to reason about. Memory only, like the core's.
     api_key: Option<String>,
+    /// Phone or watch (#880), told once at [`MobileTaskHost::init`] and
+    /// never changed — the one fact [`sign_in_in`] gates on.
+    form: MobileDeviceForm,
+}
+
+/// Which device this seam runs on (#880) — the host says so once, at
+/// [`MobileTaskHost::init`], rather than the seam inferring it from a token
+/// id. The watch builds this same seam through the shared binding
+/// (ADR-0039) but never signs in: it receives its `device-watch` token from
+/// the phone, so [`MobileTaskHost::sign_in_with_google`] refuses there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileDeviceForm {
+    Phone,
+    Watch,
 }
 
 /// The native hosts' handle on one durable `Core` — `TaskHostCore`'s
@@ -4396,9 +4528,14 @@ impl MobileTaskHost {
     /// core starts in `unknown`, and the host's start-up token load calls
     /// [`MobileTaskHost::rehydrate_api_key`] with a stored token or
     /// [`MobileTaskHost::report_no_api_key`] without one — see
-    /// [`Core::init`].
+    /// [`Core::init`]. `form` is the host saying whether it is the phone
+    /// or the watch (#880) — see [`MobileDeviceForm`].
     #[uniffi::constructor]
-    pub async fn init(namespace: String, base_url: String) -> Result<Arc<Self>, MobileInitError> {
+    pub async fn init(
+        namespace: String,
+        base_url: String,
+        form: MobileDeviceForm,
+    ) -> Result<Arc<Self>, MobileInitError> {
         let namespace_path = namespace.clone();
         let core = Core::init(namespace)
             .await
@@ -4431,6 +4568,7 @@ impl MobileTaskHost {
                 read_transport,
                 write_transport,
                 api_key: None,
+                form,
             }),
             calendar: tokio::sync::Mutex::new(calendar),
             core_owner: core_lock::CoreOwnershipTracker::new(),
@@ -4665,8 +4803,10 @@ impl MobileTaskHost {
 
     /// Trades a Google ID token from Credential Manager for this phone's
     /// token (#839, ADR-0040 decisions 1 and 3) — always as the `android`
-    /// platform: the watch never signs in (ADR-0039 is not amended), so
-    /// this seam has no other platform to name. Holds nothing: on
+    /// platform: the watch never signs in (ADR-0039 is not amended), so a
+    /// host started as [`MobileDeviceForm::Watch`] is answered
+    /// [`MobileSignInOutcome::RefusedOnWatch`] with no request sent (#880),
+    /// and this seam has no other platform to name. Holds nothing: on
     /// `SignedIn` the app stores the token and then calls
     /// [`MobileTaskHost::push_api_key`] with it.
     pub async fn sign_in_with_google(&self, id_token: String, name: String) -> MobileSignInOutcome {
@@ -6383,9 +6523,11 @@ pub fn calendar_poll_interval_ms() -> i64 {
 
 /// One `reqwest::Client` per host, cloned into both transports — connection
 /// pooling shared across reads and writes, exactly `TaskHostCore::init`'s
-/// arrangement.
+/// arrangement. The core's [`hummingbird_core::sync::sync_client`], so the
+/// connect phase is bounded too (#870); each sync request's total bound
+/// rides on the transports themselves.
 fn reqwest_client() -> reqwest::Client {
-    reqwest::Client::new()
+    hummingbird_core::sync::sync_client()
 }
 
 // ------------------------------------------------------------- M4 (#538)
@@ -7442,6 +7584,10 @@ pub enum MobileSignInOutcome {
     Unavailable,
     Invalid { detail: String },
     Failed { detail: String },
+    /// This host is a watch (#880): no request was sent. Not the
+    /// authority's answer — the seam's own, so it has no [`SignInOutcome`]
+    /// twin.
+    RefusedOnWatch,
 }
 
 fn map_sign_in_outcome(outcome: SignInOutcome) -> MobileSignInOutcome {
@@ -7518,6 +7664,9 @@ async fn sign_in_in(
     id_token: &str,
     name: &str,
 ) -> MobileSignInOutcome {
+    if inner.form == MobileDeviceForm::Watch {
+        return MobileSignInOutcome::RefusedOnWatch;
+    }
     map_sign_in_outcome(
         inner
             .core
@@ -7584,6 +7733,32 @@ pub fn device_rows(devices: Vec<MobileDeviceInfo>, now_ms: i64) -> Vec<MobileDev
 #[uniffi::export]
 pub fn sign_out_confirmation(queue_depth: u32) -> String {
     devices::sign_out_confirmation(queue_depth)
+}
+
+/// [`devices::other_device_sign_out_confirmation`] — the sentence before
+/// signing out another device (#887).
+#[uniffi::export]
+pub fn other_device_sign_out_confirmation(name: String) -> String {
+    devices::other_device_sign_out_confirmation(&name)
+}
+
+/// [`devices::sign_in_refusal`] — what a refused Google sign-in says
+/// (#887): a sentence for `NotAllowed`, `RateLimited`, `Unconfigured` and
+/// `Unavailable`, `None` for every other arm. `RefusedOnWatch` is the
+/// seam's own refusal, not the authority's, so the phone words it itself.
+#[uniffi::export]
+pub fn sign_in_refusal(outcome: MobileSignInOutcome) -> Option<String> {
+    let outcome = match outcome {
+        MobileSignInOutcome::NotAllowed => SignInOutcome::NotAllowed,
+        MobileSignInOutcome::RateLimited => SignInOutcome::RateLimited,
+        MobileSignInOutcome::Unconfigured => SignInOutcome::Unconfigured,
+        MobileSignInOutcome::Unavailable => SignInOutcome::Unavailable,
+        MobileSignInOutcome::SignedIn { .. }
+        | MobileSignInOutcome::Invalid { .. }
+        | MobileSignInOutcome::Failed { .. }
+        | MobileSignInOutcome::RefusedOnWatch => return None,
+    };
+    devices::sign_in_refusal(&outcome).map(str::to_string)
 }
 
 // -------------------------------------------------------------- #709: diagnostics
@@ -7827,6 +8002,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://authority.example".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -7872,6 +8048,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://authority.example".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -7965,6 +8142,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             String::new(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -8002,6 +8180,59 @@ mod tests {
         );
     }
 
+    /// #870 {android-capture-proceeds}: a capture issued while a sync holds
+    /// the core on a request the authority accepted and never answered
+    /// commits locally once the bound expires — not when the OS gives the
+    /// socket up. The transports are swapped for ones with a shortened
+    /// bound; the production value is pinned by the core's own tests.
+    #[tokio::test]
+    async fn a_capture_waiting_on_a_stalled_sync_commits_once_the_bound_expires() {
+        use std::time::{Duration, Instant};
+
+        const BOUND: Duration = Duration::from_millis(400);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let held: Vec<_> = listener.incoming().take(4).collect();
+            std::thread::sleep(Duration::from_secs(60));
+            drop(held);
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let host = MobileTaskHost::init(
+            dir.path().join("stalled-sync-ns").to_str().unwrap().to_string(),
+            base_url.clone(),
+            MobileDeviceForm::Phone,
+        )
+        .await
+        .unwrap();
+        host.push_api_key("device-token".to_string()).await;
+        {
+            let mut inner = host.inner.lock().await;
+            inner.read_transport =
+                ReqwestSyncTransport::new(reqwest_client(), base_url.clone()).with_timeout(BOUND);
+            inner.write_transport =
+                ReqwestMutationTransport::new(reqwest_client(), base_url).with_timeout(BOUND);
+        }
+
+        let (run, (captured, waited)) = tokio::join!(
+            host.run(1_000, "user".to_string(), true, 0.0),
+            async {
+                // Lets `run` take the core and reach its unanswered request.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let started = Instant::now();
+                let captured = host.capture(title_only_draft("milk"), 1_100).await;
+                (captured, started.elapsed())
+            }
+        );
+
+        assert_eq!(run.kind, "pull_failed");
+        assert!(captured.is_ok(), "{captured:?}");
+        assert!(waited >= BOUND / 2, "the capture waited on the stalled sync: {waited:?}");
+        assert!(waited < Duration::from_secs(5), "the bound released the core: {waited:?}");
+        assert_eq!(host.queue_depth().await, 1);
+    }
+
     // ---------------------------------------------- the calendar (#564)
     // Everything reachable without a live authority. The mint itself is
     // covered by `calendar_token`'s own tests; what these pin is the state
@@ -8014,6 +8245,7 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("cal-ns").to_str().unwrap().to_string(),
             "http://127.0.0.1:1".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -8469,6 +8701,7 @@ mod tests {
             // A base URL that would fail DNS if any request were attempted:
             // `no_credential` short-circuits before the transports.
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -8485,6 +8718,7 @@ mod tests {
             dir.path().join(name).to_str().unwrap().to_string(),
             // Would fail DNS if any request were attempted.
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap()
@@ -8653,6 +8887,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -8672,6 +8907,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -8709,6 +8945,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -8760,6 +8997,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -8907,6 +9145,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -8952,6 +9191,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9004,6 +9244,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9037,6 +9278,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9060,6 +9302,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9567,6 +9810,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9628,6 +9872,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9654,6 +9899,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9682,6 +9928,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9708,6 +9955,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9728,6 +9976,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9745,6 +9994,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9785,6 +10035,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9801,6 +10052,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9949,6 +10201,7 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("triage-board-ns").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9974,6 +10227,7 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("triage-item-ns").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -10010,6 +10264,7 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("triage-item-ns-2").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -10038,6 +10293,7 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("triage-item-ns-3").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -10078,6 +10334,7 @@ mod tests {
         let host = MobileTaskHost::init(
             path.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -10396,6 +10653,7 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("edit-ns").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -10429,6 +10687,7 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("edit-ns-2").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -11174,9 +11433,13 @@ mod skills_tests {
         // (the same trade every other tempdir-backed test here already
         // makes implicitly by never calling `.close()`).
         std::mem::forget(dir);
-        MobileTaskHost::init(path.to_str().unwrap().to_string(), "https://invalid.invalid".to_string())
-            .await
-            .unwrap()
+        MobileTaskHost::init(
+            path.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
+        )
+        .await
+        .unwrap()
     }
 
     #[tokio::test]
@@ -11606,6 +11869,7 @@ mod settings_tests {
         let host = MobileTaskHost::init(
             path.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -12039,6 +12303,7 @@ mod settings_tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "http://127.0.0.1:1".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -12670,6 +12935,70 @@ mod settings_tests {
         assert!(matches!(unbound, MobilePaneFacts::Vacation { resolved: None }));
     }
 
+    /// #855: the lineup's headline crosses the mobile seam as the same
+    /// decision the web reads — arm, count, shared reason, lock and the
+    /// crunch-time age — over the poller's own golden bodies.
+    #[test]
+    fn fantasy_lineup_headline_round_trips_over_the_golden_bodies() {
+        let lock = 1_790_900_100_000i64;
+        let hour = 3_600_000i64;
+        let facts_at = |golden: &str, now_ms: i64, age_ms: i64| {
+            let golden: serde_json::Value = serde_json::from_str(golden).unwrap();
+            let inputs = pane_inputs(serde_json::json!({
+                "nowMs": now_ms,
+                "bindings": [
+                    {"key": fantasy::BINDING_KEY, "value": {"state":"text","text":"449.l.123456"}}
+                ],
+                "paneReads": {
+                    fantasy::LINEUP_SOURCE: {"snapshots": [{
+                        "key": "449.l.123456",
+                        "envelope": {"kind":"ok","schema":fantasy::LINEUP_SOURCE, "body": golden["body"].to_string()},
+                        "freshness": {"kind":"age","ageMs":age_ms,"declaredCadenceMs":21_600_000},
+                    }]},
+                },
+            }));
+            let arm = mobile_pane_facts_of(
+                StandingQuestion::Fantasy,
+                "449.l.123456:lineup",
+                &inputs,
+                &ZoneFacts::default(),
+            );
+            let MobilePaneFacts::Fantasy { resolved: MobileFantasyResolved::Lineup { facts }, .. } = arm
+            else {
+                panic!("expected the lineup facts arm, got {arm:?}");
+            };
+            facts
+        };
+
+        let invalid = facts_at(
+            include_str!("../../../server/fantasy-poll/tests/fixtures/golden-lineup.json"),
+            lock - 4 * hour,
+            3 * hour,
+        );
+        assert_eq!(
+            invalid.headline,
+            MobileLineupHeadline::Invalid {
+                count: 3,
+                reason: None,
+                locks_at_ms: Some(lock),
+                checked_ago_ms: Some(3 * hour),
+            }
+        );
+        assert_eq!(invalid.slots.len(), 8);
+        assert_eq!(
+            invalid.slots[2].invalid,
+            Some(MobileInvalidSlot { reason: MobileSlotProblem::Empty, deadline_ms: Some(1_791_133_200_000) })
+        );
+
+        let valid = facts_at(
+            include_str!("../../../server/fantasy-poll/tests/fixtures/golden-lineup-valid.json"),
+            lock - 4 * hour,
+            60_000,
+        );
+        assert_eq!(valid.headline, MobileLineupHeadline::Set { locks_at_ms: Some(lock) });
+        assert_eq!(valid.league_name, "Twinion Family League");
+    }
+
     #[test]
     fn race_facts_round_trip_facts_and_sentinel_gap() {
         let race_start = PANE_NOW_MS + 6 * 24 * 3_600_000;
@@ -12996,6 +13325,7 @@ mod settings_tests {
         MobileTaskHost::init(
             dir.path().join("devices-ns").to_str().unwrap().to_string(),
             "http://127.0.0.1:1".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap()
@@ -13056,6 +13386,35 @@ mod settings_tests {
         );
         assert!(authority.bearers.lock().unwrap().iter().all(Option::is_none));
         assert_eq!(host.credential_arm().await, "unknown", "a sign-in holds nothing");
+    }
+
+    /// #880: a host started as a watch never signs in (ADR-0039 is not
+    /// amended) — its own refusal, and no request: the scripted authority
+    /// has no answers, so any call would panic.
+    #[tokio::test]
+    async fn a_watch_refuses_a_google_sign_in_without_reaching_the_authority() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = MobileTaskHost::init(
+            dir.path().join("watch-ns").to_str().unwrap().to_string(),
+            "http://127.0.0.1:1".to_string(),
+            MobileDeviceForm::Watch,
+        )
+        .await
+        .unwrap();
+        let authority = ScriptedAuthority::answering(&[]);
+        let inner = host.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
+        assert_eq!(
+            sign_in_in(&inner, &authority, "jwt", "Pixel Watch").await,
+            MobileSignInOutcome::RefusedOnWatch
+        );
+        drop(inner);
+        assert!(authority.bearers.lock().unwrap().is_empty(), "a watch sends nothing");
+        assert_eq!(
+            host.sign_in_with_google("jwt".to_string(), "Pixel Watch".to_string()).await,
+            MobileSignInOutcome::RefusedOnWatch,
+            "the live door refuses before its transport, not as a failed request"
+        );
+        assert_eq!(host.credential_arm().await, "unknown", "a refusal holds nothing");
     }
 
     #[tokio::test]
@@ -13164,6 +13523,32 @@ mod settings_tests {
             "Sign out this device? Nothing is waiting to send."
         );
     }
+
+    #[test]
+    fn the_other_device_confirmation_and_the_sign_in_refusals_are_the_core_sentences() {
+        assert_eq!(
+            other_device_sign_out_confirmation("Phone".to_string()),
+            devices::other_device_sign_out_confirmation("Phone")
+        );
+        for (mobile, outcome) in [
+            (MobileSignInOutcome::NotAllowed, SignInOutcome::NotAllowed),
+            (MobileSignInOutcome::RateLimited, SignInOutcome::RateLimited),
+            (MobileSignInOutcome::Unconfigured, SignInOutcome::Unconfigured),
+            (MobileSignInOutcome::Unavailable, SignInOutcome::Unavailable),
+        ] {
+            let sentence = sign_in_refusal(mobile);
+            assert!(sentence.is_some());
+            assert_eq!(sentence.as_deref(), devices::sign_in_refusal(&outcome));
+        }
+        for other in [
+            MobileSignInOutcome::SignedIn { id: "x".to_string(), token: "hb_x".to_string() },
+            MobileSignInOutcome::Invalid { detail: "too long".to_string() },
+            MobileSignInOutcome::Failed { detail: "offline".to_string() },
+            MobileSignInOutcome::RefusedOnWatch,
+        ] {
+            assert_eq!(sign_in_refusal(other), None);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -13223,6 +13608,7 @@ mod diagnostic_ffi_tests {
         let host = MobileTaskHost::init(
             dir.path().join("seq-ns").to_str().unwrap().to_string(),
             "https://authority.example".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -13289,6 +13675,7 @@ mod diagnostic_ffi_tests {
             MobileTaskHost::init(
                 dir.path().join("drain-during-hang-ns").to_str().unwrap().to_string(),
                 "https://authority.example".to_string(),
+                MobileDeviceForm::Phone,
             )
             .await
             .unwrap(),

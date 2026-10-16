@@ -206,14 +206,7 @@ fun SettingsScreen(
         if (syncTick > 0) reload()
     }
 
-    // The devices list is a network read, not a mirror read, so it rides
-    // entry, resume and the credential changing (a sign-in, a paste, a
-    // sign-out) — never the 60-second sync tick.
-    LaunchedEffect(needsToken) { viewModel.loadDevices() }
-    LifecycleResumeEffect(Unit) {
-        val resumed = scope.launch { viewModel.loadDevices() }
-        onPauseOrDispose { resumed.cancel() }
-    }
+    DevicesLoadEffect(needsToken = needsToken, load = viewModel::loadDevices)
 
     // `hummingbird_core::decisions::settings::sync_status_summary`, called
     // straight from render — the same shape `notificationTapTarget`'s call
@@ -835,6 +828,26 @@ private fun SignInEntry(
         } else {
             TextButton(onClick = { pasting = true }) { Text("Paste a token instead") }
         }
+    }
+}
+
+/**
+ * The devices list is a network read, not a mirror read, so it rides
+ * entry, resume and the credential changing (a sign-in, a paste, a
+ * sign-out) — never the 60-second sync tick.
+ *
+ * One effect, keyed on the credential (#890). The first entry is itself a
+ * resume, so an entry effect beside this one listed the devices twice; a
+ * key change replays the resume while the screen is up, and a change made
+ * while it was paused (a sign-in sheet over it) is listed on the way back.
+ * Internal so `DevicesLoadEffectTest` can count the loads.
+ */
+@Composable
+internal fun DevicesLoadEffect(needsToken: Boolean, load: suspend () -> Unit) {
+    val scope = rememberCoroutineScope()
+    LifecycleResumeEffect(needsToken) {
+        val resumed = scope.launch { load() }
+        onPauseOrDispose { resumed.cancel() }
     }
 }
 

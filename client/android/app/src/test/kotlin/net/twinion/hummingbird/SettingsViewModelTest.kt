@@ -414,7 +414,18 @@ class SettingsViewModelTest {
         viewModel.load()
 
         assertEquals("core sentence for 3", viewModel.signOutConfirmationText(row("me", isCurrent = true)))
-        assertTrue(viewModel.signOutConfirmationText(row("other", isCurrent = false)).contains("other name"))
+    }
+
+    /** #887: another device's confirmation is the core's too — the real
+     * seam call, so the sentence asserted is the one the core words. */
+    @Test
+    fun `another device's confirmation is the core's sentence`() {
+        val viewModel = SettingsViewModel(fetchFn = { emptyRead() }, setBindingFn = { _, _, _ -> })
+
+        assertEquals(
+            "Sign out other name? It stops syncing until it signs in again.",
+            viewModel.signOutConfirmationText(row("other", isCurrent = false)),
+        )
     }
 
     @Test

@@ -132,7 +132,23 @@ describe("useSignInWiring", () => {
     expect(submitToken).not.toHaveBeenCalled();
     expect(result.current.signIn).toEqual({
       kind: "error",
-      message: "This Google account is not allowed to sign in to hummingbird.",
+      message: "That Google account isn't allowed to sign in here. Nothing on this device changed.",
+    });
+  });
+
+  it("leaves the card signed out with a readable message when the exchange is abandoned (#889)", async () => {
+    const worker = fakeWorker();
+    const submitToken = vi.fn();
+    const { result } = mount(worker, "ready", { kind: "token", idToken: "id.tok.en" }, submitToken);
+    expect(result.current.signIn).toEqual({ kind: "pending" });
+    const seed = (worker.postMessage.mock.calls[0][0] as { seed: string }).seed;
+    await act(async () => {
+      answer(worker, { type: "signInResult", seed, kind: "abandoned", token: null, error: null });
+    });
+    expect(submitToken).not.toHaveBeenCalled();
+    expect(result.current.signIn).toEqual({
+      kind: "error",
+      message: "Sign-in didn't finish. Try again, or paste a token instead.",
     });
   });
 

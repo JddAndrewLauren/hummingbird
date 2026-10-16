@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from "vitest";
 import { OTHER_ROWS_KEY, SettingsScreen } from "./SettingsScreen";
 import { connectErrorCopy } from "../calendar/connect-error";
 import { questionRoster } from "./questions/roster";
+import { GOLDEN_DISCOVERED, lineupRead } from "./fantasy-pane/golden-lineup.testkit";
 import { bindingDTO, fireEvent, itemDTO, render, screen, taskState, within } from "../test/component";
 import type {
   BindingDTO,
@@ -1194,5 +1195,53 @@ describe("SettingsScreen — the contexts list (ADR-0038)", () => {
     expect(screen.queryByLabelText("Add a context")).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove @errands" })).toBeNull();
     expect(screen.getByText("@errands")).toBeDefined();
+  });
+});
+
+describe("SettingsScreen — the leagues found this season (#855)", () => {
+  const yahooLeagues = bindingDTO({ key: "yahoo-leagues", value: { state: "text", text: "448.l.1" } });
+
+  /** The `yahoo-leagues` binding row: the block under its mono key. */
+  function yahooRow(): HTMLElement {
+    const key = screen.getByText("yahoo-leagues");
+    const row = key.closest("div")?.parentElement;
+    if (row === null || row === undefined) {
+      throw new Error("no yahoo-leagues row");
+    }
+    return row;
+  }
+
+  it("lists the poller's discovered leagues beside the yahoo-leagues field, keys and names", () => {
+    renderSettings({
+      bindings: [yahooLeagues],
+      task: {
+        paneReads: {
+          "yahoo-lineup/v1": lineupRead([{ key: "discovered-leagues", schema: "yahoo-discovered-leagues/v1", body: GOLDEN_DISCOVERED, ageMs: 0 }]),
+        },
+      },
+    });
+    const row = within(yahooRow());
+    expect(row.getByRole("textbox", { name: "Yahoo leagues" })).toBeDefined();
+    const list = row.getByRole("list", { name: "Leagues found this season" });
+    const leagues = within(list).getAllByRole("listitem").map((item) => item.textContent);
+    expect(leagues).toEqual(["Twinion Family League449.l.123456", "Office Pool449.l.789012"]);
+  });
+
+  it("says nothing when no discovered-leagues row has landed", () => {
+    renderSettings({ bindings: [yahooLeagues] });
+    expect(screen.getByText("yahoo-leagues")).toBeDefined();
+    expect(screen.queryByRole("list", { name: "Leagues found this season" })).toBeNull();
+  });
+
+  it("says so when the row cannot be read", () => {
+    renderSettings({
+      bindings: [yahooLeagues],
+      task: {
+        paneReads: {
+          "yahoo-lineup/v1": lineupRead([{ key: "discovered-leagues", schema: "yahoo-discovered-leagues/v1", body: [], ageMs: 0 }]),
+        },
+      },
+    });
+    expect(within(yahooRow()).getByText("This season's leagues couldn't be read.")).toBeDefined();
   });
 });
