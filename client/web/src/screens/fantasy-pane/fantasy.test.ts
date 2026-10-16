@@ -195,6 +195,8 @@ describe("the lineup's words", () => {
     const sunday = new Date(2026, 9, 4, 13, 0, 0).getTime();
     expect(lockTime(sunday, new Date(2026, 9, 1, 9, 0, 0).getTime())).toBe("Sun 1:00pm");
     expect(lockTime(sunday, new Date(2026, 8, 20, 9, 0, 0).getTime())).toBe("Oct 4 1:00pm");
+    // Already past: the date, never a weekday that reads as this week's.
+    expect(lockTime(sunday, new Date(2026, 9, 5, 9, 0, 0).getTime())).toBe("Oct 4 1:00pm");
   });
 
   it("words every headline arm", () => {

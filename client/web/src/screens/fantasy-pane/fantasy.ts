@@ -182,12 +182,12 @@ export function shortDuration(deltaMs: number): string {
 }
 
 /** "Sun 1:00pm" — this device's own day and wall clock, no zone suffix
- * (ADR-0015). A lock more than six days out names its date instead of a
- * weekday that would be ambiguous. */
+ * (ADR-0015). A lock more than six days out, or already past, names its
+ * date instead of a weekday that would read as this week's. */
 export function lockTime(atMs: number, nowMs: number): string {
   const at = new Date(atMs);
   const day =
-    atMs - nowMs < 6 * DAY_MS
+    atMs >= nowMs && atMs - nowMs < 6 * DAY_MS
       ? new Intl.DateTimeFormat("en-US", { weekday: "short" }).format(at)
       : new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(at);
   const clock = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" })
