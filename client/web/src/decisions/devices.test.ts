@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deviceRows, signOutConfirmation } from "./seam";
+import { deviceRows, otherDeviceSignOutConfirmation, signInRefusal, signOutConfirmation } from "./seam";
 import type { DeviceInfoDTO } from "../store/protocol";
 
 const HOUR = 3_600_000;
@@ -46,5 +46,29 @@ describe("signOutConfirmation", () => {
   it("names how many changes stay queued", () => {
     expect(signOutConfirmation(0)).toBe("Sign out this device? Nothing is waiting to send.");
     expect(signOutConfirmation(3)).toContain("3 unsent changes stay queued");
+  });
+});
+
+// #887: the core owns these; the extension's `signin.test.js` pins the
+// same four refusal sentences.
+describe("otherDeviceSignOutConfirmation", () => {
+  it("is the core's sentence, naming the device", () => {
+    expect(otherDeviceSignOutConfirmation("Phone")).toBe("Sign out Phone? It stops syncing until it signs in again.");
+  });
+});
+
+describe("signInRefusal", () => {
+  it.each([
+    ["not_allowed", "That Google account isn't allowed to sign in here. Nothing on this device changed."],
+    ["rate_limited", "Too many sign-ins in the last hour. Try again later, or paste a token instead."],
+    ["unconfigured", "Sign-in isn't set up on the authority yet. Paste a token instead."],
+    ["unavailable", "The authority couldn't check with Google just now. Try again in a minute."],
+  ])("words %s with the core's sentence", (kind, sentence) => {
+    expect(signInRefusal(kind)).toBe(sentence);
+  });
+
+  it("has nothing for a kind that is not a refusal", () => {
+    expect(signInRefusal("invalid")).toBeNull();
+    expect(signInRefusal("busy")).toBeNull();
   });
 });

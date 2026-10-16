@@ -7617,6 +7617,32 @@ pub fn sign_out_confirmation(queue_depth: u32) -> String {
     devices::sign_out_confirmation(queue_depth)
 }
 
+/// [`devices::other_device_sign_out_confirmation`] — the sentence before
+/// signing out another device (#887).
+#[uniffi::export]
+pub fn other_device_sign_out_confirmation(name: String) -> String {
+    devices::other_device_sign_out_confirmation(&name)
+}
+
+/// [`devices::sign_in_refusal`] — what a refused Google sign-in says
+/// (#887): a sentence for `NotAllowed`, `RateLimited`, `Unconfigured` and
+/// `Unavailable`, `None` for every other arm. `RefusedOnWatch` is the
+/// seam's own refusal, not the authority's, so the phone words it itself.
+#[uniffi::export]
+pub fn sign_in_refusal(outcome: MobileSignInOutcome) -> Option<String> {
+    let outcome = match outcome {
+        MobileSignInOutcome::NotAllowed => SignInOutcome::NotAllowed,
+        MobileSignInOutcome::RateLimited => SignInOutcome::RateLimited,
+        MobileSignInOutcome::Unconfigured => SignInOutcome::Unconfigured,
+        MobileSignInOutcome::Unavailable => SignInOutcome::Unavailable,
+        MobileSignInOutcome::SignedIn { .. }
+        | MobileSignInOutcome::Invalid { .. }
+        | MobileSignInOutcome::Failed { .. }
+        | MobileSignInOutcome::RefusedOnWatch => return None,
+    };
+    devices::sign_in_refusal(&outcome).map(str::to_string)
+}
+
 // -------------------------------------------------------------- #709: diagnostics
 
 /// Mirrors only the handful of [`hummingbird_core::diagnostics::DiagnosticEvent`]
@@ -13314,6 +13340,32 @@ mod settings_tests {
             sign_out_confirmation(0),
             "Sign out this device? Nothing is waiting to send."
         );
+    }
+
+    #[test]
+    fn the_other_device_confirmation_and_the_sign_in_refusals_are_the_core_sentences() {
+        assert_eq!(
+            other_device_sign_out_confirmation("Phone".to_string()),
+            devices::other_device_sign_out_confirmation("Phone")
+        );
+        for (mobile, outcome) in [
+            (MobileSignInOutcome::NotAllowed, SignInOutcome::NotAllowed),
+            (MobileSignInOutcome::RateLimited, SignInOutcome::RateLimited),
+            (MobileSignInOutcome::Unconfigured, SignInOutcome::Unconfigured),
+            (MobileSignInOutcome::Unavailable, SignInOutcome::Unavailable),
+        ] {
+            let sentence = sign_in_refusal(mobile);
+            assert!(sentence.is_some());
+            assert_eq!(sentence.as_deref(), devices::sign_in_refusal(&outcome));
+        }
+        for other in [
+            MobileSignInOutcome::SignedIn { id: "x".to_string(), token: "hb_x".to_string() },
+            MobileSignInOutcome::Invalid { detail: "too long".to_string() },
+            MobileSignInOutcome::Failed { detail: "offline".to_string() },
+            MobileSignInOutcome::RefusedOnWatch,
+        ] {
+            assert_eq!(sign_in_refusal(other), None);
+        }
     }
 }
 

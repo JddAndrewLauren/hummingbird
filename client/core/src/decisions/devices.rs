@@ -1,8 +1,15 @@
 //! Signed-in devices' decision half (#839, ADR-0040 decision 7, ADR-0025):
 //! which of `GET /api/devices`' rows the section shows, in what order, in
-//! what words, and what the sign-out confirmation says — so the web and
-//! the phone describe the operator's devices identically. The rows arrive
-//! from [`crate::Core::devices`]; nothing here fetches.
+//! what words, what the sign-out confirmations say, and what a refused
+//! Google sign-in says — so the web and the phone describe the operator's
+//! devices identically (#887). The rows arrive from
+//! [`crate::Core::devices`]; nothing here fetches.
+//!
+//! The capture extension cannot call the core, so it re-states
+//! [`sign_in_refusal`]'s four sentences once, in
+//! `tools/browser-capture/lib.js`, pinned by the same cases as this
+//! module's tests (ADR-0037's re-statement rule). A wording change here is
+//! a change there.
 //!
 //! Pure and clock-free like every module beside it: `now_ms` is an
 //! argument, and ages read through [`super::settings::relative_age`], the
@@ -12,6 +19,7 @@ use hummingbird_domain::{DeviceInfo, DeviceListPlatform};
 use serde::Serialize;
 
 use super::settings::relative_age;
+use crate::devices::SignInOutcome;
 
 /// The words on this device's own row.
 pub const THIS_DEVICE: &str = "This device";
@@ -93,6 +101,55 @@ pub fn sign_out_confirmation(queue_depth: u32) -> String {
             "Sign out this device? {n} unsent changes stay queued and send once you sign in again."
         ),
     }
+}
+
+/// The confirmation before signing out another device. Its token is
+/// revoked at once, so it says what that does to the device rather than
+/// what stays queued — the queue is that device's own.
+pub fn other_device_sign_out_confirmation(name: &str) -> String {
+    format!("Sign out {name}? It stops syncing until it signs in again.")
+}
+
+/// What a refused Google sign-in says, one sentence per refusal the route
+/// gives (403, 429, and the two 503s the lane already split), or `None`
+/// for an outcome that is not a refusal: a sign-in, and the two arms that
+/// carry their own detail (`Invalid`, `Failed`), which each client words
+/// around that detail. No wildcard, so an arm added to [`SignInOutcome`]
+/// is a compile error here rather than a silent `None`.
+pub fn sign_in_refusal(outcome: &SignInOutcome) -> Option<&'static str> {
+    match outcome {
+        SignInOutcome::NotAllowed => {
+            Some("That Google account isn't allowed to sign in here. Nothing on this device changed.")
+        }
+        SignInOutcome::RateLimited => {
+            Some("Too many sign-ins in the last hour. Try again later, or paste a token instead.")
+        }
+        SignInOutcome::Unconfigured => {
+            Some("Sign-in isn't set up on the authority yet. Paste a token instead.")
+        }
+        SignInOutcome::Unavailable => {
+            Some("The authority couldn't check with Google just now. Try again in a minute.")
+        }
+        SignInOutcome::SignedIn(_) | SignInOutcome::Invalid { .. } | SignInOutcome::Failed { .. } => {
+            None
+        }
+    }
+}
+
+/// [`sign_in_refusal`] keyed by the arm's wire name
+/// ([`SignInOutcome::kind`]), for the web seam, whose sign-in answers
+/// arrive as kinds. `None` for any kind that is not one of the four
+/// refusals.
+pub fn sign_in_refusal_for_kind(kind: &str) -> Option<&'static str> {
+    [
+        SignInOutcome::NotAllowed,
+        SignInOutcome::RateLimited,
+        SignInOutcome::Unconfigured,
+        SignInOutcome::Unavailable,
+    ]
+    .iter()
+    .find(|outcome| outcome.kind() == kind)
+    .and_then(sign_in_refusal)
 }
 
 #[cfg(test)]
@@ -223,6 +280,64 @@ mod tests {
         assert_eq!(
             sign_out_confirmation(4),
             "Sign out this device? 4 unsent changes stay queued and send once you sign in again."
+        );
+    }
+
+    /// The extension re-states these four (`tools/browser-capture/
+    /// signin.test.js` pins the same strings): change both together.
+    const REFUSALS: [(&str, &str); 4] = [
+        (
+            "not_allowed",
+            "That Google account isn't allowed to sign in here. Nothing on this device changed.",
+        ),
+        (
+            "rate_limited",
+            "Too many sign-ins in the last hour. Try again later, or paste a token instead.",
+        ),
+        ("unconfigured", "Sign-in isn't set up on the authority yet. Paste a token instead."),
+        (
+            "unavailable",
+            "The authority couldn't check with Google just now. Try again in a minute.",
+        ),
+    ];
+
+    #[test]
+    fn each_refused_sign_in_has_its_one_sentence() {
+        let outcomes = [
+            SignInOutcome::NotAllowed,
+            SignInOutcome::RateLimited,
+            SignInOutcome::Unconfigured,
+            SignInOutcome::Unavailable,
+        ];
+        for (outcome, (kind, sentence)) in outcomes.iter().zip(REFUSALS) {
+            assert_eq!(outcome.kind(), kind);
+            assert_eq!(sign_in_refusal(outcome), Some(sentence), "{kind}");
+            assert_eq!(sign_in_refusal_for_kind(kind), Some(sentence), "{kind}");
+        }
+    }
+
+    #[test]
+    fn an_outcome_that_is_not_a_refusal_has_no_refusal_sentence() {
+        let signed_in = SignInOutcome::SignedIn(hummingbird_domain::SignedInDevice {
+            id: "device-web".to_string(),
+            token: "hb_x".to_string(),
+        });
+        for outcome in [
+            signed_in,
+            SignInOutcome::Invalid { message: "too long".to_string() },
+            SignInOutcome::Failed { message: "offline".to_string() },
+        ] {
+            assert_eq!(sign_in_refusal(&outcome), None, "{}", outcome.kind());
+            assert_eq!(sign_in_refusal_for_kind(outcome.kind()), None, "{}", outcome.kind());
+        }
+        assert_eq!(sign_in_refusal_for_kind("busy"), None);
+    }
+
+    #[test]
+    fn the_other_device_confirmation_names_it_and_what_signing_it_out_does() {
+        assert_eq!(
+            other_device_sign_out_confirmation("Pixel 10 Pro Fold"),
+            "Sign out Pixel 10 Pro Fold? It stops syncing until it signs in again."
         );
     }
 

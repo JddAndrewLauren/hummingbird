@@ -274,6 +274,9 @@ export interface DecisionsModule {
   // #840: Signed-in devices (ADR-0040 decision 7).
   device_rows_json(devicesJson: string, nowMs: number): string;
   sign_out_confirmation(queueDepth: number): string;
+  // #887: the other device's confirmation and the refused sign-ins.
+  other_device_sign_out_confirmation(name: string): string;
+  sign_in_refusal(kind: string): string | undefined;
 }
 
 let loaded: DecisionsModule | null = null;
@@ -824,6 +827,20 @@ export function deviceRows(devices: readonly DeviceInfoDTO[], nowMs: number): De
  * changes stay queued (signing out keeps the queue, ADR-0004). */
 export function signOutConfirmation(queueDepth: number): string {
   return required().sign_out_confirmation(queueDepth);
+}
+
+/** `hummingbird_core::decisions::devices::other_device_sign_out_confirmation`
+ * — the sentence before signing out another device (#887). */
+export function otherDeviceSignOutConfirmation(name: string): string {
+  return required().other_device_sign_out_confirmation(name);
+}
+
+/** `hummingbird_core::decisions::devices::sign_in_refusal_for_kind` — what
+ * a refused Google sign-in says, one sentence per refusal the route gives
+ * (`not_allowed`, `rate_limited`, `unconfigured`, `unavailable`), or
+ * `null` for any other kind (#887). */
+export function signInRefusal(kind: string): string | null {
+  return required().sign_in_refusal(kind) ?? null;
 }
 
 function queuePayload(items: readonly TaskItemDTO[]): string {

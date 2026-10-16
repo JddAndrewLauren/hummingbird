@@ -132,7 +132,7 @@ describe("useSignInWiring", () => {
     expect(submitToken).not.toHaveBeenCalled();
     expect(result.current.signIn).toEqual({
       kind: "error",
-      message: "This Google account is not allowed to sign in to hummingbird.",
+      message: "That Google account isn't allowed to sign in here. Nothing on this device changed.",
     });
   });
 

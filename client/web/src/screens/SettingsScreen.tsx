@@ -34,7 +34,12 @@ import { questionRoster } from "./questions/roster";
 import { APP_VERSION } from "../shell/build-version";
 import { coreInstanceLabel } from "../shell/status-label";
 import { TRIPS_CALENDAR_BINDING_KEY, tripsCalendarId } from "../calendar/selection";
-import { deviceRows, effectiveCalendarSelection, signOutConfirmation } from "../decisions/seam";
+import {
+  deviceRows,
+  effectiveCalendarSelection,
+  otherDeviceSignOutConfirmation,
+  signOutConfirmation,
+} from "../decisions/seam";
 import {
   deadLetterHeading,
   syncStatusLabel,
@@ -54,7 +59,7 @@ import type { TaskTokenSubmitOutcome } from "../task/token";
 import { formatEnteredAt, taskQueueStatusCopy, type TaskTokenUiState } from "../task/token-ui";
 import type { ThemePreference } from "../theme/theme";
 import { deadLetterSubject } from "./dead-letter-subject";
-import { devicesNote, otherDeviceConfirmation } from "./devices";
+import { devicesNote } from "./devices";
 import type { SignInUiState } from "../shell/useSignInWiring";
 import { Aside, Column, Section, TwoColumn } from "./layout";
 
@@ -395,7 +400,7 @@ function DevicesCard({
             key={row.id}
             row={row}
             first={index === 0}
-            confirmation={row.isCurrent ? signOutConfirmation(queueDepth) : otherDeviceConfirmation(row.name)}
+            confirmation={row.isCurrent ? signOutConfirmation(queueDepth) : otherDeviceSignOutConfirmation(row.name)}
             confirming={confirmingId === row.id}
             busy={busyId === row.id}
             error={error?.id === row.id ? error.message : null}
