@@ -10,6 +10,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import uniffi.hummingbird_ffi_mobile.MobileSignInOutcome
+import uniffi.hummingbird_ffi_mobile.signInRefusal
 
 // #841's acceptance boxes, driven with fakes: every way a sign-in can fail
 // has its own sentence and leaves the held token alone, and a sign-in that
@@ -100,6 +101,26 @@ class GoogleSignInTest {
         assertNull(message)
         assertEquals(listOf("google-id-token" to "Pixel 10 Pro Fold"), calls)
         assertEquals(listOf("hb_minted"), store.saves)
+    }
+
+    /** #887: the four refusals the authority gives read the core's
+     * sentences through the real seam call — the same strings the core's,
+     * the web's and the extension's tests pin. */
+    @Test
+    fun `each refusal the authority gives is the core's sentence`() {
+        for ((outcome, sentence) in listOf(
+            MobileSignInOutcome.NotAllowed to
+                "That Google account isn't allowed to sign in here. Nothing on this device changed.",
+            MobileSignInOutcome.RateLimited to
+                "Too many sign-ins in the last hour. Try again later, or paste a token instead.",
+            MobileSignInOutcome.Unconfigured to
+                "Sign-in isn't set up on the authority yet. Paste a token instead.",
+            MobileSignInOutcome.Unavailable to
+                "The authority couldn't check with Google just now. Try again in a minute.",
+        )) {
+            assertEquals(sentence, exchangeMessage(outcome))
+            assertEquals(signInRefusal(outcome), exchangeMessage(outcome))
+        }
     }
 
     @Test

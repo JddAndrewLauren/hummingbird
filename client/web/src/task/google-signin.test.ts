@@ -8,6 +8,7 @@ import {
   readSignInReturn,
   signInFailureMessage,
 } from "./google-signin";
+import { signInRefusal } from "../decisions/seam";
 import type { StorageLike } from "../screens/storage";
 import viteConfigSource from "../../vite.config.ts?raw";
 import authorityWranglerSource from "../../../../server/worker/wrangler.toml?raw";
@@ -168,13 +169,14 @@ describe("deviceNameFromUserAgent", () => {
 });
 
 describe("signInFailureMessage", () => {
-  it("words every refusal the core can answer", () => {
-    expect(signInFailureMessage("not_allowed", null)).toBe(
-      "This Google account is not allowed to sign in to hummingbird.",
-    );
-    expect(signInFailureMessage("rate_limited", null)).toMatch(/too many sign-ins/i);
-    expect(signInFailureMessage("unconfigured", null)).toMatch(/not set up/i);
-    expect(signInFailureMessage("unavailable", null)).toMatch(/try again/i);
+  it.each(["not_allowed", "rate_limited", "unconfigured", "unavailable"] as const)(
+    "words a %s refusal with the core's sentence (#887)",
+    (kind) => {
+      expect(signInFailureMessage(kind, null)).toBe(signInRefusal(kind));
+    },
+  );
+
+  it("words the rest itself", () => {
     expect(signInFailureMessage("invalid", "name must be non-empty")).toContain("name must be non-empty");
     expect(signInFailureMessage("failed", "connection refused")).toContain("connection refused");
     expect(signInFailureMessage("busy", null)).toMatch(/try again/i);

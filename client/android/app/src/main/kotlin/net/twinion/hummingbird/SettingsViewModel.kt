@@ -31,6 +31,7 @@ import uniffi.hummingbird_ffi_mobile.MobileStandingQuestion
 import uniffi.hummingbird_ffi_mobile.MobileSurface
 import uniffi.hummingbird_ffi_mobile.deadLetterHeading
 import uniffi.hummingbird_ffi_mobile.deviceRows
+import uniffi.hummingbird_ffi_mobile.otherDeviceSignOutConfirmation
 import uniffi.hummingbird_ffi_mobile.questionRoster
 import uniffi.hummingbird_ffi_mobile.signOutConfirmation
 
@@ -201,6 +202,8 @@ class SettingsViewModel(
     private val deviceRowsFn: (List<MobileDeviceInfo>, Long) -> List<MobileDeviceRow> = ::deviceRows,
     /** The core's sign-out warning for this device's own row. */
     private val signOutConfirmationFn: (UInt) -> String = ::signOutConfirmation,
+    /** The core's sign-out warning for another device's row (#887). */
+    private val otherDeviceConfirmationFn: (String) -> String = ::otherDeviceSignOutConfirmation,
     private val nowMsFn: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
 
@@ -406,14 +409,14 @@ class SettingsViewModel(
         }
     }
 
-    /** The sentence the sign-out dialog asks. This device's own is the
-     * core's, naming what stays queued; another device's says what the
-     * tap does to it. */
+    /** The sentence the sign-out dialog asks — both the core's (#887).
+     * This device's own names what stays queued; another device's says
+     * what the tap does to it. */
     fun signOutConfirmationText(row: MobileDeviceRow): String =
         if (row.isCurrent) {
             signOutConfirmationFn(_queueDepth.value)
         } else {
-            "Sign out ${row.name}? It stops syncing until it signs in again."
+            otherDeviceConfirmationFn(row.name)
         }
 
     /** Signs [row]'s device out, after the screen's confirmation. When it

@@ -1687,6 +1687,21 @@ pub fn sign_out_confirmation(queue_depth: u32) -> String {
     devices::sign_out_confirmation(queue_depth)
 }
 
+/// [`devices::other_device_sign_out_confirmation`] — the sentence before
+/// signing out another device (#887).
+#[wasm_bindgen]
+pub fn other_device_sign_out_confirmation(name: &str) -> String {
+    devices::other_device_sign_out_confirmation(name)
+}
+
+/// [`devices::sign_in_refusal_for_kind`] — what a refused Google sign-in
+/// says, keyed by the worker's `signInResult` kind (#887); `undefined` for
+/// a kind that is not one of the four refusals.
+#[wasm_bindgen]
+pub fn sign_in_refusal(kind: &str) -> Option<String> {
+    devices::sign_in_refusal_for_kind(kind).map(str::to_string)
+}
+
 // ------------------------------------------------------------------- #534
 // The remaining seven panes: the status four (kimi/github/uptime/
 // reachability) and the now three (race/weekend/vacation) — same house
@@ -3535,6 +3550,23 @@ mod tests {
             sign_out_confirmation(2),
             "Sign out this device? 2 unsent changes stay queued and send once you sign in again."
         );
+    }
+
+    #[test]
+    fn the_other_device_confirmation_and_the_sign_in_refusals_are_the_core_sentences() {
+        assert_eq!(
+            other_device_sign_out_confirmation("Phone"),
+            devices::other_device_sign_out_confirmation("Phone")
+        );
+        for kind in ["not_allowed", "rate_limited", "unconfigured", "unavailable"] {
+            assert_eq!(
+                sign_in_refusal(kind).as_deref(),
+                devices::sign_in_refusal_for_kind(kind),
+                "{kind}"
+            );
+            assert!(sign_in_refusal(kind).is_some(), "{kind}");
+        }
+        assert_eq!(sign_in_refusal("invalid"), None);
     }
 
     #[test]
