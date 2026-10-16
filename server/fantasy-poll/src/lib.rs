@@ -43,6 +43,8 @@
 //!   snapshot, each pinned byte for byte by a golden fixture.
 //! * [`gate`] — pure: given what is stored and `now`, is a Yahoo fetch
 //!   worth making this run?
+//! * [`clamp`] — when a ring may fire: moved back into the waking window,
+//!   never forwards, or not at all (ADR-0035, #856). The crate's tzdb.
 //!
 //! **Explicitly not here: any opinion about football.** A lineup with
 //! every slot filled, nobody on bye and nobody Out is valid, whether or not
@@ -50,6 +52,7 @@
 
 pub mod binding;
 pub mod body;
+pub mod clamp;
 pub mod deadline;
 pub mod discovery;
 pub mod enabled;
@@ -59,8 +62,8 @@ pub mod validity;
 
 #[cfg(test)]
 mod tests {
-    /// This crate will hold an HTTP client (#854) and a tzdb (#720), and the
-    /// wasm32 build must never see either. `hummingbird-authority-worker` is
+    /// This crate will hold an HTTP client (#854) and holds a tzdb (`clamp`,
+    /// #856), and the wasm32 build must never see either. `hummingbird-authority-worker` is
     /// the only crate that builds for wasm32, and the only structural
     /// protection is that it does not depend on this one — invisible from
     /// here, so the guard is written from the other side, as `race-poll`'s.

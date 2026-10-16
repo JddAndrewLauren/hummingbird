@@ -25,6 +25,10 @@ on:
       # these paths.
       - "client/web/src/screens/waste-pane/**"
       - "client/web/src/screens/race-pane/**"
+      # `fantasy-poll`'s `tests/tzdb_fence.rs` (#856) walks the client
+      # lockfile to prove no tzdb reaches `hummingbird-core` or an `ffi-*`
+      # crate, so a client-only change that adds one has to run it.
+      - "client/Cargo.lock"
 
 # Superseded PR pushes cancel their stale runs.
 concurrency:

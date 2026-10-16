@@ -450,6 +450,7 @@ name = "hummingbird-fantasy-poll"
 version = "0.1.0"
 dependencies = [
  "hummingbird-domain",
+ "jiff",
  "serde",
  "serde_json",
 ]
