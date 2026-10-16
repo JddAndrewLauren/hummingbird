@@ -5,7 +5,12 @@
 //! No test here ever performs a live network call: the URL builder is the
 //! only logic with a branch worth pinning, tested in isolation as a pure
 //! function; the request-sending path is exercised end-to-end by the
-//! adapter's fixture tests against a scripted transport.
+//! adapter's fixture tests against a scripted transport — save the one
+//! place a real socket is unavoidable, [`SYNC_REQUEST_TIMEOUT`]'s bound,
+//! which `tests/sync_request_bound.rs` drives against a loopback listener
+//! that accepts and never answers.
+
+use std::time::Duration;
 
 use crate::diagnostics::route::{
     CorrelationHeaders, HEADER_CLIENT_BUILD, HEADER_CLIENT_PLATFORM, HEADER_CYCLE_ID,
@@ -13,6 +18,90 @@ use crate::diagnostics::route::{
 };
 
 use super::transport::{ChangesTransport, TransportError};
+
+/// The upper bound on one sync request's **total** time — connect, send,
+/// headers and the whole response body — for every request the task core
+/// makes in a cycle: the pull here and the queued-write drain in
+/// [`super::write::ReqwestMutationTransport`] (#870).
+///
+/// **Why a bound at all.** A cycle holds the host's one task core for its
+/// whole round trip (`MobileTaskHost`'s mutex, `TaskHostCore`'s checkout),
+/// and capture, triage and every read need that same core. A request whose
+/// connection is accepted but never answered would otherwise hold it until
+/// the OS tears the socket down — minutes, on a phone.
+///
+/// **Why 15 seconds.** The calendar-token mint's `REQUEST_TIMEOUT` (on both
+/// clients) is the precedent: this is "the authority is not answering",
+/// not a UX-timed ceiling. It must stay under the web task worker's
+/// `TASK_REQUEST_TIMEOUT_MS` (30s), so the browser's fetch is aborted and
+/// the core checked back in *before* the serial queue would abandon the
+/// wait and start answering `busy`.
+///
+/// **Why per request rather than on the client.** reqwest's wasm backend
+/// has no client-level timeout; only `RequestBuilder::timeout` arms the
+/// `AbortController` that actually cancels the browser's `fetch`. Set here,
+/// in the shared transports, it bounds both hosts at once.
+pub const SYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The `reqwest::Client` both hosts build for their two sync transports.
+/// Native builds also bound the connect phase on the client itself, so a
+/// request built on this client outside the two transports (the
+/// [`super::write::DirectTransport`] calls share it) still cannot hang in
+/// connect; the wasm backend has no such knob — the browser owns the socket.
+pub fn sync_client() -> reqwest::Client {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        reqwest::Client::builder()
+            .connect_timeout(SYNC_REQUEST_TIMEOUT)
+            .build()
+            .expect("a client with only a connect timeout always builds")
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        reqwest::Client::new()
+    }
+}
+
+/// The abort reason reqwest's wasm backend gives the `AbortController` when
+/// a request's timeout fires. A timeout during `send()` comes back as
+/// reqwest's own timeout error, but one that fires while the **body** is
+/// being read surfaces only as this text inside a decode error's source.
+const WASM_TIMEOUT_ABORT_REASON: &str = "reqwest::errors::TimedOut";
+
+/// Whether a reqwest error's source chain says the request's own timeout
+/// fired — on native, or on wasm in either phase (see
+/// [`WASM_TIMEOUT_ABORT_REASON`]).
+fn is_timeout(error: &reqwest::Error) -> bool {
+    error.is_timeout() || names_the_wasm_timeout_abort(error)
+}
+
+/// Whether any cause under `error` carries [`WASM_TIMEOUT_ABORT_REASON`] —
+/// split out over `dyn Error` so a native test can pin it, since no native
+/// build can make the wasm backend's error.
+fn names_the_wasm_timeout_abort(error: &dyn std::error::Error) -> bool {
+    let mut source = error.source();
+    while let Some(cause) = source {
+        if cause.to_string().contains(WASM_TIMEOUT_ABORT_REASON) {
+            return true;
+        }
+        source = cause.source();
+    }
+    false
+}
+
+/// A reqwest failure as a connection-level [`TransportError`]. reqwest's
+/// `Display` names only the error's kind ("error sending request", "request
+/// or response body error") and never its source, so a timeout would
+/// otherwise reach `diagnostics::failure::classify_transport_error` as
+/// `unknown` or `body`; it is named as one here instead, so the journal
+/// records `timeout` on both hosts.
+pub(crate) fn transport_error(error: reqwest::Error) -> TransportError {
+    if is_timeout(&error) {
+        TransportError::new(format!("request timed out: {error}"))
+    } else {
+        TransportError::new(error.to_string())
+    }
+}
 
 /// Builds the `GET /api/changes?since=N` URL against `base_url` (the
 /// authority's origin, host-supplied — `core` never hardcodes a deployment
@@ -43,6 +132,7 @@ fn build_sweep_url(base_url: &str) -> String {
 pub struct ReqwestSyncTransport {
     client: reqwest::Client,
     base_url: String,
+    timeout: Duration,
 }
 
 impl ReqwestSyncTransport {
@@ -53,7 +143,15 @@ impl ReqwestSyncTransport {
         Self {
             client,
             base_url: base_url.into(),
+            timeout: SYNC_REQUEST_TIMEOUT,
         }
+    }
+
+    /// Replaces [`SYNC_REQUEST_TIMEOUT`] — for tests, which need a stalled
+    /// request to fail in milliseconds rather than fifteen seconds.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     /// Builds the request, attaching the four `X-Hummingbird-*` headers
@@ -66,7 +164,11 @@ impl ReqwestSyncTransport {
         access_token: &str,
         correlation: Option<&CorrelationHeaders<'_>>,
     ) -> reqwest::RequestBuilder {
-        let mut builder = self.client.get(url).bearer_auth(access_token);
+        let mut builder = self
+            .client
+            .get(url)
+            .bearer_auth(access_token)
+            .timeout(self.timeout);
         if let Some(correlation) = correlation {
             builder = builder
                 .header(HEADER_CYCLE_ID, correlation.cycle_id)
@@ -91,7 +193,7 @@ impl ReqwestSyncTransport {
             .request(url, access_token, correlation)
             .send()
             .await
-            .map_err(|source| TransportError::new(source.to_string()))?;
+            .map_err(transport_error)?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -101,10 +203,7 @@ impl ReqwestSyncTransport {
             ));
         }
 
-        response
-            .text()
-            .await
-            .map_err(|source| TransportError::new(source.to_string()))
+        response.text().await.map_err(transport_error)
     }
 }
 
@@ -185,6 +284,64 @@ mod tests {
             .unwrap();
         assert!(request.headers().get(HEADER_CYCLE_ID).is_none());
         assert!(request.headers().get(HEADER_REQUEST_ID).is_none());
+    }
+
+    /// The bound rides on every request this transport builds — the
+    /// per-request timeout is the only one reqwest's wasm backend honours.
+    #[test]
+    fn every_request_carries_the_sync_bound() {
+        let transport = ReqwestSyncTransport::new(reqwest::Client::new(), "https://authority.example");
+        let request = transport
+            .request("https://authority.example/api/sweep".to_string(), "token", None)
+            .build()
+            .unwrap();
+        assert_eq!(request.timeout(), Some(&SYNC_REQUEST_TIMEOUT));
+    }
+
+    /// The bound is under the web task worker's 30s abandon bound
+    /// (`TASK_REQUEST_TIMEOUT_MS`), so the fetch is cancelled first.
+    #[test]
+    fn the_sync_bound_is_under_the_web_workers_abandon_bound() {
+        assert!(SYNC_REQUEST_TIMEOUT < Duration::from_millis(30_000));
+    }
+
+    /// What reqwest's wasm backend hands back when the bound fires while the
+    /// body is being read: a decode error whose source is the abort reason,
+    /// formatted as a `JsValue`'s debug text (reqwest's `error::wasm`).
+    #[derive(Debug)]
+    struct WasmBodyAbort(JsAbortReason);
+
+    #[derive(Debug)]
+    struct JsAbortReason;
+
+    impl std::fmt::Display for WasmBodyAbort {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("error decoding response body")
+        }
+    }
+
+    impl std::error::Error for WasmBodyAbort {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    impl std::fmt::Display for JsAbortReason {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("JsValue(\"reqwest::errors::TimedOut\")")
+        }
+    }
+
+    impl std::error::Error for JsAbortReason {}
+
+    #[test]
+    fn a_wasm_body_read_aborted_by_the_bound_reads_as_a_timeout() {
+        assert!(names_the_wasm_timeout_abort(&WasmBodyAbort(JsAbortReason)));
+    }
+
+    #[test]
+    fn an_error_whose_causes_never_name_the_abort_is_not_a_timeout() {
+        assert!(!names_the_wasm_timeout_abort(&JsAbortReason));
     }
 
     /// Every one of the four `X-Hummingbird-*` headers lands on the request

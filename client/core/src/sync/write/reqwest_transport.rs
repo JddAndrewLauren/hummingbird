@@ -14,6 +14,10 @@ use crate::diagnostics::route::{
     HEADER_REQUEST_ID,
 };
 
+use std::time::Duration;
+
+use crate::sync::reqwest_transport::{transport_error, SYNC_REQUEST_TIMEOUT};
+
 use super::transport::{
     DirectMethod, DirectRequest, DirectTransport, HttpMethod, MutationRequest, MutationTransport,
     RawResponse, TransportError,
@@ -31,6 +35,7 @@ fn build_url(base_url: &str, path: &str) -> String {
 pub struct ReqwestMutationTransport {
     client: reqwest::Client,
     base_url: String,
+    timeout: Duration,
 }
 
 impl ReqwestMutationTransport {
@@ -39,7 +44,15 @@ impl ReqwestMutationTransport {
         Self {
             client,
             base_url: base_url.into(),
+            timeout: SYNC_REQUEST_TIMEOUT,
         }
+    }
+
+    /// Replaces [`SYNC_REQUEST_TIMEOUT`] — for tests, as on
+    /// `ReqwestSyncTransport::with_timeout`.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     /// Builds the request, attaching the four `X-Hummingbird-*` headers
@@ -60,7 +73,8 @@ impl ReqwestMutationTransport {
         };
         let mut builder = builder
             .bearer_auth(access_token)
-            .header("content-type", "application/json");
+            .header("content-type", "application/json")
+            .timeout(self.timeout);
         if let Some(correlation) = correlation {
             builder = builder
                 .header(HEADER_CYCLE_ID, correlation.cycle_id)
@@ -83,13 +97,10 @@ impl ReqwestMutationTransport {
             .body(body)
             .send()
             .await
-            .map_err(|source| TransportError::new(source.to_string()))?;
+            .map_err(transport_error)?;
 
         let status = response.status().as_u16();
-        let body = response
-            .text()
-            .await
-            .map_err(|source| TransportError::new(source.to_string()))?;
+        let body = response.text().await.map_err(transport_error)?;
         Ok(RawResponse { status, body })
     }
 
@@ -199,6 +210,17 @@ mod tests {
             .build()
             .unwrap();
         assert!(request.headers().get(HEADER_CYCLE_ID).is_none());
+    }
+
+    /// The queued-write drain carries the same bound as the pull.
+    #[test]
+    fn every_queued_write_carries_the_sync_bound() {
+        let transport = ReqwestMutationTransport::new(reqwest::Client::new(), "https://authority.example");
+        let request = transport
+            .request(&create_request(), "token", None)
+            .build()
+            .unwrap();
+        assert_eq!(request.timeout(), Some(&SYNC_REQUEST_TIMEOUT));
     }
 
     #[test]

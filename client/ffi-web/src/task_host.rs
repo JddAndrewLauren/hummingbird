@@ -1900,7 +1900,10 @@ impl TaskHostCore {
     ) -> Result<Self, CoreInitError> {
         let base_url = base_url.into();
         let core = Core::init(namespace).await?;
-        let client = reqwest::Client::new();
+        // The core's sync client: on native builds it bounds connect time;
+        // on wasm the bound is the transports' per-request timeout, which
+        // aborts the browser's `fetch` (#870).
+        let client = hummingbird_core::sync::sync_client();
         let read_transport = ReqwestSyncTransport::new(client.clone(), base_url.clone());
         let write_transport = ReqwestMutationTransport::new(client, base_url);
         Ok(Self {

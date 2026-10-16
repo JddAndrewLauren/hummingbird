@@ -66,5 +66,5 @@ pub use cycle::{Backoff, CycleOutcome, LoadError, SyncCycle, Trigger};
 pub use mirror::SyncMirror;
 pub use queue::{DeadLetterEntry, DeadLetterReason, DrainOutcome, MutationIntent, OutboundQueue, QueueEntry};
 #[cfg(feature = "reqwest-transport")]
-pub use reqwest_transport::ReqwestSyncTransport;
+pub use reqwest_transport::{sync_client, ReqwestSyncTransport, SYNC_REQUEST_TIMEOUT};
 pub use transport::{ChangesTransport, TransportError};
