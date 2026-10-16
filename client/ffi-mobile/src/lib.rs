@@ -3185,17 +3185,134 @@ pub enum MobileFantasyGap {
     Malformed { reason: String },
     UnknownSchema { schema: String },
     BodyNotRead,
+    BadBody,
 }
 
-/// [`fantasy::FantasyResolved`], mirrored — only its gap arm exists yet
-/// (#717; the fact sets arrive with #718/#719).
+/// [`fantasy::SlotProblem`], mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileSlotProblem {
+    Empty,
+    Bye,
+    Out,
+    InjuredReserve,
+}
+
+fn map_slot_problem(problem: fantasy::SlotProblem) -> MobileSlotProblem {
+    match problem {
+        fantasy::SlotProblem::Empty => MobileSlotProblem::Empty,
+        fantasy::SlotProblem::Bye => MobileSlotProblem::Bye,
+        fantasy::SlotProblem::Out => MobileSlotProblem::Out,
+        fantasy::SlotProblem::InjuredReserve => MobileSlotProblem::InjuredReserve,
+    }
+}
+
+/// [`fantasy::LineupOccupant`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileLineupOccupant {
+    pub player_key: String,
+    pub name: String,
+    pub bye_week: Option<u8>,
+    /// The body's own spelling, an open string — the core's own reason.
+    pub designation: Option<String>,
+    pub kickoff_ms: Option<i64>,
+}
+
+/// [`fantasy::InvalidSlot`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileInvalidSlot {
+    pub reason: MobileSlotProblem,
+    pub deadline_ms: Option<i64>,
+}
+
+/// [`fantasy::LineupSlot`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileLineupSlot {
+    pub position: String,
+    pub occupant: Option<MobileLineupOccupant>,
+    pub invalid: Option<MobileInvalidSlot>,
+}
+
+/// [`fantasy::LineupHeadline`], mirrored — the headline as a decision; the
+/// phone sets its own words from it (#723).
+#[derive(Debug, Clone, PartialEq, uniffi::Enum)]
+pub enum MobileLineupHeadline {
+    Set { locks_at_ms: Option<i64> },
+    Invalid {
+        count: u32,
+        reason: Option<MobileSlotProblem>,
+        locks_at_ms: Option<i64>,
+        checked_ago_ms: Option<i64>,
+    },
+}
+
+/// [`fantasy::LineupFacts`], mirrored.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct MobileLineupFacts {
+    pub league_key: String,
+    pub league_name: String,
+    pub team_key: String,
+    pub team_name: String,
+    pub week: u8,
+    pub slots: Vec<MobileLineupSlot>,
+    pub headline: MobileLineupHeadline,
+    pub stale: bool,
+    pub freshness: MobilePaneFreshness,
+}
+
+/// [`fantasy::FantasyResolved`], mirrored — the lineup's facts (#855) or a
+/// gap; the waivers arm arrives with #719.
 #[derive(Debug, Clone, PartialEq, uniffi::Enum)]
 pub enum MobileFantasyResolved {
+    Lineup { facts: MobileLineupFacts },
     Gap { gap: MobileFantasyGap },
+}
+
+fn map_lineup_headline(headline: fantasy::LineupHeadline) -> MobileLineupHeadline {
+    match headline {
+        fantasy::LineupHeadline::Set { locks_at_ms } => MobileLineupHeadline::Set { locks_at_ms },
+        fantasy::LineupHeadline::Invalid { count, reason, locks_at_ms, checked_ago_ms } => {
+            MobileLineupHeadline::Invalid {
+                count,
+                reason: reason.map(map_slot_problem),
+                locks_at_ms,
+                checked_ago_ms,
+            }
+        }
+    }
+}
+
+fn map_lineup_slot(slot: fantasy::LineupSlot) -> MobileLineupSlot {
+    MobileLineupSlot {
+        position: slot.position,
+        occupant: slot.occupant.map(|occupant| MobileLineupOccupant {
+            player_key: occupant.player_key,
+            name: occupant.name,
+            bye_week: occupant.bye_week,
+            designation: occupant.designation,
+            kickoff_ms: occupant.kickoff_ms,
+        }),
+        invalid: slot.invalid.map(|invalid| MobileInvalidSlot {
+            reason: map_slot_problem(invalid.reason),
+            deadline_ms: invalid.deadline_ms,
+        }),
+    }
 }
 
 fn map_fantasy_resolved(resolved: fantasy::FantasyResolved) -> MobileFantasyResolved {
     match resolved {
+        fantasy::FantasyResolved::Lineup(facts) => MobileFantasyResolved::Lineup {
+            facts: MobileLineupFacts {
+                league_key: facts.league_key,
+                league_name: facts.league_name,
+                team_key: facts.team_key,
+                team_name: facts.team_name,
+                week: facts.week,
+                slots: facts.slots.into_iter().map(map_lineup_slot).collect(),
+                headline: map_lineup_headline(facts.headline),
+                stale: facts.stale,
+                freshness: map_pane_freshness(facts.freshness),
+            },
+        },
         fantasy::FantasyResolved::Gap { gap } => MobileFantasyResolved::Gap {
             gap: match gap {
                 fantasy::FantasyGap::NotFetched => MobileFantasyGap::NotFetched,
@@ -3204,6 +3321,7 @@ fn map_fantasy_resolved(resolved: fantasy::FantasyResolved) -> MobileFantasyReso
                     MobileFantasyGap::UnknownSchema { schema }
                 }
                 fantasy::FantasyGap::BodyNotRead => MobileFantasyGap::BodyNotRead,
+                fantasy::FantasyGap::BadBody => MobileFantasyGap::BadBody,
             },
         },
     }
@@ -12815,6 +12933,70 @@ mod settings_tests {
             &ZoneFacts::default(),
         );
         assert!(matches!(unbound, MobilePaneFacts::Vacation { resolved: None }));
+    }
+
+    /// #855: the lineup's headline crosses the mobile seam as the same
+    /// decision the web reads — arm, count, shared reason, lock and the
+    /// crunch-time age — over the poller's own golden bodies.
+    #[test]
+    fn fantasy_lineup_headline_round_trips_over_the_golden_bodies() {
+        let lock = 1_790_900_100_000i64;
+        let hour = 3_600_000i64;
+        let facts_at = |golden: &str, now_ms: i64, age_ms: i64| {
+            let golden: serde_json::Value = serde_json::from_str(golden).unwrap();
+            let inputs = pane_inputs(serde_json::json!({
+                "nowMs": now_ms,
+                "bindings": [
+                    {"key": fantasy::BINDING_KEY, "value": {"state":"text","text":"449.l.123456"}}
+                ],
+                "paneReads": {
+                    fantasy::LINEUP_SOURCE: {"snapshots": [{
+                        "key": "449.l.123456",
+                        "envelope": {"kind":"ok","schema":fantasy::LINEUP_SOURCE, "body": golden["body"].to_string()},
+                        "freshness": {"kind":"age","ageMs":age_ms,"declaredCadenceMs":21_600_000},
+                    }]},
+                },
+            }));
+            let arm = mobile_pane_facts_of(
+                StandingQuestion::Fantasy,
+                "449.l.123456:lineup",
+                &inputs,
+                &ZoneFacts::default(),
+            );
+            let MobilePaneFacts::Fantasy { resolved: MobileFantasyResolved::Lineup { facts }, .. } = arm
+            else {
+                panic!("expected the lineup facts arm, got {arm:?}");
+            };
+            facts
+        };
+
+        let invalid = facts_at(
+            include_str!("../../../server/fantasy-poll/tests/fixtures/golden-lineup.json"),
+            lock - 4 * hour,
+            3 * hour,
+        );
+        assert_eq!(
+            invalid.headline,
+            MobileLineupHeadline::Invalid {
+                count: 3,
+                reason: None,
+                locks_at_ms: Some(lock),
+                checked_ago_ms: Some(3 * hour),
+            }
+        );
+        assert_eq!(invalid.slots.len(), 8);
+        assert_eq!(
+            invalid.slots[2].invalid,
+            Some(MobileInvalidSlot { reason: MobileSlotProblem::Empty, deadline_ms: Some(1_791_133_200_000) })
+        );
+
+        let valid = facts_at(
+            include_str!("../../../server/fantasy-poll/tests/fixtures/golden-lineup-valid.json"),
+            lock - 4 * hour,
+            60_000,
+        );
+        assert_eq!(valid.headline, MobileLineupHeadline::Set { locks_at_ms: Some(lock) });
+        assert_eq!(valid.league_name, "Twinion Family League");
     }
 
     #[test]

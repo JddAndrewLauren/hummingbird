@@ -559,6 +559,55 @@ for (const theme of THEMES) {
       });
     });
 
+    test("the fantasy lineup tile's three states capture", async ({ page }, testInfo) => {
+      // #855: the board world binds three fictional leagues, one per lineup
+      // state (`demo-pane-reads.ts`'s `fantasyLineupRead`). The two invalid
+      // ones rest open (near, imminent); the valid one rests collapsed and
+      // is opened here, so all three expanded cards are photographed — each
+      // on its own, since the aside scrolls and a frame of it would cut
+      // them off.
+      await openApp(page, theme, "board");
+      await show(page, "Now", testInfo.project.name);
+      const aside = page.getByRole("complementary", { name: "Standing questions" });
+      await aside.getByRole("button", { name: /Twinion Family League · Lineup set — locks / }).click();
+      const card = (meta: string) =>
+        aside.locator("div", { has: page.getByText(meta, { exact: true }) }).last();
+      const states = [
+        { state: "valid", meta: "Twinion Family League · Week 7", headline: /^Lineup set — locks / },
+        { state: "invalid", meta: "Office Pool · Week 7", headline: /^2 empty slots — locks in \d+h$/ },
+        {
+          state: "stale",
+          meta: "Sunday Night Six · Week 7",
+          headline: /^1 starter on bye, last checked 3h ago — locks in \d+h$/,
+        },
+      ];
+      for (const { state, meta, headline } of states) {
+        const tile = card(meta);
+        await expect(tile.getByText(headline)).toBeVisible();
+        await expect(tile.getByRole("listitem")).toHaveCount(4);
+        await tile.scrollIntoViewIfNeeded();
+        await tile.screenshot({
+          path: `visual/.captures/fantasy-lineup-${state}-${testInfo.project.name}-${theme}.png`,
+        });
+      }
+      await expectNoHorizontalOverflow(page);
+
+      // The leagues the poller found, beside the field they are copied into
+      // — below the fold on Settings at every width, so photographed alone.
+      await show(page, "Settings", testInfo.project.name);
+      const found = page.getByRole("list", { name: "Leagues found this season" });
+      if (!(await found.isVisible())) {
+        await page.locator("#standing-questions").getByRole("button", { name: /fantasy/i }).click();
+      }
+      await expect(found.getByRole("listitem")).toHaveCount(3);
+      // The binding row: the mono key's header line, then its parent.
+      const row = page.getByText("yahoo-leagues", { exact: true }).locator("xpath=../..");
+      await row.scrollIntoViewIfNeeded();
+      await row.screenshot({
+        path: `visual/.captures/settings-fantasy-leagues-${testInfo.project.name}-${theme}.png`,
+      });
+    });
+
     test("the capture popover captures", async ({ page }, testInfo) => {
       // Its own state, not a screen: `shell/CapturePopover.tsx` renders over
       // whatever is showing, so no per-screen capture ever contains it. Opened

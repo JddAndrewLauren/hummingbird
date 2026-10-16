@@ -31,6 +31,8 @@ import {
   writeExpandedQuestions,
 } from "./question-prefs";
 import { questionRoster } from "./questions/roster";
+import { BINDING_KEY as FANTASY_BINDING_KEY, discoveredLeagues } from "./fantasy-pane/fantasy";
+import { DiscoveredLeagues } from "./fantasy-pane/DiscoveredLeagues";
 import { APP_VERSION } from "../shell/build-version";
 import { coreInstanceLabel } from "../shell/status-label";
 import { TRIPS_CALENDAR_BINDING_KEY, tripsCalendarId } from "../calendar/selection";
@@ -671,6 +673,7 @@ function BindingRow({
   binding,
   writeError,
   onSetBinding,
+  aside,
 }: {
   binding: BindingDTO;
   /** The last `setBinding` failure for THIS key, already matched and worded
@@ -678,6 +681,9 @@ function BindingRow({
    * other row's. */
   writeError: string | null;
   onSetBinding?: (key: string, value: string) => void;
+  /** What a lane found that helps fill this field in, drawn under its help
+   * line — `yahoo-leagues`' discovered leagues (#855). */
+  aside?: ReactNode;
 }) {
   const copy = bindingCopy(binding);
   const [draft, setDraft] = useState(() => bindingDraftSeed(binding.value));
@@ -742,6 +748,7 @@ function BindingRow({
             </p>
           ) : null}
           <p style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}>{copy.help}</p>
+          {aside}
         </>
       ) : (
         <p style={{ font: "var(--type-body-sm)", color: "var(--text-muted)" }}>{copy.help}</p>
@@ -785,6 +792,7 @@ function QuestionGroup({
   lastBindingWrite,
   onSetBinding,
   onSetEnabled,
+  bindingAsides,
 }: {
   heading: string;
   /** The mono meta word beside the heading — the surface this question
@@ -811,6 +819,9 @@ function QuestionGroup({
   /** Absent (a core that never came up) draws the toggle read-only rather
    * than one that silently does nothing — `onSetBinding`'s own contract. */
   onSetEnabled?: (enabled: boolean) => void;
+  /** Per binding key, what to draw under that row's field (`BindingRow`'s
+   * `aside`). */
+  bindingAsides?: Partial<Record<string, ReactNode>>;
 }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
@@ -908,6 +919,7 @@ function QuestionGroup({
               binding={binding}
               writeError={bindingWriteError(lastBindingWrite, binding.key)}
               onSetBinding={onSetBinding}
+              aside={bindingAsides?.[binding.key]}
             />
           ))}
           {missing.map((key) => (
@@ -1137,6 +1149,11 @@ export function SettingsScreen({
   // raw key only if nothing claims it — a state the core's own test rules
   // out, said honestly rather than guessed at.
   const roster = questionRoster();
+  // #855: the leagues the Yahoo poller found this season, beside the field
+  // they are copied into.
+  const bindingAsides = {
+    [FANTASY_BINDING_KEY]: <DiscoveredLeagues discovered={discoveredLeagues(task.paneReads)} />,
+  };
   const groupedBindings = groupBindingsByQuestion(
     roster,
     task.bindings ?? [],
@@ -1238,6 +1255,7 @@ export function SettingsScreen({
                   onToggleExpanded={() => toggleQuestionRow(group.question)}
                   lastBindingWrite={task.lastBindingWrite}
                   onSetBinding={onSetBinding}
+                  bindingAsides={bindingAsides}
                   onSetEnabled={
                     onSetQuestionEnabled === undefined
                       ? undefined
