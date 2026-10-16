@@ -7,16 +7,21 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import java.util.concurrent.TimeUnit
+import net.twinion.hummingbird.core.CoreHolder
 import net.twinion.hummingbird.core.NetworkMonitor
 import net.twinion.hummingbird.diagnostics.DiagnosticsRecorder
 import net.twinion.hummingbird.notify.NotificationChannels
 import net.twinion.hummingbird.push.PushBootstrap
 import net.twinion.hummingbird.sync.SyncWorker
+import uniffi.hummingbird_ffi_mobile.MobileDeviceForm
 
 class HummingbirdApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // #880: before anything can reach the core — the seam is told once,
+        // at init, that this is the phone (see `CoreHolder.form`).
+        CoreHolder.form = MobileDeviceForm.PHONE
         // #709: this is what makes the process's one monotonic origin get
         // sampled at actual process start rather than by whichever of the
         // four writers happens to record first — `get` samples it eagerly

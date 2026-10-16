@@ -4353,6 +4353,20 @@ struct Inner {
     /// `rehydrate_api_key`, `clear_api_key`), so there is no second
     /// credential lifecycle to reason about. Memory only, like the core's.
     api_key: Option<String>,
+    /// Phone or watch (#880), told once at [`MobileTaskHost::init`] and
+    /// never changed — the one fact [`sign_in_in`] gates on.
+    form: MobileDeviceForm,
+}
+
+/// Which device this seam runs on (#880) — the host says so once, at
+/// [`MobileTaskHost::init`], rather than the seam inferring it from a token
+/// id. The watch builds this same seam through the shared binding
+/// (ADR-0039) but never signs in: it receives its `device-watch` token from
+/// the phone, so [`MobileTaskHost::sign_in_with_google`] refuses there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum MobileDeviceForm {
+    Phone,
+    Watch,
 }
 
 /// The native hosts' handle on one durable `Core` — `TaskHostCore`'s
@@ -4396,9 +4410,14 @@ impl MobileTaskHost {
     /// core starts in `unknown`, and the host's start-up token load calls
     /// [`MobileTaskHost::rehydrate_api_key`] with a stored token or
     /// [`MobileTaskHost::report_no_api_key`] without one — see
-    /// [`Core::init`].
+    /// [`Core::init`]. `form` is the host saying whether it is the phone
+    /// or the watch (#880) — see [`MobileDeviceForm`].
     #[uniffi::constructor]
-    pub async fn init(namespace: String, base_url: String) -> Result<Arc<Self>, MobileInitError> {
+    pub async fn init(
+        namespace: String,
+        base_url: String,
+        form: MobileDeviceForm,
+    ) -> Result<Arc<Self>, MobileInitError> {
         let namespace_path = namespace.clone();
         let core = Core::init(namespace)
             .await
@@ -4431,6 +4450,7 @@ impl MobileTaskHost {
                 read_transport,
                 write_transport,
                 api_key: None,
+                form,
             }),
             calendar: tokio::sync::Mutex::new(calendar),
             core_owner: core_lock::CoreOwnershipTracker::new(),
@@ -4665,8 +4685,10 @@ impl MobileTaskHost {
 
     /// Trades a Google ID token from Credential Manager for this phone's
     /// token (#839, ADR-0040 decisions 1 and 3) — always as the `android`
-    /// platform: the watch never signs in (ADR-0039 is not amended), so
-    /// this seam has no other platform to name. Holds nothing: on
+    /// platform: the watch never signs in (ADR-0039 is not amended), so a
+    /// host started as [`MobileDeviceForm::Watch`] is answered
+    /// [`MobileSignInOutcome::RefusedOnWatch`] with no request sent (#880),
+    /// and this seam has no other platform to name. Holds nothing: on
     /// `SignedIn` the app stores the token and then calls
     /// [`MobileTaskHost::push_api_key`] with it.
     pub async fn sign_in_with_google(&self, id_token: String, name: String) -> MobileSignInOutcome {
@@ -7442,6 +7464,10 @@ pub enum MobileSignInOutcome {
     Unavailable,
     Invalid { detail: String },
     Failed { detail: String },
+    /// This host is a watch (#880): no request was sent. Not the
+    /// authority's answer — the seam's own, so it has no [`SignInOutcome`]
+    /// twin.
+    RefusedOnWatch,
 }
 
 fn map_sign_in_outcome(outcome: SignInOutcome) -> MobileSignInOutcome {
@@ -7518,6 +7544,9 @@ async fn sign_in_in(
     id_token: &str,
     name: &str,
 ) -> MobileSignInOutcome {
+    if inner.form == MobileDeviceForm::Watch {
+        return MobileSignInOutcome::RefusedOnWatch;
+    }
     map_sign_in_outcome(
         inner
             .core
@@ -7827,6 +7856,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://authority.example".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -7872,6 +7902,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://authority.example".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -7965,6 +7996,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             String::new(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -8014,6 +8046,7 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("cal-ns").to_str().unwrap().to_string(),
             "http://127.0.0.1:1".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -8469,6 +8502,7 @@ mod tests {
             // A base URL that would fail DNS if any request were attempted:
             // `no_credential` short-circuits before the transports.
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -8485,6 +8519,7 @@ mod tests {
             dir.path().join(name).to_str().unwrap().to_string(),
             // Would fail DNS if any request were attempted.
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap()
@@ -8653,6 +8688,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -8672,6 +8708,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -8709,6 +8746,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -8760,6 +8798,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -8907,6 +8946,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -8952,6 +8992,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9004,6 +9045,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9037,6 +9079,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9060,6 +9103,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9567,6 +9611,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9628,6 +9673,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9654,6 +9700,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9682,6 +9729,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9708,6 +9756,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9728,6 +9777,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9745,6 +9795,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9785,6 +9836,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9801,6 +9853,7 @@ mod tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9949,6 +10002,7 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("triage-board-ns").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -9974,6 +10028,7 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("triage-item-ns").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -10010,6 +10065,7 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("triage-item-ns-2").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -10038,6 +10094,7 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("triage-item-ns-3").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -10078,6 +10135,7 @@ mod tests {
         let host = MobileTaskHost::init(
             path.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -10396,6 +10454,7 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("edit-ns").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -10429,6 +10488,7 @@ mod tests {
         let host = MobileTaskHost::init(
             dir.path().join("edit-ns-2").to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -11174,9 +11234,13 @@ mod skills_tests {
         // (the same trade every other tempdir-backed test here already
         // makes implicitly by never calling `.close()`).
         std::mem::forget(dir);
-        MobileTaskHost::init(path.to_str().unwrap().to_string(), "https://invalid.invalid".to_string())
-            .await
-            .unwrap()
+        MobileTaskHost::init(
+            path.to_str().unwrap().to_string(),
+            "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
+        )
+        .await
+        .unwrap()
     }
 
     #[tokio::test]
@@ -11606,6 +11670,7 @@ mod settings_tests {
         let host = MobileTaskHost::init(
             path.to_str().unwrap().to_string(),
             "https://invalid.invalid".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -12039,6 +12104,7 @@ mod settings_tests {
         let host = MobileTaskHost::init(
             namespace.to_str().unwrap().to_string(),
             "http://127.0.0.1:1".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -12996,6 +13062,7 @@ mod settings_tests {
         MobileTaskHost::init(
             dir.path().join("devices-ns").to_str().unwrap().to_string(),
             "http://127.0.0.1:1".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap()
@@ -13056,6 +13123,35 @@ mod settings_tests {
         );
         assert!(authority.bearers.lock().unwrap().iter().all(Option::is_none));
         assert_eq!(host.credential_arm().await, "unknown", "a sign-in holds nothing");
+    }
+
+    /// #880: a host started as a watch never signs in (ADR-0039 is not
+    /// amended) — its own refusal, and no request: the scripted authority
+    /// has no answers, so any call would panic.
+    #[tokio::test]
+    async fn a_watch_refuses_a_google_sign_in_without_reaching_the_authority() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = MobileTaskHost::init(
+            dir.path().join("watch-ns").to_str().unwrap().to_string(),
+            "http://127.0.0.1:1".to_string(),
+            MobileDeviceForm::Watch,
+        )
+        .await
+        .unwrap();
+        let authority = ScriptedAuthority::answering(&[]);
+        let inner = host.lock_inner(hummingbird_core::diagnostics::CoreOwner::Settings).await;
+        assert_eq!(
+            sign_in_in(&inner, &authority, "jwt", "Pixel Watch").await,
+            MobileSignInOutcome::RefusedOnWatch
+        );
+        drop(inner);
+        assert!(authority.bearers.lock().unwrap().is_empty(), "a watch sends nothing");
+        assert_eq!(
+            host.sign_in_with_google("jwt".to_string(), "Pixel Watch".to_string()).await,
+            MobileSignInOutcome::RefusedOnWatch,
+            "the live door refuses before its transport, not as a failed request"
+        );
+        assert_eq!(host.credential_arm().await, "unknown", "a refusal holds nothing");
     }
 
     #[tokio::test]
@@ -13223,6 +13319,7 @@ mod diagnostic_ffi_tests {
         let host = MobileTaskHost::init(
             dir.path().join("seq-ns").to_str().unwrap().to_string(),
             "https://authority.example".to_string(),
+            MobileDeviceForm::Phone,
         )
         .await
         .unwrap();
@@ -13289,6 +13386,7 @@ mod diagnostic_ffi_tests {
             MobileTaskHost::init(
                 dir.path().join("drain-during-hang-ns").to_str().unwrap().to_string(),
                 "https://authority.example".to_string(),
+                MobileDeviceForm::Phone,
             )
             .await
             .unwrap(),

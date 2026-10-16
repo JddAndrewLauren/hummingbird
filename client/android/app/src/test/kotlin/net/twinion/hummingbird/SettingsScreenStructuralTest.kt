@@ -295,7 +295,7 @@ class SettingsScreenStructuralTest {
 \}""",
         ).find(signIn)?.groupValues?.get(1) ?: error("exchangeMessage not found — has it been renamed?")
         assertFalse(body.contains("else ->"))
-        for (arm in listOf("SignedIn", "NotAllowed", "RateLimited", "Unconfigured", "Unavailable", "Invalid", "Failed")) {
+        for (arm in listOf("SignedIn", "NotAllowed", "RateLimited", "Unconfigured", "Unavailable", "Invalid", "Failed", "RefusedOnWatch")) {
             assertTrue("$arm needs its own sentence", body.contains("MobileSignInOutcome.$arm"))
         }
     }
