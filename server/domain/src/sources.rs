@@ -163,7 +163,7 @@ pub struct SourceEntry {
     /// allowed link origin (ADR-0014's #845 amendment) — the mint gate
     /// (`admin_tokens.rs::mint`) refuses one without. Any source's token
     /// *may* carry an origin; this says only which ones must. `true` for
-    /// `auk/v1` alone today.
+    /// `auk/v1` and `perch/v1` (#891) today.
     pub requires_link_origin: bool,
 }
 
@@ -329,6 +329,25 @@ pub const AUK_V1: &str = "auk/v1";
 /// attention item, the cockpit resolves it when the batch moves on, and
 /// nothing about a waiting batch becomes untrue with time.
 pub const STARLING_V1: &str = "starling/v1";
+
+/// `perch/v1`'s frozen namespace (#891, ADR-0014's 2026-10-15 amendment):
+/// the failures of every app built on Perch, the operator's shared base for
+/// Mac menu-bar apps (Guardian and Bearing first). **One source for every
+/// Perch app on every Mac**, not one per app — so one pair of Rules, written
+/// once, covers an app that adopts Perch later with no change here
+/// (JddAndrewLauren/Perch's ADR 0005). A pushed **state** source: the key is
+/// authored by Perch and names the thing, never the episode —
+/// `<host>/<app>/<service>` for a Service's state, resolved when the Service
+/// next runs or answers, and `<host>/<app>/<child>/recovered/<leader start
+/// time>` for a crash recovery, which is raised and never resolved. Severity
+/// is `high`, `normal` or `low`. Its alerts carry no link, and one token is
+/// shared by every Perch app on every Mac, so its tokens must carry an
+/// allowed link origin ([`SourceEntry::requires_link_origin`]) — minted with
+/// Hummingbird's own — and a leaked one can post noise but cannot point the
+/// operator at a page of its choosing. Its second consumer lives outside
+/// this repo, so a retirement to `/v2` is a change Perch and Hummingbird
+/// make together.
+pub const PERCH_V1: &str = "perch/v1";
 
 /// The frozen registry. Every entry's `source` carries a version suffix
 /// (enforced by `tests::every_registered_source_is_versioned`); every
@@ -617,6 +636,24 @@ pub const REGISTRY: &[SourceEntry] = &[
         retired_as: None,
         requires_link_origin: false,
     },
+    // Pushed by every Perch app (#891), not polled: alerts only, and never
+    // expires — a Service's alert leaves live when Perch resolves it, a
+    // crash recovery's only by the operator's ack. The second entry whose
+    // tokens must carry an allowed link origin: one token is shared by every
+    // app on every Mac, and Perch sends no link at all.
+    SourceEntry {
+        source: PERCH_V1,
+        shape: Shape::State,
+        writes: Writes::Alerts,
+        key_recipe: Some(
+            "<host>/<app>/<service>, or <host>/<app>/<child>/recovered/<leader \
+             start time> for a crash recovery — authored by Perch, the thing \
+             and never the episode",
+        ),
+        expires_at: Expiry::Never,
+        retired_as: None,
+        requires_link_origin: true,
+    },
 ];
 
 /// Looks a source string up in the registry. `None` means the registry has
@@ -808,6 +845,13 @@ pub fn starling_v1_key(attention_id: &str) -> String {
     attention_id.to_string()
 }
 
+/// `perch/v1`: `<host>/<app>/<service>`, or `<host>/<app>/<child>/recovered/
+/// <leader start time>`, authored by Perch in the request body — the thing,
+/// never the episode, so a Service that fails again re-raises its own row.
+pub fn perch_v1_key(source_key: &str) -> String {
+    source_key.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -917,6 +961,7 @@ mod tests {
             ("gmail-alert/v1", Shape::Event, Writes::Alerts, Expiry::Never, None),
             ("auk/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
             ("starling/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
+            ("perch/v1", Shape::State, Writes::Alerts, Expiry::Never, None),
         ];
 
         assert_eq!(
@@ -1090,13 +1135,27 @@ mod tests {
         assert!(!entry.is_retired());
     }
 
-    /// The link-origin requirement is `auk/v1`'s alone (#845): every other
-    /// source's tokens may carry an origin and mint as before without one.
+    /// The link-origin requirement is `auk/v1`'s (#845) and `perch/v1`'s
+    /// (#891) alone: every other source's tokens may carry an origin and
+    /// mint as before without one.
     #[test]
-    fn only_auk_v1_requires_a_link_origin() {
+    fn only_auk_v1_and_perch_v1_require_a_link_origin() {
         let requiring: Vec<_> =
             REGISTRY.iter().filter(|e| e.requires_link_origin).map(|e| e.source).collect();
-        assert_eq!(requiring, vec![AUK_V1]);
+        assert_eq!(requiring, vec![AUK_V1, PERCH_V1]);
+    }
+
+    /// `perch/v1` (#891) is a pushed state source writing alerts only —
+    /// Perch resolves a Service's alert itself, and the operator dismisses a
+    /// crash recovery, so nothing about it expires.
+    #[test]
+    fn perch_v1_is_a_state_source_writing_alerts_only() {
+        let entry = find(PERCH_V1).expect("perch/v1 is registered");
+        assert_eq!(entry.shape, Shape::State);
+        assert!(entry.writes_alerts());
+        assert!(!entry.writes_snapshots());
+        assert_eq!(entry.expires_at, Expiry::Never);
+        assert!(!entry.is_retired());
     }
 
     /// A duplicate `source` string would shadow silently in [`find`]
@@ -1551,5 +1610,17 @@ mod tests {
         assert!(!entry.writes_snapshots());
         assert_eq!(entry.expires_at, Expiry::Never);
         assert!(!entry.is_retired());
+    }
+
+    /// `perch/v1`'s frozen vectors (#891): both forms Perch authors — a
+    /// Service's state, and a crash recovery keyed by the recovered Child and
+    /// its leader's start time — ride through untouched.
+    #[test]
+    fn perch_v1_keys_on_the_key_perch_authors() {
+        assert_eq!(perch_v1_key("osprey/guardian/api"), "osprey/guardian/api");
+        assert_eq!(
+            perch_v1_key("osprey/guardian/worker/recovered/2026-10-15T09:12:03Z"),
+            "osprey/guardian/worker/recovered/2026-10-15T09:12:03Z"
+        );
     }
 }

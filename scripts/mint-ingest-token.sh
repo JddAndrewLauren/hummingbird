@@ -4,8 +4,9 @@
 # Starling cockpit's `starling/v1`, #830) whose sender reads its token from
 # the vault rather than from a Fly app this repo owns.
 #
-#   ./scripts/mint-ingest-token.sh <token-id> <source> <1password title>
+#   ./scripts/mint-ingest-token.sh <token-id> <source> <1password title> [allowed-origin]
 #   ./scripts/mint-ingest-token.sh starling-ingest starling/v1 hummingbird-starling-ingest
+#   ./scripts/mint-ingest-token.sh perch-ingest perch/v1 perch-hummingbird-ingest https://hb.twinion.net
 #
 # This is `scripts/mint-device-token.sh` with a different scope, and it is a
 # fourth script rather than a flag on that one for the reason that header gives
@@ -21,6 +22,14 @@
 # authority checks it at mint and answers 400 naming the source, before any row
 # is written -- so a typo here costs nothing, not an id.
 #
+# The optional fourth argument is the token's allowed link origin (ADR-0014's
+# #845 amendment): an alert the token writes whose `url` is off that origin is
+# refused. A source that requires one (`auk/v1`, `perch/v1`) is refused at mint
+# without it, and so is anything that is not an https origin -- scheme, host and
+# optional port, nothing else -- both as a 400 before any row is written. The
+# authority stores it canonical on the token's row and reports it in the token
+# listing; nothing here keeps a copy.
+#
 # ADMIN_SECRET comes from 1Password (`HB_ADMIN_REF` overrides the reference);
 # it mints every other token, so it never goes near Actions -- see CLAUDE.md,
 # "Credential blast radius". HB_API_BASE overrides the authority (default
@@ -32,10 +41,11 @@
 # `dev` -- revoke it and the source goes quiet.
 set -euo pipefail
 
-usage='usage: mint-ingest-token.sh <token-id> <source> <1password title>'
+usage='usage: mint-ingest-token.sh <token-id> <source> <1password title> [allowed-origin]'
 id=${1:?$usage}
 source=${2:?$usage}
 title=${3:?$usage}
+origin=${4:-}
 
 API_BASE=${HB_API_BASE:-https://hb.twinion.net}
 ADMIN_REF=${HB_ADMIN_REF:-op://dev/hummingbird-authority-admin/ADMIN_SECRET}
@@ -69,11 +79,15 @@ fi
 
 # `source` is *required* for an ingest token and forbidden for every other
 # scope (handlers/admin_tokens.rs, per ADR-0008). The token's name is its id:
-# the source is already on the row, and the id is what a revoke names.
+# the source is already on the row, and the id is what a revoke names. The
+# origin goes in only when given: an absent field, never an empty string.
 body=$(python3 -c '
 import json, sys
-print(json.dumps({"id": sys.argv[1], "name": sys.argv[1], "scope": "ingest", "source": sys.argv[2]}))' \
-  "$id" "$source")
+mint = {"id": sys.argv[1], "name": sys.argv[1], "scope": "ingest", "source": sys.argv[2]}
+if sys.argv[3]:
+    mint["allowed_origin"] = sys.argv[3]
+print(json.dumps(mint))' \
+  "$id" "$source" "$origin")
 
 resp=$(mktemp)
 # shellcheck disable=SC2064  # expand $resp now: it must be removed even if reassigned
@@ -96,7 +110,8 @@ case "$code" in
     exit 1 ;;
   400)
     echo "the authority refused the mint (HTTP 400) -- nothing was minted, so '$id' is" >&2
-    echo "still free. An unregistered or retired source answers here:" >&2
+    echo "still free. An unregistered or retired source answers here, as does a" >&2
+    echo "missing or non-https origin:" >&2
     cat "$resp" >&2
     echo >&2
     exit 1 ;;
@@ -126,9 +141,12 @@ case "$token" in
     exit 1 ;;
 esac
 
+bound="bound to $source"
+[ -z "$origin" ] || bound="$bound, links held to $origin"
+
 # The JSON item template on stdin, exactly as mint-device-token.sh stores it.
 TOKEN="$token" TITLE="$title" \
-NOTE="Ingest token bound to $source (authority id '$id'). Revoke: DELETE $API_BASE/api/admin/tokens/$id with ADMIN_SECRET." \
+NOTE="Ingest token $bound (authority id '$id'). Revoke: DELETE $API_BASE/api/admin/tokens/$id with ADMIN_SECRET." \
 python3 -c '
 import json, os
 print(json.dumps({"title": os.environ["TITLE"], "category": "PASSWORD", "fields": [
@@ -146,6 +164,6 @@ if [ "$back" != "$token" ]; then
   exit 1
 fi
 
-echo "minted ingest token '$id' bound to $source and verified it at op://$VAULT/$title/password"
+echo "minted ingest token '$id' $bound and verified it at op://$VAULT/$title/password"
 echo "The authority cannot return this plaintext again; revoke it with"
 echo "DELETE /api/admin/tokens/$id."
