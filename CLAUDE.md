@@ -28,6 +28,7 @@ grepping it.
 | The authority server | `server/authority/` (+ `worker/` wasm32 shim) | `src/lib.rs`; DDL and its migration traps in `src/schema.rs` |
 | Rule evaluation | `server/rules-engine/` | `src/lib.rs`, ADR-0013 |
 | The notification lane | `authority/src/{delivery,sweep,fcm,google_oauth}.rs`, `worker/src/fcm.rs` | `delivery.rs`, ADR-0012/0014 |
+| Healthchecks.io's webhook receiver (#893) — a check that stops checking in raises one `healthchecks/v1` alert, an up resolves it; the integration's exact settings | `server/authority/src/handlers/healthchecks.rs` | its header, then ADR-0014's #893 amendment |
 | The authority mints the web host's Google calendar token (#577) | `server/authority/src/{google_oauth,google_calendar}.rs`, `server/authority/src/handlers/calendar_token.rs`, `server/worker/src/calendar.rs`, `client/web/src/calendar/authority-token-client.ts` | `google_calendar.rs`, then ADR-0028 |
 | Grill (interview + the immutable per-item attachment) | `domain/src/grill.rs`, `authority/src/handlers/grills.rs` | `grill.rs`, ADR-0023 |
 | The which-cans poller | `server/city-waste/` | `src/lib.rs`, then `src/judge.rs` |

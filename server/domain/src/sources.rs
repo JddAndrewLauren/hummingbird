@@ -349,6 +349,13 @@ pub const STARLING_V1: &str = "starling/v1";
 /// make together.
 pub const PERCH_V1: &str = "perch/v1";
 
+/// A Healthchecks.io check that stops checking in (#893): one check per
+/// app per Mac, all under one source and one ingest token. Healthchecks.io
+/// posts to its own receiver, `POST /api/alerts/healthchecks`, which keys
+/// the alert on the check's UUID ([`healthchecks_v1_key`]), titles it with
+/// the check's name and raises it at `high`.
+pub const HEALTHCHECKS_V1: &str = "healthchecks/v1";
+
 /// The frozen registry. Every entry's `source` carries a version suffix
 /// (enforced by `tests::every_registered_source_is_versioned`); every
 /// source below has at least one frozen key-vector test in this module,
@@ -564,7 +571,7 @@ pub const REGISTRY: &[SourceEntry] = &[
         requires_link_origin: false,
     },
     SourceEntry {
-        source: "healthchecks/v1",
+        source: HEALTHCHECKS_V1,
         shape: Shape::State,
         writes: Writes::Alerts,
         key_recipe: Some("the check id, authored in the webhook body"),

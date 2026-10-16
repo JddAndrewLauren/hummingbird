@@ -364,6 +364,16 @@ INGEST_HC=$(jq -r '.token' <<<"$BODY")
 request 400 POST /api/snapshots '{"source":"healthchecks/v1","key":"k","fetched_at":1,"payload":{"schema":"healthchecks/v1","body":{}}}' "$INGEST_HC"
 [ "$(jq -r '.message' <<<"$BODY")" = '`healthchecks/v1` is not declared for snapshots' ] || fail "not-declared-for-snapshots message: $BODY"
 
+# #893: Healthchecks.io's receiver, through the Worker's real routing, under
+# that same token. A down raises the check's alert, an up resolves it, and a
+# device token is refused.
+HC_DOWN='{"check":"smoke-check","name":"smoke on host","status":"down"}'
+request 201 POST /api/alerts/healthchecks "$HC_DOWN" "$INGEST_HC"
+[ "$(jq -r '.title' <<<"$BODY")" = "smoke on host" ] || fail "healthchecks down title: $BODY"
+request 200 POST /api/alerts/healthchecks "${HC_DOWN/down/up}" "$INGEST_HC"
+[ "$(jq -r '.resolved_at' <<<"$BODY")" != "null" ] || fail "healthchecks up did not resolve: $BODY"
+request 403 POST /api/alerts/healthchecks "$HC_DOWN" "$DEVICE"
+
 # GET /api/snapshots (#135-137): the cursor read-back an evaluated-stream
 # poller needs. Source-bound for an ingest token exactly like the write
 # side; a device token reads any source.

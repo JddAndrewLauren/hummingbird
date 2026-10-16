@@ -34,8 +34,8 @@ pub use api::{
     AlertIngest, AlertPatch, ApiError, BlockedByPatch, CalendarTokenResponse, ChangesResponse,
     ConflictResponse, CreateBlockedBy, CreateFileLink, CreateFog, CreateGrill, CreateItem,
     CreateProject, CreateProjectLink, CreatePushTarget, CreateRule, CreateStep, FileLinkPatch,
-    FogPatch, GoogleSignIn, ItemPatch, MintToken, ProjectLinkPatch, ProjectPatch, PutSetting,
-    RoutePatch, RulePatch, SnapshotIngest, StepPatch, VERSION_CONFLICT,
+    FogPatch, GoogleSignIn, HealthchecksEvent, ItemPatch, MintToken, ProjectLinkPatch,
+    ProjectPatch, PutSetting, RoutePatch, RulePatch, SnapshotIngest, StepPatch, VERSION_CONFLICT,
 };
 pub use context::{Alert, ContextSnapshot, EnvelopeProblem, Setting, SnapshotEnvelope};
 pub use deadline::{
@@ -63,9 +63,9 @@ pub use sources::{
     home_assistant_v1_key, item_threshold_v1_item_id, item_threshold_v1_key, m365_calendar_v1_key,
     m365_mail_v1_key, perch_v1_key, photo_site_v1_key, race_schedule_v1_key, starling_v1_key,
     yahoo_lineup_v1_key, yahoo_waivers_v1_key, Expiry, Shape, SourceEntry, Writes, AUK_V1,
-    CITY_WASTE_V2, GITHUB_HUMMINGBIRD_V1, GMAIL_V1, GOOGLE_CALENDAR_V1, ITEM_THRESHOLD_V1,
-    KIMI_BALANCE_V1, M365_CALENDAR_V1, M365_MAIL_V1, PERCH_V1, RACE_SCHEDULE_V1, REGISTRY,
-    STARLING_V1, UPTIME_V1, YAHOO_LINEUP_V1, YAHOO_WAIVERS_V1,
+    CITY_WASTE_V2, GITHUB_HUMMINGBIRD_V1, GMAIL_V1, GOOGLE_CALENDAR_V1, HEALTHCHECKS_V1,
+    ITEM_THRESHOLD_V1, KIMI_BALANCE_V1, M365_CALENDAR_V1, M365_MAIL_V1, PERCH_V1,
+    RACE_SCHEDULE_V1, REGISTRY, STARLING_V1, UPTIME_V1, YAHOO_LINEUP_V1, YAHOO_WAIVERS_V1,
 };
 pub use step::{BlockedBy, Step};
 pub use token::{
