@@ -161,7 +161,8 @@ export function deviceNameFromUserAgent(userAgent: string): string {
 }
 
 /** The sign-in outcomes that are not `signed_in`: the core's arms
- * (`SignInOutcome::kind`) plus the seam's `busy`. */
+ * (`SignInOutcome::kind`) plus the seam's `busy` and the task queue's
+ * `abandoned` (#889). */
 export type SignInFailureKind =
   | "not_allowed"
   | "rate_limited"
@@ -169,7 +170,8 @@ export type SignInFailureKind =
   | "unavailable"
   | "invalid"
   | "failed"
-  | "busy";
+  | "busy"
+  | "abandoned";
 
 /** What the device-token card says when the exchange did not mint a token.
  * `detail` is the core's own message on `invalid`/`failed`. */
@@ -189,5 +191,7 @@ export function signInFailureMessage(kind: SignInFailureKind, detail: string | n
       return `The sign-in did not reach the server: ${detail ?? "unknown error"}`;
     case "busy":
       return "The local core was busy. Try again.";
+    case "abandoned":
+      return "Sign-in didn't finish. Try again, or paste a token instead.";
   }
 }

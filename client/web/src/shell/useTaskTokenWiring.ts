@@ -14,6 +14,7 @@ import {
   initTaskApiKey,
   pushTaskApiKey,
   reportNoTaskApiKey,
+  triggerSyncManual,
   type WorkerLike,
 } from "../store/worker-client";
 
@@ -113,16 +114,24 @@ export function useTaskTokenWiring(
   // key the core holds (`clearTaskApiKey` — see `token.ts`'s doc for why
   // clearing storage alone is not enough under #126's SharedWorker). The
   // mirror and every queued capture are untouched either way.
+  //
+  // #889: both ways this device loses its token then run one cycle. The Sync
+  // card reads the last cycle's outcome, which until the next tick is still
+  // the "completed" one the old token earned; a cycle with no credential
+  // sends no request and answers `no_credential`, so every view's card says
+  // held at once. Queued behind the clear, so it never runs with the old key.
   async function handleForgetToken(): Promise<void> {
     const result = await forgetTaskToken(deps());
     setHasToken(result.hasToken);
     setEnteredAtMs(result.enteredAtMs);
+    triggerSyncManual(worker);
   }
 
   async function handleSignedOut(): Promise<void> {
     const result = await clearSignedOutToken(deps());
     setHasToken(result.hasToken);
     setEnteredAtMs(result.enteredAtMs);
+    triggerSyncManual(worker);
   }
 
   return { hasToken, enteredAtMs, handleSubmitToken, handleForgetToken, handleSignedOut };
