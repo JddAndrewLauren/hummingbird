@@ -15,7 +15,8 @@ use async_trait::async_trait;
 use hummingbird_core::decisions::frontier::{by_priority_then_due, FrontierItem};
 use hummingbird_core::decisions::urgency::compute_urgency;
 use hummingbird_core::sync::write::{MutationRequest, MutationTransport, RawResponse};
-use hummingbird_core::sync::TransportError;
+use hummingbird_core::sync::{CycleOutcome, TransportError};
+use hummingbird_core::CoreCycleOutcome;
 use hummingbird_domain::Item;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -128,6 +129,41 @@ pub fn state_payload(frontier: &[Item], today: &[Item], now: &str, last_cycle: &
     }
 }
 
+/// What the host does after one cycle attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterCycle {
+    /// Publish the state, with the time of the last completed cycle.
+    Publish,
+    /// Publish nothing: no cycle has completed since the host started, so
+    /// its mirror may be one it never pulled.
+    Wait,
+    /// The token was refused: publish `offline`, never an empty list.
+    Offline,
+}
+
+/// Decides [`AfterCycle`] from one attempt's outcome, and records
+/// `completed_at` in `last_completed` when the cycle completed. A failed pull
+/// after a completed one still publishes: the last good lists, with the
+/// older time, so the panel reads them as stale rather than gone.
+pub fn after_cycle(
+    outcome: &CoreCycleOutcome,
+    last_completed: &mut Option<String>,
+    completed_at: String,
+) -> AfterCycle {
+    match outcome {
+        CoreCycleOutcome::Held | CoreCycleOutcome::Cycle(CycleOutcome::CredentialNeeded { .. }) => {
+            return AfterCycle::Offline;
+        }
+        CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. }) => *last_completed = Some(completed_at),
+        _ => {}
+    }
+    if last_completed.is_some() {
+        AfterCycle::Publish
+    } else {
+        AfterCycle::Wait
+    }
+}
+
 /// One retained discovery message: its topic and its JSON body.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Discovery {
@@ -137,6 +173,11 @@ pub struct Discovery {
 
 /// Home Assistant MQTT discovery for the three entities, one device. The
 /// lists ride as attributes, because a state holds at most 255 characters.
+///
+/// Each list is there twice: `items`, a list for Home Assistant itself, and
+/// `items_json`, the same list as one JSON string. Home Assistant's ESPHome
+/// integration hands a device an attribute as `str(value)`, so a list reaches
+/// the panel as a Python repr; a string reaches it as the JSON it is.
 pub fn discovery() -> Vec<Discovery> {
     let device = json!({
         "identifiers": ["hummingbird_glance"],
@@ -170,7 +211,9 @@ pub fn discovery() -> Vec<Discovery> {
             &format!("{{{{ value_json.{key}.count }}}}"),
             json!({
                 "json_attributes_topic": STATE_TOPIC,
-                "json_attributes_template": format!("{{{{ {{'items': value_json.{key}.items}} | tojson }}}}"),
+                "json_attributes_template": format!(
+                    "{{{{ {{'items': value_json.{key}.items, 'items_json': value_json.{key}.items | tojson}} | tojson }}}}"
+                ),
                 "state_class": "measurement",
                 "icon": if key == "today" { "mdi:calendar-today" } else { "mdi:format-list-checks" },
             }),
@@ -221,8 +264,8 @@ impl MutationTransport for RefusingWrite {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hummingbird_core::sync::{ChangesTransport, CycleOutcome, Trigger};
-    use hummingbird_core::{CaptureOptions, Core, CoreCycleOutcome};
+    use hummingbird_core::sync::{ChangesTransport, DrainOutcome, Trigger};
+    use hummingbird_core::{CaptureOptions, Core};
     use hummingbird_domain::{Energy, Size, Stage};
 
     const NOW: &str = "2026-11-16T09:00";
@@ -323,9 +366,45 @@ mod tests {
         assert_eq!(messages[0].payload["value_template"], "{{ value_json.frontier.count }}");
         assert_eq!(
             messages[1].payload["json_attributes_template"],
-            "{{ {'items': value_json.today.items} | tojson }}"
+            "{{ {'items': value_json.today.items, 'items_json': value_json.today.items | tojson} | tojson }}"
         );
         assert_eq!(messages[2].payload["device_class"], "timestamp");
+    }
+
+    fn pull_failed() -> CoreCycleOutcome {
+        CoreCycleOutcome::Cycle(CycleOutcome::PullFailed { drain: DrainOutcome::Completed { dead_lettered: 0 }, retry_after_ms: 1_000 })
+    }
+
+    fn completed() -> CoreCycleOutcome {
+        CoreCycleOutcome::Cycle(CycleOutcome::Completed {
+            drain: DrainOutcome::Completed { dead_lettered: 0 },
+            active_item_count: 0,
+            was_full_sweep: false,
+        })
+    }
+
+    #[test]
+    fn nothing_is_published_until_a_cycle_completes() {
+        let mut last = None;
+        assert_eq!(after_cycle(&pull_failed(), &mut last, "t1".into()), AfterCycle::Wait);
+        assert_eq!(last, None);
+        assert_eq!(after_cycle(&completed(), &mut last, "t2".into()), AfterCycle::Publish);
+        assert_eq!(last.as_deref(), Some("t2"));
+    }
+
+    #[test]
+    fn a_failed_pull_after_a_completed_one_publishes_with_the_older_time() {
+        let mut last = Some("t1".to_string());
+        assert_eq!(after_cycle(&pull_failed(), &mut last, "t2".into()), AfterCycle::Publish);
+        assert_eq!(last.as_deref(), Some("t1"), "the time is the last completed cycle's");
+    }
+
+    #[test]
+    fn a_refused_token_goes_offline_and_never_publishes_a_list() {
+        let mut last = Some("t1".to_string());
+        assert_eq!(after_cycle(&CoreCycleOutcome::Held, &mut last, "t2".into()), AfterCycle::Offline);
+        let refused = CoreCycleOutcome::Cycle(CycleOutcome::CredentialNeeded { drain: DrainOutcome::Completed { dead_lettered: 0 } });
+        assert_eq!(after_cycle(&refused, &mut last, "t3".into()), AfterCycle::Offline);
     }
 
     /// A pull that answers an empty delta, so a cycle can complete.

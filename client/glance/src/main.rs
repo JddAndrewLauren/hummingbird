@@ -5,8 +5,9 @@
 //! every [`CYCLE_INTERVAL_SECS`], and publishes the result to Home
 //! Assistant's broker.
 //!
-//! - **Secrets** rest in the login Keychain, service `hummingbird-glance`,
-//!   accounts `device-token` and `mqtt-password`. Never in the plist, the
+//! - **Secrets** rest in the login Keychain, service `hummingbird-glance`
+//!   (`GLANCE_KEYCHAIN_SERVICE` overrides it, for a local rig run), accounts
+//!   `device-token` and `mqtt-password`. Never in the plist, the
 //!   environment or a file. With no token the host idles and re-reads the
 //!   Keychain every cycle, so adding one needs no restart.
 //! - **Settings** come from the environment: `HB_AUTHORITY_URL` (default
@@ -27,12 +28,12 @@ use chrono::{Local, SecondsFormat};
 use hummingbird_core::sync::{sync_client, CycleOutcome, ReqwestSyncTransport, Trigger};
 use hummingbird_core::{Core, CoreCycleOutcome};
 use hummingbird_glance::{
-    discovery, frontier_in_display_order, state_payload, RefusingWrite, AVAILABILITY_TOPIC,
-    CYCLE_INTERVAL_SECS, STATE_TOPIC,
+    after_cycle, discovery, frontier_in_display_order, state_payload, AfterCycle, RefusingWrite,
+    AVAILABILITY_TOPIC, CYCLE_INTERVAL_SECS, STATE_TOPIC,
 };
 use rumqttc::{AsyncClient, Event, LastWill, MqttOptions, Packet, QoS};
 
-const KEYCHAIN_SERVICE: &str = "hummingbird-glance";
+const DEFAULT_KEYCHAIN_SERVICE: &str = "hummingbird-glance";
 
 fn log(message: &str) {
     eprintln!("{} {message}", Local::now().to_rfc3339_opts(SecondsFormat::Secs, false));
@@ -45,8 +46,9 @@ fn env_or(name: &str, default: &str) -> String {
 /// One generic password from the login Keychain, or `None`. The value goes
 /// straight into memory and is never logged.
 fn keychain(account: &str) -> Option<String> {
+    let service = env_or("GLANCE_KEYCHAIN_SERVICE", DEFAULT_KEYCHAIN_SERVICE);
     let output = Command::new("/usr/bin/security")
-        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account, "-w"])
+        .args(["find-generic-password", "-s", &service, "-a", account, "-w"])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -73,7 +75,7 @@ async fn main() {
     let port: u16 = env_or("GLANCE_MQTT_PORT", "1883").parse().unwrap_or(1883);
     let user = env_or("GLANCE_MQTT_USER", "nest-mqtt-hummingbird");
     let Some(mqtt_password) = keychain("mqtt-password") else {
-        log("no MQTT password in the Keychain (service hummingbird-glance, account mqtt-password)");
+        log("no MQTT password in the Keychain (account mqtt-password)");
         std::process::exit(78);
     };
 
@@ -118,11 +120,22 @@ async fn main() {
     let mut last_completed: Option<String> = None;
     let mut first = true;
     let mut tick = tokio::time::interval(Duration::from_secs(CYCLE_INTERVAL_SECS));
+    // launchd stops an agent with SIGTERM; a terminal with SIGINT. Either way
+    // the entities go unavailable at once rather than at the broker's
+    // keepalive timeout.
+    let mut sigterm = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        Ok(signal) => signal,
+        Err(error) => {
+            log(&format!("cannot listen for SIGTERM: {error}"));
+            std::process::exit(71);
+        }
+    };
 
     loop {
         tokio::select! {
             _ = tick.tick() => {}
             _ = tokio::signal::ctrl_c() => break,
+            _ = sigterm.recv() => break,
         }
 
         // A token appearing, or changing after a 401, is picked up here.
@@ -135,7 +148,7 @@ async fn main() {
             Some(_) => {}
             None if pushed_token.is_none() => {
                 core.report_no_api_key();
-                log("no device token in the Keychain (service hummingbird-glance, account device-token)");
+                log("no device token in the Keychain (account device-token)");
                 continue;
             }
             None => {}
@@ -149,20 +162,26 @@ async fn main() {
             log(&format!("refused {} mutation(s): the glance host never writes", write.refused()));
         }
 
-        match outcome {
-            CoreCycleOutcome::Held | CoreCycleOutcome::Cycle(CycleOutcome::CredentialNeeded { .. }) => {
+        let completed_at = Local::now().to_rfc3339_opts(SecondsFormat::Secs, false);
+        match after_cycle(&outcome, &mut last_completed, completed_at) {
+            AfterCycle::Offline => {
                 log("the authority refused the device token; publishing offline until it changes");
                 publish(&client, AVAILABILITY_TOPIC, "offline".into()).await;
                 continue;
             }
-            CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. }) => {
-                last_completed = Some(Local::now().to_rfc3339_opts(SecondsFormat::Secs, false));
+            AfterCycle::Wait => {
+                log(&format!("cycle did not complete: {outcome:?}"));
+                continue;
             }
-            other => log(&format!("cycle did not complete: {other:?}")),
+            AfterCycle::Publish => {
+                if !matches!(outcome, CoreCycleOutcome::Cycle(CycleOutcome::Completed { .. })) {
+                    log(&format!("cycle did not complete: {outcome:?}; publishing the last good lists"));
+                }
+            }
         }
 
         let Some(last_cycle) = last_completed.as_deref() else {
-            continue;
+            continue; // after_cycle never says Publish without one
         };
         let now = Local::now().format("%Y-%m-%dT%H:%M").to_string();
         let frontier = frontier_in_display_order(core.frontier());
@@ -177,6 +196,9 @@ async fn main() {
         }
     }
 
+    log("stopping");
     publish(&client, AVAILABILITY_TOPIC, "offline".into()).await;
     let _ = client.disconnect().await;
+    // The event loop task delivers the two packets above.
+    tokio::time::sleep(Duration::from_millis(500)).await;
 }

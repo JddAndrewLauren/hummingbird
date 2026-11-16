@@ -66,19 +66,24 @@ of the embedded core, and the first with no UI). `CONTEXT.md` gains
    as JSON attributes, because a Home Assistant state holds at most 255
    characters. Three entities: a Frontier count sensor and a Today count
    sensor (each carrying its list as attributes), and a `timestamp` sensor
-   for the last completed cycle. An availability topic with a last will
-   turns them unavailable when the host dies. `expire_after` turns them
-   unavailable when the host is alive but its cycles stop completing, so a
-   panel never shows an old list as a current one. That is ADR-0039 decision
-   6's honesty rule, applied to a device that has no screen of its own.
+   for the last completed cycle. An availability topic with a last will,
+   plus `expire_after`, turns them unavailable when the host dies or stops
+   publishing. When the host is alive but its pulls fail, it keeps
+   publishing the last good lists with the time of the last completed
+   cycle, so the panel can say how old they are. A refused token publishes
+   `offline`, never an empty list. So a panel never shows an old list as a
+   current one: that is ADR-0039 decision 6's honesty rule, applied to a
+   device with no screen of its own. Until a cycle completes in a process,
+   it publishes nothing, so a fresh start can't pass an unpulled mirror off
+   as an empty one.
 
-6. **Cadence: one cycle every five minutes, and a publish after each.** The
+6. **Cadence: one cycle every five minutes, and a publish after each
+   attempt.** The
    host's own loop owns that cadence. The LaunchAgent only keeps the process
    alive and sets no interval of its own, so there is one clock (CLAUDE.md's
-   "No competing clocks"). Each
-   publish is a full retained state, even when nothing changed, so
-   `expire_after` measures whether the host is alive rather than whether the
-   tasks changed. There is no push lane: five minutes is the accepted
+   "No competing clocks"). Each publish is a full retained state, even when
+   nothing changed, so `expire_after` measures whether the host is alive
+   rather than whether the tasks changed. There is no push lane: five minutes is the accepted
    staleness for a wall panel that redraws once a minute at most.
 
 ## Considered and not taken
