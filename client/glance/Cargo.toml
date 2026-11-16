@@ -1,0 +1,26 @@
+[package]
+name = "hummingbird-glance"
+version.workspace = true
+edition.workspace = true
+description = "The glance host (ADR-0041): a headless core that publishes the Frontier and Today to Home Assistant over MQTT."
+
+[[bin]]
+name = "hummingbird-glance"
+path = "src/main.rs"
+
+[dependencies]
+# The core with its default `reqwest-transport`: this host runs real sync
+# cycles against the authority, so unlike `client/next-up` it needs them.
+hummingbird-core = { path = "../core" }
+hummingbird-domain = { path = "../../server/domain" }
+async-trait = "0.1.92"
+chrono = "0.4.45"
+# The MQTT client is this host's dependency, never the core's (ADR-0041).
+# No TLS: the broker is Home Assistant's Mosquitto on the LAN.
+rumqttc = { version = "0.25", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1", features = ["rt", "macros", "time", "signal"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }
