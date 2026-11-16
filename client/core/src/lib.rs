@@ -1249,6 +1249,35 @@ where
             .collect()
     }
 
+    /// The live items due today, in [`decisions::glance::today`]'s order:
+    /// what a **Glance host** (ADR-0041) publishes beside
+    /// [`Core::frontier`]. Unlike the frontier it reads every live item,
+    /// blocked and untriaged ones included, because a blocked item due today
+    /// is still due today. Done and archived items never appear.
+    ///
+    /// `now` is the reader's local wall clock in deadline shape
+    /// (`YYYY-MM-DDTHH:MM`), as [`decisions::urgency::compute_urgency`]
+    /// takes it.
+    pub fn today(&self, now: &str) -> Vec<Item> {
+        let mut live: BTreeMap<String, Item> = self
+            .overlaid_items()
+            .into_iter()
+            .filter(|(_, item)| item.archived_at.is_none() && item.stage != Stage::Done)
+            .collect();
+        let facts: Vec<decisions::glance::TodayItem> = live
+            .values()
+            .map(|item| decisions::glance::TodayItem {
+                id: item.id.clone(),
+                deadline: item.deadline.clone(),
+                scheduled_date: item.scheduled_date.clone(),
+            })
+            .collect();
+        decisions::glance::today(&facts, now)
+            .into_iter()
+            .filter_map(|id| live.remove(&id))
+            .collect()
+    }
+
     /// Items awaiting triage: captured, not yet promoted to an actionable
     /// stage — the owned-schema counterpart to [`task::Mirror::triage_inbox`]'s
     /// S1/Linear-era twin, and, unlike [`Core::frontier`], the query a
@@ -6413,6 +6442,38 @@ mod tests {
         assert!(
             core.blocked().is_empty(),
             "an absent blocker no longer explains anything as blocked"
+        );
+    }
+
+    /// ADR-0041's Today: every live stage counts, a relation-blocked item
+    /// included, and Done or archived never does.
+    #[tokio::test]
+    async fn today_reads_every_live_item_and_never_a_done_or_archived_one() {
+        let due = |id: &str, stage: Stage| hummingbird_domain::Item {
+            deadline: Some("2026-11-16".into()),
+            ..fixture_item(id, stage)
+        };
+        let archived = hummingbird_domain::Item {
+            archived_at: Some(1),
+            ..due("archived", Stage::Ready)
+        };
+        let core = seeded_core(
+            vec![
+                due("blocked", Stage::Ready),
+                due("blocker", Stage::Ready),
+                due("triage", Stage::Triage),
+                due("waiting", Stage::Blocked),
+                due("done", Stage::Done),
+                archived,
+                fixture_item("undated", Stage::Ready),
+            ],
+            vec![fixture_blocked_by("blocked", "blocker")],
+        )
+        .await;
+
+        assert_eq!(
+            core.today("2026-11-16T09:00").iter().map(|i| i.id.clone()).collect::<Vec<_>>(),
+            vec!["blocked", "blocker", "triage", "waiting"]
         );
     }
 
