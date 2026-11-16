@@ -15,7 +15,8 @@ and `deploy.sh` doesn't build or install it.
      `hummingbird-glance-device-token`. Then add it with
      `security add-generic-password -s hummingbird-glance -a device-token -w`,
      which prompts for the value.
-   - The MQTT password: nest's `nest-mqtt-hummingbird` (1Password `dev`). Add it
+   - The MQTT password: 1Password `dev` item `nest-mqtt-hummingbird` (username
+     `hummingbird-glance`, already a Mosquitto login on the nest box). Add it
      with `security add-generic-password -s hummingbird-glance -a mqtt-password -w`.
 3. Copy `net.twinion.hummingbird.glance.plist` to `~/Library/LaunchAgents/`,
    replacing `JOHN_HOME` with your home directory. Then run

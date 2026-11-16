@@ -13,7 +13,7 @@
 //! - **Settings** come from the environment: `HB_AUTHORITY_URL` (default
 //!   `https://hb.twinion.net`), `GLANCE_MQTT_HOST` (default
 //!   `192.168.1.134`), `GLANCE_MQTT_PORT` (1883) and `GLANCE_MQTT_USER`
-//!   (`nest-mqtt-hummingbird`).
+//!   (`hummingbird-glance`, the username in 1Password `dev` item `nest-mqtt-hummingbird`).
 //! - **Publishing:** nothing until a cycle has completed in this process,
 //!   so a fresh start never publishes an empty list it hasn't pulled. After
 //!   that, a retained state after every attempt, carrying the time of the
@@ -73,7 +73,7 @@ async fn main() {
     let authority = env_or("HB_AUTHORITY_URL", "https://hb.twinion.net");
     let host = env_or("GLANCE_MQTT_HOST", "192.168.1.134");
     let port: u16 = env_or("GLANCE_MQTT_PORT", "1883").parse().unwrap_or(1883);
-    let user = env_or("GLANCE_MQTT_USER", "nest-mqtt-hummingbird");
+    let user = env_or("GLANCE_MQTT_USER", "hummingbird-glance");
     let Some(mqtt_password) = keychain("mqtt-password") else {
         log("no MQTT password in the Keychain (account mqtt-password)");
         std::process::exit(78);
