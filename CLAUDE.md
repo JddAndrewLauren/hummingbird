@@ -46,6 +46,7 @@ grepping it.
 | Android's calendar lane (#564) and the panes it unblocks (#621) — the authority mint, the calendar half behind its own lock, Settings' Calendar section, the weekend card's plan chips | `client/ffi-mobile/src/{calendar_token.rs,lib.rs}` (its calendar (#564) section), `client/core/src/calendar/{host.rs,selection.rs}`, `client/android/.../{CalendarPrefs.kt,SettingsScreen.kt,ui/panes/NowPanesExpanded.kt}` | `calendar_token.rs`, then `host.rs`; ADR-0028 as amended by #564, ADR-0025 |
 | The skills runner lane, client side (#538/M4) | `client/core/src/decisions/skills/`, `client/web/src/skills/`, `client/android/.../hummingbird/skills/` | `decisions/skills/mod.rs`, then `SkillRunner.kt`; ADR-0025 as amended by #538 |
 | The `/next-up-hb` seam | `client/next-up/` | `src/lib.rs` |
+| The glance host (ADR-0041) — a headless core on Kestrel that publishes the Frontier and Today to Home Assistant over MQTT for nest's office e-paper; never writes, installed by hand, not by `deploy.sh` | `client/glance/`, `client/core/src/decisions/glance.rs` | `client/glance/README.md`, then `src/lib.rs`; ADR-0041 |
 | The wasm seams | `client/ffi-web/src/{task_host,calendar_host}.rs` | those headers |
 | The OpenClaw task agent (third interactive arm, ADR-0029) | `openclaw/` | `docs/openclaw.md` |
 | The agent's calendar write (ADR-0031) — the id-gated mint route, and the skill that calls it | `server/authority/src/handlers/calendar_token.rs`, `server/worker/src/calendar.rs`, `openclaw/calendar/` | `calendar_token.rs`'s `write_verdict`, then `openclaw/calendar/scripts/gcal.sh`; ADR-0031 |
@@ -129,7 +130,9 @@ signing in (ADR-0040) or by the admin lane (a browser
 profile running the capture extension is one — `device-chrome-<machine>`,
 ADR-0037; the watch is one — `device-watch`, ADR-0039, delivered from the
 phone's Settings over the Wearable Data Layer and held on the watch alone),
-the runner's
+the glance host's (`device-glance-kestrel`, ADR-0041: admin-minted, held in
+Kestrel's login Keychain by a long-running process that never writes, but
+the token itself can), the runner's
 (`runner`), and the OpenClaw agent's (`openclaw-agent`, on the gateway
 machine — ADR-0029, minted and rotated per `docs/openclaw.md`).
 **That population is no longer uniform in what it can reach.** Since
