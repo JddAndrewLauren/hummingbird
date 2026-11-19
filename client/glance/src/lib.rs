@@ -178,6 +178,10 @@ pub struct Discovery {
 /// `items_json`, the same list as one JSON string. Home Assistant's ESPHome
 /// integration hands a device an attribute as `str(value)`, so a list reaches
 /// the panel as a Python repr; a string reaches it as the JSON it is.
+///
+/// The templates index `['items']`, never `.items`: in Jinja, `.items` on a
+/// dict finds the dict's own `items` method first, which `tojson` can't
+/// serialize, so Home Assistant drops every attribute.
 pub fn discovery() -> Vec<Discovery> {
     let device = json!({
         "identifiers": ["hummingbird_glance"],
@@ -212,7 +216,7 @@ pub fn discovery() -> Vec<Discovery> {
             json!({
                 "json_attributes_topic": STATE_TOPIC,
                 "json_attributes_template": format!(
-                    "{{{{ {{'items': value_json.{key}.items, 'items_json': value_json.{key}.items | tojson}} | tojson }}}}"
+                    "{{{{ {{'items': value_json.{key}['items'], 'items_json': value_json.{key}['items'] | tojson}} | tojson }}}}"
                 ),
                 "state_class": "measurement",
                 "icon": if key == "today" { "mdi:calendar-today" } else { "mdi:format-list-checks" },
@@ -366,7 +370,7 @@ mod tests {
         assert_eq!(messages[0].payload["value_template"], "{{ value_json.frontier.count }}");
         assert_eq!(
             messages[1].payload["json_attributes_template"],
-            "{{ {'items': value_json.today.items, 'items_json': value_json.today.items | tojson} | tojson }}"
+            "{{ {'items': value_json.today['items'], 'items_json': value_json.today['items'] | tojson} | tojson }}"
         );
         assert_eq!(messages[2].payload["device_class"], "timestamp");
     }
