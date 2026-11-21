@@ -27,12 +27,54 @@ object ThreadGroups {
     )
 
     /** The thread summaries in [active] whose group holds no other
-     * notification. Only summaries this file tagged are ever returned, so a
-     * summary some other feature posts is never touched. */
-    fun orphanedSummaries(active: List<Posted>): List<Posted> {
-        val grouped = active.filter { !it.isSummary }.mapNotNull { it.group }.toSet()
+     * notification, not counting any alert in [cancelling]: an alert whose
+     * cancel is in flight is gone as far as its group is concerned, even
+     * when the platform's snapshot still lists it. Only summaries this file
+     * tagged are ever returned, so a summary some other feature posts is
+     * never touched. */
+    fun orphanedSummaries(active: List<Posted>, cancelling: Set<String> = emptySet()): List<Posted> {
+        val grouped = active.filter { !it.isSummary && it.tag !in cancelling }
+            .mapNotNull { it.group }.toSet()
         return active.filter {
             it.isSummary && it.tag?.startsWith(SUMMARY_TAG_PREFIX) == true && it.group !in grouped
         }
+    }
+}
+
+/** The summary bookkeeping's one piece of state: the alerts being cancelled.
+ *
+ * Two Ack workers can finish for a thread's last two alerts at once. Each
+ * reads its own snapshot of what is posted, and a snapshot taken before the
+ * other's cancel landed still lists the other alert — so if each excluded
+ * only its own, each would see a surviving child and the empty summary would
+ * stay for good. So the ids stay in [cancelling] until a snapshot no longer
+ * lists them (the platform has caught up), every pass excludes the whole
+ * set, and [AlertNotifier] runs each pass under this object's monitor so two
+ * passes never interleave. */
+internal class SummaryBookkeeping {
+    private val cancelling = mutableSetOf<String>()
+
+    /** [alertId] is being cancelled; returns the summaries left empty, given
+     * the platform's [active] snapshot (which may still list it). */
+    @Synchronized
+    fun cancelled(alertId: String, active: List<ThreadGroups.Posted>): List<ThreadGroups.Posted> {
+        cancelling += alertId
+        return sweep(active)
+    }
+
+    /** [alertId] is posted (again): no longer being cancelled, so a re-raise
+     * after an ack counts as a child again. */
+    @Synchronized
+    fun posted(alertId: String) {
+        cancelling -= alertId
+    }
+
+    /** The empty summaries in [active], excluding every alert still being
+     * cancelled, then forgets the ids the snapshot confirms are gone. */
+    @Synchronized
+    fun sweep(active: List<ThreadGroups.Posted>): List<ThreadGroups.Posted> {
+        val orphans = ThreadGroups.orphanedSummaries(active, cancelling)
+        cancelling.retainAll(active.mapNotNull { it.tag }.toSet())
+        return orphans
     }
 }

@@ -182,14 +182,19 @@ class MainActivity : ComponentActivity() {
  * notification (its extras), or an item link from the watch (its data URI,
  * `ItemLink`'s — the `.ItemLink` alias in the manifest). A launcher start
  * is neither, and answers `null`. */
-private sealed interface Arrival {
+internal sealed interface Arrival {
     data class Notification(val tap: NotificationTap) : Arrival
     data class Item(val itemId: String) : Arrival
+
+    /** A tapped thread summary (#922): it names no one alert, so it opens
+     * the Alerts screen. */
+    data object Alerts : Arrival
 
     companion object {
         fun from(intent: Intent?): Arrival? =
             ItemLink.itemId(intent)?.let { Item(it) }
                 ?: NotificationTap.from(intent)?.let { Notification(it) }
+                ?: Alerts.takeIf { intent?.getBooleanExtra(AlertNotifier.EXTRA_OPEN_ALERTS, false) == true }
     }
 }
 
@@ -198,7 +203,7 @@ private sealed interface Arrival {
  * to the core's `notificationTapTarget`, which owns the answer (ADR-0027).
  * Absent extras cross as empty strings, which that function answers with
  * alert detail — the permanent contract for an alert naming no item. */
-private data class NotificationTap(
+internal data class NotificationTap(
     val alertId: String,
     val source: String,
     val sourceKey: String,
@@ -570,6 +575,9 @@ private fun AppRoot(
                     // defect (#518) is a property of the restored stack,
                     // not of who asked.
                     is Arrival.Item -> navController.openItemFromNotification(arrival.itemId)
+                    // A thread summary names no alert: the Alerts screen, on
+                    // the same pop-to-Now door.
+                    Arrival.Alerts -> navController.openAlertsFromNotification()
                 }
                 // Consumed: a configuration change must not re-navigate.
                 deepLinkedAlertId.value = null
@@ -1216,6 +1224,16 @@ private fun MoreSheetRow(
  * which would otherwise stack a second identical copy of it. */
 private fun NavHostController.openAlertFromNotification(alertId: String) {
     navigate(Routes.alertDetail(alertId)) {
+        popUpTo(Routes.NOW) { inclusive = false }
+        launchSingleTop = true
+    }
+}
+
+/** A tapped thread summary lands the Alerts screen on top of Now, the same
+ * `popUpTo` policy as [openAlertFromNotification] and for the same reason
+ * (#518): a cold tap restores a previous session's back stack. */
+private fun NavHostController.openAlertsFromNotification() {
+    navigate(Routes.ALERTS) {
         popUpTo(Routes.NOW) { inclusive = false }
         launchSingleTop = true
     }

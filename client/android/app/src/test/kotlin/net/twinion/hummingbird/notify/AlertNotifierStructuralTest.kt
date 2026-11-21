@@ -87,4 +87,17 @@ class AlertNotifierStructuralTest {
             cancel.contains("removeOrphanedSummaries"),
         )
     }
+
+    @Test
+    fun `a thread summary is never auto-cancelled and its tap opens Alerts (#922)`() {
+        val summary = src.substringAfter("private fun postSummary(").substringBefore("private fun removeOrphanedSummaries")
+        assertFalse("a tap would take the children with it", summary.contains("setAutoCancel(true)"))
+        assertTrue(summary.contains("setAutoCancel(false)"))
+        assertTrue(summary.contains("putExtra(EXTRA_OPEN_ALERTS, true)"))
+    }
+
+    @Test
+    fun `summary bookkeeping runs under one lock (#922)`() {
+        assertTrue(Regex("""synchronized\(bookkeeping\)""").findAll(src).count() >= 2)
+    }
 }

@@ -46,4 +46,32 @@ class ThreadGroupsTest {
         val foreign = Posted(tag = "someone-else", id = 9, group = "g", isSummary = true)
         assertEquals(emptyList<Posted>(), ThreadGroups.orphanedSummaries(listOf(foreign)))
     }
+
+    @Test
+    fun `two overlapping cancels against a stale snapshot still retire the summary`() {
+        // Both workers read a snapshot taken before either cancel landed: it
+        // still lists both children.
+        val stale = listOf(summary("t"), alert("a-1", "t"), alert("a-2", "t"))
+        val book = SummaryBookkeeping()
+        assertEquals(emptyList<Posted>(), book.cancelled("a-1", stale))
+        assertEquals(listOf(summary("t")), book.cancelled("a-2", stale))
+    }
+
+    @Test
+    fun `an alert posted again after its cancel counts as a child again`() {
+        val stale = listOf(summary("t"), alert("a-1", "t"))
+        val book = SummaryBookkeeping()
+        assertEquals(listOf(summary("t")), book.cancelled("a-1", stale))
+        book.posted("a-1")
+        assertEquals(emptyList<Posted>(), book.sweep(stale))
+    }
+
+    @Test
+    fun `an id is forgotten once a snapshot no longer lists it`() {
+        val book = SummaryBookkeeping()
+        book.cancelled("a-1", listOf(summary("t"), alert("a-1", "t")))
+        book.sweep(listOf(summary("t")))
+        // a-1 re-posted by something that bypassed `posted` would count again.
+        assertEquals(emptyList<Posted>(), book.sweep(listOf(summary("t"), alert("a-1", "t"))))
+    }
 }

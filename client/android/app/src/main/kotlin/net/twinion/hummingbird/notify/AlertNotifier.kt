@@ -46,6 +46,12 @@ object AlertNotifier {
      * ([ThreadGroups.summaryTag]), exactly as an alert's does. */
     private const val SUMMARY_ID = 2
 
+    /** Set on a thread summary's tap intent: the tap opens the Alerts screen
+     * (no single alert to name). `MainActivity`'s `Arrival` reads it. */
+    const val EXTRA_OPEN_ALERTS = "net.twinion.hummingbird.extra.OPEN_ALERTS"
+
+    private val bookkeeping = SummaryBookkeeping()
+
     /** The alert id, carried on the tap intent into `MainActivity` and on
      * the Ack broadcast into [AckReceiver]. */
     const val EXTRA_ALERT_ID = "net.twinion.hummingbird.extra.ALERT_ID"
@@ -125,9 +131,12 @@ object AlertNotifier {
         }
 
         val manager = NotificationManagerCompat.from(app)
-        manager.notify(alert.alertId, NOTIFICATION_ID, builder.build())
-        alert.thread?.let { postSummary(app, manager, alert, it, channelId) }
-        removeOrphanedSummaries(manager, exceptTag = null)
+        synchronized(bookkeeping) {
+            bookkeeping.posted(alert.alertId)
+            manager.notify(alert.alertId, NOTIFICATION_ID, builder.build())
+            alert.thread?.let { postSummary(app, manager, alert, it, channelId) }
+            removeOrphanedSummaries(manager, cancelledAlertId = null)
+        }
     }
 
     /** The one summary a thread's notifications collapse under. Re-posting it
@@ -146,7 +155,11 @@ object AlertNotifier {
             0,
             Intent(app, MainActivity::class.java)
                 .setAction(Intent.ACTION_VIEW)
+                // The data URI only keeps each thread's PendingIntent
+                // distinct; the extra is what `MainActivity` reads: open the
+                // Alerts screen.
                 .setData(android.net.Uri.parse("hummingbird://thread/${android.net.Uri.encode(thread)}"))
+                .putExtra(EXTRA_OPEN_ALERTS, true)
                 .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
@@ -154,7 +167,9 @@ object AlertNotifier {
             .setSmallIcon(SourceIcons.drawableFor(alert.sourceIcon))
             .setContentTitle(alert.context ?: alert.sourceName ?: alert.title)
             .setContentIntent(open)
-            .setAutoCancel(true)
+            // Never auto-cancel: a tap would take the summary's children with
+            // it. Its life is the child bookkeeping's ([ThreadGroups]).
+            .setAutoCancel(false)
             .setGroup(thread)
             .setGroupSummary(true)
             .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
@@ -163,11 +178,8 @@ object AlertNotifier {
     }
 
     /** Cancels every thread summary with no alert left under it. */
-    private fun removeOrphanedSummaries(manager: NotificationManagerCompat, exceptTag: String?) {
+    private fun removeOrphanedSummaries(manager: NotificationManagerCompat, cancelledAlertId: String?) {
         val active = manager.activeNotifications
-            // The platform may still list the notification this call has just
-            // cancelled; it is gone as far as the group is concerned.
-            .filter { it.tag != exceptTag }
             .map {
                 ThreadGroups.Posted(
                     tag = it.tag,
@@ -176,7 +188,12 @@ object AlertNotifier {
                     isSummary = it.notification.flags and Notification.FLAG_GROUP_SUMMARY != 0,
                 )
             }
-        for (orphan in ThreadGroups.orphanedSummaries(active)) {
+        // The platform may still list alerts whose cancel is in flight (this
+        // one, or another worker's); the bookkeeping excludes them all.
+        val orphans =
+            if (cancelledAlertId != null) bookkeeping.cancelled(cancelledAlertId, active)
+            else bookkeeping.sweep(active)
+        for (orphan in orphans) {
             manager.cancel(orphan.tag, orphan.id)
         }
     }
@@ -185,8 +202,12 @@ object AlertNotifier {
      * ring does not outlive the thing it was about. */
     fun cancel(context: Context, alertId: String) {
         val manager = NotificationManagerCompat.from(context.applicationContext)
-        manager.cancel(alertId, NOTIFICATION_ID)
-        // Its thread's summary goes with its last alert (#922, ADR-0042).
-        removeOrphanedSummaries(manager, exceptTag = alertId)
+        // One pass at a time: two Ack workers finishing together must not
+        // each see the other's alert as a surviving child.
+        synchronized(bookkeeping) {
+            manager.cancel(alertId, NOTIFICATION_ID)
+            // Its thread's summary goes with its last alert (#922, ADR-0042).
+            removeOrphanedSummaries(manager, cancelledAlertId = alertId)
+        }
     }
 }
