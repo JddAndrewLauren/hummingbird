@@ -25,19 +25,19 @@
         android:strokeLineCap="round"
         android:strokeLineJoin="round" />
     <path
-        android:pathData="M10 14.66V17c0 .55-.47.98-1.21 1.21C7.85 18.75 7 20.24 7 22"
+        android:pathData="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"
         android:strokeWidth="1.75"
         android:strokeColor="#FFFFFF"
         android:strokeLineCap="round"
         android:strokeLineJoin="round" />
     <path
-        android:pathData="M14 14.66V17c0 .55.47.98 1.21 1.21C16.15 18.75 17 20.24 17 22"
+        android:pathData="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"
         android:strokeWidth="1.75"
         android:strokeColor="#FFFFFF"
         android:strokeLineCap="round"
         android:strokeLineJoin="round" />
     <path
-        android:pathData="M18 2H6v7a6 6 0 0 0 12 0V2z"
+        android:pathData="M18 2H6v7a6 6 0 0 0 12 0V2Z"
         android:strokeWidth="1.75"
         android:strokeColor="#FFFFFF"
         android:strokeLineCap="round"

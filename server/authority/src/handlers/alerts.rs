@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 
 use hummingbird_domain::{
     find_source, now_as_deadline, url_is_on_origin, Alert, AlertIngest, AlertPatch, Event,
-    BODY_MAX_CHARS, CONTEXT_MAX_CHARS, THREAD_KEY_MAX_CHARS, TITLE_MAX_CHARS,
+    CONTEXT_MAX_CHARS, THREAD_KEY_MAX_CHARS,
 };
 use hummingbird_rules_engine::{evaluate_rules, RuleOutcome};
 
@@ -82,11 +82,11 @@ pub(super) fn ingest_parsed(
     if ingest.subject_key.as_deref() == Some("") {
         return Ok(error(400, "validation", "subject_key must be non-empty when present"));
     }
-    // #922: the length caps and the non-empty rule for the two new optional
-    // lines. A 400 names the field, so a source's bug is visible at its own
+    // #922: the non-empty rule and length cap for the two new optional lines. A 400 names the field, so a source's bug is visible at its own
     // door rather than as a clipped or silently-dropped notification.
-    // Counted in characters, not bytes: a title in another script must not
-    // trip a cap meant for what the operator reads.
+    // Counted in characters, not bytes: a line in another script must not
+    // trip a cap meant for what the operator reads. Title and body carry no
+    // cap: a mail subject or calendar title is third-party text.
     if let Some(problem) = text_field_problem(&ingest) {
         return Ok(error(400, "validation", &problem));
     }
@@ -152,20 +152,14 @@ pub(super) fn ingest_parsed(
     Ok(response)
 }
 
-/// The first of `title`, `body`, `context` and `thread_key` that breaks its
-/// rule (#922), as the 400's message — which names the field. `context` and
-/// `thread_key` are non-empty when present; all four have a character cap.
+/// The first of `context` and `thread_key` that breaks its rule (#922), as
+/// the 400's message — which names the field. Both are non-empty when present
+/// and have a character cap.
 fn text_field_problem(ingest: &AlertIngest) -> Option<String> {
     let too_long = |name: &str, value: &str, max: usize| {
         (value.chars().count() > max)
             .then(|| format!("{name} must be at most {max} characters"))
     };
-    if let Some(p) = too_long("title", &ingest.title, TITLE_MAX_CHARS) {
-        return Some(p);
-    }
-    if let Some(p) = ingest.body.as_deref().and_then(|b| too_long("body", b, BODY_MAX_CHARS)) {
-        return Some(p);
-    }
     for (name, value, max) in [
         ("context", ingest.context.as_deref(), CONTEXT_MAX_CHARS),
         ("thread_key", ingest.thread_key.as_deref(), THREAD_KEY_MAX_CHARS),

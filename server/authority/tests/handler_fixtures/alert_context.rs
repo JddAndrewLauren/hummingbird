@@ -1,6 +1,5 @@
 //! #922: every alert says which app sent it and what it belongs to — the
-//! two new optional ingest fields (`context`, `thread_key`), the caps on the
-//! old ones, and the push data map a real ingest produces. One test per
+//! two new optional ingest fields (`context`, `thread_key`) with their caps, and the push data map a real ingest produces. One test per
 //! acceptance box that lives on the server.
 
 use hummingbird_authority::{message_json, ApiResponse, DeliveryOutcome};
@@ -75,11 +74,10 @@ fn a_payload_without_the_new_fields_is_accepted_as_before() {
     assert_eq!((read.context, read.thread_key), (None, None));
 }
 
-fn refused_naming(field: &str, extra: &str, title_body: Option<String>) {
+fn refused_naming(field: &str, extra: &str) {
     let sql = RusqliteSql::new();
     let t = token(&sql);
-    let payload = title_body.unwrap_or_else(|| body(extra));
-    let resp = post(&sql, &t, &payload, 10);
+    let resp = post(&sql, &t, &body(extra), 10);
     assert_eq!(resp.status, 400, "{field}: {}", resp.body);
     assert!(resp.body.contains(field), "the 400 names `{field}`: {}", resp.body);
     let swept: serde_json::Value = serde_json::from_str(&sweep(&sql).body).unwrap();
@@ -88,37 +86,18 @@ fn refused_naming(field: &str, extra: &str, title_body: Option<String>) {
 
 #[test]
 fn an_over_long_context_is_a_400_naming_the_field() {
-    refused_naming("context", &format!(r#""context": "{}""#, "x".repeat(81)), None);
+    refused_naming("context", &format!(r#""context": "{}""#, "x".repeat(81)));
 }
 
 #[test]
 fn an_over_long_thread_key_is_a_400_naming_the_field() {
-    refused_naming("thread_key", &format!(r#""thread_key": "{}""#, "x".repeat(121)), None);
-}
-
-#[test]
-fn an_over_long_title_is_a_400_naming_the_field() {
-    let payload = format!(
-        r#"{{"source": "{SOURCE}", "source_key": "{KEY}", "title": "{}", "severity": "normal"}}"#,
-        "t".repeat(121)
-    );
-    refused_naming("title", "", Some(payload));
-}
-
-#[test]
-fn an_over_long_body_is_a_400_naming_the_field() {
-    let payload = format!(
-        r#"{{"source": "{SOURCE}", "source_key": "{KEY}", "title": "ok", "body": "{}",
-            "severity": "normal"}}"#,
-        "b".repeat(1001)
-    );
-    refused_naming("body", "", Some(payload));
+    refused_naming("thread_key", &format!(r#""thread_key": "{}""#, "x".repeat(121)));
 }
 
 #[test]
 fn an_empty_context_or_thread_key_is_a_400_naming_the_field() {
-    refused_naming("context", r#""context": """#, None);
-    refused_naming("thread_key", r#""thread_key": """#, None);
+    refused_naming("context", r#""context": """#);
+    refused_naming("thread_key", r#""thread_key": """#);
 }
 
 #[test]
@@ -130,8 +109,8 @@ fn the_caps_hold_exactly_at_the_limit_and_count_characters_not_bytes() {
     let payload = format!(
         r#"{{"source": "{SOURCE}", "source_key": "{KEY}", "title": "{}", "body": "{}",
             "context": "{context}", "thread_key": "{}", "severity": "normal"}}"#,
-        "t".repeat(120),
-        "b".repeat(1000),
+        "t".repeat(500),
+        "b".repeat(5000),
         "k".repeat(120)
     );
     let resp = post(&sql, &t, &payload, 10);

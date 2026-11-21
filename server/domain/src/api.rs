@@ -494,10 +494,8 @@ pub struct SnapshotIngest {
     pub fetched_at: i64,
 }
 
-/// Ingest caps (#922): the most characters each text field of an
-/// [`AlertIngest`] may carry. Past one is a 400 naming the field.
-pub const TITLE_MAX_CHARS: usize = 120;
-pub const BODY_MAX_CHARS: usize = 1000;
+/// Ingest caps (#922): the most characters the `context` and `thread_key` of
+/// an [`AlertIngest`] may carry. Past one is a 400 naming the field.
 pub const CONTEXT_MAX_CHARS: usize = 80;
 pub const THREAD_KEY_MAX_CHARS: usize = 120;
 

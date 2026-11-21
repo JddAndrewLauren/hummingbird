@@ -33,13 +33,13 @@ first consumer.
    absolutely on every write: a write that omits one clears it. A payload
    that sends neither is accepted unchanged.
 
-3. **Caps, counted in characters.** `title` at most 120, `body` at most 1000,
-   `context` at most 80, `thread_key` at most 120. Past one is a 400 naming
-   the field, and nothing is written. The caps are on the ingest door
-   (`POST /api/alerts` and the Healthchecks receiver, which enters through
-   it), not on the sweep's own `item-threshold/v1` writes, which never
-   cross it. The lengths bound what a phone can sensibly draw and what a
-   push payload can carry; they are not a style rule.
+3. **Caps on the two new fields, counted in characters.** `context` at most
+   80 and `thread_key` at most 120. Past one is a 400 naming the field, and
+   nothing is written. The lengths bound what a notification header and a
+   group key can sensibly carry. `title` and `body` get **no** cap: they hold
+   third-party text (a mail subject, a calendar title), and refusing a long
+   one would lose the alert. The caps are on the ingest door (`POST
+   /api/alerts` and the Healthchecks receiver, which enters through it).
 
 4. **The thread is scoped to the source.** The authority's thread value is
    `<source>:<thread_key>` (`auk/v1:out-412`): two sources that use the same
@@ -89,6 +89,3 @@ first consumer.
 - Deploy: the Fly runner needs nothing; the authority is a Cloudflare Worker
   deploy (its schema grows by two `ALTER TABLE`s on first boot), then an
   Android release.
-- The caps make an over-long title or body from an existing source a 400
-  where it used to be accepted. Pollers that forward third-party text (a mail
-  subject, a calendar title) are the ones to watch; none truncates today.
