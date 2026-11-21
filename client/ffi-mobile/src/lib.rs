@@ -113,7 +113,7 @@ use hummingbird_core::decisions::devices;
 use hummingbird_core::devices::{DevicesOutcome, RevokeOutcome, SignInOutcome};
 use hummingbird_core::{search, CaptureOptions, Core, CoreCycleOutcome, CoreEvent, ItemAction};
 use hummingbird_domain::{
-    Alert, Condition, CreatePushTarget, DeviceInfo, DeviceListPlatform, DevicePlatform, Energy,
+    find_source, Alert, Condition, CreatePushTarget, DeviceInfo, DeviceListPlatform, DevicePlatform, Energy,
     FieldType, Item, Platform, Rule, Size, Stage, Tier,
 };
 use hummingbird_rules_engine::Operator;
@@ -1401,6 +1401,17 @@ pub struct AlertRecord {
     pub source: String,
     pub source_key: String,
     pub subject_key: Option<String>,
+    /// The source's human name from the registry (#922, ADR-0042) — what the
+    /// list and detail screens show instead of the raw `source` string. A
+    /// source the registry does not know falls back to the raw string, so the
+    /// screen never shows a blank.
+    pub source_name: String,
+    /// The registry's icon slug (#922). The bell, spelled `bell`, for a
+    /// source the registry does not know; Kotlin falls back to the same bell
+    /// for a slug it has no drawable for.
+    pub source_icon: String,
+    /// The alert's context line (#922), when its source sent one.
+    pub context: Option<String>,
     pub title: String,
     pub body: Option<String>,
     pub url: Option<String>,
@@ -1416,11 +1427,15 @@ pub struct AlertRecord {
 
 fn to_alert_record(alert: &Alert, now_ms: i64) -> AlertRecord {
     let is_live = alert.is_live(now_ms);
+    let entry = find_source(&alert.source);
     AlertRecord {
         id: alert.id.clone(),
         source: alert.source.clone(),
         source_key: alert.source_key.clone(),
         subject_key: alert.subject_key.clone(),
+        source_name: entry.map_or_else(|| alert.source.clone(), |e| e.display_name.to_string()),
+        source_icon: entry.map_or("bell", |e| e.icon).to_string(),
+        context: alert.context.clone(),
         title: alert.title.clone(),
         body: alert.body.clone(),
         url: alert.url.clone(),
@@ -10312,6 +10327,8 @@ mod tests {
             source: "race/v1".to_string(),
             source_key: format!("occurrence:{id}"),
             subject_key: None,
+            context: None,
+            thread_key: None,
             title: format!("alert {id}"),
             body: Some("body".to_string()),
             url: Some("https://example.invalid/a".to_string()),
@@ -10346,6 +10363,25 @@ mod tests {
     /// live and cannot be acked; the same row under an earlier clock is
     /// both — which is exactly what a Kotlin `dismissedAt == null` test
     /// would get wrong for the expiry case below.
+    /// #922: the list and detail name the source by its registry name and
+    /// show the context line; an unregistered source falls back to its raw
+    /// string and the bell.
+    #[test]
+    fn the_record_names_the_source_and_carries_the_context_line() {
+        let mut a = alert("a-9", 500);
+        a.source = "auk/v1".to_string();
+        a.context = Some("hummingbird \u{b7} out-412".to_string());
+        let r = to_alert_record(&a, 1_000);
+        assert_eq!((r.source_name.as_str(), r.source_icon.as_str()), ("Auk", "auk"));
+        assert_eq!(r.context.as_deref(), Some("hummingbird \u{b7} out-412"));
+
+        let mut unknown = alert("a-10", 500);
+        unknown.source = "mystery/v1".to_string();
+        let r = to_alert_record(&unknown, 1_000);
+        assert_eq!((r.source_name.as_str(), r.source_icon.as_str()), ("mystery/v1", "bell"));
+        assert_eq!(r.context, None);
+    }
+
     #[test]
     fn the_record_decides_liveness_and_ackability_at_the_callers_clock() {
         let live = to_alert_record(&alert("a-1", 500), 1_000);

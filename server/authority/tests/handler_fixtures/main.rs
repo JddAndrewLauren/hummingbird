@@ -6,6 +6,7 @@
 mod rig;
 
 mod admin_tokens;
+mod alert_context;
 mod alerts;
 mod auk_source;
 mod auth_google;

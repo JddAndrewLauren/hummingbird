@@ -36,6 +36,17 @@ pub struct Alert {
     /// item is not a standing question and has no pane.
     #[serde(default)]
     pub subject_key: Option<String>,
+    /// #922: one short line saying where the alert belongs ("hummingbird · out-412"),
+    /// source-owned and set absolutely on every write. At most
+    /// [`crate::CONTEXT_MAX_CHARS`] characters. `#[serde(default)]` because
+    /// every alert minted before the field existed carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// #922: groups one source's alerts (the phone stacks a thread under one
+    /// summary). Scoped to the source — two sources' equal keys never merge.
+    /// At most [`crate::THREAD_KEY_MAX_CHARS`] characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_key: Option<String>,
     pub title: String,
     pub body: Option<String>,
     pub url: Option<String>,
@@ -55,6 +66,15 @@ pub struct Alert {
 }
 
 impl Alert {
+    /// The thread this alert stacks under on a phone (#922): its
+    /// `thread_key` scoped by its source, `<source>:<thread_key>`, so two
+    /// sources that happen to use the same key never merge. A registered
+    /// source string carries no `:` (`name/vN`), so the join is unambiguous.
+    /// `None` when the alert names no thread.
+    pub fn thread(&self) -> Option<String> {
+        self.thread_key.as_deref().map(|key| format!("{}:{key}", self.source))
+    }
+
     /// ADR-0014's live predicate ([`crate::is_live`]), applied to this row.
     /// Call with the caller's clock, never a stored value — `now` matters
     /// only for the expiry clause.
@@ -355,6 +375,8 @@ mod tests {
             source: "auk/v1".into(),
             source_key: "k".into(),
             subject_key: None,
+            context: None,
+            thread_key: None,
             title: "t".into(),
             body: None,
             url: None,

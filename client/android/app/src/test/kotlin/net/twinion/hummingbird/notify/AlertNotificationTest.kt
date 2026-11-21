@@ -64,6 +64,54 @@ class AlertNotificationTest {
     }
 
     @Test
+    fun `the source's name, icon, context and thread map through (#922)`() {
+        val mapped = AlertNotification.from(
+            payload(
+                extra = mapOf(
+                    "source_name" to "Auk",
+                    "source_icon" to "auk",
+                    "context" to "hummingbird · out-412",
+                    "thread" to "auk/v1:out-412",
+                ),
+            ),
+        )!!
+        assertEquals("Auk", mapped.sourceName)
+        assertEquals("auk", mapped.sourceIcon)
+        assertEquals("hummingbird · out-412", mapped.context)
+        assertEquals("auk/v1:out-412", mapped.thread)
+        assertEquals("Auk · hummingbird · out-412", mapped.subText)
+    }
+
+    @Test
+    fun `the subtext is the source name alone when there is no context`() {
+        val mapped = AlertNotification.from(
+            payload(extra = mapOf("source_name" to "Perch", "source_icon" to "perch")),
+        )!!
+        assertNull(mapped.context)
+        assertNull(mapped.thread)
+        assertEquals("Perch", mapped.subText)
+    }
+
+    @Test
+    fun `a blank context or thread counts as none`() {
+        val mapped = AlertNotification.from(
+            payload(extra = mapOf("source_name" to "Auk", "context" to " ", "thread" to "")),
+        )!!
+        assertNull(mapped.context)
+        assertNull(mapped.thread)
+        assertEquals("Auk", mapped.subText)
+    }
+
+    @Test
+    fun `a payload from a server older than #922 maps with no subtext, icon or thread`() {
+        val mapped = AlertNotification.from(payload())!!
+        assertNull(mapped.sourceName)
+        assertNull(mapped.sourceIcon)
+        assertNull(mapped.subText)
+        assertNull(mapped.thread)
+    }
+
+    @Test
     fun `an omitted body stays null -- it is not the same input as a blank one`() {
         // `data` has no null, so the server omits the key entirely; a
         // bodyless notification renders as one line, a blank-bodied one as

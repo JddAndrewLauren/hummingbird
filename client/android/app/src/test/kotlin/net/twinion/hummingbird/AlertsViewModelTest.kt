@@ -116,11 +116,15 @@ internal fun alert(
     severity: String? = "urgent",
     body: String? = "the detail line",
     url: String? = null,
+    context: String? = null,
 ) = AlertRecord(
     id = id,
     source = "fly",
     sourceKey = "hb-worker",
     subjectKey = null,
+    sourceName = "Fly",
+    sourceIcon = "bell",
+    context = context,
     title = "alert $id",
     body = body,
     url = url,
@@ -133,3 +137,12 @@ internal fun alert(
     isLive = isLive,
     canAck = canAck,
 )
+
+class SourceLineTest {
+    @Test
+    fun `the source line is the display name, then the context when there is one`() {
+        val withContext = alert("a-1", context = "hummingbird · out-412").copy(sourceName = "Auk")
+        assertEquals("Auk · hummingbird · out-412", sourceLine(withContext))
+        assertEquals("Auk", sourceLine(alert("a-2").copy(sourceName = "Auk")))
+    }
+}

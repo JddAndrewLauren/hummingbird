@@ -50,6 +50,8 @@ impl AlertPlan {
             // falsehood to match a temporary client choice, and the alert
             // still serves the notification lane either way.
             subject_key: Some(SNAPSHOT_KEY.to_string()),
+            context: None,
+            thread_key: None,
             title: self.title.clone(),
             body: Some(self.body.clone()),
             url: None,

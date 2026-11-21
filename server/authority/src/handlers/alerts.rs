@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 
 use hummingbird_domain::{
     find_source, now_as_deadline, url_is_on_origin, Alert, AlertIngest, AlertPatch, Event,
+    BODY_MAX_CHARS, CONTEXT_MAX_CHARS, THREAD_KEY_MAX_CHARS, TITLE_MAX_CHARS,
 };
 use hummingbird_rules_engine::{evaluate_rules, RuleOutcome};
 
@@ -80,6 +81,14 @@ pub(super) fn ingest_parsed(
     // quietly empty", applied on the alert side of the same join).
     if ingest.subject_key.as_deref() == Some("") {
         return Ok(error(400, "validation", "subject_key must be non-empty when present"));
+    }
+    // #922: the length caps and the non-empty rule for the two new optional
+    // lines. A 400 names the field, so a source's bug is visible at its own
+    // door rather than as a clipped or silently-dropped notification.
+    // Counted in characters, not bytes: a title in another script must not
+    // trip a cap meant for what the operator reads.
+    if let Some(problem) = text_field_problem(&ingest) {
+        return Ok(error(400, "validation", &problem));
     }
     // Two contradictory instructions about `raised_at`: one says "use this
     // stamp", the other says "decide the stamp for me". Refused rather than
@@ -141,6 +150,35 @@ pub(super) fn ingest_parsed(
     let mut response = json(status, &alert);
     response.deliveries = deliveries;
     Ok(response)
+}
+
+/// The first of `title`, `body`, `context` and `thread_key` that breaks its
+/// rule (#922), as the 400's message — which names the field. `context` and
+/// `thread_key` are non-empty when present; all four have a character cap.
+fn text_field_problem(ingest: &AlertIngest) -> Option<String> {
+    let too_long = |name: &str, value: &str, max: usize| {
+        (value.chars().count() > max)
+            .then(|| format!("{name} must be at most {max} characters"))
+    };
+    if let Some(p) = too_long("title", &ingest.title, TITLE_MAX_CHARS) {
+        return Some(p);
+    }
+    if let Some(p) = ingest.body.as_deref().and_then(|b| too_long("body", b, BODY_MAX_CHARS)) {
+        return Some(p);
+    }
+    for (name, value, max) in [
+        ("context", ingest.context.as_deref(), CONTEXT_MAX_CHARS),
+        ("thread_key", ingest.thread_key.as_deref(), THREAD_KEY_MAX_CHARS),
+    ] {
+        let Some(value) = value else { continue };
+        if value.is_empty() {
+            return Some(format!("{name} must be non-empty when present"));
+        }
+        if let Some(p) = too_long(name, value, max) {
+            return Some(p);
+        }
+    }
+    None
 }
 
 /// The notification lane's second `deliver` caller (#255): `POST
@@ -237,6 +275,8 @@ pub(crate) fn upsert(
             source: ingest.source,
             source_key: ingest.source_key,
             subject_key: ingest.subject_key,
+            context: ingest.context,
+            thread_key: ingest.thread_key,
             title: ingest.title,
             body: ingest.body,
             url: ingest.url,
@@ -248,14 +288,16 @@ pub(crate) fn upsert(
             version,
         };
         sql.exec(
-            "INSERT INTO alerts (id, source, source_key, subject_key, title, body, url, severity, \
-             raised_at, resolved_at, dismissed_at, expires_at, version) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+            "INSERT INTO alerts (id, source, source_key, subject_key, context, thread_key, title, \
+             body, url, severity, raised_at, resolved_at, dismissed_at, expires_at, version) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
             &[
                 SqlValue::Text(alert.id.clone()),
                 SqlValue::Text(alert.source.clone()),
                 SqlValue::Text(alert.source_key.clone()),
                 SqlValue::from_opt_text(alert.subject_key.as_deref()),
+                SqlValue::from_opt_text(alert.context.as_deref()),
+                SqlValue::from_opt_text(alert.thread_key.as_deref()),
                 SqlValue::Text(alert.title.clone()),
                 SqlValue::from_opt_text(alert.body.as_deref()),
                 SqlValue::from_opt_text(alert.url.as_deref()),
@@ -310,6 +352,8 @@ pub(crate) fn upsert(
         // that stops naming a subject clears the join rather than leaving
         // the alert bound to a subject it no longer claims.
         subject_key: ingest.subject_key,
+        context: ingest.context,
+        thread_key: ingest.thread_key,
         title: ingest.title,
         body: ingest.body,
         url: ingest.url,
@@ -346,10 +390,13 @@ pub(crate) fn upsert(
 
     let version = read_meta_version(sql)? + 1;
     sql.exec(
-        "UPDATE alerts SET subject_key = ?, title = ?, body = ?, url = ?, severity = ?, \
-         raised_at = ?, resolved_at = ?, expires_at = ?, version = ? WHERE id = ?",
+        "UPDATE alerts SET subject_key = ?, context = ?, thread_key = ?, title = ?, body = ?, \
+         url = ?, severity = ?, raised_at = ?, resolved_at = ?, expires_at = ?, version = ? \
+         WHERE id = ?",
         &[
             SqlValue::from_opt_text(next.subject_key.as_deref()),
+            SqlValue::from_opt_text(next.context.as_deref()),
+            SqlValue::from_opt_text(next.thread_key.as_deref()),
             SqlValue::Text(next.title.clone()),
             SqlValue::from_opt_text(next.body.as_deref()),
             SqlValue::from_opt_text(next.url.as_deref()),
@@ -524,6 +571,8 @@ pub(super) fn alert_from_row(row: &Row) -> Result<Alert, SqlError> {
         source: r.text("source")?,
         source_key: r.text("source_key")?,
         subject_key: r.opt_text("subject_key"),
+        context: r.opt_text("context"),
+        thread_key: r.opt_text("thread_key"),
         title: r.text("title")?,
         body: r.opt_text("body"),
         url: r.opt_text("url"),

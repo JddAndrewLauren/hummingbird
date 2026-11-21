@@ -22,6 +22,8 @@ pub fn plan(m: &Match) -> AlertIngest {
         source: m.event.source.clone(),
         source_key: m.event.source_key.clone(),
         subject_key: None,
+        context: None,
+        thread_key: None,
         title: m.event.title.clone(),
         body: m.event.body.clone(),
         url: m.event.url.clone(),

@@ -267,14 +267,7 @@ private fun AlertRow(
                         .background(bg, RoundedCornerShape(6.dp))
                         .padding(horizontal = 8.dp, vertical = 2.dp),
                 )
-                Text(
-                    // The middle dot is the metadata join, not an icon.
-                    "${record.source} · ${record.sourceKey}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                SourceLine(record, singleLine = true)
             }
 
             Text(record.title, style = MaterialTheme.typography.bodyLarge)

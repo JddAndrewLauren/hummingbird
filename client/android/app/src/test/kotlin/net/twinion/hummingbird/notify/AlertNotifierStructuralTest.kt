@@ -70,4 +70,21 @@ class AlertNotifierStructuralTest {
             immutable >= creations,
         )
     }
+
+    @Test
+    fun `an alert posts its source's subtext, icon and thread group (#922)`() {
+        assertTrue("subtext from the mapper", src.contains("setSubText(it)"))
+        assertTrue("the source's own icon", src.contains("SourceIcons.drawableFor(alert.sourceIcon)"))
+        assertTrue("the thread is the group key", src.contains("setGroup(it)"))
+        assertTrue("a thread posts one summary", src.contains("setGroupSummary(true)"))
+    }
+
+    @Test
+    fun `a cancel retires the thread summary its last alert leaves empty (#922)`() {
+        val cancel = src.substringAfter("fun cancel(").substringBefore("\n    }")
+        assertTrue(
+            "cancel must sweep orphaned summaries after cancelling the alert",
+            cancel.contains("removeOrphanedSummaries"),
+        )
+    }
 }

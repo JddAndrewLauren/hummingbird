@@ -25,7 +25,11 @@ a *civil* dimension. A ring fires at `deadline − MIN_LEAD` clamped
 backwards into the operator's waking window, and a ring with no waking
 moment in its lead range is not delivered at all — so two rings for one
 alert are no longer guaranteed. Severity, generation and the lifecycle
-gate are untouched.
+gate are untouched. · **amended 2026-11-21 by
+[ADR-0042](0042-an-alert-names-its-source-and-what-it-belongs-to.md):** the
+data-only payload gains the source's registry name and icon, the alert's
+context line and its source-scoped thread, and the Android notification draws
+a header subtext, a per-source icon and a group per thread.
 **Context:** the push-notifications grilling of 2026-08-09. Companion to
 [ADR-0011](0011-context-ingestion-moves-server-side.md), which owns how
 stream events reach the rule engine; this ADR owns what a rule is, what a

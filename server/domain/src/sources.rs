@@ -142,6 +142,12 @@ pub struct SourceEntry {
     /// carries a `/vN` suffix from the start (ADR-0014) — there is no bare
     /// name.
     pub source: &'static str,
+    /// The human name the phone shows for this source (#922), held here so no
+    /// ingest token can claim another source's name. Never empty.
+    pub display_name: &'static str,
+    /// The icon slug the phone draws beside that name (#922). A slug a client
+    /// has no drawable for falls back to the bell. Never empty.
+    pub icon: &'static str,
     pub shape: Shape,
     /// Which of `alerts`/`context_snapshots` this source may write —
     /// [`POST /api/alerts`](crate) and `POST /api/snapshots` each reject a
@@ -364,6 +370,8 @@ pub const HEALTHCHECKS_V1: &str = "healthchecks/v1";
 pub const REGISTRY: &[SourceEntry] = &[
     SourceEntry {
         source: GMAIL_V1,
+        display_name: "Gmail",
+        icon: "mail",
         shape: Shape::Event,
         // Both: mints an alert on a rule match, and separately writes/reads
         // its own delta cursor as a context_snapshots row (ADR-0011).
@@ -375,6 +383,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     },
     SourceEntry {
         source: M365_MAIL_V1,
+        display_name: "Outlook",
+        icon: "mail",
         shape: Shape::Event,
         writes: Writes::Both,
         key_recipe: Some(
@@ -387,6 +397,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     },
     SourceEntry {
         source: GOOGLE_CALENDAR_V1,
+        display_name: "Google Calendar",
+        icon: "calendar",
         shape: Shape::Event,
         // Both: mints an alert on a rule match, and writes both its delta
         // sync-token cursor and the busy_now gauge as context_snapshots
@@ -399,6 +411,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     },
     SourceEntry {
         source: M365_CALENDAR_V1,
+        display_name: "Outlook Calendar",
+        icon: "calendar",
         shape: Shape::Event,
         writes: Writes::Both,
         key_recipe: Some("<seriesMasterId or id>:<originalStart>"),
@@ -425,6 +439,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     // `Writes::Alerts`, never `Both`.
     SourceEntry {
         source: "city-waste/v1",
+        display_name: "Waste collection",
+        icon: "trash",
         shape: Shape::Event,
         writes: Writes::Alerts,
         key_recipe: Some(
@@ -438,6 +454,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     },
     SourceEntry {
         source: CITY_WASTE_V2,
+        display_name: "Waste collection",
+        icon: "trash",
         shape: Shape::Event,
         // Both, from #254's amendment: the daily poll body every run
         // (context_snapshots) and a holiday-week alert (alerts) — #120's
@@ -457,6 +475,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     },
     SourceEntry {
         source: RACE_SCHEDULE_V1,
+        display_name: "Racing",
+        icon: "flag",
         // Event: a race start is a discrete occurrence, not the state of a
         // thing — `source_key` names the start instant, and the row leaves
         // live by ack or expiry rather than by resolving.
@@ -481,6 +501,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     // `YAHOO_WAIVERS_INGEST_TOKEN`; ADR-0011's #717 amendment).
     SourceEntry {
         source: YAHOO_LINEUP_V1,
+        display_name: "Fantasy lineup",
+        icon: "football",
         // State: `source_key` names the team whose lineup it is, and the
         // alert leaves live when the next poll sees a valid roster.
         shape: Shape::State,
@@ -501,6 +523,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     },
     SourceEntry {
         source: YAHOO_WAIVERS_V1,
+        display_name: "Fantasy waivers",
+        icon: "football",
         // Event: a weekly waiver deadline is an occurrence; the row never
         // resolves, it leaves by expiry at the deadline.
         shape: Shape::Event,
@@ -524,6 +548,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     // `alerts` row to ever mean.
     SourceEntry {
         source: KIMI_BALANCE_V1,
+        display_name: "Kimi balance",
+        icon: "pulse",
         shape: Shape::State,
         writes: Writes::Snapshots,
         key_recipe: None,
@@ -537,6 +563,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     // question").
     SourceEntry {
         source: GITHUB_HUMMINGBIRD_V1,
+        display_name: "GitHub",
+        icon: "github",
         shape: Shape::State,
         writes: Writes::Snapshots,
         key_recipe: None,
@@ -552,6 +580,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     // triple exists for it.
     SourceEntry {
         source: UPTIME_V1,
+        display_name: "Uptime",
+        icon: "pulse",
         shape: Shape::State,
         writes: Writes::Snapshots,
         key_recipe: None,
@@ -561,6 +591,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     },
     SourceEntry {
         source: ITEM_THRESHOLD_V1,
+        display_name: "Hummingbird",
+        icon: "task",
         shape: Shape::State,
         // Alerts only: the internal DO-alarm sweep mints alerts against
         // items it reads directly — it writes no context_snapshots row.
@@ -572,6 +604,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     },
     SourceEntry {
         source: HEALTHCHECKS_V1,
+        display_name: "Healthchecks",
+        icon: "pulse",
         shape: Shape::State,
         writes: Writes::Alerts,
         key_recipe: Some("the check id, authored in the webhook body"),
@@ -581,6 +615,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     },
     SourceEntry {
         source: "home-assistant/v1",
+        display_name: "Home Assistant",
+        icon: "home",
         shape: Shape::State,
         writes: Writes::Alerts,
         key_recipe: Some("the entity id, authored in the webhook body"),
@@ -590,6 +626,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     },
     SourceEntry {
         source: "github/v1",
+        display_name: "GitHub",
+        icon: "github",
         shape: Shape::Event,
         writes: Writes::Alerts,
         key_recipe: Some("the source's own event id"),
@@ -599,6 +637,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     },
     SourceEntry {
         source: "photo-site/v1",
+        display_name: "Photo site",
+        icon: "camera",
         shape: Shape::Event,
         writes: Writes::Alerts,
         key_recipe: Some("the source's own event id"),
@@ -608,6 +648,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     },
     SourceEntry {
         source: "gmail-alert/v1",
+        display_name: "Gmail",
+        icon: "mail",
         shape: Shape::Event,
         writes: Writes::Alerts,
         key_recipe: Some("the source's own message id"),
@@ -621,6 +663,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     // entry whose tokens must carry an allowed link origin.
     SourceEntry {
         source: AUK_V1,
+        display_name: "Auk",
+        icon: "auk",
         shape: Shape::State,
         writes: Writes::Alerts,
         key_recipe: Some("machine, record id and cause, authored by Auk — never the wait episode"),
@@ -633,6 +677,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     // is waiting, and it leaves live when the cockpit posts a resolve.
     SourceEntry {
         source: STARLING_V1,
+        display_name: "Starling",
+        icon: "starling",
         shape: Shape::State,
         writes: Writes::Alerts,
         key_recipe: Some(
@@ -650,6 +696,8 @@ pub const REGISTRY: &[SourceEntry] = &[
     // app on every Mac, and Perch sends no link at all.
     SourceEntry {
         source: PERCH_V1,
+        display_name: "Perch",
+        icon: "perch",
         shape: Shape::State,
         writes: Writes::Alerts,
         key_recipe: Some(
@@ -874,6 +922,27 @@ mod tests {
         }
     }
 
+    /// #922: every registered source names itself and its icon — the phone
+    /// shows these, and no ingest token can claim another source's name
+    /// because the registry holds them.
+    #[test]
+    fn every_registered_source_has_a_display_name_and_an_icon() {
+        for entry in REGISTRY {
+            assert!(!entry.display_name.trim().is_empty(), "{} has no display name", entry.source);
+            assert!(!entry.icon.trim().is_empty(), "{} has no icon slug", entry.source);
+            assert!(
+                entry.icon.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'),
+                "{}: icon `{}` is not a lower-case slug",
+                entry.source,
+                entry.icon
+            );
+        }
+        let auk = find(AUK_V1).expect("auk/v1 is registered");
+        assert_eq!((auk.display_name, auk.icon), ("Auk", "auk"));
+        let perch = find(PERCH_V1).expect("perch/v1 is registered");
+        assert_eq!((perch.display_name, perch.icon), ("Perch", "perch"));
+    }
+
     /// Frozen table-pin: every entry's `(source, shape, writes, expires_at,
     /// retired_as)` tuple, verbatim, in registration order. `source` and
     /// `shape` are half of the `sha256(source, source_key)` alert id and
@@ -1038,6 +1107,8 @@ mod tests {
     fn a_snapshot_only_entry_is_representable_and_not_alert_writing() {
         let entry = SourceEntry {
             source: "anthropic-usage/v1",
+            display_name: "Anthropic usage",
+            icon: "pulse",
             shape: Shape::State,
             writes: Writes::Snapshots,
             key_recipe: None,
@@ -1217,6 +1288,8 @@ mod tests {
     fn a_retired_source_is_representable_and_distinct_from_unknown() {
         let retired = SourceEntry {
             source: "city-waste/v1",
+            display_name: "Waste collection",
+            icon: "trash",
             shape: Shape::Event,
             writes: Writes::Alerts,
             key_recipe: Some("<stream>:<scheduled-date>"),

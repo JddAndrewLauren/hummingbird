@@ -6370,6 +6370,8 @@ mod pane_read_tests {
                 source: "city-waste/v2".to_string(),
                 source_key: "collection:2026-08-11".to_string(),
                 subject_key: Some("collection".to_string()),
+                context: None,
+                thread_key: None,
                 title: "Collection moved".to_string(),
                 body: None,
                 url: None,

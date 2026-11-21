@@ -64,6 +64,8 @@ impl AlertPlan {
             // The pane join's own half: `(source, subject_key)` ↔
             // `(source, key)`, and the snapshot's key is the series.
             subject_key: Some(self.series.clone()),
+            context: None,
+            thread_key: None,
             title: self.title.clone(),
             body: Some(self.body.clone()),
             // Nothing useful to link once the feed's wikipedia `url` is
