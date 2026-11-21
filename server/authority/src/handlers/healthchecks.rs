@@ -77,6 +77,8 @@ pub fn receive(
                 source: HEALTHCHECKS_V1.to_string(),
                 source_key,
                 subject_key: None,
+                context: None,
+                thread_key: None,
                 title,
                 body: None,
                 url: None,

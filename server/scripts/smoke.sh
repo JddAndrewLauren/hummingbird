@@ -72,7 +72,7 @@ rm -rf .wrangler/state
 # on a cold runner `cargo install worker-build` alone takes minutes, which
 # would eat the whole readiness budget below. Warm, wrangler's own re-run
 # of it is a fast no-op.
-cargo install -q worker-build && worker-build --release
+cargo install -q worker-build@^0.8 && worker-build --release
 
 export CI=true WRANGLER_SEND_METRICS=false
 # The trap must kill the whole tree — killing only the npx wrapper orphans

@@ -45,7 +45,7 @@
 //! anyway would mean every alert raised before the first device ever
 //! registers (all of them, until #141 ships) rings for no one, forever.
 
-use hummingbird_domain::{severity_rank, Alert, PushTarget, Tier};
+use hummingbird_domain::{find_source, severity_rank, Alert, PushTarget, Tier};
 
 use crate::codec::RowReader;
 use crate::handlers::push_targets::push_target_from_row;
@@ -69,6 +69,20 @@ pub struct PushNotification {
     /// *recognised* source naming no item, not a missing field.
     pub source: String,
     pub source_key: String,
+    /// The source's human name from the registry (#922): what the phone
+    /// writes in the notification's header. Held by the registry rather than
+    /// sent by the source, so no token can claim another source's name. A
+    /// source the registry does not know falls back to its raw string.
+    pub source_name: String,
+    /// The registry's icon slug for the source (#922). A slug the phone has
+    /// no drawable for falls back to the bell; an unregistered source sends
+    /// `bell` itself.
+    pub source_icon: String,
+    /// The alert's context line, when it has one (#922).
+    pub context: Option<String>,
+    /// The alert's thread, scoped to its source (#922) — see
+    /// [`Alert::thread`]. `None` when the alert has no `thread_key`.
+    pub thread: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -79,7 +93,7 @@ pub enum DeliveryOutcome {
     Logged {
         delivery_id: String,
         targets: Vec<PushTarget>,
-        notification: PushNotification,
+        notification: Box<PushNotification>,
     },
     /// Absorbed silently: not a delivery-warranting transition
     /// (ADR-0012/0014), or nothing could have received it. Either way
@@ -166,6 +180,7 @@ pub fn deliver(
         ],
     )?;
 
+    let entry = find_source(&alert.source);
     let notification = PushNotification {
         alert_id: alert.id.clone(),
         title: alert.title.clone(),
@@ -174,8 +189,12 @@ pub fn deliver(
         tier,
         source: alert.source.clone(),
         source_key: alert.source_key.clone(),
+        source_name: entry.map_or_else(|| alert.source.clone(), |e| e.display_name.to_string()),
+        source_icon: entry.map_or("bell", |e| e.icon).to_string(),
+        context: alert.context.clone(),
+        thread: alert.thread(),
     };
-    Ok(DeliveryOutcome::Logged { delivery_id, targets, notification })
+    Ok(DeliveryOutcome::Logged { delivery_id, targets, notification: Box::new(notification) })
 }
 
 /// Whether this ring is one of ADR-0012's two delivery-warranting

@@ -157,7 +157,17 @@ use crate::sql::{Sql, SqlError, SqlValue};
 /// verified against a real migrated store's `sqlite_master`, not reasoned
 /// out. Every token minted before it reads back `NULL`: links anywhere, as
 /// before.
-pub const SCHEMA_VERSION: i64 = 16;
+///
+/// 17 adds `alerts.context` and `alerts.thread_key` (#922, ADR-0042): the
+/// one short line saying where an alert belongs, and the key that groups a
+/// source's alerts. The 3→4 shape again — two nullable columns on `alerts`,
+/// which has a trailing `UNIQUE` — so [`add_missing_columns`] gains a tenth
+/// and eleventh arm, and both splice after `subject_key` on
+/// [`CREATE_ALERTS`]' one spliced line, ahead of that `UNIQUE`, in the order
+/// the `ALTER`s run. **The `ALTER`s must stay in that order**, or a migrated
+/// store's `sqlite_master.sql` differs from a fresh one's. Every alert
+/// written before it reads back `NULL` for both: no line, no thread.
+pub const SCHEMA_VERSION: i64 = 17;
 
 /// meta: the workspace version counter (one row), bumped by every write.
 /// Every mutated row stamps its `version` from this counter; the delta pull
@@ -313,7 +323,7 @@ CREATE TABLE IF NOT EXISTS alerts (
   resolved_at  INTEGER,
   dismissed_at INTEGER,
   expires_at   INTEGER,
-  version      INTEGER NOT NULL, subject_key TEXT,
+  version      INTEGER NOT NULL, subject_key TEXT, context TEXT, thread_key TEXT,
   UNIQUE(source, source_key)
 )";
 
@@ -643,7 +653,8 @@ fn archive_unaddressable_items(sql: &dyn Sql, now_ms: i64) -> Result<(), SqlErro
 /// first written — `alerts.subject_key` (3→4, ADR-0015), `items.agent`
 /// (4→5, #115), `projects`' pair (8→9, #625), `rules.deleted_at`
 /// (9→10), `items.vault_path` (12→13, #771), `items`' Link pair
-/// (13→14, #782) and `tokens.allowed_origin` (15→16, #845). The arms are
+/// (13→14, #782), `tokens.allowed_origin` (15→16, #845) and `alerts`' `context`
+/// and `thread_key` (16→17, #922). The arms are
 /// independent and each reads its own column's presence, so a store at
 /// any starting version reaches the same shape.
 ///
@@ -686,6 +697,12 @@ fn add_missing_columns(sql: &dyn Sql) -> Result<(), SqlError> {
     }
     if !column_exists(sql, "tokens", "allowed_origin")? {
         sql.exec("ALTER TABLE tokens ADD COLUMN allowed_origin TEXT", &[])?;
+    }
+    if !column_exists(sql, "alerts", "context")? {
+        sql.exec("ALTER TABLE alerts ADD COLUMN context TEXT", &[])?;
+    }
+    if !column_exists(sql, "alerts", "thread_key")? {
+        sql.exec("ALTER TABLE alerts ADD COLUMN thread_key TEXT", &[])?;
     }
     Ok(())
 }

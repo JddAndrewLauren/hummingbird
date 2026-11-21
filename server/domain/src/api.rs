@@ -494,6 +494,11 @@ pub struct SnapshotIngest {
     pub fetched_at: i64,
 }
 
+/// Ingest caps (#922): the most characters the `context` and `thread_key` of
+/// an [`AlertIngest`] may carry. Past one is a 400 naming the field.
+pub const CONTEXT_MAX_CHARS: usize = 80;
+pub const THREAD_KEY_MAX_CHARS: usize = 120;
+
 /// `POST /api/alerts` body (webhook ingest, `ingest` scope only). No
 /// `expected_version`: webhook sources cannot track versions, and the
 /// upsert on `(source, source_key)` is inherently absolute — the source is
@@ -523,6 +528,16 @@ pub struct AlertIngest {
     /// question, and `sweep_tick` deliberately never sends it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject_key: Option<String>,
+    /// #922: one short line saying where the alert belongs. Absent is the
+    /// norm; present it is non-empty and at most [`CONTEXT_MAX_CHARS`]
+    /// characters. Source-owned: an absent one clears the stored line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// #922: groups this source's alerts into one thread. Absent is the
+    /// norm; present it is non-empty and at most [`THREAD_KEY_MAX_CHARS`]
+    /// characters. Source-owned: an absent one clears the stored key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_key: Option<String>,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,

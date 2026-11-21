@@ -10,7 +10,9 @@ package net.twinion.hummingbird.notify
 // strings — `alert_id`, `severity`, `tier`, `channel_id`, `title`, and
 // `body` **only when there is one** (`data` has no null, and a bodyless
 // notification renders differently from one with a blank line, so absent
-// and empty are not the same input here).
+// and empty are not the same input here). Since #922 the map also carries
+// `source_name` and `source_icon` always, and `context` and `thread` only when
+// the alert has them (ADR-0042).
 //
 // This file has **no clock and no time imports**, and a structural test
 // gates that. The text of a notification must be byte-identical across
@@ -41,7 +43,26 @@ data class AlertNotification(
      * would be that convention hand-copied into Kotlin. */
     val source: String?,
     val sourceKey: String?,
+    /** The source's registry name (#922, ADR-0042) — the notification's
+     * header. Null for a payload from a server older than the field. */
+    val sourceName: String?,
+    /** The registry's icon slug; resolved to a drawable at post time by
+     * [SourceIcons], where an unknown slug falls back to the bell. */
+    val sourceIcon: String?,
+    /** The alert's context line, or null when its source sent none. */
+    val context: String?,
+    /** The alert's thread, already scoped to its source by the server, or
+     * null when the alert names none. Used verbatim as the group key. */
+    val thread: String?,
 ) {
+    /** The header subtext: "<source name> · <context>", or the source name
+     * alone when there is no context, or null when the payload names no
+     * source at all (an older server). The middle dot is the metadata join,
+     * as everywhere in the app. Pure text, no clock, so a re-send is
+     * byte-identical. */
+    val subText: String?
+        get() = sourceName?.let { name -> context?.let { "$name · $it" } ?: name }
+
     companion object {
         /** The tier an unroutable payload lands on. `normal` rather than
          * `urgent`: guessing upward would let a malformed or future-tier
@@ -68,6 +89,12 @@ data class AlertNotification(
                 body = data["body"],
                 source = data["source"],
                 sourceKey = data["source_key"],
+                // #922: each is optional on the wire — `context` and `thread`
+                // are omitted when unset, and a blank one is as good as none.
+                sourceName = data["source_name"]?.takeIf { it.isNotBlank() },
+                sourceIcon = data["source_icon"]?.takeIf { it.isNotBlank() },
+                context = data["context"]?.takeIf { it.isNotBlank() },
+                thread = data["thread"]?.takeIf { it.isNotBlank() },
             )
         }
     }

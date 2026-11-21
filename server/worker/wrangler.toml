@@ -110,7 +110,8 @@ main = "build/worker/shim.mjs"
 compatibility_date = "2026-08-08"
 
 [build]
-command = "cargo install -q worker-build && worker-build --release"
+# worker-build is pinned to the `worker` crate's minor (Cargo.toml): 0.9 refuses worker 0.8.
+command = "cargo install -q worker-build@^0.8 && worker-build --release"
 
 [vars]
 # The `hummingbird-signin` Web client (#836). The Android clients are not

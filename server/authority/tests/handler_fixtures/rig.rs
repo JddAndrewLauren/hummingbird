@@ -593,6 +593,8 @@ pub fn seed_alert_full_raw(
         source: "test-source/v1".into(),
         source_key: id.into(),
         subject_key: None,
+        context: None,
+        thread_key: None,
         title: "seeded alert".into(),
         body: None,
         url: None,

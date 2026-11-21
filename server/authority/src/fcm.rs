@@ -220,6 +220,18 @@ pub fn message_json(notification: &PushNotification, fcm_token: &str) -> String 
     // absence here.
     data.insert("source".into(), notification.source.clone().into());
     data.insert("source_key".into(), notification.source_key.clone().into());
+    // #922: the source's registry name and icon always ride (the phone's
+    // header and small icon read them); the context line and the thread ride
+    // only when the alert has them, absent rather than empty for the reason
+    // `body` is below.
+    data.insert("source_name".into(), notification.source_name.clone().into());
+    data.insert("source_icon".into(), notification.source_icon.clone().into());
+    if let Some(context) = &notification.context {
+        data.insert("context".into(), context.clone().into());
+    }
+    if let Some(thread) = &notification.thread {
+        data.insert("thread".into(), thread.clone().into());
+    }
     // Absent rather than an empty string: the client renders a bodyless
     // notification differently from one with a blank line, and `data` has
     // no null to express "no body" with.
@@ -409,6 +421,10 @@ mod tests {
             // Built through the recipe, never spelled as a literal — the
             // key convention has one owner (ADR-0027 part 2).
             source_key: hummingbird_domain::item_threshold_v1_key("item-7"),
+            source_name: "Hummingbird".into(),
+            source_icon: "task".into(),
+            context: None,
+            thread: None,
         }
     }
 
@@ -495,6 +511,38 @@ mod tests {
                 "body": "due in 2 days",
                 "source": "item-threshold/v1",
                 "source_key": "item:item-7",
+                "source_name": "Hummingbird",
+                "source_icon": "task",
+            })
+        );
+    }
+
+    /// #922: a context line and a thread ride the data map when the alert
+    /// has them, beside the source's registry name and icon — and only then.
+    #[test]
+    fn data_carries_the_context_and_thread_when_set() {
+        let mut n = notification(Tier::Urgent);
+        n.source = hummingbird_domain::AUK_V1.into();
+        n.source_name = "Auk".into();
+        n.source_icon = "auk".into();
+        n.context = Some("hummingbird \u{b7} out-412".into());
+        n.thread = Some("auk/v1:out-412".into());
+        let json: serde_json::Value = serde_json::from_str(&message_json(&n, "tok-1")).unwrap();
+        assert_eq!(
+            json["message"]["data"],
+            serde_json::json!({
+                "alert_id": "alert-1",
+                "severity": "high",
+                "tier": "urgent",
+                "channel_id": "urgent",
+                "title": "Ship the thing",
+                "body": "due in 2 days",
+                "source": "auk/v1",
+                "source_key": "item:item-7",
+                "source_name": "Auk",
+                "source_icon": "auk",
+                "context": "hummingbird \u{b7} out-412",
+                "thread": "auk/v1:out-412",
             })
         );
     }

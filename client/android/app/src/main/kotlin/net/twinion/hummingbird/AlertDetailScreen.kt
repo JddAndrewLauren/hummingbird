@@ -159,11 +159,7 @@ private fun LoadedBody(
                 .background(bg, RoundedCornerShape(6.dp))
                 .padding(horizontal = 8.dp, vertical = 2.dp),
         )
-        Text(
-            "${record.source} · ${record.sourceKey}",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        SourceLine(record, singleLine = false)
     }
 
     Text(record.title, style = MaterialTheme.typography.headlineLarge)

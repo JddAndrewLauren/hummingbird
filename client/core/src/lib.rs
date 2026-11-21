@@ -7343,6 +7343,8 @@ mod tests {
             source: source.to_string(),
             source_key: format!("occurrence:{id}"),
             subject_key: subject_key.map(|key| key.to_string()),
+            context: None,
+            thread_key: None,
             title: format!("alert {id}"),
             body: None,
             url: None,
